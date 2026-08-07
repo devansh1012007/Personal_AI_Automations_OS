@@ -1,0 +1,42 @@
+# =====================================================================
+# gVisor override — run the sandbox worker under runsc (RFC §13, docs/adr/0019).
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.gvisor.yml up -d
+#
+# REQUIREMENTS (host, not container):
+#   * Linux. gVisor is a Linux user-space kernel; it does not exist on Windows
+#     or macOS. On a non-Linux host this override does nothing useful and the
+#     runtime will honestly report NAMESPACE isolation instead of VM.
+#   * runsc installed and registered with the Docker daemon. Verify with:
+#         docker info --format '{{json .Runtimes}}'   # must list "runsc"
+#     Install per https://gvisor.dev/docs/user_guide/install/ and add to
+#     /etc/docker/daemon.json:
+#         { "runtimes": { "runsc": { "path": "/usr/local/bin/runsc" } } }
+#     then `systemctl restart docker`.
+#
+# What it changes:
+#   * Tells the runtime to request `--runtime=runsc` for the throwaway worker
+#     containers it launches (SandboxSettings.container_runtime -> runsc). The
+#     DockerSandbox only *uses* runsc when the daemon reports it is registered,
+#     and reports VM-level isolation only then — it never overstates containment
+#     (see paa/sandbox/docker_backend.py and tests/sandbox/test_docker_backend.py).
+#   * Optionally runs the paa container itself under runsc. This is defence in
+#     depth for the daemon process; the security-critical boundary is the worker
+#     containers, which the runtime controls via the setting above.
+#
+# NOTE: `runtime:` here applies to the *paa* container. The workers it spawns get
+# their runtime from PAA_SANDBOX__CONTAINER_RUNTIME, which is why both are set.
+# =====================================================================
+
+services:
+  paa:
+    # Run the daemon itself under gVisor. Comment out to keep only the worker
+    # containers under runsc (the minimal, sufficient hardening).
+    runtime: runsc
+    environment:
+      # The worker containers the runtime launches will request runsc.
+      PAA_SANDBOX__CONTAINER_RUNTIME: runsc
+      # Pin the sandbox backend to docker so an "auto" probe cannot silently
+      # degrade to a weaker backend on a host where runsc is expected.
+      PAA_SANDBOX__BACKEND: docker

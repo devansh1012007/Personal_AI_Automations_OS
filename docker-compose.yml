@@ -1,0 +1,160 @@
+# =====================================================================
+# PAA server topology (docs/adr/0019) — the RFC's original stack, restored.
+#
+#   paa       the runtime daemon (this repo's image)
+#   postgres  relational substrate + ledger (backend_relational=postgres)
+#   qdrant    vector recall server        (backend_vector=qdrant_server)
+#   redis     dispatch fabric, AOF on     (backend_queue=redis)
+#   minio     cold-lake object store       (backend_coldlake=minio)
+#
+# Security posture:
+#   * All backing services live only on the internal `paa_net` bridge. None of
+#     them publish a host port, so nothing but the `paa` container can reach
+#     Postgres, Redis, Qdrant or MinIO.
+#   * The only host-exposed port is the runtime's ingestion API, bound to
+#     127.0.0.1 — loopback only, matching Settings._enforce_loopback. There is
+#     no public edge (RFC §6 "no public ingestion").
+#   * Secrets come from the .env file (see .env.example); none are hard-coded
+#     here. Copy .env.example to .env and fill it before `docker compose up`.
+#
+# gVisor: run the sandbox worker under runsc by layering the override —
+#   docker compose -f docker-compose.yml -f docker-compose.gvisor.yml up
+# =====================================================================
+
+name: paa
+
+services:
+  paa:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: paa/runtime:4.1
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # --- backend selection: the server topology ---
+      PAA_HOME: /data
+      PAA_API_HOST: 127.0.0.1
+      PAA_API_PORT: "8787"
+      PAA_STORAGE__BACKEND_RELATIONAL: postgres
+      PAA_STORAGE__POSTGRES_DSN: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      PAA_STORAGE__BACKEND_QUEUE: redis
+      PAA_STORAGE__REDIS_URL: redis://redis:6379/0
+      PAA_STORAGE__BACKEND_VECTOR: qdrant_server
+      PAA_STORAGE__QDRANT_URL: http://qdrant:6333
+      PAA_STORAGE__BACKEND_COLDLAKE: minio
+      PAA_STORAGE__MINIO_ENDPOINT: http://minio:9000
+      PAA_STORAGE__MINIO_BUCKET: ${MINIO_BUCKET:-paa-cold-lake}
+      PAA_STORAGE__MINIO_SECURE: "false"
+      # Credential indirection: config stores the *names*, these env vars hold
+      # the values (defaults PAA_MINIO_ACCESS_KEY / PAA_MINIO_SECRET_KEY).
+      PAA_MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      PAA_MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      # Stock namespaces by default; the gvisor override flips this to runsc.
+      PAA_SANDBOX__CONTAINER_RUNTIME: runc
+    ports:
+      # Loopback only. The runtime is single-user and local-first.
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - paa_data:/data
+    networks:
+      - paa_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      qdrant:
+        # Qdrant's image is distroless (no shell/curl), so a container-side
+        # healthcheck cannot be expressed portably; gate on start instead. The
+        # runtime's own qdrant client retries until the server answers.
+        condition: service_started
+
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      # Enforce a strong hash for the superuser and enable pg_trgm below.
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    # Create the pg_trgm extension the entity trigram index needs, on first init.
+    command:
+      - "postgres"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./deploy/postgres/initdb:/docker-entrypoint-initdb.d:ro
+    networks:
+      - paa_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - paa_net
+    # No host ports and no portable healthcheck (distroless image). Reachable
+    # only from `paa` over the internal network at http://qdrant:6333.
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    # AOF on: dispatch state is durable across a restart. Redis is still not the
+    # source of truth (RFC §17.4) — the ledger in Postgres is — but AOF avoids
+    # needless redelivery churn after a bounce.
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis_data:/data
+    networks:
+      - paa_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio_data:/data
+    networks:
+      - paa_net
+    # Console left internal by default. To administer it, uncomment to bind the
+    # console to loopback only — never to 0.0.0.0.
+    # ports:
+    #   - "127.0.0.1:9001:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+networks:
+  paa_net:
+    driver: bridge
+    internal: false  # paa needs egress for model escalation; backing services
+                     # still publish no host ports, so they stay unreachable.
+
+volumes:
+  paa_data:
+  pg_data:
+  qdrant_data:
+  redis_data:
+  minio_data:

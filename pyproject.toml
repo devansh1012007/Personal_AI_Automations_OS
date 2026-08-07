@@ -1,0 +1,140 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "paa"
+version = "4.1.0"
+description = "Personal Autonomous Cognitive Operating System Runtime — a local-first, event-sourced agent substrate"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Devansh Gaur" }]
+keywords = ["agents", "event-sourcing", "local-first", "cognitive-runtime"]
+
+# ---------------------------------------------------------------------------
+# Core dependencies are deliberately small. This runtime targets a machine with
+# ~3.5 GB of free RAM; every heavyweight dependency (torch, qdrant, kuzu) is an
+# opt-in extra with a working pure-Python fallback. See docs/adr/0001.
+# ---------------------------------------------------------------------------
+dependencies = [
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "aiosqlite>=0.20",
+    "numpy>=1.26",
+    "zstandard>=0.23",
+    "structlog>=24.4",
+    "typer>=0.12",
+    "rich>=13.9",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+# Vector recall backed by a real HNSW index rather than the brute-force fallback.
+vector = ["qdrant-client>=1.12"]
+# Embedded C++ property-graph engine for multi-hop provenance traversal.
+graph = ["kuzu>=0.11"]
+# Real sentence embeddings. Pulls torch (~2 GB on disk); the hash-embedder
+# fallback keeps the runtime functional without it.
+embeddings = ["sentence-transformers>=3.3"]
+api = ["fastapi>=0.115", "uvicorn[standard]>=0.32"]
+redis = ["redis>=5.2"]
+postgres = ["psycopg[binary,pool]>=3.2"]
+# S3/MinIO-backed cold lake for the Docker deployment (ADR-0019). boto3 speaks
+# the S3 API MinIO implements; the filesystem CAS remains the laptop default.
+minio = ["boto3>=1.35"]
+otel = [
+    "opentelemetry-api>=1.28",
+    "opentelemetry-sdk>=1.28",
+    "opentelemetry-exporter-otlp-proto-http>=1.28",
+]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "hypothesis>=6.115",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+all = [
+    "paa[vector,graph,embeddings,api,redis,postgres,minio,otel]",
+]
+
+[project.scripts]
+paa = "paa.cli.main:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/paa"]
+
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+addopts = "-q --strict-markers --strict-config"
+markers = [
+    "slow: tests that take more than a second",
+    "requires_vector: needs the qdrant-client extra",
+    "requires_graph: needs the kuzu extra",
+    "requires_embeddings: needs the sentence-transformers extra",
+    "requires_api: needs the fastapi/uvicorn extra",
+    "chaos: crash-injection and recovery tests",
+]
+filterwarnings = ["error::DeprecationWarning:paa.*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "ASYNC", "S"]
+ignore = [
+    "S101",     # assert is fine in this codebase's invariant checks
+    "B008",     # FastAPI Depends() in defaults is idiomatic
+    # `class X(str, Enum)` rather than `StrEnum`. The two differ in __str__ and
+    # format() behaviour; this codebase always passes `.value` explicitly and
+    # round-trips enums through pydantic and SQLite TEXT columns. Switching
+    # would change serialisation semantics across the ledger for no gain.
+    "UP042",
+    # Aimed at trio/anyio codebases. This runtime is asyncio, and the flagged
+    # calls are single stat()s on a local path during recovery — microseconds,
+    # not a starvation risk. Genuinely blocking I/O goes through
+    # asyncio.to_thread (see the kuzu and embedder backends).
+    "ASYNC240",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "B011"]
+# S608 flags f-string SQL as injection-prone. In these modules the interpolated
+# value is always a module-level column-list constant, never caller input —
+# parameters are bound with `?` throughout. Scoped to the files that legitimately
+# do this so a genuine interpolation elsewhere still fails the build.
+"src/paa/ledger/store.py" = ["S608"]
+# SIM905: the stopword list is kept as split text, not a 50-element literal —
+# a deliberate readability trade (see the comment at _STOPWORDS).
+"src/paa/agents/context_agents.py" = ["S608", "SIM905"]
+"src/paa/observability/runs.py" = ["S608"]
+"src/paa/storage/coldlake/artifacts.py" = ["S608"]
+"src/paa/storage/coldlake/signals.py" = ["S608"]
+"src/paa/storage/graph/sqlite_backend.py" = ["S608"]
+# S105 reads `PERM_SECRET_READ` / a verdict constant as a hardcoded password.
+# Both are capability names, not credentials.
+"src/paa/core/types.py" = ["S105"]
+"src/paa/validation/engine.py" = ["S105"]
+# config.py names *env var names* for secrets (e.g. `minio_secret_key_env`,
+# `escalation_api_key_env`) — the names of where to read a secret from, never a
+# secret value. S105 cannot tell the difference.
+"src/paa/config.py" = ["S105"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_defs = false

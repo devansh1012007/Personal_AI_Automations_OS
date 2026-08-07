@@ -1,0 +1,42 @@
+# Keep the build context tiny and secret-free. Only pyproject, README and src/
+# are needed to build the wheel; everything else is noise or risk.
+
+# VCS / tooling
+.git
+.github
+.gitignore
+.venv
+venv
+*.egg-info
+.mypy_cache
+.ruff_cache
+.pytest_cache
+__pycache__
+*.pyc
+*.pyo
+
+# Tests and docs are not needed inside the image
+tests
+docs
+
+# Local state and secrets must never enter an image layer
+.env
+.env.*
+!.env.example
+*.db
+*.db-wal
+*.db-shm
+data
+cold_lake
+state
+
+# Editor / OS cruft
+.idea
+.vscode
+.DS_Store
+Thumbs.db
+
+# Container artefacts themselves
+Dockerfile
+docker-compose*.yml
+.dockerignore
