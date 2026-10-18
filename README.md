@@ -226,13 +226,16 @@ All three run on the same ledger-backed, crash-recoverable, deterministically-sa
 | Marketplace (signed packages, 5-gate installer) | tested | 18 |
 | Self-improvement + meta-learning | tested | 22 |
 | Claude-Code features (permissions, hooks, loop, sessions) | tested | 39 |
+| Coder agent (`paa agent` — router-backed tool loop over the runtime) | tested | 91 |
 | FastAPI ingestion + daemon + CLI | tested | 27 |
 | Docker deployment + Postgres/MinIO backends | built, live-server run still needs a pass | parity + backend |
 | Observability (metrics, tracing, runs, logging) | built, untested | — |
 
-Total: 1138 passing, 6 skipped.
+Total: 1185 collected — 1104 passing, 75 skipped (optional extras not installed), 6 failing. All six failures are environmental and pre-existing: the sandbox executes steps with `python`, and on this machine only `python3` exists, so worker steps exhaust their retry budget. They fail identically on a clean checkout.
 
-You can drive the runtime from the CLI (`paa submit/status/ledger/recover/gate/doctor/serve`) or over HTTP (loopback FastAPI), and there's a background daemon that runs boot recovery, drains the task queue, ingests signals, and runs the decay sweep.
+You can drive the runtime from the CLI (`paa submit/status/ledger/recover/gate/doctor/serve/agent`) or over HTTP (loopback FastAPI), and there's a background daemon that runs boot recovery, drains the task queue, ingests signals, and runs the decay sweep.
+
+`paa agent` is the tool-using loop described in `docs/coder-agent.md`: it builds a real runtime, hands the model seven ledger-facing tools, and gates every call through the permission policy. Provider choice is configuration — set `PAA_MODELS__LOCAL_PROVIDER=openrouter` and put the key in `.env`, and it runs against a hosted model with no code change.
 
 `Runtime.build()` in `src/paa/runtime.py` wires the whole thing together, and `tests/integration/` proves all five DoD items in a single run: full lifecycle to `MUTATION_COMMITTED`, crash-and-recover, a human gate parking across a restart, deterministic security blocks, and the token ceiling actually holding.
 
@@ -257,9 +260,14 @@ src/paa/
 ├── sandbox/       pluggable containment backends
 ├── validation/    AST scan, patch apply/rollback, workspace manifests
 ├── models/        provider abstraction + escalation router
+├── coder/         Claude-Code-shaped loop: permissions, hooks, sessions, tools
 ├── skills/        Unified Skill Adapter
 └── observability/ metrics, tracing, execution runs
 ```
+
+`coder/` is the one package that both consumes the runtime and is driven by a
+model directly; `coder/agent.py` is its composition root. See
+`docs/coder-agent.md`.
 
 ## Testing
 

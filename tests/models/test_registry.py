@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import pytest
 
+from paa.config import reset_dotenv_cache
 from paa.models.anthropic_provider import AnthropicProvider
 from paa.models.base import ModelTier
 from paa.models.echo_provider import EchoProvider
@@ -18,6 +22,8 @@ from paa.models.registry import (
     provider_names,
     resolve_spec,
 )
+
+from .conftest import FAKE_KEY
 
 
 @pytest.mark.parametrize(
@@ -109,3 +115,55 @@ def test_azure_pins_the_deployment_in_the_path() -> None:
     assert "/openai/deployments/my-deploy/chat/completions" in provider._chat_path
     assert provider._extra_query is not None and "api-version=" in provider._extra_query
     assert provider._auth_header == "api-key"
+
+
+class TestApiKeyResolution:
+    """Where a provider's key is looked up, and in what order.
+
+    The environment is checked first, then the ``.env`` in the current working
+    directory. The second hop exists because pydantic-settings consumes that file
+    for ``PAA_*`` settings while a provider key is *not* a settings field — it is
+    named per registry row — so without it the documented ``.env.example``
+    workflow reads the credential in one layer and silently ignores it in the
+    other, surfacing as a 401 rather than a configuration error.
+    """
+
+    @pytest.fixture
+    def dotenv_cwd(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        reset_dotenv_cache()
+        yield tmp_path
+        reset_dotenv_cache()
+
+    def test_environment_is_checked_first(self, dotenv_cwd: Path) -> None:
+        (dotenv_cwd / ".env").write_text("OPENROUTER_API_KEY=from-dotenv\n")
+        os.environ["OPENROUTER_API_KEY"] = "from-environment"
+        try:
+            assert resolve_spec("openrouter").resolved_api_key() == "from-environment"
+        finally:
+            del os.environ["OPENROUTER_API_KEY"]
+
+    def test_dotenv_supplies_the_key_when_the_environment_is_empty(
+        self, dotenv_cwd: Path
+    ) -> None:
+        (dotenv_cwd / ".env").write_text("OPENROUTER_API_KEY=sk-or-from-dotenv\n")
+        assert resolve_spec("openrouter").resolved_api_key() == "sk-or-from-dotenv"
+
+    def test_a_dotenv_comment_is_not_a_key(self, dotenv_cwd: Path) -> None:
+        (dotenv_cwd / ".env").write_text("# OPENROUTER_API_KEY=sk-or-commented\n")
+        assert resolve_spec("openrouter").resolved_api_key() is None
+
+    def test_an_empty_value_reads_as_unset(self, dotenv_cwd: Path) -> None:
+        (dotenv_cwd / ".env").write_text("OPENROUTER_API_KEY=\n")
+        assert resolve_spec("openrouter").resolved_api_key() is None
+
+    def test_no_dotenv_at_all_is_not_an_error(self, dotenv_cwd: Path) -> None:
+        assert resolve_spec("openrouter").resolved_api_key() is None
+
+    def test_the_resolved_key_reaches_the_provider(self, dotenv_cwd: Path) -> None:
+        """End to end: `.env` -> spec -> the header the provider will send."""
+        (dotenv_cwd / ".env").write_text(f"OPENROUTER_API_KEY={FAKE_KEY}\n")
+        provider = build_provider("openrouter")
+        assert provider._api_key == FAKE_KEY
+        assert provider._headers()["authorization"] == f"Bearer {FAKE_KEY}"

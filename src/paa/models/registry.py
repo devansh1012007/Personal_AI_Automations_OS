@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Literal
 
 import httpx
 
+from paa.config import dotenv_value
 from paa.models.base import ModelProvider, ModelTier
 
 if TYPE_CHECKING:
@@ -101,9 +102,18 @@ class ProviderSpec:
     api_version: str | None = None
 
     def resolved_api_key(self) -> str | None:
-        """The first configured key value, or ``None``. Read at build time."""
+        """The first configured key value, or ``None``. Read at build time.
+
+        Environment first, then the CWD ``.env``. The second lookup is what makes
+        the documented `.env.example` workflow actually work: pydantic-settings
+        consumes that file for ``PAA_*`` fields, but a provider key is not a
+        settings field — it is named per registry row — so without this the
+        credential is read by config and ignored by the model layer.
+        """
         for name in self.api_key_env:
             if value := os.environ.get(name):
+                return value
+            if value := dotenv_value(name):
                 return value
         return None
 

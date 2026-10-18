@@ -34,6 +34,7 @@ Deviations fall into three classes:
 | [0014](0014-memory-domains-consolidated.md) | 18 memory domains map to 6 mechanisms | Direction |
 | [0015](0015-capability-ceiling.md) | On matching Claude Code: what architecture can and cannot buy | **Honesty** |
 | [0019](0019-docker-server-deployment.md) | Dual embedded/server topology for the Docker deployment | Direction |
+| [0020](0020-provider-keys-from-dotenv.md) | Provider API keys resolve from `.env`, not only the environment | **Correctness** |
 
 ## Template
 

@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import Any
 
 __all__ = [
+    "DEFAULT_MUTATING_TOOLS",
     "PermissionDecision",
     "PermissionMode",
     "PermissionOutcome",
@@ -118,6 +119,11 @@ class PermissionRule:
 
 
 #: Tools that mutate state — refused outright in PLAN mode. Matched by glob.
+#: These name the filesystem/shell-shaped capabilities a conventional coding
+#: agent has; a caller with a different tool set overrides them via
+#: ``ToolPermissionPolicy(mutating_tools=...)`` rather than editing this list,
+#: so a tool whose name happens to contain "write" cannot quietly become
+#: mutating and one that does not cannot quietly escape being so.
 _MUTATING_TOOLS: tuple[str, ...] = (
     "write*",
     "edit*",
@@ -129,6 +135,9 @@ _MUTATING_TOOLS: tuple[str, ...] = (
     "send_*",
     "*_commit*",
 )
+
+#: Public alias — the default set, for callers that extend rather than replace.
+DEFAULT_MUTATING_TOOLS: tuple[str, ...] = _MUTATING_TOOLS
 
 
 class ToolPermissionPolicy:
@@ -142,9 +151,11 @@ class ToolPermissionPolicy:
         deny: list[str] | None = None,
         ask: list[str] | None = None,
         edit_tools: tuple[str, ...] = ("write_file", "edit_file", "apply_patch"),
+        mutating_tools: tuple[str, ...] | None = None,
     ) -> None:
         self.mode = mode
         self._edit_tools = edit_tools
+        self._mutating_tools = mutating_tools or _MUTATING_TOOLS
         self._rules: list[PermissionRule] = []
         # Order of construction does not matter; evaluation applies the
         # deny > allow > ask precedence explicitly.
@@ -207,7 +218,7 @@ class ToolPermissionPolicy:
         return PermissionDecision(PermissionOutcome.ASK, f"{self.mode.value} mode asks by default")
 
     def _is_mutating(self, tool_name: str) -> bool:
-        return any(fnmatch.fnmatch(tool_name, pat) for pat in _MUTATING_TOOLS)
+        return any(fnmatch.fnmatch(tool_name, pat) for pat in self._mutating_tools)
 
 
 def _render_args(arguments: dict[str, Any]) -> str:

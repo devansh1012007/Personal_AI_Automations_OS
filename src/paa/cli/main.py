@@ -26,6 +26,7 @@ from rich.console import Console
 from rich.table import Table
 
 from paa import __version__
+from paa.cli.coder import register_agent
 from paa.core.types import ComplexityModality, PermissionMode
 
 app = typer.Typer(
@@ -310,6 +311,12 @@ def correlation_id_uuid(value: str):
     except ValueError:
         console.print(f"[red]invalid correlation id: {value}[/red]")
         raise typer.Exit(1) from None
+
+
+#: ``paa agent`` lives in its own module because it is the one command that
+#: assembles :mod:`paa.coder` into something runnable; registering it here keeps
+#: the composition in ``coder/`` and the CLI surface here.
+register_agent(app)
 
 
 if __name__ == "__main__":

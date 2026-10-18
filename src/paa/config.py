@@ -15,6 +15,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
 
+from dotenv import dotenv_values
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -28,7 +29,9 @@ __all__ = [
     "SandboxSettings",
     "Settings",
     "StorageSettings",
+    "dotenv_value",
     "get_settings",
+    "reset_dotenv_cache",
     "reset_settings_cache",
 ]
 
@@ -451,6 +454,38 @@ class Settings(BaseSettings):
             path.mkdir(parents=True, exist_ok=True)
 
 
+_DOTENV_CACHE: dict[str, str] | None = None
+
+
+def dotenv_value(name: str) -> str | None:
+    """Value of ``name`` in the ``.env`` of the current working directory.
+
+    Deliberately does **not** write to ``os.environ``. pydantic-settings already
+    reads that file for the ``PAA_*`` fields of :class:`Settings`; this covers
+    the variables that are *not* ``Settings`` fields but are still configured
+    there — chiefly each provider's API key, which
+    :func:`paa.models.registry.build_provider` resolves by env-var name. Without
+    it a credential placed in ``.env`` is read by config and silently ignored by
+    the model layer, surfacing as a 401 from the provider instead of a
+    configuration error.
+
+    Mutating the environment instead would inject every ``PAA_*`` line into
+    ``os.environ`` for the whole process, including test runs, so the file is
+    parsed into a cache and consulted on demand.
+
+    Values already exported in the environment are expected to win; callers
+    check ``os.environ`` first and fall back here.
+    """
+    global _DOTENV_CACHE
+    if _DOTENV_CACHE is None:
+        path = Path.cwd() / ".env"
+        parsed = dotenv_values(path) if path.is_file() else {}
+        # ``dotenv_values`` types unset keys as ``None``; drop them so the cache
+        # stays ``dict[str, str]`` and ``KEY=`` means the same as an absent key.
+        _DOTENV_CACHE = {k: v for k, v in parsed.items() if v}
+    return _DOTENV_CACHE.get(name)
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     """Process-wide settings singleton."""
@@ -460,3 +495,9 @@ def get_settings() -> Settings:
 def reset_settings_cache() -> None:
     """Drop the cached singleton. Tests use this after mutating the environment."""
     get_settings.cache_clear()
+
+
+def reset_dotenv_cache() -> None:
+    """Forget the parsed ``.env``. Tests use this after changing directory."""
+    global _DOTENV_CACHE
+    _DOTENV_CACHE = None
