@@ -24,7 +24,13 @@ Verify in this order before calling work done:
 - mypy is `strict = true` with `warn_unreachable` — `disallow_untyped_defs` is relaxed only for `tests.*`.
 - ruff `line-length = 100`, and `S` (bandit) is on. The `S608` / `S105` ignores in `pyproject.toml` are
   per-file allow-lists for known-safe patterns; do **not** add new files to them, and do not "fix" a
-  triggered line by widening the ignore.
+  triggered line by widening the ignore. A single line that legitimately interpolates SQL takes a
+  **per-line** `# noqa: S608` (the convention in `memory/facts.py` and `skills/registry.py`) — that is
+  narrower than a per-file allow-list and keeps the rest of the file under the rule.
+- **The baseline is red.** `ruff` reports 69 findings and `mypy` 116 at HEAD, all pre-existing; so
+  does the suite, with 6 environmental failures (the sandbox cannot exec a bare `python` binary).
+  "Do not expand the count" is the gate, not "make it zero" — fixing the 185 pre-existing findings is
+  a project of its own and would bury any change you are making. Do not silence one either.
 - There is no CI config, Makefile, or pre-commit hook in this repo. Nothing enforces the order above
   but you.
 
@@ -36,13 +42,15 @@ views rebuilt by replay (`ledger/replay.py`). Two rules follow and are not negot
 1. **Ledger event before side effect, always.** A crash between event and work is recoverable; the
    reverse is not. See the task lifecycle diagram in `README.md`.
 2. **Everything else must be replayable.** If you add state that isn't derivable from events, it needs
-   a snapshot *and* a recovery rule (`ledger/recovery.py`, `save_snapshot`/`load_snapshot`).
+   a snapshot *and* a recovery rule (`ledger/store.py::save_snapshot`/`load_snapshot` for the snapshot,
+   `ledger/recovery.py` for the sweep rule).
 
 Adding an `EventType` means touching, at minimum: `core/types.py` (`EventType`, plus `TERMINAL_EVENTS`
-if it ends a lineage), `ledger/replay.py` (`_PHASE_MAP` and the projection `match`, or `_NON_PHASE_EVENTS`
-if it is informational), and the emitter in `agents/orchestrator.py`. `ledger/store.py` assigns
-`state_version`, links `prev_hash`, and updates the head projection in one transaction — never append
-outside it.
+if it ends a lineage), `ledger/replay.py` (`_PHASE_MAP` and the projection `match`, or `_NO_PHASE_CHANGE`
+if it is informational), and its emitter — `agents/orchestrator.py` for lifecycle events,
+`ledger/recovery.py` for recovery and rollback events, `models/router.py` for `MODEL_ESCALATED`.
+`ledger/store.py` assigns `state_version`, links `prev_hash`, and updates the head projection in one
+transaction — never append outside it.
 
 `EXECUTION_COMPLETED` fires **per step**, not per task (ADR-0010); it is not terminal.
 
@@ -55,9 +63,39 @@ to **both** files.
 
 Every substrate has an embedded default and a server variant, selected by `PAA_*` env vars
 (`StorageSettings.backend_*`). The factories degrade, they never raise — `runtime.py::_try_vector /
-_try_graph /_try_queue` and `sandbox/_acquire_sandbox` (5s probe timeout, then subprocess) are the
+_try_graph /_try_queue` and `runtime.py::_acquire_sandbox` (5s probe timeout, then subprocess) are the
 pattern. Heavy deps (qdrant, kuzu, sentence-transformers, redis, psycopg, boto3) are optional extras;
 **never** import one at module scope in a core path, or a minimal install stops importing.
+
+### Every LIKE pattern comes from one helper
+
+A `LIKE` pattern is the one place where a *value* changes the *meaning* of a query. `%` matches any run
+of characters, `_` matches any one, and a NUL ends the pattern where SQLite reads it through the C
+string API — so `%\x00%` is a bare `%` that matches every row. A keyword that happens to contain one
+is that keyword, not a pattern.
+
+**Every `LIKE` pattern that interpolates text comes from `storage/relational/like.py`** —
+`like_pattern(term)` for the pattern, `like_predicate(*columns)` for the SQL half, and
+`escape_like` underneath them. Not from an f-string at the call site. Three facts are stated once
+there and are not to be rediscovered per site:
+
+- SQLite's `LIKE` has **no default escape character**; PostgreSQL's defaults to a backslash. The same
+  escaped pattern is wrong on one engine and right on the other unless the SQL declares `ESCAPE '\'`.
+  The escape character and the clause are derived from one constant, so they cannot drift.
+- A **NUL truncates the pattern**, and the escape clause does not help — a NUL is not a metacharacter,
+  it is the end of the string.
+- A term with **nothing to search for** is refused, not compiled: the pattern would be `%%`, which
+  matches every row, and there is no `LIKE` pattern that matches nothing instead.
+
+The policy on a NUL is the caller's, and both are deliberate: `memory/facts.py` refuses it (the query
+is a model-supplied tool argument, so the refusal goes back to the model as an error value), and the
+internal recall paths drop it and carry on. ADR-0023 has the full reasoning and the consequence at
+each site.
+
+**A `LIMIT` cut needs a total order.** `ORDER BY` on a non-unique column leaves the cut to an order
+the SQL does not define, so a `LIMIT` over it is not reproducible by the standard — add a unique
+secondary key (`f.id`). SQLite happens to be deterministic for a fixed plan, but that is an
+implementation detail, and PostgreSQL promises nothing about ties at all.
 
 ## Config
 
@@ -89,8 +127,14 @@ pattern. Heavy deps (qdrant, kuzu, sentence-transformers, redis, psycopg, boto3)
   `write_text`/`read_text` would translate newlines on Windows and report phantom manifest drift.
 - Set `PAA_TEST_VERBOSE=1` to un-silence structlog.
 - Hypothesis covers the invariants that must hold for all inputs (gatherer token ceiling, replay over
-  arbitrary event orderings, confidence in [0,1]). Extend those rather than writing example-based
-  tests for them.
+  arbitrary event orderings, confidence in [0,1], LIKE-escaping losslessness). Extend those rather
+  than writing example-based tests for them. The files that do: `tests/context/test_budget.py`,
+  `test_compaction.py`, `test_gatherer.py`, `test_metrics.py`, `tests/ledger/test_replay.py`,
+  `tests/memory/test_decay.py`, `tests/storage/test_like.py`.
+- A Hypothesis test that calls a function which can raise must handle the raising input. Draw the
+  adversarial value from the strategy, don't hope it turns up: a strategy that *might* produce one
+  makes the test a coin flip, and a test that only sometimes exercises the rule is a test that
+  sometimes misses it.
 - Crash/chaos tests simulate power loss by closing the DB mid-lineage and reopening — committed
   transactions survive, uncommitted vanish.
 - `tests/validation/` is an empty package and there is no `tests/observability/` — those subsystems are
@@ -100,7 +144,13 @@ pattern. Heavy deps (qdrant, kuzu, sentence-transformers, redis, psycopg, boto3)
 
 Agents depend on the narrow `agents/reasoning.py::ModelLike` protocol
 (`complete_structured(prompt, schema, **kwargs)`), never on a provider. `runtime.py::RouterModelAdapter`
-is the only place that knows about `EscalatingModelRouter`; keep it that way.
+and `coder/model_adapter.py::RouterToolCallingModel` are the only two places that know about
+`EscalatingModelRouter`; keep it that way.
+
+A new provider threads the transport-retry budget (`ModelSettings.max_transport_retries`, ADR-0021)
+through its constructor, and so do the fast paths in `models/__init__.py` and the registry rows in
+`models/registry.py` — a provider that does not retry a transient 429 ends the whole run, and
+escalation policy can forbid the fallback that would have absorbed it.
 
 To test anything agent-shaped, inject a scripted model:
 
@@ -110,8 +160,11 @@ rt = await Runtime.build(model_adapter=ScriptedModel(), ...)
 
 `EchoProvider` cannot drive a plan (its minimal-schema-instance output isn't a plan). The
 `ScriptedModel` in `tests/integration/conftest.py` is the reference implementation — it answers by
-schema shape and records every call, which is how the "no model in the security loop" guarantee is
-asserted (a blocked task must reach its verdict with `call_count` unchanged).
+schema shape and records every call. That is how the "no model in the security loop" guarantee is
+asserted, and it is asserted *structurally*: `test_policy_agent_holds_no_model` proves the policy
+agent holds no model dependency at all, so a blocked task reaches its verdict with the model never
+consulted. (A different, unrelated `ScriptedModel` lives in `tests/coder/test_agent.py` — it emits
+scripted `ModelTurn`s, not schema-shaped dicts.)
 
 ## Conventions that differ from defaults
 
@@ -137,12 +190,15 @@ reports `NAMESPACE` instead of `VM` when `runsc` isn't registered.
 
 ## Known-stale references (don't chase these)
 
-- `docs/adr/README.md` indexes ADRs 0001–0022, but only `0008`, `0010`, `0015`, `0019`, `0020`,
-  `0021`, `0022` exist on disk. Source comments cite `docs/adr/0001`–`0007` etc. as rationale; the
-  intent is documented even though the file is absent.
-- `docs/architecture.md` is referenced from docstrings but does not exist.
+- `docs/adr/README.md` indexes ADRs 0001–0015 and 0019–0023 (0016–0018 are unindexed), but only
+  `0008`, `0010`, `0015`, `0019`, `0020`, `0021`, `0022`, `0023` exist on disk. Source comments cite
+  `docs/adr/0001`–`0014`, `0016` and `0018` as rationale; the intent is documented even though the
+  file is absent.
+- `docs/architecture.md` is referenced from docstrings (`config.py:4`, `paa/__init__.py:4`) but does
+  not exist — the architecture docs live in `docs/architecture/` (`overview.md`,
+  `component-interactions.md`, `repository-map.md`). Fix the docstring references to point there.
 - `README.md`'s Testing section still shows Windows paths, and its per-subsystem test counts in the
-  build-status table are approximate — only the total line was reconciled against a real run.
+  build-status table are approximate — the total line is stale too, so reconcile neither against it.
 - `src/paa/agents/specialists/` is an empty package.
 
 ## The coder agent (`paa agent`)
@@ -155,8 +211,10 @@ Read `coder/__init__.py` before adding to that package — the pieces are delibe
 
 - **The model seam is constrained JSON, not native tool calls.** `coder/model_adapter.py` asks the
   router for a `{text, tool_calls[]}` object conforming to a schema with tool names in an `enum`;
-  `ModelProvider.complete_structured` does the validate-and-repair. Nothing in `models/` supports a
-  `tools` wire field, so adding native tool calling is an optimisation *inside that one class*.
+  `ModelProvider.complete_structured` does the validate-and-repair. No provider surface accepts a
+  *catalogue* of callable tools — the only `tools` payload in `models/` is Anthropic's single
+  synthetic structured-output tool, whose `input_schema` is the JSON schema itself — so adding
+  native tool calling is an optimisation *inside that one class*.
 - **`ModelTurn.tokens` is always 0** on this path (`complete_structured` returns a dict and drops
   usage numbers). `AgentLoop(max_tokens=...)` therefore never trips — bound runs with `max_steps`.
 - **Tool names must match the policy globs.** `submit_task`/`run_task`/`remember_fact` match none
@@ -167,6 +225,13 @@ Read `coder/__init__.py` before adding to that package — the pieces are delibe
 - **ASK mode standing-allows the read-only half.** `CoderAgent.build` passes
   `allow=[*READ_ONLY_TOOLS, *(allow or [])]`, so only state-changing calls prompt. An explicit deny
   still wins (precedence step 1) and PLAN still refuses the mutating tools.
+- **Memory writes go through the cold lake.** `remember_fact` files the assertion as a
+  `cold_lake_signals` row and materialises the facts from it, so the fact carries a resolvable
+  `source_signal_id` and the daemon cannot write it a second time — the tool and the daemon batch
+  claim the same row, and whoever wins writes the facts in the transaction that marks the row
+  processed (ADR-0022). A new tool that writes memory does the same; a direct write into
+  `hot_serving_active_facts` is not rebuildable by replay and breaks the invariant the whole
+  subsystem rests on.
 - Provider choice is entirely `PAA_MODELS__*`; the command names no vendor. To use OpenRouter:
 
   ```bash

@@ -37,6 +37,7 @@ Deviations fall into three classes:
 | [0020](0020-provider-keys-from-dotenv.md) | Provider API keys resolve from `.env`, not only the environment | **Correctness** |
 | [0021](0021-transport-retry.md) | Transport retry for transient model-endpoint failures | **Correctness** |
 | [0022](0022-coder-memory-writes.md) | The coder agent's memory writes go through the cold lake | **Correctness** |
+| [0023](0023-like-pattern-escaping.md) | Every `LIKE` pattern that interpolates text comes from one helper | **Correctness** |
 
 ## Template
 
