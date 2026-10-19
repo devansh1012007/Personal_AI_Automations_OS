@@ -18,6 +18,8 @@ from __future__ import annotations
 import asyncio
 import math
 import time
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any, Never
 
 import httpx
@@ -40,7 +42,8 @@ _RETRYABLE_STATUSES: frozenset[int] = frozenset({408, 429})
 #: ``Retry-After`` is honoured only up to this many seconds. The header is the
 #: server's suggestion, not this runtime's budget: a gateway answering "retry
 #: in ten minutes" must not park a call whose own wall clock is
-#: ``request_timeout_seconds`` (SPEC DEVIATION (docs/adr/0021)).
+#: ``request_timeout_seconds * (max_transport_retries + 1)``
+#: (SPEC DEVIATION (docs/adr/0021)).
 _RETRY_AFTER_CAP_S: float = 10.0
 
 #: Above this exponent the backoff schedule is already orders of magnitude past
@@ -66,9 +69,17 @@ def _raise_chained(error: ModelUnavailableError, cause: BaseException | None) ->
 
 
 def _retry_after_seconds(response: httpx.Response) -> float | None:
-    """``Retry-After`` as seconds, when it is a plain non-negative number.
+    """``Retry-After`` as seconds, in either of the header's two legal forms.
 
-    Absent, HTTP-date, negative or non-finite values all return ``None``:
+    RFC 9110 allows delta-seconds (``120``) and an HTTP-date
+    (``Wed, 21 Oct 2026 07:28:00 GMT``). Both are understood: the date form
+    is resolved against the current wall clock. Both forms are clamped to
+    :data:`_RETRY_AFTER_CAP_S` exactly alike — the header is the server's
+    suggestion, not this runtime's budget — and a date already in the past
+    yields ``0.0``, because the retry it asks for is due: a negative sleep is
+    not a thing.
+
+    Absent, malformed, negative or non-finite values all return ``None``:
     the exponential schedule is the fallback, and sleeping on a header we
     guessed at is worse than sleeping on the one we understood. Callers
     consult this only on 429 — the status where the header is part of the
@@ -80,10 +91,29 @@ def _retry_after_seconds(response: httpx.Response) -> float | None:
     try:
         seconds = float(raw.strip())
     except ValueError:
-        return None
+        dated = _retry_after_date_seconds(raw)
+        if dated is None:
+            return None
+        return min(dated, _RETRY_AFTER_CAP_S)
     if not math.isfinite(seconds) or seconds < 0.0:
         return None
     return min(seconds, _RETRY_AFTER_CAP_S)
+
+
+def _retry_after_date_seconds(raw: str) -> float | None:
+    """The HTTP-date form of ``Retry-After``, as seconds from now.
+
+    ``None`` when the value is not a date we can read at all. A date in the
+    past yields ``0.0`` rather than a negative number of seconds: the server
+    is asking for a retry that is already due.
+    """
+    try:
+        when = parsedate_to_datetime(raw.strip())
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    return max(0.0, (when - datetime.now(UTC)).total_seconds())
 
 
 class HttpModelProvider(ModelProvider):
@@ -110,7 +140,9 @@ class HttpModelProvider(ModelProvider):
         unavailable (SPEC DEVIATION (docs/adr/0021)). The distinction is not
         cosmetic: a single 429 from a hosted gateway used to end the whole
         run, and escalation policy can forbid the fallback that would
-        otherwise have absorbed it.
+        otherwise have absorbed it. Those attempts share a wall-clock budget
+        of ``timeout * (max_transport_retries + 1)`` — the timeout bounds a
+        single attempt, not the whole loop; see :meth:`_post_json`.
 
         The backoff knobs are constructor arguments rather than settings
         because they are timing constants, not operational choices; tests set
@@ -183,23 +215,37 @@ class HttpModelProvider(ModelProvider):
 
         Transient failures — timeouts, connection errors and HTTP 408/429/5xx —
         are re-attempted up to :attr:`max_transport_retries` times with capped
-        exponential backoff (a numeric ``Retry-After`` on 429 overrides it), all
-        bounded by a wall-clock deadline taken from the request timeout so
-        retries cannot multiply the call's total latency (SPEC DEVIATION
-        (docs/adr/0021)). Deterministic failures — any other 4xx, a non-JSON
-        body, a JSON value that is not an object — raise on the first response
-        exactly as they did before this loop existed: replaying a 401 returns a
-        401. What the caller eventually sees is byte-for-byte the same message,
-        ``status_code`` and redacted ``body_excerpt`` as a one-shot failure;
-        only *when* it surfaces has changed. The retry log line carries the
-        status but never the body, because a rejection body can quote the key
-        back.
+        exponential backoff (a ``Retry-After`` on 429 overrides it, in either
+        of its two legal forms), all bounded by a wall-clock deadline so
+        retries cannot multiply the call's latency without limit (SPEC
+        DEVIATION (docs/adr/0021)). The bound is
+        ``request_timeout_seconds * (max_transport_retries + 1)``: the request
+        timeout is a *per-attempt* budget, and the loop's own budget is that
+        timeout times the number of attempts it is allowed to make. The two
+        must not be the same quantity — an attempt that genuinely times out
+        consumes its whole timeout, so a deadline equal to that timeout would
+        leave the retry the knob exists to buy with nowhere to run, and a
+        timeout would never be retried at all. Deterministic failures — any
+        other 4xx, a non-JSON body, a JSON value that is not an object — raise
+        on the first response exactly as they did before this loop existed:
+        replaying a 401 returns a 401. What the caller eventually sees is
+        byte-for-byte the same message, ``status_code`` and redacted
+        ``body_excerpt`` as a one-shot failure; only *when* it surfaces has
+        changed. The retry log line carries the status but never the body,
+        because a rejection body can quote the key back.
         """
         client = await self._http()
         url = f"{self._base_url}{path}"
         effective_timeout = request_timeout if request_timeout is not None else self._timeout
-        deadline = time.monotonic() + effective_timeout
         max_attempts = self._max_transport_retries + 1
+        # The loop's budget is the *per-attempt* timeout times the attempt
+        # count — deliberately not the timeout itself. An attempt that really
+        # times out spends the whole per-attempt timeout, so a deadline equal
+        # to that timeout would be spent by the first attempt and the retry
+        # could never run: the timeout half of the retryable class would be
+        # advertised and unreachable. Two quantities, one deadline
+        # (SPEC DEVIATION (docs/adr/0021)).
+        deadline = time.monotonic() + effective_timeout * max_attempts
 
         last_error: ModelUnavailableError | None = None
         last_cause: BaseException | None = None
@@ -207,12 +253,19 @@ class HttpModelProvider(ModelProvider):
         for attempt in range(max_attempts):
             remaining = deadline - time.monotonic()
             if remaining <= 0.0:
-                # The budget ran out during the previous backoff sleep (or the
-                # caller asked for a non-positive timeout). The last failure
-                # is still the honest, fully-shaped error to surface.
+                # The budget ran out during the previous backoff sleep, or the
+                # caller asked for a non-positive timeout. The last failure is
+                # still the honest, fully-shaped error to surface; with no
+                # failure yet there is nothing to chain, so the timeout is
+                # reported as itself rather than as a request with no timeout.
                 if last_error is not None:
                     _raise_chained(last_error, last_cause)
-                remaining = effective_timeout
+                raise ModelUnavailableError(
+                    "request to the model endpoint timed out",
+                    provider=self.name,
+                    url=self._safe_url(url),
+                    timeout_seconds=effective_timeout,
+                )
 
             error: ModelUnavailableError
             cause: BaseException | None
@@ -289,8 +342,10 @@ class HttpModelProvider(ModelProvider):
                 delay = min(self._retry_backoff_base * (2.0**exponent), self._retry_backoff_cap)
 
             if time.monotonic() + delay >= deadline:
-                # Sleeping would leave no time to actually try again; the
-                # deadline is a hard bound on wall clock, not a hint.
+                # Sleeping would leave no time to actually try again — the
+                # budget is a hard bound on wall clock, not a hint. Raise the
+                # error in hand rather than burning the wait and then failing
+                # with a request that had no time left to run.
                 _raise_chained(error, cause)
 
             log.warning(

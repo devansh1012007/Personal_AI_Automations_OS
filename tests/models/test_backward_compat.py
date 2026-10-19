@@ -89,3 +89,54 @@ def test_groq_escalation_is_frontier_tier() -> None:
     assert isinstance(frontier, OpenAICompatibleProvider)
     assert frontier.name == "groq"
     assert frontier.tier is ModelTier.FRONTIER
+
+
+# -- ADR-0021: one transport-retry knob, on every construction path ---------
+
+
+def test_the_local_fast_paths_thread_the_transport_retry_budget() -> None:
+    """``build_local_provider`` builds some providers itself, so it must thread
+    the setting itself.
+
+    ``echo``/``llamacpp``/``ollama`` are constructed directly rather than
+    through the registry, so nothing else does it for them. Dropping the
+    kwarg there leaves the provider on its own default and the knob silently
+    does nothing on the path most deployments use — which is exactly the
+    "every construction path honours one knob" claim (SPEC DEVIATION
+    (docs/adr/0021)).
+    """
+    settings = ModelSettings(local_provider="ollama", max_transport_retries=5)
+
+    local = build_local_provider(settings)
+    assert isinstance(local, OllamaProvider)
+    assert local.max_transport_retries == 5
+
+    llamacpp = build_local_provider(
+        ModelSettings(local_provider="llamacpp", max_transport_retries=5)
+    )
+    assert isinstance(llamacpp, OpenAICompatibleProvider)
+    assert llamacpp.max_transport_retries == 5
+
+
+def test_the_frontier_fast_paths_thread_the_transport_retry_budget() -> None:
+    """The same knob, on the escalation side of the same claim.
+
+    ``openai_compatible`` and ``anthropic`` are constructed directly here
+    too, so the frontier tier has exactly as much of a hole in it as the
+    local one had.
+    """
+    frontier = build_frontier_provider(
+        ModelSettings(
+            escalation_provider="openai_compatible",
+            escalation_base_url="https://gateway.test.invalid",
+            max_transport_retries=5,
+        )
+    )
+    assert isinstance(frontier, OpenAICompatibleProvider)
+    assert frontier.max_transport_retries == 5
+
+    anthropic = build_frontier_provider(
+        ModelSettings(escalation_provider="anthropic", max_transport_retries=5)
+    )
+    assert isinstance(anthropic, AnthropicProvider)
+    assert anthropic.max_transport_retries == 5
