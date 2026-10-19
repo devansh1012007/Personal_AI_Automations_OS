@@ -159,11 +159,14 @@ Read `coder/__init__.py` before adding to that package — the pieces are delibe
   `tools` wire field, so adding native tool calling is an optimisation *inside that one class*.
 - **`ModelTurn.tokens` is always 0** on this path (`complete_structured` returns a dict and drops
   usage numbers). `AgentLoop(max_tokens=...)` therefore never trips — bound runs with `max_steps`.
-- **Tool names must match the policy globs.** `submit_task`/`run_task` match none of
-  `DEFAULT_MUTATING_TOOLS`, which is why `CoderAgent.build` passes
+- **Tool names must match the policy globs.** `submit_task`/`run_task`/`remember_fact` match none
+  of `DEFAULT_MUTATING_TOOLS`, which is why `CoderAgent.build` passes
   `mutating_tools=(*DEFAULT_MUTATING_TOOLS, *MUTATING_RUNTIME_TOOLS)` — otherwise `--mode plan`
-  would silently exempt the two tools that actually change state. A new mutating tool needs adding
-  to that tuple or it becomes read-only-by-accident.
+  would silently exempt the three tools that actually change state. A new mutating tool needs
+  adding to that tuple or it becomes read-only-by-accident.
+- **ASK mode standing-allows the read-only half.** `CoderAgent.build` passes
+  `allow=[*READ_ONLY_TOOLS, *(allow or [])]`, so only state-changing calls prompt. An explicit deny
+  still wins (precedence step 1) and PLAN still refuses the mutating tools.
 - Provider choice is entirely `PAA_MODELS__*`; the command names no vendor. To use OpenRouter:
 
   ```bash
@@ -177,4 +180,51 @@ Read `coder/__init__.py` before adding to that package — the pieces are delibe
 
   `LOCAL_PROVIDER` holding a hosted model is a router *slot* name, not a locality claim — the
   registry row sets `tier = FRONTIER`, so `leaves_machine` in any escalation record stays truthful.
-  Without `--yes`, an ASK-ed call prompts; with no confirm callback the loop auto-*denies*.
+  Without `--yes`, an ASK-ed (state-changing) call prompts; with no confirm callback the loop
+  auto-*denies*.
+
+## Mandatory Engineering Workflow
+
+### 1. Understand Before Changing (ALWAYS)
+
+Before making **any code change**, spawn subagent(s) to investigate the relevant code and its surrounding system. This step is mandatory, regardless of change size.
+
+- Read relevant documentation, `AGENTS.md` files, ADRs, and existing tests.
+- Trace execution flows, dependencies, interfaces, invariants, and downstream effects.
+- Identify the root cause, not just the visible symptom.
+- Return a concise context report identifying affected files, risks, expected behavior, and required tests.
+- Do not modify code until sufficient context has been gathered. Never invent APIs, assume behavior, or guess at undocumented contracts.
+
+### 2. Implement in Atomic Phases
+
+Break work into small, independently verifiable phases. Make minimal, focused changes that preserve existing contracts unless a change is explicitly required.
+
+Follow established conventions, keep abstractions justified, handle errors explicitly, validate inputs, and avoid duplication, dead code, unnecessary dependencies, and unrelated refactoring. Update documentation when behavior or interfaces change.
+
+Use tests and actual source evidence to resolve uncertainty. Never fabricate implementation details, claim unverified behavior works, or weaken tests merely to achieve a passing suite.
+
+### 3. Mandatory Independent Review (EVERY PHASE)
+
+After each atomic phase, spawn a **separate reviewer subagent** to audit the changes before declaring the phase complete.
+
+The reviewer must independently inspect the diff, surrounding code, original requirements, and tests. Check for:
+
+- Bugs, regressions, flawed assumptions, and integration issues.
+- Security, error handling, edge cases, and violated invariants.
+- Maintainability, unnecessary complexity, and inconsistent conventions.
+- Tests that are missing, incorrect, superficial, or pass without testing the intended behavior.
+- Whether tests would detect the actual bug or failure they claim to prevent.
+
+Run relevant tests and verify their results. The reviewer must report concrete findings with evidence and severity. Fix valid findings and repeat review and testing until critical issues are resolved or explicitly documented as blockers. Never approve changes merely because tests pass.
+
+### 4. Mandatory Final Review (BEFORE COMPLETION OR COMMIT)
+
+After all phases are implemented, spawn a fresh reviewer subagent for a full-task review. Re-evaluate the complete diff against the original requirements and system architecture, including cross-phase interactions, regressions, test coverage, and whether the tests genuinely prove correctness.
+
+Run the appropriate test suite, inspect the final diff, and report verified results separately from unverified assumptions. Do not declare the task complete, commit, or open a PR until this review passes. If issues are found, fix them and repeat the review.
+
+### 5. Git Discipline
+
+Commits and PRs are permitted. Create focused commits and a PR when appropriate, but only after the mandatory reviews pass. Never commit known unresolved critical issues, claim tests passed without executing them, or bypass review gates to save time.
+
+**Non-negotiable rule:** Context-gathering subagents must run before every change; an independent review subagent must run after every atomic phase and once again at the end. If subagents or required verification are unavailable, stop and report the blocker instead of pretending the workflow was completed.
