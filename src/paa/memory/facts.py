@@ -638,12 +638,16 @@ class FactRepository:
         Superseded rows are excluded: resurrecting a supersession tail would
         hand back beliefs a newer version replaced. LIKE metacharacters in
         ``query`` are escaped, so a stray ``%`` cannot silently widen the scan
-        to every row.
+        to every row, and a NUL byte is refused outright — SQLite truncates a
+        LIKE pattern at a NUL, so ``%\\x00%`` would degrade to a bare ``%`` and
+        match everything. See :func:`_like_pattern`.
+
+        :raises ValueError: if ``query`` contains a NUL byte.
         """
         term = " ".join(query.split())
         if not term:
             return []
-        pattern = f"%{_escape_like(term)}%"
+        pattern = _like_pattern(term)
         rows = await self._db.fetch_all(
             f"SELECT {_FACT_COLUMNS}, e.canonical_name AS entity_name "  # noqa: S608
             "FROM hot_serving_active_facts f "
@@ -745,6 +749,32 @@ def _escape_like(value: str) -> str:
     anywhere to diagnose it by.
     """
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _like_pattern(term: str) -> str:
+    """The LIKE pattern that matches ``term`` literally, or a refusal.
+
+    Two separate hazards turn a keyword search into a table scan, and they
+    need two separate defences:
+
+    * ``%`` and ``_`` are LIKE wildcards. Escaped by :func:`_escape_like`,
+      with the SQL side declaring ``ESCAPE '\\'`` to match.
+    * A **NUL byte truncates the pattern**. SQLite's ``LIKE`` reaches the
+      pattern through the C string API, so ``%\\x00%`` is not "a literal NUL
+      between two wildcards" — it is ``%`` and nothing else, and that matches
+      *every row in the table*. Escaping cannot save this one: ``\\x00`` is
+      still a NUL followed by the end of the pattern. The only defence is to
+      refuse the query, which is what this does.
+
+    A NUL in a search term is never intentional, and the alternative — a
+    keyword search that silently returns the whole table — is the exact
+    failure the escaping exists to prevent.
+
+    :raises ValueError: if ``term`` contains a NUL byte.
+    """
+    if "\x00" in term:
+        raise ValueError("query must not contain a NUL byte")
+    return f"%{_escape_like(term)}%"
 
 
 def _clean_aliases(aliases: Sequence[str] | None, *, exclude: str) -> tuple[str, ...]:

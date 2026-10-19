@@ -137,9 +137,9 @@ reports `NAMESPACE` instead of `VM` when `runsc` isn't registered.
 
 ## Known-stale references (don't chase these)
 
-- `docs/adr/README.md` indexes ADRs 0001–0020, but only `0008`, `0010`, `0015`, `0019`, `0020` exist
-  on disk. Source comments cite `docs/adr/0001`–`0007` etc. as rationale; the intent is documented
-  even though the file is absent.
+- `docs/adr/README.md` indexes ADRs 0001–0022, but only `0008`, `0010`, `0015`, `0019`, `0020`,
+  `0021`, `0022` exist on disk. Source comments cite `docs/adr/0001`–`0007` etc. as rationale; the
+  intent is documented even though the file is absent.
 - `docs/architecture.md` is referenced from docstrings but does not exist.
 - `README.md`'s Testing section still shows Windows paths, and its per-subsystem test counts in the
   build-status table are approximate — only the total line was reconciled against a real run.

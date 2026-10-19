@@ -26,12 +26,17 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sqlite3
 import uuid
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from hypothesis import given
+from hypothesis import settings as hyp_settings
+from hypothesis import strategies as st
 
 from paa.coder.agent import MUTATING_RUNTIME_TOOLS, CoderAgent
 from paa.coder.loop import ModelTurn, ToolCall
@@ -50,8 +55,28 @@ from paa.core.types import EventType, PermissionMode, new_correlation_id
 from paa.ledger.events import LedgerEvent
 from paa.ledger.store import LedgerStore
 from paa.memory.creator import MemoryCreator
-from paa.memory.facts import FactRepository
+from paa.memory.facts import FactRepository, _escape_like, _like_pattern
 from paa.storage.relational.database import Database, dumps, to_iso, utc_now
+
+
+def _unescape_like(pattern: str) -> str:
+    """The inverse of the LIKE escaping, for the round-trip property.
+
+    A backslash escapes whatever follows it; a trailing backslash stands for
+    itself. Written here rather than imported because the production module
+    has no use for the inverse — only the test does.
+    """
+    out: list[str] = []
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        if char == "\\" and index + 1 < len(pattern):
+            out.append(pattern[index + 1])
+            index += 2
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
 
 
 class FakeProvider:
@@ -713,6 +738,106 @@ class TestSearchFactsByText:
 
         assert await repo.search_facts_by_text("active") == []
         assert [f.id for f in await repo.search_facts_by_text("paused")] == [new]
+
+
+class TestLikeEscapingIsTotal:
+    """The LIKE escaping must hold for *any* text, not for three examples.
+
+    The example-based tests above cover ``%``, ``_`` and ``\\`` one at a time.
+    This class covers the property those three depend on: over arbitrary text,
+    the escaped pattern matches that text literally and nothing else. A recall
+    query that widened into a table scan is a correctness bug with no error
+    anywhere to diagnose it by, so the invariant belongs in a property test —
+    the same reason the rest of the repository uses Hypothesis for invariants
+    that must hold for all inputs.
+    """
+
+    @given(text=st.text(min_size=1, max_size=24))
+    @hyp_settings(max_examples=200, deadline=None)
+    def test_the_escaping_is_lossless_and_leaves_no_wildcard(self, text: str) -> None:
+        escaped = _escape_like(text)
+
+        assert _unescape_like(escaped) == text, "escaping must be reversible"
+
+        # Every ``%`` and ``_`` in the pattern must sit behind an odd number
+        # of backslashes — an escape — and an even number means LIKE would
+        # read it as a wildcard.
+        run = 0
+        for char in escaped:
+            if char == "\\":
+                run += 1
+                continue
+            assert not (char in "%_" and run % 2 == 0), (
+                f"unescaped wildcard {char!r} survived in {escaped!r}"
+            )
+            run = 0
+
+    @given(
+        text=st.text(min_size=1, max_size=24),
+        haystack=st.text(max_size=40),
+    )
+    @hyp_settings(max_examples=200, deadline=None)
+    def test_the_pattern_never_matches_a_string_that_does_not_contain_the_text(
+        self, text: str, haystack: str
+    ) -> None:
+        """The real engine's own verdict, not a re-implementation of LIKE.
+
+        Checked against SQLite directly — the engine the relational layer
+        actually runs on — so the property is the database's, not this
+        repository's reading of what ``ESCAPE`` means.
+        """
+        term = " ".join(text.split())
+        if not term:
+            return
+        try:
+            pattern = _like_pattern(term)
+        except ValueError:
+            # Refused. The refusal *is* the guarantee: no pattern, no
+            # widening. A NUL is the only thing that may be refused, and it
+            # is refused for exactly one reason.
+            assert "\x00" in term
+            return
+
+        with closing(sqlite3.connect(":memory:")) as conn:
+            (matched,) = conn.execute(
+                "SELECT ? LIKE ? ESCAPE '\\'", (haystack, pattern)
+            ).fetchone()
+
+        # A match implies the text is really in there. SQLite's LIKE is
+        # case-insensitive for ASCII, so the containment check folds case too.
+        assert not matched or term.lower() in haystack.lower()
+
+    @given(text=st.text(min_size=1, max_size=24))
+    @hyp_settings(max_examples=200, deadline=None)
+    def test_a_nul_is_refused_rather_than_searched(self, text: str) -> None:
+        """A NUL truncates the pattern, so the query is refused, not searched.
+
+        Found by this property test rather than by inspection: SQLite reaches
+        the LIKE pattern through the C string API, so ``%\\x00%`` is ``%`` and
+        matches *every row in the table* — the exact widening the metacharacter
+        escaping exists to prevent, arrived at through a different character.
+        """
+        term = " ".join(text.split())
+        if "\x00" not in term:
+            return
+        with pytest.raises(ValueError, match="NUL"):
+            _like_pattern(term)
+
+    async def test_the_repository_refuses_a_nul_query(self, db: Database) -> None:
+        repo = FactRepository(db)
+        eid = await repo.upsert_entity("concept", "Widget")
+        await repo.add_fact(eid, "is", "plain value", confidence=0.9)
+
+        with pytest.raises(ValueError, match="NUL"):
+            await repo.search_facts_by_text("plain\x00value")
+
+    async def test_the_tool_reports_a_nul_query_as_an_error_value(
+        self, tools: dict[str, Any]
+    ) -> None:
+        result = json.loads(await tools["recall_facts"].run({"query": "a\x00b"}))
+
+        assert result["error"] == "query must not contain a NUL byte"
+        assert result.get("facts") is None
 
 
 class TestReadOnlyAndMutatingSets:

@@ -761,6 +761,13 @@ class _RecallFacts(_RuntimeTool):
         if not isinstance(query, str) or not query.strip():
             return self._emit({"error": "query must be non-empty"})
         query = query.strip()
+        if "\x00" in query:
+            # A NUL truncates the LIKE pattern the keyword tier builds, and a
+            # truncated pattern matches every row — so the query is refused
+            # rather than searched. The repository refuses it too; this is
+            # the tool's half of the same rule, and it reports the refusal as
+            # a value because that is what this module does with bad input.
+            return self._emit({"error": "query must not contain a NUL byte"})
         limit = _clamp_int(arguments.get("limit"), default=10, low=1, high=50)
 
         repo = FactRepository(self._rt.db)
