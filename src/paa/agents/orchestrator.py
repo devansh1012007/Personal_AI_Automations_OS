@@ -271,8 +271,7 @@ class ChiefOrchestrator:
             from paa.storage.queue.base import StreamName
 
             depth = await self._queue.depth(StreamName.ORCHESTRATOR_CORE)
-            state = self._backpressure.assess(depth)
-            degraded = self._backpressure.degrade_modality(modality, state)
+            degraded = self._backpressure.degrade_modality(modality)
             if degraded is not modality:
                 log.warning(
                     "orchestrator.backpressure_degraded",

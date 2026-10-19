@@ -102,6 +102,39 @@ class TestErrorHandling:
         assert result.exit_code == 1
         assert "no such task" in result.stdout
 
+    def test_agent_handles_model_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A timed-out or unavailable model must not dump a traceback.
+
+        The agent still records every attempt in its transcript; this only
+        cleans up the CLI output the operator sees. The run against a real
+        provider is exercised separately.
+        """
+        from paa.models.base import ModelUnavailableError
+        from paa.models.router import EscalatingModelRouter
+
+        async def boom(*_args: object, **_kwargs: object) -> None:  # pragma: no cover
+            raise ModelUnavailableError("request to the model endpoint timed out")
+
+        monkeypatch.setattr(EscalatingModelRouter, "complete_structured", boom)
+
+        result = runner.invoke(app, ["agent", "tell me something"])
+        assert result.exit_code == 1
+        assert "error" in result.stdout.lower()
+
+    def test_agent_catches_generic_paa_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A raised PaaError must be reported cleanly, not dumped."""
+        from paa.coder.agent import CoderAgent
+        from paa.core.errors import PaaError
+
+        def boom(self: object, _prompt: str) -> None:  # pragma: no cover
+            raise PaaError("boom: something went wrong")
+
+        monkeypatch.setattr(CoderAgent, "ask", boom)
+
+        result = runner.invoke(app, ["agent", "hello"])
+        assert result.exit_code == 1
+        assert "error" in result.stdout.lower()
+
 
 def _extract_cid(text: str) -> str:
     for line in text.splitlines():

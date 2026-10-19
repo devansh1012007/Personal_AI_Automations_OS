@@ -303,6 +303,14 @@ def mode(
     )
 
 
+@app.command()
+def tui() -> None:
+    """Run the interactive dashboard until you quit."""
+    from paa.tui.runner import run_tui
+
+    asyncio.run(run_tui())
+
+
 def correlation_id_uuid(value: str):
     import uuid
 

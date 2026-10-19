@@ -92,6 +92,7 @@ def register_agent(app: typer.Typer) -> None:
             from paa.coder.agent import CoderAgent
             from paa.coder.session import Session
             from paa.config import get_settings
+            from paa.core.errors import PaaError
 
             settings = get_settings()
             transcript_dir = settings.home / "sessions"
@@ -128,6 +129,13 @@ def register_agent(app: typer.Typer) -> None:
                     f"[dim]{result.steps} steps, {result.tool_calls} tool calls, "
                     f"{result.denied_calls} denied, stopped: {result.stopped_reason}[/dim]"
                 )
+            except PaaError as exc:
+                # A model failure (timeout, provider down, modality blocked) must be
+                # reported cleanly rather than dumped as a traceback. The agent's
+                # own transcript still records every attempt; this only cleans up the
+                # CLI output the operator sees.
+                console.print(f"[red]error:[/red] {exc}")
+                raise typer.Exit(1) from exc
             finally:
                 await built.close()
 
