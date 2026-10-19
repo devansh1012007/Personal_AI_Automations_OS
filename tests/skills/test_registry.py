@@ -175,3 +175,128 @@ class TestReliabilityAndDeactivate:
 
     async def test_update_reliability_absent_skill_does_not_raise(self, db: Database) -> None:
         assert await SkillRegistry(db).update_reliability("ghost", 0.1) == 0.0
+
+
+class TestLiteralIntentSearch:
+    """Discovery searches for the text the caller wrote, not for a pattern.
+
+    Fallback recall is a ``LIKE`` prefilter followed by a trigram re-rank, and
+    a ``LIKE`` pattern is the one place where a value silently changes the
+    meaning of a query: ``%`` matches any run of characters and ``_`` matches
+    any one of them. An intent is text, so an intent carrying one of those
+    characters is that text and not a pattern.
+
+    A wrong prefilter is worse here than a noisy answer, because the
+    prefilter decides *which rows are ranked at all*. A wildcard always
+    matches something, and a match suppresses the full trigram pass — so the
+    skills the caller actually asked about, the ones whose names merely
+    resemble the intent, were dropped rather than ranked. And a pattern that
+    matches nothing at all widens into a scan of every active skill, which is
+    the opposite of what a prefilter is for.
+
+    Each test registers a decoy that the old wildcard behaviour swept in, so
+    a regression cannot hide behind an assertion that only checks the happy
+    path.
+    """
+
+    async def test_a_percent_in_an_intent_is_not_a_wildcard(self, db: Database) -> None:
+        registry = SkillRegistry(db)
+        for name in ("alpha", "beta", "gamma"):
+            await registry.register(_contract(name=name))
+
+        results = await registry.search("alpha%")
+
+        # The literal intent matches nothing by substring, so the documented
+        # fallback ranks the whole active set — rather than handing back the
+        # subset the wildcard used to select.
+        assert [c.skill_name for c in results] == ["alpha", "beta", "gamma"]
+
+    async def test_an_underscore_in_an_intent_is_matched_literally(
+        self, db: Database
+    ) -> None:
+        registry = SkillRegistry(db)
+        await registry.register(_contract(name="alpha_beta"))
+        await registry.register(_contract(name="alpha-beta"))
+
+        results = await registry.search("alpha_beta")
+
+        # "alpha-beta" is a different skill from "alpha_beta", and the intent
+        # named the second one.
+        assert [c.skill_name for c in results] == ["alpha_beta"]
+
+    async def test_a_nul_byte_does_not_widen_the_prefilter_to_every_skill(
+        self, db: Database
+    ) -> None:
+        registry = SkillRegistry(db)
+        for name in ("alpha", "beta", "gamma"):
+            await registry.register(_contract(name=name))
+
+        results = await registry.search("\x00alpha")
+
+        # SQLite reads a LIKE pattern through the C string API, so a NUL
+        # *ends* it: the pattern degrades to a bare "%" and matches everything.
+        assert [c.skill_name for c in results] == ["alpha"]
+
+    async def test_a_misspelled_intent_is_not_silently_dropped(self, db: Database) -> None:
+        registry = SkillRegistry(db)
+        await registry.register(_contract(name="alpha-beta"))
+        await registry.register(_contract(name="unrelated-tool"))
+
+        results = await registry.search("alpha_beta")
+
+        names = [c.skill_name for c in results]
+        # The intent matches nothing by substring — the caller wrote an
+        # underscore where the skill has a hyphen — and the full trigram pass
+        # the docstring promises still runs, so the skill that was meant is
+        # ranked rather than dropped, and the whole active set is ranked
+        # rather than the subset a match would have selected.
+        assert "alpha-beta" in names
+        assert names == ["alpha-beta", "unrelated-tool"]
+
+    async def test_an_intent_with_nothing_to_search_for_takes_the_fallback(
+        self, db: Database
+    ) -> None:
+        """An intent that was nothing but NUL bytes has no pattern to build.
+
+        A pattern of ``"%%"`` would match every active skill, and there is
+        no LIKE pattern that matches nothing instead, so the prefilter is
+        skipped and the documented fallback does the work: the whole active
+        set, ranked by trigram similarity.
+        """
+        registry = SkillRegistry(db)
+        for name in ("alpha", "beta", "gamma"):
+            await registry.register(_contract(name=name))
+
+        results = await registry.search("\x00")
+
+        assert [c.skill_name for c in results] == ["alpha", "beta", "gamma"]
+
+
+    async def test_a_skill_whose_name_contains_an_underscore_is_retrievable(
+        self, db: Database
+    ) -> None:
+        registry = SkillRegistry(db)
+        await registry.register(_contract(name="rotate_widget"))
+        await registry.register(_contract(name="rotate-widget"))
+
+        results = await registry.search("rotate_widget")
+
+        # "rotate-widget" is the decoy the old wildcard behaviour swept in:
+        # its underscore matched any one character.
+        assert [c.skill_name for c in results] == ["rotate_widget"]
+
+    async def test_a_skill_whose_description_contains_a_percent_is_retrievable(
+        self, db: Database
+    ) -> None:
+        registry = SkillRegistry(db)
+        await registry.register(
+            _contract(name="scale-up", description="Scales the fleet to 100% capacity.")
+        )
+        await registry.register(
+            _contract(name="other-tool", description="Handles 100 requests per second.")
+        )
+
+        results = await registry.search("100%")
+
+        # "other-tool" is the decoy: the old pattern matched its "100" too.
+        assert [c.skill_name for c in results] == ["scale-up"]

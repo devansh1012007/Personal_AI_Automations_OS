@@ -36,6 +36,7 @@ from paa.core.errors import SkillContractError
 from paa.memory.facts import trigram_similarity
 from paa.skills.contracts import SkillContract
 from paa.storage.relational.database import dumps, loads, to_iso, utc_now
+from paa.storage.relational.like import like_pattern, like_predicate
 
 if TYPE_CHECKING:
     from paa.storage.relational.database import Database
@@ -270,15 +271,46 @@ class SkillRegistry:
         thing for every query, which ``LIKE`` alone does not. A query that
         matches nothing by substring still gets a full trigram pass over the
         active set, so a fuzzy/misspelled intent is not silently dropped.
+
+        **The prefilter is literal.** An intent is text, and text that
+        contains a LIKE metacharacter is that text, not a pattern: an
+        unescaped ``%`` matches any run of characters and an unescaped ``_``
+        matches any one, so the intent ``alpha%`` used to match whatever
+        contained ``alpha`` and *not* whatever contained ``alpha%``. That
+        inverted the sense of the query, and it also suppressed the fallback
+        — the wildcard always matched something, so the full trigram pass
+        that the docstring above promises for a query matching nothing by
+        substring never ran, and the skills the caller actually asked about
+        were dropped. The pattern is built by
+        :mod:`paa.storage.relational.like`, which also drops the NUL byte
+        that would otherwise end the pattern where SQLite reads it and turn
+        the prefilter into a scan of the whole active set.
+
+        A literal intent that matches nothing therefore matches nothing, and
+        the documented fallback does what it says: the whole active set is
+        scored by trigram similarity and the best of them are returned. That
+        costs a scan of the active set rather than a scan of the matches,
+        which is the price of not quietly answering a different question.
+
+        An intent with nothing to search for — empty, or nothing but NUL
+        bytes — has no pattern to build, and a pattern of ``"%%"`` would
+        match every active skill. There is no LIKE pattern that matches
+        nothing instead, so the prefilter is skipped and the fallback below
+        does the work.
         """
-        like = f"%{intent.strip()}%"
-        rows = await self._db.fetch_all(
-            _SELECT_CONTRACT + " WHERE is_active = 1 AND (skill_name LIKE ? OR description LIKE ?)",
-            (like, like),
-        )
+        try:
+            like = like_pattern(intent.strip())
+        except ValueError:
+            like = None
+        predicate = like_predicate("skill_name", "description")
+        rows: list[Any] = []
+        if like is not None:
+            rows = await self._db.fetch_all(
+                _SELECT_CONTRACT + " WHERE is_active = 1 AND (" + predicate + ")",
+                (like, like),
+            )
         if not rows:
             rows = await self._db.fetch_all(_SELECT_CONTRACT + " WHERE is_active = 1")
-
         scored: list[tuple[float, SkillContract]] = []
         for row in rows:
             contract = _row_to_contract(row)

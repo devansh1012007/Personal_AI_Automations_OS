@@ -25,8 +25,19 @@ division of labour:
 That boundary matters. If a model chose packet contents, then text retrieved
 from an untrusted source could argue its way into the planner's context — and
 the packet would stop being reproducible, breaking ledger replay. With the
-split, the worst a compromised expansion can do is retrieve *irrelevant* facts,
-which the density check then catches.
+split, a compromised expansion can only *choose what to look for*, and the
+facts it leads to are still facts somebody stored.
+
+What the split does **not** do is make irrelevant facts harmless. The density
+check measures how many required slots the packet resolves, and a hot fact
+resolves a slot by its *predicate* — so an irrelevant fact that happens to
+share a required slot's name counts as resolving it, and inflates the
+density that is supposed to reveal the gap. The hot tier is also not
+relevance-filtered: the relevance floor is applied to the semantic tier
+only, and a hot fact is pinned at ``relevance=1.0`` because it was matched
+literally against a search term. Neither of those is a reason to widen the
+retrieval — it is a reason to keep the retrieval literal, which is what
+:meth:`_BaseContextBuilder._hot_facts` now guarantees.
 """
 
 from __future__ import annotations
@@ -41,6 +52,7 @@ from paa.context.gatherer import BoundedContextGatherer, ContextElement
 from paa.core.types import AgentRole
 from paa.memory.decay import effective_confidence
 from paa.memory.domains import narrative_domains
+from paa.storage.relational.like import like_pattern, like_predicate
 
 if TYPE_CHECKING:
     from paa.storage.relational.database import Database
@@ -134,14 +146,51 @@ class _BaseContextBuilder(Agent):
         Decay is applied here rather than trusted from the row because the
         stored value is ``C₀``; using it directly would treat a two-year-stale
         fact as freshly verified.
+
+        **The search is literal.** A term is a word, and a word that happens
+        to contain a LIKE metacharacter is that word, not a pattern: an
+        unescaped ``_`` matches any character, so the term ``foo_bar`` would
+        also retrieve ``fooXbar``. That matters more here than it would in
+        an ordinary search, because a retrieved fact is not merely returned
+        — it becomes a :class:`~paa.context.gatherer.ContextElement` with
+        ``relevance=1.0`` and ``slot=`` the fact's *predicate*, and the
+        gatherer resolves a required slot from that predicate. An unrelated
+        fact that happens to share a required slot's name therefore
+        *resolves* it, which inflates the context density and silently
+        retires the vacancy that would have sent the task to a human. The
+        hot tier is not relevance-filtered — the relevance floor is applied
+        to the semantic tier only — so nothing downstream removes a fact
+        that should never have been retrieved.
+
+        The pattern is built by :mod:`paa.storage.relational.like`, which
+        also drops the NUL byte that would otherwise end the pattern where
+        SQLite reads it and turn the search into a match-everything scan. A
+        term with nothing left to search for once the NULs are gone is
+        skipped rather than compiled into a pattern of ``"%%"``, which would
+        match every fact in the table.
         """
         if self._db is None or not terms:
             return []
 
-        clauses = " OR ".join(["f.object_value LIKE ? OR f.predicate LIKE ?"] * len(terms))
-        params: list[Any] = []
+        patterns: list[str] = []
         for term in terms:
-            params.extend([f"%{term}%", f"%{term}%"])
+            try:
+                patterns.append(like_pattern(term))
+            except ValueError:
+                # A term with nothing to search for — empty, or nothing but
+                # NUL bytes — is not a term. Skipping it is the whole answer:
+                # the alternative is a pattern of "%%", which matches every
+                # fact in the table, and the whole point of this tier is
+                # that a retrieved fact is a fact somebody asked for.
+                continue
+        if not patterns:
+            return []
+
+        predicate = like_predicate("f.object_value", "f.predicate")
+        clauses = " OR ".join([predicate] * len(patterns))
+        params: list[Any] = []
+        for pattern in patterns:
+            params.extend([pattern, pattern])
         params.append(limit)
 
         rows = await self._db.fetch_all(
@@ -150,7 +199,14 @@ class _BaseContextBuilder(Agent):
             "FROM hot_serving_active_facts f "
             "JOIN hot_serving_entity_index e ON e.id = f.entity_id "
             f"WHERE f.superseded_by IS NULL AND ({clauses}) "
-            "ORDER BY f.importance DESC LIMIT ?",
+            # The tiebreaker is what makes the cut reproducible: importance is
+            # a float, so a batch of facts sharing one importance value would
+            # otherwise be truncated to the first sixty the database happened
+            # to return, and two runs over the same data could hand the model
+            # different contexts. Ids are UUIDs and carry no order of their
+            # own, which is exactly why they are the right tiebreaker here:
+            # stable, and not pretending to be chronological.
+            "ORDER BY f.importance DESC, f.id ASC LIMIT ?",
             params,
         )
 
@@ -170,7 +226,7 @@ class _BaseContextBuilder(Agent):
                 ContextElement(
                     id=row["id"],
                     content=f"{row['canonical_name']} {row['predicate']} {row['object_value']}",
-                    relevance=1.0,  # exact-key retrieval
+                    relevance=1.0,  # matched literally against a search term
                     confidence=confidence,
                     importance=row["importance"],
                     slot=row["predicate"],

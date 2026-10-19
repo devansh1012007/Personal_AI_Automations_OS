@@ -80,7 +80,7 @@ human text; atomic writes (temp + `os.replace`) (`world_model.py:95`).
 | `FactRepository` → `Database` | SQL INSERT/SELECT | Persist entities/facts | `facts.py` |
 | `DecaySweeper` → `Database`, `domains` | decay policy + SQL DELETE | Evict stale facts | `decay.py` |
 | `MemoryCreator` → `SignalRepository`, `FactRepository` | claim signals → facts | Ingest signals | `creator.py`, `daemon.py:167` |
-| `Context builders` → `FactRepository` | `query_facts` | Read context | `context_agents.py:147` |
+| `Context builders` → `Database` | hand-rolled `LIKE` over the fact tables | Read context | `context_agents.py:189` |
 | `PolicyRiskAgent` → anti-goals (vault) | read `anti_goals.md` | Semantic block | `runtime.py:463`, `policy.py:262` |
 
 ## Runtime behavior
