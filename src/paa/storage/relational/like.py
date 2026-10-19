@@ -49,6 +49,10 @@ search_facts_by_text` is that caller: the query is a model-supplied tool
 argument, so the refusal is reported back to the model as an error value
 rather than swallowed. Every internal recall path uses the permissive form,
 because those paths have to answer rather than refuse.
+
+The whole decision, with the consequence at each call site spelled out, is
+in ``docs/adr/0023-like-pattern-escaping.md`` (SPEC DEVIATION
+(docs/adr/0023)).
 """
 
 from __future__ import annotations

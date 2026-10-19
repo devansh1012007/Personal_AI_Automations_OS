@@ -204,6 +204,15 @@ class TestTheTwoHalvesAgree:
         assert like_predicate("a").count("?") == 1
         assert like_predicate("a", "b", "c").count("?") == 3
 
+    def test_a_predicate_with_no_column_is_refused(self) -> None:
+        """An empty predicate is an empty SQL fragment.
+
+        That would be a statement matching nothing, which reads as a bug at
+        the call site rather than as one, so it is refused here instead.
+        """
+        with pytest.raises(ValueError, match="column"):
+            like_predicate()
+
     def test_the_clause_survives_the_postgres_placeholder_translation(self) -> None:
         """The SQL half has to survive the rewrite to psycopg's dialect.
 

@@ -199,13 +199,18 @@ class _BaseContextBuilder(Agent):
             "FROM hot_serving_active_facts f "
             "JOIN hot_serving_entity_index e ON e.id = f.entity_id "
             f"WHERE f.superseded_by IS NULL AND ({clauses}) "
-            # The tiebreaker is what makes the cut reproducible: importance is
-            # a float, so a batch of facts sharing one importance value would
-            # otherwise be truncated to the first sixty the database happened
-            # to return, and two runs over the same data could hand the model
-            # different contexts. Ids are UUIDs and carry no order of their
-            # own, which is exactly why they are the right tiebreaker here:
-            # stable, and not pretending to be chronological.
+            # The tiebreaker makes the sort key *total*, so the cut is settled
+            # by the ordering rather than by whichever way an engine happened
+            # to arrange the ties: importance is a float, and a batch of
+            # facts sharing one importance value would otherwise be truncated
+            # to the first sixty of an order the SQL does not define.
+            # SQLite is in fact deterministic for a fixed plan, but that is an
+            # implementation detail rather than a guarantee, and PostgreSQL
+            # does not promise an order among ties at all — so the same
+            # request could hand the model a different context on the other
+            # backend. Ids are UUIDs and carry no order of their own, which
+            # is exactly why they are the right tiebreaker here: stable, and
+            # not pretending to be chronological.
             "ORDER BY f.importance DESC, f.id ASC LIMIT ?",
             params,
         )

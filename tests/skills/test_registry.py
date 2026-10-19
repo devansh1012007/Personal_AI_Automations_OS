@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from typing import Any
+
 import pytest
 
 from paa.core.types import Permission
@@ -253,7 +256,7 @@ class TestLiteralIntentSearch:
         assert "alpha-beta" in names
         assert names == ["alpha-beta", "unrelated-tool"]
 
-    async def test_an_intent_with_nothing_to_search_for_takes_the_fallback(
+    async def test_an_intent_with_nothing_to_search_for_skips_the_prefilter(
         self, db: Database
     ) -> None:
         """An intent that was nothing but NUL bytes has no pattern to build.
@@ -262,7 +265,22 @@ class TestLiteralIntentSearch:
         no LIKE pattern that matches nothing instead, so the prefilter is
         skipped and the documented fallback does the work: the whole active
         set, ranked by trigram similarity.
+
+        The assertion is about the *query*, not the result, and it has to
+        be: the wildcard path and the fallback path return the same list, so
+        a result-based assertion here would pass either way and would guard
+        nothing. What must not happen is the prefilter being issued at all —
+        it is the statement that would match everything.
         """
+        queries: list[str] = []
+        original = db.fetch_all
+
+        async def recording_fetch_all(sql: str, params: Sequence[Any] = ()) -> list[Any]:
+            queries.append(sql)
+            return await original(sql, params)
+
+        db.fetch_all = recording_fetch_all  # type: ignore[method-assign]
+
         registry = SkillRegistry(db)
         for name in ("alpha", "beta", "gamma"):
             await registry.register(_contract(name=name))
@@ -270,7 +288,10 @@ class TestLiteralIntentSearch:
         results = await registry.search("\x00")
 
         assert [c.skill_name for c in results] == ["alpha", "beta", "gamma"]
-
+        assert not [sql for sql in queries if "LIKE" in sql], (
+            "the prefilter was issued; a match-everything pattern must never "
+            "reach the database"
+        )
 
     async def test_a_skill_whose_name_contains_an_underscore_is_retrievable(
         self, db: Database

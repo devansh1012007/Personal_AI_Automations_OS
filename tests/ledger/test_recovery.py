@@ -289,6 +289,7 @@ class TestWorkspaceReconciliation:
 class TestHardCrashSimulation:
     """Kill the process, reopen the database, prove nothing was lost."""
 
+    @pytest.mark.chaos
     async def test_state_survives_process_death(self, tmp_path: Path) -> None:
         db_path = tmp_path / "crash.db"
         cid = new_correlation_id()
@@ -332,6 +333,7 @@ class TestHardCrashSimulation:
         finally:
             await db2.close()
 
+    @pytest.mark.chaos
     async def test_many_lineages_recover_independently(self, tmp_path: Path) -> None:
         db_path = tmp_path / "multi.db"
         db1 = Database(db_path)
@@ -373,6 +375,7 @@ class TestHardCrashSimulation:
         finally:
             await db2.close()
 
+    @pytest.mark.chaos
     async def test_uncommitted_transaction_leaves_no_trace(self, tmp_path: Path) -> None:
         """A crash mid-transaction must not leave a partial event."""
         db_path = tmp_path / "partial.db"
