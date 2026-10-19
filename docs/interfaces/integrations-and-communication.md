@@ -141,9 +141,9 @@ uvicorn over the FastAPI app plus the daemon loops over one shared runtime
 
 ## Related documents
 
-- [`interfaces/api-reference.md`](interfaces/api-reference.md) — the FastAPI endpoints.
-- [`modules/models.md`](modules/models.md) — model layer deep dive.
-- [`modules/storage.md`](modules/storage.md) — optional substrates.
-- [`modules/coder.md`](modules/coder.md) — `paa agent` tool loop.
-- [`operations/configuration-and-environment.md`](operations/configuration-and-environment.md) — `PAA_MODELS__*` and `PAA_STORAGE__*` settings.
-- [`architecture/component-interactions.md`](architecture/component-interactions.md) — external service diagram.
+- [`interfaces/api-reference.md`](api-reference.md) — the FastAPI endpoints.
+- [`modules/models.md`](../modules/models.md) — model layer deep dive.
+- [`modules/storage.md`](../modules/storage.md) — optional substrates.
+- [`modules/coder.md`](../modules/coder.md) — `paa agent` tool loop.
+- [`operations/configuration-and-environment.md`](../operations/configuration-and-environment.md) — `PAA_MODELS__*` and `PAA_STORAGE__*` settings.
+- [`architecture/component-interactions.md`](../architecture/component-interactions.md) — external service diagram.

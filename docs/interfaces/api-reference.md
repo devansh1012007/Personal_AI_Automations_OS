@@ -182,7 +182,7 @@ topology (Docker publishes no host ports; only the ingestion API on
 
 ## Related documents
 
-- [`interfaces/integrations-and-communication.md`](interfaces/integrations-and-communication.md) — external integrations and model providers.
-- [`backend/request-lifecycle.md`](backend/request-lifecycle.md) — what happens after `POST /tasks`.
-- [`operations/configuration-and-environment.md`](operations/configuration-and-environment.md) — `PAA_API_*` settings.
-- [`modules/cli.md`](modules/cli.md) — the CLI surface (the other entry point).
+- [`interfaces/integrations-and-communication.md`](integrations-and-communication.md) — external integrations and model providers.
+- [`backend/request-lifecycle.md`](../backend/request-lifecycle.md) — what happens after `POST /tasks`.
+- [`operations/configuration-and-environment.md`](../operations/configuration-and-environment.md) — `PAA_API_*` settings.
+- [`modules/cli.md`](../modules/cli.md) — the CLI surface (the other entry point).

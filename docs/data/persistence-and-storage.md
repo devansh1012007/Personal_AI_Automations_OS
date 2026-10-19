@@ -179,8 +179,8 @@ Degradation impact:
 
 ## Related documents
 
-- [`data/data-models-and-relationships.md`](data/data-models-and-relationships.md) — table/column reference.
-- [`data/data-lifecycle.md`](data/data-lifecycle.md) — creation, mutation, invalidation, deletion.
-- [`modules/ledger.md`](modules/ledger.md) — the ledger spine.
-- [`modules/storage.md`](modules/storage.md) — storage substrate deep dives.
-- [`operations/configuration-and-environment.md`](operations/configuration-and-environment.md) — `PAA_STORAGE__*` settings.
+- [`data/data-models-and-relationships.md`](data-models-and-relationships.md) — table/column reference.
+- [`data/data-lifecycle.md`](data-lifecycle.md) — creation, mutation, invalidation, deletion.
+- [`modules/ledger.md`](../modules/ledger.md) — the ledger spine.
+- [`modules/storage.md`](../modules/storage.md) — storage substrate deep dives.
+- [`operations/configuration-and-environment.md`](../operations/configuration-and-environment.md) — `PAA_STORAGE__*` settings.

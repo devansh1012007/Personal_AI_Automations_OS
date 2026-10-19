@@ -450,7 +450,7 @@ passed>0).
 
 ## Related documents
 
-- [`backend/request-lifecycle.md`](backend/request-lifecycle.md) — the submit→run path traced.
-- [`architecture/component-interactions.md`](architecture/component-interactions.md) — verified inter-module connections.
-- [`modules/ledger.md`](modules/ledger.md), [`modules/agents.md`](modules/agents.md), [`modules/validation.md`](modules/validation.md), [`modules/sandbox.md`](modules/sandbox.md), [`modules/models.md`](modules/models.md) — deep dives.
-- [`operations/configuration-and-environment.md`](operations/configuration-and-environment.md) — all `PAA_*` settings.
+- [`backend/request-lifecycle.md`](request-lifecycle.md) — the submit→run path traced.
+- [`architecture/component-interactions.md`](../architecture/component-interactions.md) — verified inter-module connections.
+- [`modules/ledger.md`](../modules/ledger.md), [`modules/agents.md`](../modules/agents.md), [`modules/validation.md`](../modules/validation.md), [`modules/sandbox.md`](../modules/sandbox.md), [`modules/models.md`](../modules/models.md) — deep dives.
+- [`operations/configuration-and-environment.md`](../operations/configuration-and-environment.md) — all `PAA_*` settings.

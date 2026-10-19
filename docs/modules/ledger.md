@@ -168,10 +168,10 @@ from that version.
 
 ## Related documents
 
-- [`architecture/overview.md`](architecture/overview.md) — ledger-is-truth invariant.
-- [`architecture/component-interactions.md`](architecture/component-interactions.md) — ledger connections.
-- [`data/data-models-and-relationships.md`](data/data-models-and-relationships.md) — `system_state_ledger` schema.
-- [`runtime/background-jobs-and-events.md`](runtime/background-jobs-and-events.md) — recovery sweep.
-- [`flows/workflow-03-crash-recovery.md`](flows/workflow-03-crash-recovery.md) — recovery trace.
+- [`architecture/overview.md`](../architecture/overview.md) — ledger-is-truth invariant.
+- [`architecture/component-interactions.md`](../architecture/component-interactions.md) — ledger connections.
+- [`data/data-models-and-relationships.md`](../data/data-models-and-relationships.md) — `system_state_ledger` schema.
+- [`runtime/background-jobs-and-events.md`](../runtime/background-jobs-and-events.md) — recovery sweep.
+- [`flows/workflow-03-crash-recovery.md`](../flows/workflow-03-crash-recovery.md) — recovery trace.
 - [`docs/adr/0008-idempotency-key-with-attempt.md`](../adr/0008-idempotency-key-with-attempt.md)
 - [`docs/adr/0010-head-projection-not-partial-index.md`](../adr/0010-head-projection-not-partial-index.md)

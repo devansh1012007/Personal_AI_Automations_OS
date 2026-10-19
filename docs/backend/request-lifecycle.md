@@ -183,7 +183,7 @@ sequenceDiagram
 
 ## Related documents
 
-- [`backend/modules-and-services.md`](backend/modules-and-services.md) — each module's internals.
-- [`architecture/component-interactions.md`](architecture/component-interactions.md) — verified connections.
-- [`modules/ledger.md`](modules/ledger.md) — event vocabulary and store.
-- [`flows/workflow-01-submit-and-run.md`](flows/workflow-01-submit-and-run.md) — end-to-end trace with a concrete goal.
+- [`backend/modules-and-services.md`](modules-and-services.md) — each module's internals.
+- [`architecture/component-interactions.md`](../architecture/component-interactions.md) — verified connections.
+- [`modules/ledger.md`](../modules/ledger.md) — event vocabulary and store.
+- [`flows/workflow-01-submit-and-run.md`](../flows/workflow-01-submit-and-run.md) — end-to-end trace with a concrete goal.

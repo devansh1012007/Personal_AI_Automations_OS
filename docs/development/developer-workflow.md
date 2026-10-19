@@ -122,5 +122,5 @@ implementation (`AGENTS.md:108`).
 ## Related documents
 
 - [`development/testing-and-quality.md`](testing-and-quality.md) — test conventions.
-- [`AGENTS.md`](../AGENTS.md) — authoritative runtime conventions.
-- [`pyproject.toml`](../pyproject.toml) — lint/type/test config.
+- [`AGENTS.md`](../../AGENTS.md) — authoritative runtime conventions.
+- [`pyproject.toml`](../../pyproject.toml) — lint/type/test config.

@@ -35,7 +35,7 @@ The ledger layer (`src/paa/ledger/`):
 | `replay.py` | Deterministic left-fold projection of events into a `TaskProjection`; pure and total (never raises on unknown events) |
 | `recovery.py` | Post-crash boot sweep: replay open lineages, reconcile workspace vs manifest, restore drift, re-queue resumable tasks |
 
-See [`modules/ledger.md`](modules/ledger.md).
+See [`modules/ledger.md`](../modules/ledger.md).
 
 ## High-level data flow
 
@@ -245,13 +245,13 @@ access layer, not business logic).
 
 ## Related documents
 
-- [`architecture/repository-map.md`](architecture/repository-map.md) — directory
+- [`architecture/repository-map.md`](repository-map.md) — directory
   and module map.
-- [`architecture/component-interactions.md`](architecture/component-interactions.md)
+- [`architecture/component-interactions.md`](component-interactions.md)
   — verified connections between subsystems.
-- [`modules/ledger.md`](modules/ledger.md) — ledger deep dive.
-- [`modules/agents.md`](modules/agents.md) — agent hierarchy deep dive.
-- [`modules/models.md`](modules/models.md) — model layer deep dive.
-- [`modules/storage.md`](modules/storage.md) — storage substrates deep dive.
+- [`modules/ledger.md`](../modules/ledger.md) — ledger deep dive.
+- [`modules/agents.md`](../modules/agents.md) — agent hierarchy deep dive.
+- [`modules/models.md`](../modules/models.md) — model layer deep dive.
+- [`modules/storage.md`](../modules/storage.md) — storage substrates deep dive.
 - [`docs/adr/README.md`](../adr/README.md) — design reasoning and RFC deviations.
-- [`README.md`](../README.md) — project README, build status, layout.
+- [`README.md`](../../README.md) — project README, build status, layout.

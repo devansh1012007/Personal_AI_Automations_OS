@@ -119,4 +119,4 @@ Missing tests ≠ proven defects; these are uncovered areas.
 ## Related documents
 
 - [`development/developer-workflow.md`](developer-workflow.md) — setup and workflow.
-- [`architecture/overview.md`](architecture/overview.md) — conventions that differ from defaults.
+- [`architecture/overview.md`](../architecture/overview.md) — conventions that differ from defaults.

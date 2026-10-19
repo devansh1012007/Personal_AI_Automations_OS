@@ -240,7 +240,7 @@ independent of the ledger FK structure (signals reference `signal_id`→
 
 ## Related documents
 
-- [`data/persistence-and-storage.md`](data/persistence-and-storage.md) — how data is written, read, and validated.
-- [`data/data-lifecycle.md`](data/data-lifecycle.md) — creation, mutation, invalidation, deletion.
-- [`modules/ledger.md`](modules/ledger.md) — the ledger spine deep dive.
-- [`modules/storage.md`](modules/storage.md) — storage substrates deep dive.
+- [`data/persistence-and-storage.md`](persistence-and-storage.md) — how data is written, read, and validated.
+- [`data/data-lifecycle.md`](data-lifecycle.md) — creation, mutation, invalidation, deletion.
+- [`modules/ledger.md`](../modules/ledger.md) — the ledger spine deep dive.
+- [`modules/storage.md`](../modules/storage.md) — storage substrates deep dive.

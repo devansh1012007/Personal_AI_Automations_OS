@@ -200,7 +200,7 @@ backend.py` `_read_capped`).
 
 ## Related documents
 
-- [`backend/modules-and-services.md`](backend/modules-and-services.md) — policy, sandbox, validation internals.
-- [`modules/sandbox.md`](modules/sandbox.md), [`modules/validation.md`](modules/validation.md) — deep dives.
-- [`operations/configuration-and-environment.md`](operations/configuration-and-environment.md) — `PAA_POLICY__*`, `PAA_SANDBOX__*`, `PAA_API_HOST`.
-- [`architecture/component-interactions.md`](architecture/component-interactions.md) — trust-boundary diagram.
+- [`backend/modules-and-services.md`](../backend/modules-and-services.md) — policy, sandbox, validation internals.
+- [`modules/sandbox.md`](../modules/sandbox.md), [`modules/validation.md`](../modules/validation.md) — deep dives.
+- [`operations/configuration-and-environment.md`](../operations/configuration-and-environment.md) — `PAA_POLICY__*`, `PAA_SANDBOX__*`, `PAA_API_HOST`.
+- [`architecture/component-interactions.md`](../architecture/component-interactions.md) — trust-boundary diagram.

@@ -246,9 +246,9 @@ paa agent "prompt" (cli/coder.py:44)
 
 ## 7. Related documents
 
-- [`architecture/overview.md`](architecture/overview.md) — design patterns and the ledger-is-truth invariant.
-- [`architecture/repository-map.md`](architecture/repository-map.md) — directory and module map.
-- [`modules/ledger.md`](modules/ledger.md) — ledger deep dive.
-- [`modules/agents.md`](modules/agents.md) — agent hierarchy deep dive.
-- [`modules/storage.md`](modules/storage.md) — storage substrates deep dive.
-- [`flows/workflow-01-submit-and-run.md`](flows/workflow-01-submit-and-run.md) — traced main-path execution.
+- [`architecture/overview.md`](overview.md) — design patterns and the ledger-is-truth invariant.
+- [`architecture/repository-map.md`](repository-map.md) — directory and module map.
+- [`modules/ledger.md`](../modules/ledger.md) — ledger deep dive.
+- [`modules/agents.md`](../modules/agents.md) — agent hierarchy deep dive.
+- [`modules/storage.md`](../modules/storage.md) — storage substrates deep dive.
+- [`flows/workflow-01-submit-and-run.md`](../flows/workflow-01-submit-and-run.md) — traced main-path execution.

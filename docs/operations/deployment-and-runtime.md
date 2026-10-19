@@ -100,6 +100,6 @@ All state under `PAA_HOME` (default `~/.paa`, outside the repo):
 ## Related documents
 
 - [`docs/deployment/docker.md](../deployment/docker.md) — Docker deployment details.
-- [`operations/configuration-and-environment.md`](operations/configuration-and-environment.md) — all `PAA_*` settings.
-- [`architecture/overview.md`](architecture/overview.md) — degradation philosophy.
-- [`runtime/background-jobs-and-events.md`](runtime/background-jobs-and-events.md) — daemon loops.
+- [`operations/configuration-and-environment.md`](configuration-and-environment.md) — all `PAA_*` settings.
+- [`architecture/overview.md`](../architecture/overview.md) — degradation philosophy.
+- [`runtime/background-jobs-and-events.md`](../runtime/background-jobs-and-events.md) — daemon loops.

@@ -73,7 +73,7 @@ All three converge on `ChiefOrchestrator` (`agents/orchestrator.py:84`).
 
 ## Related documents
 
-- [`backend/modules-and-services.md`](backend/modules-and-services.md) — each backend module's internals, inputs, outputs, and consumers.
-- [`backend/request-lifecycle.md`](backend/request-lifecycle.md) — the submit→run execution path traced step by step.
-- [`architecture/component-interactions.md`](architecture/component-interactions.md) — how backend modules connect to storage, model, and sandbox.
-- [`modules/ledger.md`](modules/ledger.md) — the ledger spine.
+- [`backend/modules-and-services.md`](modules-and-services.md) — each backend module's internals, inputs, outputs, and consumers.
+- [`backend/request-lifecycle.md`](request-lifecycle.md) — the submit→run execution path traced step by step.
+- [`architecture/component-interactions.md`](../architecture/component-interactions.md) — how backend modules connect to storage, model, and sandbox.
+- [`modules/ledger.md`](../modules/ledger.md) — the ledger spine.

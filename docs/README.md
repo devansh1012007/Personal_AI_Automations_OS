@@ -59,7 +59,7 @@ The composition root is `Runtime.build()` (`src/paa/runtime.py:231`).
 - [Component interactions](architecture/component-interactions.md) — how major subsystems connect and depend on one another.
 - [Configuration and environment](operations/configuration-and-environment.md) — every `PAA_*` setting, defaults, precedence, consumers.
 - [Developer setup and workflow](development/developer-workflow.md) — install, lint/typecheck/test commands.
-- [Execution flows](flows/) — traced workflows: submit-and-run, human gate, crash recovery.
+- [Execution flows](flows) — traced workflows: submit-and-run, human gate, crash recovery.
 
 ## C. Documentation map (by area)
 
@@ -118,11 +118,11 @@ Review
 - [reviews/documentation-audit.md](reviews/documentation-audit.md)
 
 Existing (pre-existing) documents retained in `docs/`:
-- [docs/coder-agent.md](../coder-agent.md) — the `paa agent` tool loop.
-- [docs/EXTENSIBILITY_PIPELINES.md](../EXTENSIBILITY_PIPELINES.md) — pluggable agentic loops design.
-- [docs/ROADMAP.md](../ROADMAP.md), [docs/VISION.md](../VISION.md)
-- [docs/deployment/docker.md](../deployment/docker.md)
-- [docs/adr/README.md](../adr/README.md) and ADRs 0008, 0010, 0015, 0019, 0020.
+- [coder-agent.md](coder-agent.md) — the `paa agent` tool loop.
+- [EXTENSIBILITY_PIPELINES.md](EXTENSIBILITY_PIPELINES.md) — pluggable agentic loops design.
+- [ROADMAP.md](ROADMAP.md), [VISION.md](VISION.md)
+- [deployment/docker.md](deployment/docker.md)
+- [adr/README.md](adr/README.md) and ADRs 0008, 0010, 0015, 0019, 0020.
 
 ## D. How to trace a feature
 
@@ -138,7 +138,7 @@ Existing (pre-existing) documents retained in `docs/`:
 5. Follow errors: every `PaaError` subclass carries structured `details` written to the
    ledger; terminal events close a lineage (`core/types.py:132`).
 
-When modifying a component, check its [module page](modules/) for upstream callers and
+When modifying a component, check its [module page](modules) for upstream callers and
 downstream consumers, then update the corresponding flow trace and this index.
 
 ## E. Verification and known gaps

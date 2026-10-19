@@ -235,8 +235,8 @@ state directories (`config.py:450`).
 
 ## Related documents
 
-- [`data/data-models-and-relationships.md`](data/data-models-and-relationships.md) — table/column reference.
-- [`data/persistence-and-storage.md`](data/persistence-and-storage.md) — substrates and degradation.
-- [`modules/ledger.md`](modules/ledger.md) — the ledger spine.
-- [`modules/memory.md`](modules/memory.md) — memory domains and decay.
-- [`flows/workflow-03-crash-recovery.md`](flows/workflow-03-crash-recovery.md) — crash recovery data flow.
+- [`data/data-models-and-relationships.md`](data-models-and-relationships.md) — table/column reference.
+- [`data/persistence-and-storage.md`](persistence-and-storage.md) — substrates and degradation.
+- [`modules/ledger.md`](../modules/ledger.md) — the ledger spine.
+- [`modules/memory.md`](../modules/memory.md) — memory domains and decay.
+- [`flows/workflow-03-crash-recovery.md`](../flows/workflow-03-crash-recovery.md) — crash recovery data flow.

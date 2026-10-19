@@ -139,8 +139,8 @@ lineages. The event vocabulary (`src/paa/core/types.py:67`):
 
 ## Related documents
 
-- [`modules/daemon.md`](modules/daemon.md) — daemon deep dive.
-- [`modules/ledger.md`](modules/ledger.md) — event vocabulary and store.
-- [`backend/request-lifecycle.md`](backend/request-lifecycle.md) — the task lifecycle the daemon drives.
-- [`data/data-lifecycle.md`](data/data-lifecycle.md) — queue message and signal lifecycles.
-- [`operations/configuration-and-environment.md`](operations/configuration-and-environment.md) — `QueueSettings` and daemon intervals.
+- [`modules/daemon.md`](../modules/daemon.md) — daemon deep dive.
+- [`modules/ledger.md`](../modules/ledger.md) — event vocabulary and store.
+- [`backend/request-lifecycle.md`](../backend/request-lifecycle.md) — the task lifecycle the daemon drives.
+- [`data/data-lifecycle.md`](../data/data-lifecycle.md) — queue message and signal lifecycles.
+- [`operations/configuration-and-environment.md`](../operations/configuration-and-environment.md) — `QueueSettings` and daemon intervals.

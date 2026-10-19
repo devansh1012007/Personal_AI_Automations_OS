@@ -242,7 +242,7 @@ Provider `api_key_env` tuples are defined per row in `registry.py:_SPECS`
 
 ## Related documents
 
-- [`operations/deployment-and-runtime.md`](operations/deployment-and-runtime.md) — Docker/deployment topology.
-- [`architecture/overview.md`](architecture/overview.md) — configuration philosophy.
-- [`modules/storage.md`](modules/storage.md) — `PAA_STORAGE__*` consumers.
-- [`modules/models.md`](modules/models.md) — `PAA_MODELS__*` consumers.
+- [`operations/deployment-and-runtime.md`](deployment-and-runtime.md) — Docker/deployment topology.
+- [`architecture/overview.md`](../architecture/overview.md) — configuration philosophy.
+- [`modules/storage.md`](../modules/storage.md) — `PAA_STORAGE__*` consumers.
+- [`modules/models.md`](../modules/models.md) — `PAA_MODELS__*` consumers.
