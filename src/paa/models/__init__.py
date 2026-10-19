@@ -109,10 +109,20 @@ def build_local_provider(settings: ModelSettings) -> ModelProvider:
     dedicated class: ``llama-server``, LM Studio and the rest all expose
     ``/v1/chat/completions``, so a separate implementation would be the same
     code under a different name.
+
+    These fast paths construct their providers directly rather than through
+    :func:`~paa.models.registry.build_provider`, so they thread
+    :attr:`~paa.config.ModelSettings.max_transport_retries` themselves — the
+    transport-retry budget is the same knob on every path (SPEC DEVIATION
+    (docs/adr/0021)).
     """
     name = settings.local_provider
     if name == "echo":
-        return EchoProvider(model=settings.local_model, max_retries=settings.max_retries)
+        return EchoProvider(
+            model=settings.local_model,
+            max_retries=settings.max_retries,
+            max_transport_retries=settings.max_transport_retries,
+        )
     if name == "llamacpp":
         return OpenAICompatibleProvider(
             settings.local_model,
@@ -121,6 +131,7 @@ def build_local_provider(settings: ModelSettings) -> ModelProvider:
             name="llamacpp",
             timeout=settings.request_timeout_seconds,
             max_retries=settings.max_retries,
+            max_transport_retries=settings.max_transport_retries,
         )
     if name == "ollama":
         return OllamaProvider(
@@ -128,6 +139,7 @@ def build_local_provider(settings: ModelSettings) -> ModelProvider:
             base_url=settings.local_base_url,
             timeout=settings.request_timeout_seconds,
             max_retries=settings.max_retries,
+            max_transport_retries=settings.max_transport_retries,
         )
     return build_provider(
         name,
@@ -143,6 +155,11 @@ def build_frontier_provider(settings: ModelSettings) -> ModelProvider | None:
     Returning ``None`` for ``"none"`` is what makes a fully air-gapped
     deployment expressible in configuration rather than requiring a code path:
     the router simply has nowhere to escalate to, and says so when asked.
+
+    The direct constructions here thread
+    :attr:`~paa.config.ModelSettings.max_transport_retries` themselves, so the
+    transport-retry budget does not diverge between these fast paths and the
+    registry rows (SPEC DEVIATION (docs/adr/0021)).
     """
     name = settings.escalation_provider
     if name == "none":
@@ -161,6 +178,7 @@ def build_frontier_provider(settings: ModelSettings) -> ModelProvider | None:
             name="openai_compatible",
             timeout=settings.request_timeout_seconds,
             max_retries=settings.max_retries,
+            max_transport_retries=settings.max_transport_retries,
         )
     if name == "anthropic":
         return AnthropicProvider(
@@ -169,6 +187,7 @@ def build_frontier_provider(settings: ModelSettings) -> ModelProvider | None:
             base_url=settings.escalation_base_url,
             timeout=settings.request_timeout_seconds,
             max_retries=settings.max_retries,
+            max_transport_retries=settings.max_transport_retries,
         )
     # Any other registry platform (gemini, openai, groq, openrouter ...). The
     # platform's own default credential variable is used unless the deployment

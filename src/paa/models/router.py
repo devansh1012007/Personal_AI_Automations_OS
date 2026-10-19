@@ -57,6 +57,7 @@ from paa.models.base import (
     ModelTier,
     ModelUnavailableError,
     StructuredOutputError,
+    redact,
 )
 
 if TYPE_CHECKING:
@@ -200,6 +201,35 @@ class EscalatingModelRouter:
 
     # -- policy -------------------------------------------------------------
 
+    def block_reasons(
+        self, modality: ComplexityModality, permission_mode: PermissionMode
+    ) -> list[str]:
+        """Every escalation rule this request violates, in evaluation order.
+
+        Returns the module's rules 1 and 2 evaluated to completion — security
+        first (``permission_mode_forbids_escalation``), then cost
+        (``modality_below_escalation_floor:<floor>``) — and is empty when
+        escalation is permitted.
+
+        :meth:`evaluate` deliberately reports only the *first* violated rule:
+        its first-reason-wins contract is what ledger payloads and existing
+        callers are written against, and it does not change. This method is
+        the same two rules gathered into a list for **error reporting**
+        instead. An operator told only "escalation is not permitted: modality
+        below floor" fixes the floor, re-runs, and hits the permission-mode
+        rule as if it were a brand-new bug; showing every obstacle at once is
+        the difference between a diagnostic and a map.
+        """
+        reasons: list[str] = []
+        if permission_mode in self._settings.escalation_forbidden_modes:
+            reasons.append("permission_mode_forbids_escalation")
+
+        floor = self._settings.escalate_at_or_above
+        if _MODALITY_RANK[modality] < _MODALITY_RANK[floor]:
+            reasons.append(f"modality_below_escalation_floor:{floor.value}")
+
+        return reasons
+
     def evaluate(
         self, modality: ComplexityModality, permission_mode: PermissionMode
     ) -> EscalationDecision:
@@ -209,20 +239,14 @@ class EscalatingModelRouter:
         load-bearing: rule 1 is a security boundary and rule 2 is a cost
         heuristic, and a cost heuristic must never be in a position to override
         a security boundary.
-        """
-        if permission_mode in self._settings.escalation_forbidden_modes:
-            return EscalationDecision(
-                allowed=False,
-                reason="permission_mode_forbids_escalation",
-                modality=modality,
-                permission_mode=permission_mode,
-            )
 
-        floor = self._settings.escalate_at_or_above
-        if _MODALITY_RANK[modality] < _MODALITY_RANK[floor]:
+        When several rules are violated only the first is reported as
+        ``reason``; :meth:`block_reasons` returns all of them.
+        """
+        if (reasons := self.block_reasons(modality, permission_mode)):
             return EscalationDecision(
                 allowed=False,
-                reason=f"modality_below_escalation_floor:{floor.value}",
+                reason=reasons[0],
                 modality=modality,
                 permission_mode=permission_mode,
             )
@@ -340,6 +364,10 @@ class EscalatingModelRouter:
                 "escalation is permitted but no frontier provider is configured",
                 provider=self._local.name,
                 escalation_trigger=trigger,
+                # Always False inside this branch; carried for parity with the
+                # _local_only error so a caller reads one wiring fact from one
+                # stable key on either path.
+                frontier_configured=False,
                 **decision.to_payload(),
             ) from local_error
 
@@ -365,16 +393,72 @@ class EscalatingModelRouter:
         that is the air-gap promise being kept; below the modality floor it is
         the cost ceiling being kept. Both are guarantees, and a guarantee that
         bends under load is not one.
+
+        The policy decision itself is unchanged — only its *reporting* is
+        richer, because the original error showed one violated rule and the
+        exception type's name, which told an operator neither how many
+        obstacles stood in the way nor why the provider failed. The details
+        carried on the raised error are:
+
+        ``escalation_block_reason``
+            ``decision.reason`` — the *first* violated rule, byte-identical to
+            the original contract so existing readers keep working.
+        ``escalation_block_reasons``
+            **every** violated rule from :meth:`block_reasons`, in rule order
+            (security before cost). Always a list, even for a single rule, so
+            callers parse one shape instead of branching on type.
+        ``underlying_error`` / ``underlying_message``
+            the provider failure's type name (as before) plus its own message
+            — ``"model endpoint returned HTTP 429"`` rather than just
+            ``ModelUnavailableError``. The type name alone discarded the
+            diagnosis the provider had already built.
+        ``underlying_<key>``
+            each of the underlying error's ``details`` entries (``status_code``,
+            ``body_excerpt``, ...), prefixed, with every string value passed
+            through :func:`~paa.models.base.redact`. :class:`PaaError` redacts
+            only the message on the way in and merges details into ledger
+            payloads *verbatim*, so the scrub happens here; explicit keys
+            listed above win on a name collision, ``underlying_*`` never
+            overwrite them.
+        ``frontier_configured`` / ``escalation_unavailable_reason``
+            whether a frontier provider is wired, as a bool and as a stable
+            string key (``"no_frontier_configured"`` or ``None``). Frontier
+            presence is **irrelevant to this decision**: ``evaluate`` blocked
+            escalation on policy before any wiring was consulted, so a missing
+            frontier neither caused nor could have prevented the block and it
+            is deliberately *not* appended to ``escalation_block_reasons``. It
+            surfaces anyway because it is the fact the operator needs next —
+            "would escalation even help if I raised the modality or left
+            ``LOCKDOWN``?" — and without it the error reads as if configuring
+            a frontier provider would have changed the outcome.
         """
         try:
             return await self._invoke(self._local, request, schema)
         except (ModelUnavailableError, StructuredOutputError) as exc:
+            frontier_ok = self._frontier is not None
+            details: dict[str, Any] = {
+                f"underlying_{key}": redact(value) if isinstance(value, str) else value
+                for key, value in exc.details.items()
+            }
+            details.update(
+                {
+                    "escalation_block_reason": decision.reason,
+                    "escalation_block_reasons": self.block_reasons(
+                        decision.modality, decision.permission_mode
+                    ),
+                    "underlying_error": type(exc).__name__,
+                    "underlying_message": redact(getattr(exc, "message", str(exc))),
+                    "frontier_configured": frontier_ok,
+                    "escalation_unavailable_reason": (
+                        None if frontier_ok else "no_frontier_configured"
+                    ),
+                    **decision.to_payload(),
+                }
+            )
             raise ModelUnavailableError(
                 "local provider failed and escalation is not permitted",
                 provider=self._local.name,
-                escalation_block_reason=decision.reason,
-                underlying_error=type(exc).__name__,
-                **decision.to_payload(),
+                **details,
             ) from exc
 
     async def _invoke(

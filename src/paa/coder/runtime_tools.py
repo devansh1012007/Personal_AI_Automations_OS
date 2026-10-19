@@ -13,6 +13,13 @@ it is what a testing agent is for. A tool suite that mutated files would be
 adding capability — which the RFC's §13 gates and this module's callers have not
 asked for.
 
+Memory joined the catalogue later, for a different reason. ``remember_fact`` /
+``recall_facts`` expose the subsystem the daemon already exercises
+(:class:`paa.memory.creator.MemoryCreator`): rule-based extraction, no model
+call, contradiction quarantined rather than auto-resolved. What they add is
+continuity — the agent can hold a fact across turns and sessions — not new
+capability the runtime does not already have on its ingest path.
+
 Two conventions every tool here follows:
 
 * **Read the projection, not the caches.** ``task_status`` calls
@@ -35,13 +42,33 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from paa.ledger.replay import project
+from paa.memory.creator import MemoryCreator, ProcessingOutcome, SignalEnvelope
+from paa.memory.facts import Fact, FactRepository
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from paa.runtime import Runtime
 
-__all__ = ["build_runtime_tools"]
+__all__ = ["READ_ONLY_TOOLS", "build_runtime_tools"]
+
+#: The catalogue's non-mutating tools. :class:`paa.coder.agent.CoderAgent`
+#: standing-allows these in ASK mode so a permission prompt fires only for
+#: calls that change state — prompting for ``check_runtime({})`` is friction
+#: that trains operators to approve everything, including the calls that
+#: matter. They stay deniable by name because an explicit deny rule is
+#: precedence step 1 in :class:`~paa.coder.permissions.ToolPermissionPolicy`
+#: and outranks any allow.
+READ_ONLY_TOOLS: frozenset[str] = frozenset(
+    {
+        "check_runtime",
+        "list_tasks",
+        "task_status",
+        "read_ledger",
+        "verify_ledger",
+        "recall_facts",
+    }
+)
 
 
 def build_runtime_tools(rt: Runtime) -> dict[str, Any]:
@@ -63,6 +90,8 @@ def build_runtime_tools(rt: Runtime) -> dict[str, Any]:
             _RunTask(rt),
             _ReadLedger(rt),
             _VerifyLedger(rt),
+            _RememberFact(rt),
+            _RecallFacts(rt),
         )
     }
 
@@ -379,6 +408,172 @@ class _VerifyLedger(_RuntimeTool):
             return cid  # an error payload, already JSON
         ok, problems = await self._rt.ledger.verify_chain(cid)
         return self._emit({"correlation_id": str(cid), "chain_ok": ok, "problems": problems})
+
+
+class _RememberFact(_RuntimeTool):
+    """Write one free-text assertion into long-term memory.
+
+    Extraction is the daemon's :class:`~paa.memory.creator.RuleBasedExtractor`
+    — deterministic, rule-based, **no model call** — so what lands in memory is
+    what the rules can parse, and nothing is fabricated when they cannot:
+    conversational prose comes back ``IGNORED`` with ``facts_written: 0``.
+    Contradicting an incumbent belief quarantines the whole signal (RFC §4.2):
+    the runtime never picks a winner between conflicting facts, so
+    ``requires_human_attestation`` is reported as a *value*, not an exception.
+
+    **Provenance tradeoff.** The envelope is processed with ``persisted=False``
+    and no cold-lake row is written first. Routing through
+    :meth:`paa.storage.coldlake.signals.SignalRepository.record` would give the
+    fact a ``source_signal_id`` foreign key, but ``record`` files rows as
+    ``unprocessed`` — the daemon's batch would then re-process the same signal
+    and write a duplicate fact, and ``SignalRepository`` additionally demands a
+    ``ContentAddressedStore`` this tool has no business constructing. With
+    ``persisted=False`` the relational FK is ``None``, but each fact's
+    ``provenance`` JSON still names the ephemeral envelope id, the channel, and
+    the extraction rule, so the chain of evidence survives; only the foreign
+    key does not. Memory is not a task lineage, so no ledger event is written
+    either (creator module docstring: the cold-lake row is the
+    event-before-side-effect analogue, and here it is deliberately skipped).
+
+    Genuine database faults raise, per this module's convention for mutations.
+    """
+
+    name = "remember_fact"
+    description = (
+        "Remember a fact in long-term memory, for recall across turns and "
+        "sessions. Input is free text; deterministic rules extract "
+        "'<subject> <predicate> <object>' sentences (e.g. 'Project Alpha is "
+        "active') — no model call. Text that asserts nothing is honestly "
+        "reported as ignored with zero facts. Contradicting a stored belief "
+        "quarantines the write for human attestation rather than overwriting."
+    )
+
+    def schema(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": (
+                        "What to remember, e.g. 'Project Alpha is active'. "
+                        "Conversational noise extracts no facts and is ignored."
+                    ),
+                }
+            },
+            "required": ["text"],
+            "additionalProperties": False,
+        }
+
+    async def run(self, arguments: Mapping[str, Any]) -> str:
+        text = arguments.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return self._emit({"error": "text must be non-empty"})
+        text = text.strip()
+        envelope = SignalEnvelope(
+            id=str(uuid.uuid4()),
+            channel="coder",
+            payload=text,
+            raw=text,
+            persisted=False,
+        )
+        result = await MemoryCreator(self._rt.db).process_signal(envelope)
+        return self._emit(
+            {
+                "remembered": result.outcome is ProcessingOutcome.PROCESSED
+                and bool(result.facts_written),
+                "facts_written": len(result.facts_written),
+                "outcome": result.outcome.value,
+                "requires_human_attestation": result.requires_human_attestation,
+                "entities": list(result.entities_touched),
+                "provenance": "signal not persisted; source_signal_id=None",
+            }
+        )
+
+
+class _RecallFacts(_RuntimeTool):
+    """Read memory back: entity resolution first, keyword search as fallback.
+
+    Two tiers because the memory subsystem offers two indexes and neither
+    covers everything. ``resolve_entity`` handles "what do I know about
+    Project Alpha" — exact, alias, then trigram-fuzzy, the ladder the fact
+    repository already implements. When the query is a *phrase* rather than an
+    entity name ("Acme", "deploy pipeline"), resolution misses and
+    :meth:`~paa.memory.facts.FactRepository.search_facts_by_text` scans fact
+    predicates and object values instead.
+
+    Semantic (vector) recall is honestly absent in v1: facts only reach the
+    vector index when built with an embedding sink, and nothing in the runtime
+    wires one (creator module docstring), so the response says so in ``note``
+    rather than pretending the absence is a miss. Confidence is the decayed
+    effective value, because :meth:`~paa.memory.facts.FactRepository.query_facts`
+    decays at read time by design.
+    """
+
+    name = "recall_facts"
+    description = (
+        "Recall previously remembered facts. The query is matched against "
+        "entity names first (exact, alias, then fuzzy), falling back to a "
+        "keyword search over fact predicates and values. Confidence is "
+        "time-decayed. Facts are not embedded, so recall is keyword-based, "
+        "not semantic."
+    )
+
+    def schema(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "An entity name ('Project Alpha') or keywords ('Acme').",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50,
+                    "description": "Maximum facts to return. Default 10.",
+                },
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        }
+
+    async def run(self, arguments: Mapping[str, Any]) -> str:
+        query = arguments.get("query")
+        if not isinstance(query, str) or not query.strip():
+            return self._emit({"error": "query must be non-empty"})
+        query = query.strip()
+        limit = _clamp_int(arguments.get("limit"), default=10, low=1, high=50)
+
+        repo = FactRepository(self._rt.db)
+        facts: list[Fact] = []
+        entity = await repo.resolve_entity(query)
+        if entity is not None:
+            facts = await repo.query_facts(entity_id=entity.id, limit=limit)
+        if not facts:
+            facts = await repo.search_facts_by_text(query, limit=limit)
+
+        return self._emit(
+            {
+                "query": query,
+                "facts": [
+                    {
+                        "entity": f.entity_name or f.entity_id,
+                        "predicate": f.predicate,
+                        "object_value": f.object_value,
+                        "confidence": f.confidence,
+                        "domain": f.domain,
+                    }
+                    for f in facts
+                ],
+                "count": len(facts),
+                "note": (
+                    "semantic recall unavailable: facts are not embedded "
+                    "(no vector sink wired)"
+                ),
+            }
+        )
 
 
 # ---------------------------------------------------------------------------

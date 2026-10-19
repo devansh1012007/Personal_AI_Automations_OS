@@ -35,7 +35,7 @@ from paa.coder.hooks import HookRegistry
 from paa.coder.loop import AgentLoop, LoopResult
 from paa.coder.model_adapter import RouterToolCallingModel
 from paa.coder.permissions import DEFAULT_MUTATING_TOOLS, PermissionMode, ToolPermissionPolicy
-from paa.coder.runtime_tools import build_runtime_tools
+from paa.coder.runtime_tools import READ_ONLY_TOOLS, build_runtime_tools
 from paa.coder.session import Session
 from paa.core.errors import PaaError
 from paa.core.types import ComplexityModality
@@ -55,13 +55,16 @@ log = structlog.get_logger(__name__)
 
 TranscriptDir = str | Path
 
-#: The runtime tools that change state. ``submit_task`` writes a lineage and
-#: ``run_task`` executes work, but neither name matches the conventional
-#: filesystem/shell globs in :data:`~paa.coder.permissions.DEFAULT_MUTATING_TOOLS`
-#: — so without this the plan-mode guarantee would silently exempt exactly the
-#: two tools that matter most. ``--mode plan`` has to mean *this* runtime does
-#: not change, not just *this runtime's files do not change*.
-MUTATING_RUNTIME_TOOLS: tuple[str, ...] = ("submit_task", "run_task")
+#: The runtime tools that change state. ``submit_task`` writes a lineage,
+#: ``run_task`` executes work, and ``remember_fact`` writes rows into the
+#: memory tables (``hot_serving_entity_index`` / ``hot_serving_active_facts``)
+#: — but none of those names matches the conventional filesystem/shell globs
+#: in :data:`~paa.coder.permissions.DEFAULT_MUTATING_TOOLS`, so without this
+#: the plan-mode guarantee would silently exempt exactly the tools that matter
+#: most. ``--mode plan`` has to mean *this* runtime does not change, not just
+#: *this runtime's files* do not change. A new mutating tool that escapes this
+#: tuple becomes plan-mode-exempt by accident; add it here.
+MUTATING_RUNTIME_TOOLS: tuple[str, ...] = ("submit_task", "run_task", "remember_fact")
 
 
 @dataclass
@@ -187,7 +190,14 @@ class CoderAgent:
             session=session,
             permissions=ToolPermissionPolicy(
                 mode=mode,
-                allow=allow,
+                # Standing-allow the catalogue's read-only tools so ASK mode
+                # prompts for calls that *change state*, not for reads — a
+                # prompt for ``check_runtime({})`` is friction that trains the
+                # operator to approve everything, including the calls that
+                # matter. An explicit ``--deny`` still wins: deny is precedence
+                # step 1 in ToolPermissionPolicy and outranks any allow, and
+                # PLAN still refuses the mutating tools regardless.
+                allow=[*READ_ONLY_TOOLS, *(allow or [])],
                 deny=deny,
                 mutating_tools=(*DEFAULT_MUTATING_TOOLS, *MUTATING_RUNTIME_TOOLS),
             ),

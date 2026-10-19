@@ -76,12 +76,29 @@ class GeminiProvider(HttpModelProvider):
         tier: ModelTier = ModelTier.FRONTIER,
         timeout: float = 120.0,
         max_retries: int = 2,
+        max_transport_retries: int = 2,
+        retry_backoff_base: float = 0.5,
+        retry_backoff_cap: float = 5.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
+        """Construct the provider.
+
+        ``max_transport_retries`` is how many times a transient failure
+        (timeout, connection error, HTTP 408/429/5xx) is re-attempted before
+        Gemini is declared unavailable, and ``retry_backoff_base`` /
+        ``retry_backoff_cap`` are the timing constants behind it (SPEC
+        DEVIATION (docs/adr/0021)). The backoff pair is a constructor
+        argument rather than a setting because it is not an operational
+        choice, and tests set it to ~0 so retry coverage runs instantly
+        instead of sleeping half a second per attempt.
+        """
         super().__init__(
             base_url=base_url or DEFAULT_BASE_URL,
             timeout=timeout,
             max_retries=max_retries,
+            max_transport_retries=max_transport_retries,
+            retry_backoff_base=retry_backoff_base,
+            retry_backoff_cap=retry_backoff_cap,
             client=client,
         )
         self._model = model

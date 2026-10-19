@@ -49,6 +49,9 @@ class OpenAICompatibleProvider(HttpModelProvider):
         name: str = "openai_compatible",
         timeout: float = 120.0,
         max_retries: int = 2,
+        max_transport_retries: int = 2,
+        retry_backoff_base: float = 0.5,
+        retry_backoff_cap: float = 5.0,
         client: httpx.AsyncClient | None = None,
         schema_name: str = "structured_output",
         chat_path: str = "/v1/chat/completions",
@@ -67,9 +70,24 @@ class OpenAICompatibleProvider(HttpModelProvider):
         constructor arguments — all defaulting to the canonical OpenAI shape —
         keeps one class covering the whole family instead of a subclass per
         vendor quirk, and leaves the default behaviour byte-identical.
+
+        ``max_transport_retries`` retries transient failures only; see
+        :class:`paa.models._http.HttpModelProvider` (SPEC DEVIATION
+        (docs/adr/0021)). ``retry_backoff_base`` and ``retry_backoff_cap``
+        are the timing constants behind that retry — the first wait and the
+        ceiling the exponential schedule grows into. They are constructor
+        arguments rather than settings because they are not operational
+        choices, and tests set them to ~0 so retry coverage runs instantly
+        instead of sleeping half a second per attempt.
         """
         super().__init__(
-            base_url=base_url, timeout=timeout, max_retries=max_retries, client=client
+            base_url=base_url,
+            timeout=timeout,
+            max_retries=max_retries,
+            max_transport_retries=max_transport_retries,
+            retry_backoff_base=retry_backoff_base,
+            retry_backoff_cap=retry_backoff_cap,
+            client=client,
         )
         self._model = model
         self._api_key = api_key

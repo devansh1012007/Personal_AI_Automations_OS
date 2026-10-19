@@ -54,6 +54,10 @@ class EchoProvider(ModelProvider):
         genuine local failure without a mock — the router's behaviour on a
         failing local provider is the single most important thing it does.
     :param healthy: what :meth:`healthcheck` reports.
+    :param max_transport_retries: accepted so every registry row can be built
+        with the same kwargs regardless of whether it speaks HTTP. Echo never
+        opens a socket, so the value is unused here (SPEC DEVIATION
+        (docs/adr/0021) lives in :mod:`paa.models._http`).
     """
 
     def __init__(
@@ -66,6 +70,7 @@ class EchoProvider(ModelProvider):
         fail_times: int = 0,
         healthy: bool = True,
         max_retries: int = 0,
+        max_transport_retries: int = 2,
         prefix: str = "[echo]",
     ) -> None:
         super().__init__(max_retries=max_retries)

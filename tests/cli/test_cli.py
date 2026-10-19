@@ -135,6 +135,124 @@ class TestErrorHandling:
         assert result.exit_code == 1
         assert "error" in result.stdout.lower()
 
+    def test_agent_renders_a_blocked_escalation_readably(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The escalation failure has to read as a diagnosis, not a dict dump.
+
+        The router now carries the whole diagnosis on the error — which rule
+        blocked the escalation, whether a frontier provider exists at all, and
+        what the provider said when it failed. Rendering it as one flat
+        ``key='value'`` line buries all three.
+        """
+        from paa.models.base import ModelUnavailableError
+        from paa.models.router import EscalatingModelRouter
+
+        monkeypatch.setenv("COLUMNS", "200")
+
+        async def boom(*_args: object, **_kwargs: object) -> None:  # pragma: no cover
+            raise ModelUnavailableError(
+                "local provider failed and escalation is not permitted",
+                provider="openrouter",
+                escalation_block_reason="modality_below_escalation_floor:COMPLEX",
+                escalation_block_reasons=["modality_below_escalation_floor:COMPLEX"],
+                underlying_error="ModelUnavailableError",
+                underlying_message="model endpoint returned HTTP 429",
+                underlying_status_code=429,
+                frontier_configured=False,
+                escalation_unavailable_reason="no_frontier_configured",
+                modality="STANDARD",
+                permission_mode="ASK",
+                policy_reason="modality_below_escalation_floor:COMPLEX",
+                escalation_allowed=False,
+            )
+
+        monkeypatch.setattr(EscalatingModelRouter, "complete_structured", boom)
+
+        result = runner.invoke(app, ["agent", "hello"])
+
+        assert result.exit_code == 1
+        assert "escalation blocked: modality_below_escalation_floor:COMPLEX" in result.stdout
+        assert "escalation unavailable: no_frontier_configured" in result.stdout
+        assert "provider failure: model endpoint returned HTTP 429" in result.stdout
+        assert "modality STANDARD (floor COMPLEX)" in result.stdout
+        assert "permission mode ASK" in result.stdout
+        # The noise keys are implied by the block; repeating them is noise.
+        assert "policy_reason" not in result.stdout
+
+
+class TestAgentModality:
+    def test_the_modality_flag_reaches_the_router(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The flag is only worth having if it changes what the router is told.
+
+        ``CoderAgent.build`` forwards the modality to the router adapter, and
+        the router compares it against the escalation floor. A CLI that
+        accepted the flag and dropped it would look like it worked.
+        """
+        from paa.core.types import ComplexityModality
+        from paa.models.router import EscalatingModelRouter
+
+        seen: list[object] = []
+
+        async def capture(
+            self: object, *args: object, **kwargs: object
+        ) -> dict[str, object]:
+            seen.append(kwargs.get("modality"))
+            return {"text": "ok", "tool_calls": []}
+
+        monkeypatch.setattr(EscalatingModelRouter, "complete_structured", capture)
+
+        result = runner.invoke(app, ["agent", "--modality", "COMPLEX", "hello"])
+
+        assert result.exit_code == 0
+        assert seen == [ComplexityModality.COMPLEX]
+
+
+class TestAgentSessions:
+    """Continuity between invocations.
+
+    Every ``paa agent`` run used to start a brand-new session, so the model
+    had no memory of the previous conversation: "my name is what?" was a
+    question with no context to answer it from.
+    """
+
+    def test_continue_without_a_previous_session_fails_cleanly(self) -> None:
+        result = runner.invoke(app, ["agent", "--continue", "hello"])
+
+        assert result.exit_code == 1
+        assert "no previous session" in result.stdout
+
+    def test_continue_resumes_the_most_recent_transcript(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import os
+
+        from paa.coder.session import Session
+
+        monkeypatch.setenv("COLUMNS", "200")
+        sessions = Path(os.environ["PAA_HOME"]) / "sessions"
+        older = Session("zzz-older", transcript_dir=sessions)
+        older.user("the older conversation")
+        newer = Session("aaa-newer", transcript_dir=sessions)
+        newer.user("the newer conversation")
+        # The newest transcript is the one that sorts *first* by id, so a
+        # lexicographic "latest" would pick the wrong file.
+        os.utime(sessions / "zzz-older.jsonl", (1_000_000, 1_000_000))
+        os.utime(sessions / "aaa-newer.jsonl", (2_000_000, 2_000_000))
+        transcript = sessions / "aaa-newer.jsonl"
+        before = transcript.stat().st_size
+
+        result = runner.invoke(app, ["agent", "--continue", "what did we discuss?"])
+
+        assert result.exit_code == 0
+        assert "continued session aaa-newer" in result.stdout
+        assert "paa agent --resume aaa-newer" in result.stdout
+        # The resumed run appended to the same transcript.
+        assert transcript.stat().st_size > before
+        assert len(Session.resume("aaa-newer", sessions).turns) == 3
+
 
 def _extract_cid(text: str) -> str:
     for line in text.splitlines():

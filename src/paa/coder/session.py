@@ -185,7 +185,47 @@ class Session:
 
     @staticmethod
     def list_sessions(transcript_dir: Path | str) -> list[str]:
+        """Every session id under ``transcript_dir``, sorted **by id**.
+
+        The order is lexicographic over the id, and ids are UUID hex — so this
+        list is in *no* meaningful chronological order. It answers "which
+        sessions exist", not "which session came last"; use
+        :meth:`latest_session` for recency.
+        """
         d = Path(transcript_dir)
         if not d.exists():
             return []
         return sorted(p.stem for p in d.glob("*.jsonl"))
+
+    @staticmethod
+    def latest_session(transcript_dir: Path | str) -> str | None:
+        """The id of the most recently written transcript, or ``None``.
+
+        "Most recent" is decided by the file's mtime and nothing else. The id
+        is a UUID hex, so the lexicographic order :meth:`list_sessions` returns
+        is random with respect to time and cannot answer "what did I just
+        run"; the mtime is the only recency signal a transcript directory
+        carries, and it is the one an operator means by "the last session".
+
+        ``None`` means there is nothing to continue: the directory is missing,
+        empty, or holds no ``.jsonl`` transcript. A transcript directory with
+        no session in it is a *state*, not an error, and the caller decides
+        what to do about it.
+        """
+        d = Path(transcript_dir)
+        if not d.is_dir():
+            return None
+        newest: tuple[float, str] | None = None
+        for path in d.glob("*.jsonl"):
+            if not path.is_file():
+                continue
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue
+            # Ties break on the id so repeated calls agree with each other:
+            # two transcripts written in the same clock tick are otherwise
+            # ordered by whatever order the filesystem hands them back.
+            if newest is None or (mtime, path.stem) > newest:
+                newest = (mtime, path.stem)
+        return newest[1] if newest else None

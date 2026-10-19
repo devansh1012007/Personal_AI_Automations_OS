@@ -9,6 +9,7 @@ the only seam that is doubled, and it is doubled exactly the way
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from paa.cli.main import app
 from paa.coder.agent import CoderAgent
 from paa.coder.loop import ModelTurn, ToolCall
 from paa.coder.permissions import PermissionMode
+from paa.coder.session import Session
 from paa.config import Settings
 
 
@@ -204,3 +206,70 @@ class TestCli:
 
         assert result.exit_code == 1
         assert "unknown mode" in result.output
+
+    def test_unknown_modality_is_rejected_before_settings_are_loaded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A bad flag must not cost a runtime build.
+
+        The settings are what the runtime is built from, so a validation that
+        happens after they are loaded has already paid for the thing it was
+        meant to prevent.
+        """
+        import paa.config
+
+        def _boom() -> Settings:  # pragma: no cover - must never be reached
+            raise AssertionError("settings were loaded before the modality was validated")
+
+        monkeypatch.setattr(paa.config, "get_settings", _boom)
+
+        result = CliRunner().invoke(app, ["agent", "hi", "--modality", "bogus"])
+
+        assert result.exit_code == 1
+        assert "unknown modality" in result.output
+
+    def test_resume_and_continue_are_mutually_exclusive(self) -> None:
+        result = CliRunner().invoke(app, ["agent", "hi", "--resume", "abc", "--continue"])
+
+        assert result.exit_code == 1
+        assert "mutually exclusive" in result.output
+
+    def test_help_lists_the_session_and_modality_flags(self) -> None:
+        result = CliRunner().invoke(app, ["agent", "--help"])
+
+        assert result.exit_code == 0
+        assert "--continue" in result.output
+        assert "--modality" in result.output
+
+
+class TestLatestSession:
+    """Which transcript is the most recent one.
+
+    The ordering is by mtime and by nothing else. Session ids are UUID hex,
+    so the lexicographic order :meth:`Session.list_sessions` returns says
+    nothing about time — which is exactly why ``--continue`` cannot use it.
+    """
+
+    def test_the_newest_transcript_wins(self, tmp_path: Path) -> None:
+        older = tmp_path / "zzz.jsonl"
+        newer = tmp_path / "aaa.jsonl"
+        older.write_text("{}\n", encoding="utf-8")
+        newer.write_text("{}\n", encoding="utf-8")
+        os.utime(older, (1_000_000, 1_000_000))
+        os.utime(newer, (2_000_000, 2_000_000))
+
+        # The newest is the one that sorts *first* by id, so a lexicographic
+        # "latest" would answer "zzz" and be wrong.
+        assert Session.latest_session(tmp_path) == "aaa"
+
+    def test_a_missing_directory_has_no_latest_session(self, tmp_path: Path) -> None:
+        assert Session.latest_session(tmp_path / "does-not-exist") is None
+
+    def test_an_empty_directory_has_no_latest_session(self, tmp_path: Path) -> None:
+        assert Session.latest_session(tmp_path) is None
+
+    def test_files_that_are_not_transcripts_are_ignored(self, tmp_path: Path) -> None:
+        (tmp_path / "notes.txt").write_text("hello", encoding="utf-8")
+        (tmp_path / "transcript.jsonl.bak").write_text("{}\n", encoding="utf-8")
+
+        assert Session.latest_session(tmp_path) is None

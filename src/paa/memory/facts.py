@@ -606,6 +606,43 @@ class FactRepository:
         matched.sort(key=lambda f: (-f.confidence, -f.importance, f.created_at))
         return matched[: max(0, limit)]
 
+    async def search_facts_by_text(
+        self, query: str, limit: int = 50, *, max_scan: int = 500
+    ) -> list[Fact]:
+        """Keyword fallback over fact predicates and object values.
+
+        There is no fact-level FTS index — only entities have one
+        (:mod:`paa.memory.facts` module docstring) — so this is a bounded LIKE
+        scan, the relational analogue of ``context_agents._hot_facts``. It
+        exists for callers whose query is a *phrase* rather than an entity
+        name: the coder agent's ``recall_facts`` resolves the query as an
+        entity first, and falls back to this when resolution misses even though
+        the phrase may still appear inside a stored object value.
+
+        Ranking mirrors :meth:`query_facts` (effective confidence, then
+        importance) so the two tiers of one recall present a consistent order.
+        Superseded rows are excluded: resurrecting a supersession tail would
+        hand back beliefs a newer version replaced. LIKE metacharacters in
+        ``query`` are escaped, so a stray ``%`` cannot silently widen the scan
+        to every row.
+        """
+        term = " ".join(query.split())
+        if not term:
+            return []
+        pattern = f"%{_escape_like(term)}%"
+        rows = await self._db.fetch_all(
+            f"SELECT {_FACT_COLUMNS}, e.canonical_name AS entity_name "  # noqa: S608
+            "FROM hot_serving_active_facts f "
+            "LEFT JOIN hot_serving_entity_index e ON e.id = f.entity_id "
+            "WHERE f.superseded_by IS NULL AND "
+            "(f.predicate LIKE ? ESCAPE '\\' OR f.object_value LIKE ? ESCAPE '\\') "
+            "ORDER BY f.importance DESC, f.id ASC LIMIT ?",
+            (pattern, pattern, max_scan),
+        )
+        facts = [_to_fact(row) for row in rows]
+        facts.sort(key=lambda f: (-f.confidence, -f.importance, f.created_at))
+        return facts[: max(0, limit)]
+
     # -- embedding queue ---------------------------------------------------
 
     async def pending_embeddings(self, limit: int = 100) -> list[Fact]:
@@ -660,6 +697,17 @@ def _fts_phrase(value: str) -> str:
     operator. Doubling embedded quotes makes the whole term a literal.
     """
     return '"' + value.replace('"', '""') + '"'
+
+
+def _escape_like(value: str) -> str:
+    """Escape LIKE metacharacters so user text matches literally.
+
+    Without this a query containing ``%`` matches every row and one containing
+    ``_`` matches any character — a recall tool that silently widened a
+    keystroke into a table scan would be a correctness bug with no error
+    anywhere to diagnose it by.
+    """
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _clean_aliases(aliases: Sequence[str] | None, *, exclude: str) -> tuple[str, ...]:

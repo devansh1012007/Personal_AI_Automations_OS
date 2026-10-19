@@ -330,11 +330,17 @@ def build_provider(
     effective_tier = tier if tier is not None else spec.default_tier
     timeout = float(getattr(settings, "request_timeout_seconds", 120.0))
     max_retries = int(getattr(settings, "max_retries", 2))
+    max_transport_retries = int(getattr(settings, "max_transport_retries", 2))
 
     if spec.kind == "echo":
         from paa.models.echo_provider import EchoProvider
 
-        return EchoProvider(model=model, tier=effective_tier, max_retries=max_retries)
+        return EchoProvider(
+            model=model,
+            tier=effective_tier,
+            max_retries=max_retries,
+            max_transport_retries=max_transport_retries,
+        )
 
     if spec.kind == "ollama":
         from paa.models.ollama_provider import OllamaProvider
@@ -344,6 +350,7 @@ def build_provider(
             base_url=base or "http://127.0.0.1:11434",
             timeout=timeout,
             max_retries=max_retries,
+            max_transport_retries=max_transport_retries,
             client=client,
         )
 
@@ -357,6 +364,7 @@ def build_provider(
             base_url=base,
             timeout=timeout,
             max_retries=max_retries,
+            max_transport_retries=max_transport_retries,
             client=client,
         )
 
@@ -370,6 +378,7 @@ def build_provider(
             tier=effective_tier,
             timeout=timeout,
             max_retries=max_retries,
+            max_transport_retries=max_transport_retries,
             client=client,
         )
 
@@ -391,6 +400,7 @@ def build_provider(
         name=spec.name,
         timeout=timeout,
         max_retries=max_retries,
+        max_transport_retries=max_transport_retries,
         client=client,
         chat_path=chat_path,
         models_path=spec.models_path,

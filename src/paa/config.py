@@ -325,6 +325,14 @@ class ModelSettings(BaseModel):
 
     request_timeout_seconds: float = Field(default=120.0, gt=0)
     max_retries: int = Field(default=2, ge=0)
+    #: Transport-level retries for *transient* failures — timeouts, connection
+    #: errors and HTTP 408/429/5xx — before a provider is declared unavailable
+    #: (SPEC DEVIATION (docs/adr/0021)). Deliberately a separate knob from
+    #: :attr:`max_retries`, which is structured-output *repair* only: it re-asks
+    #: after a malformed answer and never protects the request itself. Without
+    #: this, one 429 or 5xx from a hosted gateway ends the whole run, and
+    #: escalation policy can forbid the fallback that would have absorbed it.
+    max_transport_retries: int = Field(default=2, ge=0)
 
     #: Embedding model. 384 dimensions matches the RFC's Qdrant collections.
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
