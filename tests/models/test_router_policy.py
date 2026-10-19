@@ -33,9 +33,12 @@ from paa.models.base import (
     ModelProvider,
     ModelTier,
     ModelUnavailableError,
+    StructuredOutputError,
 )
 from paa.models.echo_provider import EchoProvider
 from paa.models.router import EscalatingModelRouter
+
+from .conftest import assert_no_key_leak
 
 #: Credential-shaped token long enough to trip the generic redactor in
 #: :func:`paa.models.base.redact` (``sk-`` + 12+ chars).
@@ -83,6 +86,40 @@ class _RaisingProvider(ModelProvider):
 
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         raise ModelUnavailableError(self._message, provider=self.name, **self._details)
+
+    async def healthcheck(self) -> bool:
+        return False
+
+
+class _RaisingStructuredProvider(ModelProvider):
+    """Local double that fails the way a real provider fails a schema check.
+
+    ``validate_against_schema`` embeds the offending instance in its message
+    (``f"{path}: {instance!r} is not one of {allowed!r}"``), so a model that
+    echoes a credential back puts it into ``schema_errors`` — a **list** of
+    strings. That is the shape a top-level-only scrub misses entirely, which
+    is why this double exists alongside :class:`_RaisingProvider`.
+    """
+
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__()
+        self._message = message
+        self._details = details
+
+    @property
+    def name(self) -> str:
+        return "fake"
+
+    @property
+    def tier(self) -> ModelTier:
+        return ModelTier.LOCAL
+
+    @property
+    def model(self) -> str:
+        return "fake-model"
+
+    async def complete(self, request: CompletionRequest) -> CompletionResponse:
+        raise StructuredOutputError(self._message, provider=self.name, **self._details)
 
     async def healthcheck(self) -> bool:
         return False
@@ -257,3 +294,71 @@ async def test_underlying_secrets_are_redacted_before_attachment() -> None:
     assert message == "model endpoint returned HTTP 401 for key ***REDACTED***"
     assert excerpt == "invalid api key: ***REDACTED***"
     assert FAKE_KEY not in str(details)
+
+
+async def test_underlying_list_details_are_redacted_before_attachment() -> None:
+    """A list-valued detail is scrubbed too, not just the top-level strings.
+
+    ``StructuredOutputError.schema_errors`` is a list of strings built by
+    ``validate_against_schema`` from the model's own output, so a model that
+    echoes a credential back lands there verbatim. The scrub has to recurse.
+    """
+    local = _RaisingStructuredProvider(
+        "provider could not produce output conforming to the schema",
+        schema_errors=[f"$: {FAKE_KEY!r} is not one of ['x']"],
+    )
+    router = EscalatingModelRouter(local, None, settings=ModelSettings())
+    with pytest.raises(ModelUnavailableError) as excinfo:
+        await router.complete(
+            _request(),
+            modality=ComplexityModality.STANDARD,
+            permission_mode=PermissionMode.ASK,
+        )
+
+    details = excinfo.value.details
+    assert_no_key_leak(str(excinfo.value), details)
+    # Scrubbed, not dropped: the operator still needs the diagnosis.
+    assert details["underlying_schema_errors"] == ["$: '***REDACTED***' is not one of ['x']"]
+
+
+async def test_underlying_nested_dict_details_are_redacted_before_attachment() -> None:
+    """Recursion is pinned below the top level too: dict → list → string."""
+    local = _RaisingProvider(
+        "provider could not produce output conforming to the schema",
+        response_body={"choices": [{"text": f"the key is {FAKE_KEY}"}]},
+    )
+    router = EscalatingModelRouter(local, None, settings=ModelSettings())
+    with pytest.raises(ModelUnavailableError) as excinfo:
+        await router.complete(
+            _request(),
+            modality=ComplexityModality.STANDARD,
+            permission_mode=PermissionMode.ASK,
+        )
+
+    details = excinfo.value.details
+    assert_no_key_leak(str(excinfo.value), details)
+    # Keys are detail names, not model output — they survive untouched.
+    assert details["underlying_response_body"] == {
+        "choices": [{"text": "the key is ***REDACTED***"}]
+    }
+
+
+async def test_explicit_keys_win_over_underlying_prefixed_keys() -> None:
+    """``underlying_*`` never overwrites an explicit key, even on a collision."""
+    local = _RaisingProvider(
+        "model endpoint returned HTTP 429",
+        error="a colliding detail name",
+        body_excerpt="rate limited, retry in 20s",
+    )
+    router = EscalatingModelRouter(local, None, settings=ModelSettings())
+    with pytest.raises(ModelUnavailableError) as excinfo:
+        await router.complete(
+            _request(),
+            modality=ComplexityModality.STANDARD,
+            permission_mode=PermissionMode.ASK,
+        )
+
+    details = excinfo.value.details
+    # The explicit key carries the error *type*; the underlying detail loses.
+    assert details["underlying_error"] == "ModelUnavailableError"
+    assert details["underlying_body_excerpt"] == "rate limited, retry in 20s"

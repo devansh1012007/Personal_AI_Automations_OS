@@ -82,6 +82,34 @@ _MODALITY_RANK: Final[dict[ComplexityModality, int]] = {
 }
 
 
+def _redact_detail(value: Any) -> Any:
+    """Recursively scrub strings out of a detail value.
+
+    A detail is not always a string: ``StructuredOutputError.schema_errors`` is
+    a list of strings that embed the model's own output, which is exactly where
+    a provider-echoed credential lands. Redacting only the top-level string
+    left that list verbatim — and ``PaaError.details`` is merged into ledger
+    event payloads *verbatim*, so a leak there becomes a permanent record.
+
+    Keys are deliberately **not** scrubbed. They come from the exception's own
+    detail names (``schema_errors``, ``status_code``, ...), fixed by the code
+    that raised the error rather than by the model, so a key is an identifier
+    callers and ledger payloads are written against — rewriting one would break
+    the contract without removing a leak. Scrubbing the values is sufficient.
+
+    Anything that is not a string, a list/tuple or a dict is passed through
+    unchanged: numbers and booleans cannot carry a credential, and the detail
+    values are required to stay JSON-serialisable for the ledger.
+    """
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, (list, tuple)):
+        return [_redact_detail(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _redact_detail(item) for key, item in value.items()}
+    return value
+
+
 @dataclass
 class ProviderUsage:
     """Per-provider counters consumed by the observability layer."""
@@ -414,12 +442,16 @@ class EscalatingModelRouter:
             diagnosis the provider had already built.
         ``underlying_<key>``
             each of the underlying error's ``details`` entries (``status_code``,
-            ``body_excerpt``, ...), prefixed, with every string value passed
-            through :func:`~paa.models.base.redact`. :class:`PaaError` redacts
-            only the message on the way in and merges details into ledger
-            payloads *verbatim*, so the scrub happens here; explicit keys
-            listed above win on a name collision, ``underlying_*`` never
-            overwrite them.
+            ``body_excerpt``, ...), prefixed, with every string value — at any
+            depth, including inside lists, tuples and nested dicts — passed
+            through :func:`~paa.models.base.redact`. A detail is not always a
+            string: ``StructuredOutputError.schema_errors`` is a list of
+            strings that embed the model's own output, which is where a
+            provider-echoed credential lands, so a top-level-only scrub is not
+            enough. :class:`PaaError` redacts only the message on the way in
+            and merges details into ledger payloads *verbatim*, so the scrub
+            happens here; explicit keys listed above win on a name collision,
+            ``underlying_*`` never overwrite them.
         ``frontier_configured`` / ``escalation_unavailable_reason``
             whether a frontier provider is wired, as a bool and as a stable
             string key (``"no_frontier_configured"`` or ``None``). Frontier
@@ -437,7 +469,7 @@ class EscalatingModelRouter:
         except (ModelUnavailableError, StructuredOutputError) as exc:
             frontier_ok = self._frontier is not None
             details: dict[str, Any] = {
-                f"underlying_{key}": redact(value) if isinstance(value, str) else value
+                f"underlying_{key}": _redact_detail(value)
                 for key, value in exc.details.items()
             }
             details.update(
