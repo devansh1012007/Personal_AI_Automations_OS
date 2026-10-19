@@ -47,6 +47,7 @@ import structlog
 
 from paa.memory.decay import effective_confidence
 from paa.memory.domains import MemoryDomain
+from paa.storage.relational.like import like_pattern, like_predicate
 
 if TYPE_CHECKING:
     from paa.storage.relational.database import Database
@@ -640,20 +641,28 @@ class FactRepository:
         ``query`` are escaped, so a stray ``%`` cannot silently widen the scan
         to every row, and a NUL byte is refused outright — SQLite truncates a
         LIKE pattern at a NUL, so ``%\\x00%`` would degrade to a bare ``%`` and
-        match everything. See :func:`_like_pattern`.
+        match everything. See :mod:`paa.storage.relational.like`.
+
+        The NUL is refused rather than dropped, unlike the internal recall
+        paths: this query is a model-supplied tool argument, so telling the
+        model "that query was rejected" is more useful than searching for
+        something the model did not ask for. The tool turns the refusal into
+        an error value.
 
         :raises ValueError: if ``query`` contains a NUL byte.
         """
         term = " ".join(query.split())
         if not term:
             return []
-        pattern = _like_pattern(term)
+        if "\x00" in term:
+            raise ValueError("query must not contain a NUL byte")
+        pattern = like_pattern(term)
         rows = await self._db.fetch_all(
             f"SELECT {_FACT_COLUMNS}, e.canonical_name AS entity_name "  # noqa: S608
             "FROM hot_serving_active_facts f "
             "LEFT JOIN hot_serving_entity_index e ON e.id = f.entity_id "
             "WHERE f.superseded_by IS NULL AND "
-            "(f.predicate LIKE ? ESCAPE '\\' OR f.object_value LIKE ? ESCAPE '\\') "
+            f"({like_predicate('f.predicate', 'f.object_value')}) "
             "ORDER BY f.id LIMIT ?",
             (pattern, pattern, max_scan),
         )
@@ -738,43 +747,6 @@ def _fts_phrase(value: str) -> str:
     operator. Doubling embedded quotes makes the whole term a literal.
     """
     return '"' + value.replace('"', '""') + '"'
-
-
-def _escape_like(value: str) -> str:
-    """Escape LIKE metacharacters so user text matches literally.
-
-    Without this a query containing ``%`` matches every row and one containing
-    ``_`` matches any character — a recall tool that silently widened a
-    keystroke into a table scan would be a correctness bug with no error
-    anywhere to diagnose it by.
-    """
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-
-def _like_pattern(term: str) -> str:
-    """The LIKE pattern that matches ``term`` literally, or a refusal.
-
-    Two separate hazards turn a keyword search into a table scan, and they
-    need two separate defences:
-
-    * ``%`` and ``_`` are LIKE wildcards. Escaped by :func:`_escape_like`,
-      with the SQL side declaring ``ESCAPE '\\'`` to match.
-    * A **NUL byte truncates the pattern**. SQLite's ``LIKE`` reaches the
-      pattern through the C string API, so ``%\\x00%`` is not "a literal NUL
-      between two wildcards" — it is ``%`` and nothing else, and that matches
-      *every row in the table*. Escaping cannot save this one: ``\\x00`` is
-      still a NUL followed by the end of the pattern. The only defence is to
-      refuse the query, which is what this does.
-
-    A NUL in a search term is never intentional, and the alternative — a
-    keyword search that silently returns the whole table — is the exact
-    failure the escaping exists to prevent.
-
-    :raises ValueError: if ``term`` contains a NUL byte.
-    """
-    if "\x00" in term:
-        raise ValueError("query must not contain a NUL byte")
-    return f"%{_escape_like(term)}%"
 
 
 def _clean_aliases(aliases: Sequence[str] | None, *, exclude: str) -> tuple[str, ...]:
