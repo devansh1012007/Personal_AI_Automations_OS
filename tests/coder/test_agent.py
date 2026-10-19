@@ -20,7 +20,7 @@ from paa.cli.main import app
 from paa.coder.agent import CoderAgent
 from paa.coder.loop import ModelTurn, ToolCall
 from paa.coder.permissions import PermissionMode
-from paa.coder.session import Session
+from paa.coder.session import Session, Turn, TurnRole
 from paa.config import Settings
 
 
@@ -245,9 +245,13 @@ class TestCli:
 class TestLatestSession:
     """Which transcript is the most recent one.
 
-    The ordering is by mtime and by nothing else. Session ids are UUID hex,
-    so the lexicographic order :meth:`Session.list_sessions` returns says
-    nothing about time — which is exactly why ``--continue`` cannot use it.
+    The ordering is by the transcript's own last-turn ``created_at``, and
+    only falls back to the file's mtime for a transcript whose turns cannot
+    be read. Session ids are UUID hex, so the lexicographic order
+    :meth:`Session.list_sessions` returns says nothing about time — which is
+    exactly why ``--continue`` cannot use it. The mtime is not enough on its
+    own either: it has one-second granularity on ext3, HFS+ and exFAT, so two
+    runs in the same second tie and the id breaks the tie at random.
     """
 
     def test_the_newest_transcript_wins(self, tmp_path: Path) -> None:
@@ -273,3 +277,74 @@ class TestLatestSession:
         (tmp_path / "transcript.jsonl.bak").write_text("{}\n", encoding="utf-8")
 
         assert Session.latest_session(tmp_path) is None
+
+    def test_the_turn_timestamp_beats_the_mtime(self, tmp_path: Path) -> None:
+        """Same mtime, different turn timestamps — the newer turn wins.
+
+        This is the bug the mtime-only ordering had: the filesystem's mtime
+        has one-second granularity on ext3, HFS+ and exFAT, so two runs in
+        the same second tie, and the tie-break is the session id — a random
+        UUID hex. The transcript's own ``created_at`` is microsecond
+        resolution and already on disk, so it is the signal that can tell
+        the two runs apart.
+        """
+        # The ids are chosen so the mtime-only tie-break answers "zzz" —
+        # the *older* transcript — and the correct answer is "aaa".
+        older = _transcript(tmp_path, "zzz", "2026-01-01T00:00:00.000000+00:00")
+        newer = _transcript(tmp_path, "aaa", "2026-02-02T00:00:00.000000+00:00")
+        for path in (older, newer):
+            os.utime(path, (1_000_000, 1_000_000))
+
+        assert Session.latest_session(tmp_path) == "aaa"
+
+    def test_a_torn_last_line_still_yields_the_session(self, tmp_path: Path) -> None:
+        """A crash mid-write must not hide the session.
+
+        The final line is a partial JSON object — the write was interrupted
+        — so the last *good* turn is the one that says when the session was
+        active. The file's own mtime is older than the other transcript's,
+        so a mtime-only ordering would pick the wrong file.
+        """
+        torn = _transcript(tmp_path, "torn", "2026-03-03T00:00:00.000000+00:00")
+        with torn.open("a", encoding="utf-8") as fh:
+            fh.write('{"role": "user", "content": "half a tur')
+        other = _transcript(tmp_path, "other", "2026-01-01T00:00:00.000000+00:00")
+        os.utime(torn, (1_000_000, 1_000_000))
+        os.utime(other, (2_000_000, 2_000_000))
+
+        assert Session.latest_session(tmp_path) == "torn"
+
+    def test_a_full_tie_breaks_on_the_id_not_the_glob_order(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Identical mtime *and* identical timestamp: still one answer.
+
+        The tie-break is the session id, so the answer is the same on every
+        call and does not depend on the order the filesystem hands the
+        directory back.
+        """
+        _transcript(tmp_path, "aaa", "2026-04-04T00:00:00.000000+00:00")
+        _transcript(tmp_path, "zzz", "2026-04-04T00:00:00.000000+00:00")
+        for path in tmp_path.glob("*.jsonl"):
+            os.utime(path, (1_000_000, 1_000_000))
+
+        first = Session.latest_session(tmp_path)
+        assert first == "zzz"  # the id breaks the tie, and it is deterministic
+
+        original_glob = Path.glob
+
+        def _reversed(self: Path, pattern: str) -> list[Path]:
+            return list(reversed(list(original_glob(self, pattern))))
+
+        monkeypatch.setattr(Path, "glob", _reversed)
+
+        assert Session.latest_session(tmp_path) == first
+
+
+def _transcript(directory: Path, session_id: str, created_at: str) -> Path:
+    """A one-turn transcript whose turn carries an explicit timestamp."""
+    session = Session(session_id, transcript_dir=directory)
+    session.append(
+        Turn(TurnRole.USER, "hello", created_at=created_at),
+    )
+    return directory / f"{session_id}.jsonl"

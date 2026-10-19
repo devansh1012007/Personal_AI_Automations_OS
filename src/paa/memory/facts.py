@@ -607,7 +607,7 @@ class FactRepository:
         return matched[: max(0, limit)]
 
     async def search_facts_by_text(
-        self, query: str, limit: int = 50, *, max_scan: int = 500
+        self, query: str, limit: int = 50, *, max_scan: int = 10_000
     ) -> list[Fact]:
         """Keyword fallback over fact predicates and object values.
 
@@ -619,8 +619,22 @@ class FactRepository:
         entity first, and falls back to this when resolution misses even though
         the phrase may still appear inside a stored object value.
 
-        Ranking mirrors :meth:`query_facts` (effective confidence, then
-        importance) so the two tiers of one recall present a consistent order.
+        **The ``LIMIT`` is a scan bound, not a ranking.** Ranking mirrors
+        :meth:`query_facts` — effective confidence, then importance, then age —
+        and it is applied in Python, over the whole candidate pool, for the
+        same reason that method does not push its ``LIMIT`` into SQL. Ordering
+        the pool by ``importance`` in SQL and then ranking it by confidence
+        would choose the candidate set by one criterion and rank it by
+        another, so a high-confidence, low-importance fact outside the top
+        slice would never be seen at all. Here the pool is taken in ``id``
+        order — neutral, so no criterion quietly decides what is a candidate —
+        and the ceiling being hit is logged, never silent.
+
+        The ceiling is the same 10 000 :meth:`query_facts` uses. The LIKE
+        predicate is unindexed, so the SQL cost is the table scan and not the
+        size of the pool; a bigger pool only buys a more complete ranking,
+        which is what two tiers of one recall need in order to agree.
+
         Superseded rows are excluded: resurrecting a supersession tail would
         hand back beliefs a newer version replaced. LIKE metacharacters in
         ``query`` are escaped, so a stray ``%`` cannot silently widen the scan
@@ -636,12 +650,35 @@ class FactRepository:
             "LEFT JOIN hot_serving_entity_index e ON e.id = f.entity_id "
             "WHERE f.superseded_by IS NULL AND "
             "(f.predicate LIKE ? ESCAPE '\\' OR f.object_value LIKE ? ESCAPE '\\') "
-            "ORDER BY f.importance DESC, f.id ASC LIMIT ?",
+            "ORDER BY f.id LIMIT ?",
             (pattern, pattern, max_scan),
         )
+        if len(rows) == max_scan:
+            log.warning("memory.search_scan_ceiling_hit", max_scan=max_scan, term=term[:120])
+
         facts = [_to_fact(row) for row in rows]
         facts.sort(key=lambda f: (-f.confidence, -f.importance, f.created_at))
         return facts[: max(0, limit)]
+
+    async def facts_by_source_signal(self, source_signal_id: str) -> list[Fact]:
+        """Facts written from one cold-lake signal, oldest first.
+
+        The other end of the ``source_signal_id`` pointer. A fact's evidence is
+        walkable because that column resolves to a ``cold_lake_signals`` row
+        holding the verbatim assertion; this is how a caller follows it back.
+
+        Superseded rows are included: a fact that a later version replaced is
+        still evidence of what was believed at the time, and the chain of
+        evidence is the thing being walked.
+        """
+        rows = await self._db.fetch_all(
+            f"SELECT {_FACT_COLUMNS}, e.canonical_name AS entity_name "  # noqa: S608
+            "FROM hot_serving_active_facts f "
+            "LEFT JOIN hot_serving_entity_index e ON e.id = f.entity_id "
+            "WHERE f.source_signal_id = ? ORDER BY f.created_at ASC, f.id ASC",
+            (source_signal_id,),
+        )
+        return [_to_fact(row) for row in rows]
 
     # -- embedding queue ---------------------------------------------------
 

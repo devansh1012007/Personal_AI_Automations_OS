@@ -36,6 +36,7 @@ Deviations fall into three classes:
 | [0019](0019-docker-server-deployment.md) | Dual embedded/server topology for the Docker deployment | Direction |
 | [0020](0020-provider-keys-from-dotenv.md) | Provider API keys resolve from `.env`, not only the environment | **Correctness** |
 | [0021](0021-transport-retry.md) | Transport retry for transient model-endpoint failures | **Correctness** |
+| [0022](0022-coder-memory-writes.md) | The coder agent's memory writes go through the cold lake | **Correctness** |
 
 ## Template
 

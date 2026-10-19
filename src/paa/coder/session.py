@@ -201,11 +201,25 @@ class Session:
     def latest_session(transcript_dir: Path | str) -> str | None:
         """The id of the most recently written transcript, or ``None``.
 
-        "Most recent" is decided by the file's mtime and nothing else. The id
-        is a UUID hex, so the lexicographic order :meth:`list_sessions` returns
-        is random with respect to time and cannot answer "what did I just
-        run"; the mtime is the only recency signal a transcript directory
-        carries, and it is the one an operator means by "the last session".
+        **Recency is read off the transcript, not off the filesystem.** The
+        last turn carries a ``created_at`` stamp with microsecond resolution,
+        and it says when the *session* was last active. The file's mtime says
+        when the file was last touched, at whatever granularity the
+        filesystem offers: one second on ext3, HFS+ and exFAT, and on many
+        network mounts. Two ``paa agent`` runs in the same second therefore
+        tie — and the tie-break is the session id, a random UUID hex, so the
+        tie was broken at random and the *older* transcript could be picked.
+        The turn timestamp is already on disk and is strictly finer, so it is
+        the primary signal; the mtime is the fallback for a transcript whose
+        turns cannot be read.
+
+        The id is a UUID hex, so the lexicographic order :meth:`list_sessions`
+        returns is random with respect to time and cannot answer "what did I
+        just run"; a timestamp can.
+
+        A tie that survives both signals still breaks on the id, so repeated
+        calls agree with each other and the answer does not depend on the
+        order the filesystem hands the directory back.
 
         ``None`` means there is nothing to continue: the directory is missing,
         empty, or holds no ``.jsonl`` transcript. A transcript directory with
@@ -215,7 +229,7 @@ class Session:
         d = Path(transcript_dir)
         if not d.is_dir():
             return None
-        newest: tuple[float, str] | None = None
+        newest: tuple[datetime, str] | None = None
         for path in d.glob("*.jsonl"):
             if not path.is_file():
                 continue
@@ -226,6 +240,70 @@ class Session:
             # Ties break on the id so repeated calls agree with each other:
             # two transcripts written in the same clock tick are otherwise
             # ordered by whatever order the filesystem hands them back.
-            if newest is None or (mtime, path.stem) > newest:
-                newest = (mtime, path.stem)
+            key = (_recency_moment(path, mtime), path.stem)
+            if newest is None or key > newest:
+                newest = key
         return newest[1] if newest else None
+
+
+# ---------------------------------------------------------------------------
+# Recency. The filesystem's mtime is too coarse to order two runs that
+# happened in the same second, and the session id is a random UUID hex, so
+# the tie-break it provides is random too. The transcript's own turn
+# timestamps are finer and already on disk, so they are the signal.
+# ---------------------------------------------------------------------------
+
+
+def _last_turn_created_at(path: Path) -> str | None:
+    """The ``created_at`` of a transcript's last readable turn, or ``None``.
+
+    Read from the end of the file backwards. A transcript is append-only, so
+    the last turn is the last line — but a crash can leave a torn final line
+    (the write was interrupted mid-JSON), and a line that does not parse is
+    skipped rather than raised: the turn before it is still a true statement
+    about when the session was last active. A line that parses but carries no
+    ``created_at`` is skipped the same way.
+
+    The raw ISO-8601 stamp is returned as the transcript holds it.
+    """
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        stamp = payload.get("created_at")
+        if isinstance(stamp, str) and stamp.strip():
+            return stamp
+    return None
+
+
+def _recency_moment(path: Path, mtime: float) -> datetime:
+    """When a transcript was last active, as one comparable UTC moment.
+
+    The last turn's ``created_at`` is the signal. The file's mtime is the
+    fallback for a transcript with no readable turn, or one whose stamp
+    cannot be parsed. Both are normalised to UTC so the two are comparable:
+    a lexical comparison of raw ISO strings would only be chronological
+    within a single UTC offset.
+    """
+    stamp = _last_turn_created_at(path)
+    if stamp is not None:
+        try:
+            moment = datetime.fromisoformat(stamp)
+        except ValueError:
+            moment = None
+        if moment is not None:
+            if moment.tzinfo is None:
+                # A naive stamp in a transcript written in UTC means UTC.
+                moment = moment.replace(tzinfo=UTC)
+            return moment.astimezone(UTC)
+    return datetime.fromtimestamp(mtime, UTC)

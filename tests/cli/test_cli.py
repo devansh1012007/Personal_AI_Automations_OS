@@ -159,6 +159,12 @@ class TestErrorHandling:
                 underlying_error="ModelUnavailableError",
                 underlying_message="model endpoint returned HTTP 429",
                 underlying_status_code=429,
+                # The shape the router actually raises: the underlying error
+                # names the provider it was calling, which is the same
+                # provider the router was calling.
+                underlying_provider="openrouter",
+                underlying_url="https://api.openrouter.ai/api/v1/chat/completions",
+                underlying_body_excerpt="rate limited, retry in 20s",
                 frontier_configured=False,
                 escalation_unavailable_reason="no_frontier_configured",
                 modality="STANDARD",
@@ -179,6 +185,15 @@ class TestErrorHandling:
         assert "permission mode ASK" in result.stdout
         # The noise keys are implied by the block; repeating them is noise.
         assert "policy_reason" not in result.stdout
+        # The provider is named once. The underlying error names it too, and
+        # that is the same fact — the local provider the router was calling —
+        # so it must not show up a second time as "provider provider: ...".
+        assert "provider provider:" not in result.stdout
+        assert "provider: openrouter" in result.stdout
+        # The details that are *not* a repetition of the provider still
+        # belong on the screen: they carry what the endpoint said.
+        assert "provider url: https://api.openrouter.ai/api/v1/chat/completions" in result.stdout
+        assert "provider body_excerpt: rate limited, retry in 20s" in result.stdout
 
 
 class TestAgentModality:

@@ -26,9 +26,9 @@ the registry row, which declares ``openrouter`` as
 
 **Sessions are the operator's memory.** Every run ends by printing the session
 id and the two ways to pick that session up again — ``--resume <id>`` and
-``--continue`` (the most recent transcript, by mtime). Without that line a
-conversation is a one-shot: the next invocation starts a fresh session with a
-fresh id and the model has no idea the last one happened.
+``--continue`` (the most recent transcript, by the timestamp of its last turn).
+Without that line a conversation is a one-shot: the next invocation starts a
+fresh session with a fresh id and the model has no idea the last one happened.
 """
 
 from __future__ import annotations
@@ -113,16 +113,16 @@ def register_agent(app: typer.Typer) -> None:
             )
             raise typer.Exit(1)
 
-        # ``_as_modality`` is the same tolerant coercion the runtime tools use
+        # ``as_modality`` is the same tolerant coercion the runtime tools use
         # on a model's own modality argument, so the CLI and the tools agree
         # on what "complex" means. It returns ``None`` for anything it cannot
         # parse, which for a flag the operator typed is a mistake, not a
         # request to guess.
-        from paa.coder.runtime_tools import _as_modality
+        from paa.coder.runtime_tools import as_modality
 
         resolved_modality = ComplexityModality.STANDARD
         if modality is not None:
-            parsed = _as_modality(modality)
+            parsed = as_modality(modality)
             if parsed is None:
                 console.print(
                     f"[red]unknown modality {modality!r}[/red] — "
@@ -202,11 +202,15 @@ def register_agent(app: typer.Typer) -> None:
                 # Printed from the ``finally`` so it appears on the failure path
                 # too: a run that died still had a session, and the id is how
                 # the operator picks that transcript up again.
-                console.print(
-                    f"[dim]session {built.session.session_id}  —  "
-                    f"paa agent --resume {built.session.session_id}  |  "
-                    f"paa agent --continue[/dim]"
-                )
+                #
+                # One command per line, each with the real id: the id is a
+                # 32-char uuid an operator copies, and a single long line
+                # wraps — which splits the id across two lines and leaves them
+                # pasting half an id and a resume that finds nothing.
+                session_id = built.session.session_id
+                console.print(f"[dim]session {session_id}[/dim]")
+                console.print(f"[dim]  resume:   paa agent --resume {session_id}[/dim]")
+                console.print("[dim]  continue: paa agent --continue[/dim]")
                 await built.close()
 
         asyncio.run(_do())
@@ -264,9 +268,23 @@ def _render_error(exc: PaaError, *, floor: str | None = None) -> None:
         consumed.add("underlying_status_code")
 
     provider = details.get("provider")
+    underlying_provider = details.get("underlying_provider")
     if provider:
         bullets.append(f"provider: {provider}")
         consumed.add("provider")
+        # The underlying error names its own provider, and that provider IS
+        # the local one the router was calling — the same fact under a second
+        # name. The catch-all below would render it as "provider provider:
+        # ...", so it is consumed here instead. A name that *disagrees* with
+        # the top-level one is a contradiction rather than a repetition, and
+        # that is worth showing.
+        if underlying_provider and underlying_provider != provider:
+            bullets.append(f"provider (underlying): {underlying_provider}")
+    elif underlying_provider:
+        # No top-level provider, but the failure still names one.
+        bullets.append(f"provider: {underlying_provider}")
+    if underlying_provider is not None:
+        consumed.add("underlying_provider")
 
     modality = details.get("modality")
     permission_mode = details.get("permission_mode")
@@ -323,8 +341,11 @@ async def always_yes(tool: str, arguments: dict[str, Any], reason: str) -> bool:
 async def prompt_yes(tool: str, arguments: dict[str, Any], reason: str) -> bool:
     """Ask the operator. Runs the blocking read on a worker thread.
 
-    The default for this command is to *ask*, because the tools that matter here
-    (``submit_task``, ``run_task``) write to the ledger and can execute work.
+    Only state-changing calls reach this prompt. The read-only half of the
+    catalogue is standing-allowed in ASK mode, so what arrives here are the
+    tools that write: ``submit_task`` and ``run_task`` write to the ledger and
+    can execute work, and ``remember_fact`` writes to the memory tables. A
+    denied call never gets here — it is refused outright.
     """
 
     def _ask() -> bool:

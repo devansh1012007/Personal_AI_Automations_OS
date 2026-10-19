@@ -37,20 +37,26 @@ Two conventions every tool here follows:
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
+import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
 from paa.ledger.replay import project
 from paa.memory.creator import MemoryCreator, ProcessingOutcome, SignalEnvelope
 from paa.memory.facts import Fact, FactRepository
+from paa.storage.coldlake.cas import ContentAddressedStore
+from paa.storage.coldlake.signals import Signal, SignalRepository
+from paa.storage.relational.database import dumps
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from paa.runtime import Runtime
 
-__all__ = ["READ_ONLY_TOOLS", "build_runtime_tools"]
+__all__ = ["READ_ONLY_TOOLS", "as_modality", "build_runtime_tools"]
 
 #: The catalogue's non-mutating tools. :class:`paa.coder.agent.CoderAgent`
 #: standing-allows these in ASK mode so a permission prompt fires only for
@@ -69,6 +75,11 @@ READ_ONLY_TOOLS: frozenset[str] = frozenset(
         "recall_facts",
     }
 )
+
+#: The cold-lake channel the coder agent's assertions arrive on. A channel of
+#: its own so the agent's writes are attributable in the cold lake, and so
+#: their idempotency key cannot collide with another channel's.
+_CODER_CHANNEL = "coder"
 
 
 def build_runtime_tools(rt: Runtime) -> dict[str, Any]:
@@ -279,7 +290,7 @@ class _SubmitTask(_RuntimeTool):
             return self._emit({"error": "submit_task requires a non-empty 'goal'"})
         cid = await self._rt.submit(
             goal.strip(),
-            modality=_as_modality(arguments.get("modality")),
+            modality=as_modality(arguments.get("modality")),
             target_agent=arguments.get("target_agent") or None,
         )
         return self._emit({"correlation_id": str(cid), "goal": goal.strip()})
@@ -421,19 +432,43 @@ class _RememberFact(_RuntimeTool):
     the runtime never picks a winner between conflicting facts, so
     ``requires_human_attestation`` is reported as a *value*, not an exception.
 
-    **Provenance tradeoff.** The envelope is processed with ``persisted=False``
-    and no cold-lake row is written first. Routing through
-    :meth:`paa.storage.coldlake.signals.SignalRepository.record` would give the
-    fact a ``source_signal_id`` foreign key, but ``record`` files rows as
-    ``unprocessed`` — the daemon's batch would then re-process the same signal
-    and write a duplicate fact, and ``SignalRepository`` additionally demands a
-    ``ContentAddressedStore`` this tool has no business constructing. With
-    ``persisted=False`` the relational FK is ``None``, but each fact's
-    ``provenance`` JSON still names the ephemeral envelope id, the channel, and
-    the extraction rule, so the chain of evidence survives; only the foreign
-    key does not. Memory is not a task lineage, so no ledger event is written
-    either (creator module docstring: the cold-lake row is the
-    event-before-side-effect analogue, and here it is deliberately skipped).
+    **The write goes through the cold lake.** The assertion is filed as a
+    ``cold_lake_signals`` row first — the same front door every other channel
+    uses (RFC §1.2) — and only then turned into facts by
+    :meth:`paa.memory.creator.MemoryCreator.process_signal`, bound to that
+    row. Three things follow, and they are the point:
+
+    * The fact carries a real ``source_signal_id`` foreign key, so its
+      evidence is walkable: the id resolves to a row in ``cold_lake_signals``
+      holding the verbatim assertion. **That row is where the evidence
+      lives** — the fact's ``provenance`` blob only names the extractor and
+      the rule that produced it.
+    * Hot serving is derived from the cold lake, like every other memory in
+      the system. Replaying the row through the creator re-derives the same
+      facts, because extraction is deterministic, so the agent's own memories
+      are rebuildable like everyone else's.
+    * No ledger event is written, and none is needed: memory is not a task
+      lineage, so there is no lineage to record it in. The cold-lake row is
+      the durable record of the assertion, in the same way the ledger is the
+      durable record of a task. The row is written *before* the facts — the
+      event-before-side-effect ordering — and the creator's commit writes the
+      facts and closes the row out in one transaction.
+
+    **Why the daemon cannot write the same fact twice.**
+    :meth:`paa.memory.creator.MemoryCreator.run_batch` claims the rows whose
+    ``sync_status`` is ``unprocessed`` and flips them to ``processing``; the
+    creator's commit then sets them to ``processed``. This tool takes that
+    same claim for its own row — a conditional ``UPDATE`` that fires only
+    while the row is still ``unprocessed`` — so exactly one of the two paths
+    owns the row, and the loser writes no facts. If the daemon won the race,
+    the tool waits for the row to settle and reports what the row says.
+    See ``docs/adr/0022-coder-memory-writes.md``.
+
+    **Idempotence.** The cold-lake external id is the digest of the
+    assertion, so the same text is the same row: a retried call re-uses the
+    signal it filed the first time instead of filing a second one, and the
+    tool reports the fact that is already there rather than writing a
+    duplicate of it.
 
     Genuine database faults raise, per this module's convention for mutations.
     """
@@ -447,6 +482,13 @@ class _RememberFact(_RuntimeTool):
         "reported as ignored with zero facts. Contradicting a stored belief "
         "quarantines the write for human attestation rather than overwriting."
     )
+
+    #: How long to wait for a signal another worker claimed to settle before
+    #: reporting it as still in flight. The daemon's ingestion loop runs every
+    #: second, so this is generous for the common case and short enough that a
+    #: stuck row does not hang the agent's turn.
+    _SETTLE_TIMEOUT_SECONDS = 2.0
+    _SETTLE_POLL_SECONDS = 0.05
 
     def schema(self) -> dict[str, Any]:
         return {
@@ -470,25 +512,199 @@ class _RememberFact(_RuntimeTool):
         if not isinstance(text, str) or not text.strip():
             return self._emit({"error": "text must be non-empty"})
         text = text.strip()
+
+        repo = self._signal_repo()
+        external_id = _external_id(text)
+        signal = await repo.record(_CODER_CHANNEL, dumps(text), external_id=external_id)
+
+        if signal.sync_status == "unprocessed" and await self._claim(signal.id):
+            # We own the row. The creator's commit flips it to 'processed' in
+            # the same transaction as the facts, so the daemon cannot re-claim
+            # it afterwards.
+            outcome, fact_ids, entity_ids = await self._process(repo, signal, text, external_id)
+            settled = await repo.get(signal.id)
+            if settled is not None:
+                # The row the creator closed out, not the one we filed: its
+                # status is the verdict the tool reports.
+                signal = settled
+            replay = False
+        else:
+            # Either this call is a retry of one that already settled, or the
+            # daemon claimed the row first. Neither is a reason to write facts
+            # a second time.
+            signal = await self._await_settled(repo, signal.id)
+            outcome, fact_ids, entity_ids = await self._settled_outcome(signal)
+            replay = True
+
+        return self._emit(self._report(outcome, fact_ids, entity_ids, signal, replay=replay))
+
+    # -- the write path ----------------------------------------------------
+
+    def _signal_repo(self) -> SignalRepository:
+        """The cold-lake front door over this runtime's database.
+
+        The content-addressed store is the one the ingestion API already uses
+        (:func:`paa.api.app._signal_repo`): constructing it creates the two
+        directories it needs and it is only *used* for a payload over 64 KB,
+        which an assertion never is. The tool does not get to pick a different
+        archive from the rest of the runtime.
+        """
+        cas = ContentAddressedStore(self._rt.settings.storage.cold_lake_path)
+        return SignalRepository(self._rt.db, cas)
+
+    async def _claim(self, signal_id: str) -> bool:
+        """Take exclusive ownership of one cold-lake row.
+
+        The daemon's claim (:meth:`paa.memory.creator.MemoryCreator._claim`)
+        selects the rows whose ``sync_status`` is ``unprocessed`` and flips
+        them to ``processing`` in one transaction, so a row that is already
+        ``processing`` belongs to somebody else. This is the same claim,
+        scoped to a single row: a conditional ``UPDATE`` that fires only while
+        the row is still ``unprocessed``. Whoever wins writes the facts; the
+        loser writes nothing.
+
+        :meth:`paa.storage.coldlake.signals.SignalRepository.claim_unprocessed`
+        cannot do this — it claims by arrival order, so it would take other
+        channels' rows along with ours.
+        """
+        changed = await self._rt.db.execute(
+            "UPDATE cold_lake_signals SET sync_status = 'processing' "
+            "WHERE id = ? AND sync_status = 'unprocessed'",
+            (signal_id,),
+        )
+        return changed == 1
+
+    async def _process(
+        self,
+        repo: SignalRepository,
+        signal: Signal,
+        text: str,
+        external_id: str,
+    ) -> tuple[str, list[str], list[str]]:
+        """Turn the claimed signal into facts, and report what happened.
+
+        The envelope is the cold-lake row: ``persisted=True`` is what makes the
+        creator write the fact's ``source_signal_id`` and close the row out.
+        ``raw`` is the assertion as it was spoken, not the JSON the row stores,
+        so the creator's containment check sees the original bytes — a NUL or
+        an ANSI escape in the text is rejected here exactly as it is on the
+        daemon's path.
+        """
         envelope = SignalEnvelope(
-            id=str(uuid.uuid4()),
-            channel="coder",
+            id=signal.id,
+            channel=_CODER_CHANNEL,
             payload=text,
             raw=text,
-            persisted=False,
+            external_id=external_id,
+            received_at=signal.received_at,
+            persisted=True,
         )
-        result = await MemoryCreator(self._rt.db).process_signal(envelope)
-        return self._emit(
-            {
-                "remembered": result.outcome is ProcessingOutcome.PROCESSED
-                and bool(result.facts_written),
-                "facts_written": len(result.facts_written),
-                "outcome": result.outcome.value,
-                "requires_human_attestation": result.requires_human_attestation,
-                "entities": list(result.entities_touched),
-                "provenance": "signal not persisted; source_signal_id=None",
-            }
+        try:
+            result = await MemoryCreator(self._rt.db).process_signal(envelope)
+        except Exception:
+            # The claim is ours and the facts are not written. Hand the row
+            # back: a row stuck in 'processing' is invisible to every poller,
+            # and the cold lake is the source of truth for this assertion.
+            await repo.release(signal.id)
+            raise
+        return (
+            result.outcome.value,
+            list(result.facts_written),
+            list(result.entities_touched),
         )
+
+    async def _await_settled(self, repo: SignalRepository, signal_id: str) -> Signal:
+        """Wait, briefly, for a signal another worker claimed to settle.
+
+        The daemon claims a row by flipping it to ``processing`` and then
+        processes it, which lands it on ``processed``, ``quarantined`` or
+        ``malformed``. A row still ``processing`` when the wait runs out
+        belongs to a worker that is still working on it, and the tool says so
+        rather than pretending the fact is not there.
+        """
+        deadline = time.monotonic() + self._SETTLE_TIMEOUT_SECONDS
+        while True:
+            current = await repo.get(signal_id)
+            if current is None:  # pragma: no cover - the row was just written
+                raise KeyError(f"cold-lake signal {signal_id} vanished")
+            if current.sync_status != "processing":
+                return current
+            if time.monotonic() >= deadline:
+                return current
+            await asyncio.sleep(self._SETTLE_POLL_SECONDS)
+
+    async def _settled_outcome(self, signal: Signal) -> tuple[str, list[str], list[str]]:
+        """What a signal that is not ours says about itself.
+
+        The row's status is the verdict the creator recorded: ``processed``
+        (facts written, or nothing worth writing), ``quarantined`` (a human
+        must decide) or ``malformed`` (contained, nothing written).
+
+        Two statuses are not verdicts. ``processing`` means another worker
+        still owns the row; ``unprocessed`` means nobody does — the row was
+        released, so the daemon will pick it up. Both report as ``pending``:
+        the fact is not in memory yet, and the tool says so rather than
+        dressing an unfinished write up as a result. The row's own status is
+        in the report, so the model can tell the two apart.
+        """
+        status = signal.sync_status
+        if status in ("processing", "unprocessed"):
+            return "pending", [], []
+        if status == "quarantined":
+            return ProcessingOutcome.QUARANTINED.value, [], []
+        if status == "malformed":
+            return ProcessingOutcome.MALFORMED.value, [], []
+
+        facts = await FactRepository(self._rt.db).facts_by_source_signal(signal.id)
+        if not facts:
+            return ProcessingOutcome.IGNORED.value, [], []
+        return (
+            ProcessingOutcome.PROCESSED.value,
+            [f.id for f in facts],
+            [f.entity_id for f in facts],
+        )
+
+    def _report(
+        self,
+        outcome: str,
+        fact_ids: list[str],
+        entity_ids: list[str],
+        signal: Signal,
+        *,
+        replay: bool,
+    ) -> dict[str, Any]:
+        """The tool's answer. Honest about where the evidence lives.
+
+        ``source_signal_id`` is the foreign key the fact carries, and it
+        resolves to the ``cold_lake_signals`` row named in ``provenance`` —
+        the raw assertion, verbatim. The tool does not claim a chain of
+        evidence it cannot walk.
+
+        ``facts_written`` counts the facts the assertion produced. On an
+        idempotent replay the same facts are counted again and
+        ``idempotent_replay`` says so, so the model can tell "I wrote it" from
+        "it was already there".
+
+        ``outcome`` is one of the :class:`~paa.memory.creator.ProcessingOutcome`
+        values, plus ``pending`` for a signal another worker has not finished
+        — the one case where the fact is not in memory yet and the tool says
+        so rather than claiming a result it does not have.
+        """
+        return {
+            "remembered": outcome == ProcessingOutcome.PROCESSED.value and bool(fact_ids),
+            "facts_written": len(fact_ids),
+            "outcome": outcome,
+            "requires_human_attestation": outcome == ProcessingOutcome.QUARANTINED.value,
+            "entities": list(entity_ids),
+            "source_signal_id": signal.id,
+            "provenance": {
+                "source": "cold_lake_signals",
+                "channel": signal.channel,
+                "external_id": signal.external_id,
+                "sync_status": signal.sync_status,
+            },
+            "idempotent_replay": replay,
+        }
 
 
 class _RecallFacts(_RuntimeTool):
@@ -502,12 +718,13 @@ class _RecallFacts(_RuntimeTool):
     :meth:`~paa.memory.facts.FactRepository.search_facts_by_text` scans fact
     predicates and object values instead.
 
-    Semantic (vector) recall is honestly absent in v1: facts only reach the
-    vector index when built with an embedding sink, and nothing in the runtime
-    wires one (creator module docstring), so the response says so in ``note``
-    rather than pretending the absence is a miss. Confidence is the decayed
-    effective value, because :meth:`~paa.memory.facts.FactRepository.query_facts`
-    decays at read time by design.
+    Semantic (vector) recall is honestly absent in v1: a fact only reaches the
+    vector index when the creator is built with an embedding sink
+    (:class:`paa.memory.creator.EmbeddingSink`), and nothing in the runtime
+    wires one, so the response says so in ``note`` rather than pretending the
+    absence is a miss. Confidence is the decayed effective value, because
+    :meth:`~paa.memory.facts.FactRepository.query_facts` decays at read time by
+    design.
     """
 
     name = "recall_facts"
@@ -600,8 +817,14 @@ def _as_uuid(value: Any) -> uuid.UUID | str:
         )
 
 
-def _as_modality(value: Any) -> Any:
-    """Map a modality name onto the enum, tolerating the model's casing."""
+def as_modality(value: Any) -> Any:
+    """Map a modality name onto the enum, tolerating the model's casing.
+
+    Public because the CLI parses its own ``--modality`` flag with it: the
+    operator's typing and the model's have to agree on what "complex" means,
+    and a private name would be a cross-module import of somebody else's
+    internals. Returns ``None`` for anything it cannot parse.
+    """
     if not isinstance(value, str) or not value.strip():
         return None
     from paa.core.types import ComplexityModality
@@ -610,6 +833,24 @@ def _as_modality(value: Any) -> Any:
         return ComplexityModality(value.strip().upper())
     except ValueError:
         return None
+
+
+def _external_id(text: str) -> str:
+    """The cold-lake idempotency key for one assertion.
+
+    The digest of the text, so the same assertion is always the same row:
+    ``cold_lake_signals`` is unique on ``(channel, external_id)``, so a retried
+    call re-uses the signal it filed the first time instead of filing a
+    second one — and the tool reports the fact that is already there rather
+    than writing a duplicate of it.
+
+    A per-turn id would have been the other option, but it would make the key
+    depend on the caller remembering to supply one, and the model is not a
+    reliable source of ids. The assertion itself is the thing being made
+    idempotent, so it is what the key is derived from.
+    """
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return f"{_CODER_CHANNEL}:{digest}"
 
 
 def _clamp_int(value: Any, *, default: int, low: int, high: int) -> int:
