@@ -72,23 +72,69 @@ class TestEntities:
         resolved = await repo.resolve_entity("Widget Service")
         assert resolved is not None and resolved.id == eid
 
-    async def test_a_query_the_engine_rejects_resolves_to_no_match(
+    async def test_a_term_the_engine_would_reject_resolves_to_no_match(
         self, repo: FactRepository
     ) -> None:
         """Resolution fails closed, and the failure is not the batch's.
 
-        A NUL byte in the term makes SQLite's full-text matcher reject the
-        statement. That is a bad *query*, not a broken database, and the
-        answer is "no match" — the ingestion batch that asked the question
-        must not go down with it.
+        A NUL byte in the term is refused by the *repository*, before the
+        engine ever sees it — SQLite's full-text matcher would reject the
+        statement, and psycopg would refuse the bound parameter outright.
+        The refusal lives in the repository so that the answer is the same
+        on both substrates: "no match", not an exception the ingestion
+        batch has to survive.
 
-        The catch that does this was dead code for as long as it existed: a
-        read raised the driver's own exception, and the catch was written
-        for the neutral one.
+        The catch that makes the *other* rejected queries fail closed was
+        dead code for as long as it existed: a read raised the driver's
+        own exception, and the catch was written for the neutral one. It
+        is load-bearing again — for a malformed ``MATCH`` expression and
+        for a corrupt row — and the NUL refusal no longer needs it.
         """
         await repo.upsert_entity("project", "Widget Service")
         assert await repo.resolve_entity("a\x00b") is None
         assert await repo.resolve_entity("\x00") is None
+
+    async def test_a_nul_term_never_reaches_the_substrate(
+        self, repo: FactRepository, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The refusal is the *repository's*, and this is what proves it.
+
+        The outcome alone cannot prove where the refusal happened: on the
+        embedded substrate the NUL path degrades to "no match" whether
+        the repository refused the term or the engine rejected the
+        statement. So the substrate is watched: a term carrying a NUL
+        must not produce a statement at all.
+
+        The positive control is what keeps the test honest — it shows the
+        spy records the statements that *are* issued, so the empty list
+        afterwards means "refused before asking", not "the spy is broken".
+        """
+        await repo.upsert_entity("project", "Widget Service")
+
+        issued: list[str] = []
+        real_fetch_one = db.fetch_one
+        real_fetch_all = db.fetch_all
+
+        async def _fetch_one(sql: str, params: Any = ()) -> Any:
+            issued.append(sql)
+            return await real_fetch_one(sql, params)
+
+        async def _fetch_all(sql: str, params: Any = ()) -> Any:
+            issued.append(sql)
+            return await real_fetch_all(sql, params)
+
+        monkeypatch.setattr(db, "fetch_one", _fetch_one)
+        monkeypatch.setattr(db, "fetch_all", _fetch_all)
+
+        assert await repo.resolve_entity("a\x00b") is None
+        assert issued == [], f"the refused term reached the substrate: {issued}"
+
+        # The positive control: the spy is live, and the ladder stops at
+        # the exact rung for an exact match.
+        resolved = await repo.resolve_entity("Widget Service")
+        assert resolved is not None
+        assert len(issued) == 1, issued
+        assert "canonical_name" in issued[0], issued
 
     async def test_a_rejected_query_does_not_break_the_next_resolution(
         self, repo: FactRepository
@@ -112,10 +158,25 @@ class TestEntities:
         contract does not change with the class: resolution answers "no
         match" rather than taking the ingestion batch down.
 
-        The failure is raised by the *alias* lookup, and the alias lookup
+        The failure surfaces in the *alias* lookup, and the alias lookup
         scans the table — so ONE corrupt row breaks resolution for every
         term. That is the case this defends.
+
+        The error raised here carries ``substrate="postgres"`` on a
+        *SQLite* database, which is the point of the fake: the handler
+        that does the degrading catches the neutral *class*, so it fires
+        whichever substrate produced the error.
         """
+
+        await repo.upsert_entity("project", "Widget Service", aliases=["Gadget Assembly"])
+
+        # The positive control: the term matches the alias of a healthy
+        # row, so "no match" afterwards is a *change* — and a test that
+        # only asserted "no match" would pass just as well with the alias
+        # rung removed entirely.
+        before = await repo.resolve_entity("Gadget Assembly", fuzzy=False)
+        assert before is not None, "the alias rung did not resolve a matching alias"
+        assert before.match == "alias"
 
         async def _raise(self: Any, sql: str, params: Any = ()) -> Any:
             if "a.value" in sql:
@@ -124,8 +185,72 @@ class TestEntities:
 
         _original_fetch_one = type(repo._db).fetch_one
         monkeypatch.setattr(type(repo._db), "fetch_one", _raise)
-        await repo.upsert_entity("project", "Widget Service")
-        assert await repo.resolve_entity("Gadget Assembly") is None
+
+        assert await repo.resolve_entity("Gadget Assembly", fuzzy=False) is None
+
+
+class TestTheCorruptRow:
+    """One unreadable row must not break resolution for every term.
+
+    The alias column is JSON held as *text* on both substrates. The server
+    dialect casts it back to ``jsonb`` to expand it; the embedded dialect
+    expands it with ``json_each``. Either way the expansion reads *every*
+    row, so a single corrupt row breaks the alias rung for every term —
+    and the rung has to answer "no match" rather than take the ingestion
+    batch down with it.
+    """
+
+    async def test_a_corrupt_row_fails_closed_and_the_row_was_consulted(
+        self, repo: FactRepository, db: Database
+    ) -> None:
+        """The real thing, on the embedded substrate.
+
+        The row is genuinely corrupt — the alias column holds something
+        that is not JSON — so the failure is raised by the engine and
+        classified by the substrate boundary, not simulated by a fake.
+
+        The schema's ``CHECK (json_valid(aliases))`` means a corrupt row
+        cannot be written through the repository at all: it is a row that
+        arrived by another route, which is exactly what the classifier's
+        corrupt-document case is a defence against.
+
+        ``fuzzy=False`` isolates the alias rung, so the assertion is about
+        the rung that fails rather than about a trigram guess.
+        """
+        await repo.upsert_entity("project", "Widget Service", aliases=["Gadget Assembly"])
+        await repo.upsert_entity("project", "Other Service", aliases=["Sprocket Assembly"])
+
+        # The positive control: both terms match the alias of a healthy
+        # row, so "no match" afterwards is a change rather than a
+        # standing fact.
+        before = await repo.resolve_entity("Gadget Assembly", fuzzy=False)
+        assert before is not None, "the alias rung did not resolve a matching alias"
+        assert before.match == "alias"
+        other = await repo.resolve_entity("Sprocket Assembly", fuzzy=False)
+        assert other is not None, "the alias rung did not resolve a matching alias"
+        assert other.match == "alias"
+
+        # The check constraint has to be out of the way for the row to be
+        # written corrupt at all.
+        await db.execute("PRAGMA ignore_check_constraints=ON")
+        await db.execute(
+            "UPDATE hot_serving_entity_index SET aliases = 'not json at all' "
+            "WHERE canonical_name = 'Widget Service'"
+        )
+        await db.execute("PRAGMA ignore_check_constraints=OFF")
+
+        # One corrupt row breaks the alias rung for *every* term — the
+        # second alias was perfectly good, and it stops resolving too.
+        assert await repo.resolve_entity("Gadget Assembly", fuzzy=False) is None
+        assert await repo.resolve_entity("Sprocket Assembly", fuzzy=False) is None
+        # And the degradation is the alias rung's alone: the exact rung
+        # does not read the alias column, and both rows are still there.
+        exact = await repo.resolve_entity("Widget Service")
+        assert exact is not None
+        assert exact.canonical_name == "Widget Service"
+        exact_other = await repo.resolve_entity("Other Service")
+        assert exact_other is not None
+        assert exact_other.canonical_name == "Other Service"
 
 
 class TestFacts:

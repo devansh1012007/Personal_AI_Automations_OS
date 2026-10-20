@@ -17,9 +17,11 @@ suite because the suite only ever ran the SQLite half:
   that catches ``LedgerError`` to recognise the race caught nothing on the
   server;
 * a corrupt row in the entity table raised its error from the *alias*
-  lookup, and only the candidate lookup had a fail-closed handler — so one
-  unreadable row took down entity resolution for every term on the server,
-  while the SQLite half failed closed;
+  lookup, and only the candidate lookup had a fail-closed handler — the
+  error was raised there and nothing caught it, so the alias rung took
+  the caller down with it — and one unreadable row took down entity
+  resolution for every term on the server, while the SQLite half failed
+  closed;
 * a NUL byte in a term was refused by SQLite's full-text matcher (which
   the candidate lookup catches) and by psycopg at the *parameter*, before
   any statement was sent — so the same term failed closed on one substrate
@@ -49,10 +51,40 @@ The DSN names a *server*, not a database to write to. Every test here
 creates a database of its own and drops it when it is over — so a run can
 never touch the database the deployment is using.
 
-The SQLite half of each contract lives in the ordinary suite
-(``tests/storage/test_errors.py``, ``tests/memory/test_facts.py``,
-``tests/ledger/test_store.py``); the assertions here are the *same* ones,
-run against the other substrate.
+Where the SQLite half of each contract lives
+--------------------------------------------
+Each contract below is a promise the two substrates make to each other, and
+each one has a counterpart in the ordinary suite — a suite that needs no
+server, and that therefore actually runs. They are named here exactly, so
+the two halves can be read together and so a contract cannot be quietly
+dropped from one side:
+
+* *the ledger's own error keeps its type* —
+  ``tests/storage/test_errors.py::TestTheTransactionBoundaryIsNarrow`` (the
+  embedded substrate) and
+  ``tests/storage/test_errors.py::TestTheDriverBoundaryIsNarrow`` (the server
+  boundary, proved without a server)
+* *a programming error keeps its type* — the same two
+* *a driver error is still translated* —
+  ``tests/storage/test_errors.py::TestTheDriverBoundaryIsNarrow`` (the server
+  boundary, proved without a server) and
+  ``tests/storage/test_errors.py::TestTheReadPathIsABoundary`` (the embedded
+  substrate)
+* *a NUL byte in a term resolves to no match* —
+  ``tests/memory/test_facts.py::TestEntities::test_a_nul_term_never_reaches_the_substrate``
+* *a corrupt row resolves to no match* —
+  ``tests/memory/test_facts.py::TestTheCorruptRow``
+* *the ledger suppresses a redelivered event* —
+  ``tests/ledger/test_store.py::TestIdempotency``
+* *an entity id arrives as text* —
+  ``tests/memory/test_facts.py::TestTheFactRowConversion``
+
+The two exception contracts are the ones that had **no** counterpart
+anywhere until now: the server substrate's transaction boundary used to
+translate *every* exception the block raised, so a ``LedgerError`` arrived
+as a ``StorageError`` there and as a ``LedgerError`` on SQLite. The
+counterparts above are driver-free — they run on a laptop, with no server
+— so the guarantee is proved where the code actually runs.
 """
 
 from __future__ import annotations
@@ -187,15 +219,32 @@ class TestTheFailClosedContract:
         holding something that is not JSON makes that cast fail — and
         because the expansion scans the table, one corrupt row breaks the
         lookup for *every* term.
+
+        The positive control is what makes this a contract rather than a
+        tautology. Before the row is corrupted, the term resolves through
+        the alias rung, so "no match" afterwards is a *change*: without
+        the control the assertion would pass just as well with the alias
+        rung removed entirely, or with a row that was never corrupt.
         """
         repo = FactRepository(postgres)
-        await repo.upsert_entity("project", "Widget Service")
+        await repo.upsert_entity("project", "Widget Service", aliases=["Gadget Assembly"])
+
+        before = await repo.resolve_entity("Gadget Assembly", fuzzy=False)
+        assert before is not None, "the alias rung did not resolve a matching alias"
+        assert before.match == "alias"
+
         await postgres.execute(
             "UPDATE hot_serving_entity_index SET aliases = 'not json at all' "
             "WHERE canonical_name = 'Widget Service'"
         )
 
-        assert await repo.resolve_entity("Gadget Assembly") is None
+        # The corrupt row breaks the alias rung for *every* term...
+        assert await repo.resolve_entity("Gadget Assembly", fuzzy=False) is None
+        # ...and the degradation is the alias rung's alone: the exact rung
+        # does not read the alias column, and the row is still there.
+        exact = await repo.resolve_entity("Widget Service")
+        assert exact is not None
+        assert exact.canonical_name == "Widget Service"
 
     async def test_the_ledger_suppresses_a_redelivered_event(
         self, postgres: PostgresDatabase

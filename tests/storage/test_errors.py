@@ -26,6 +26,7 @@ a driver's exception, and the SQLSTATE table is a table of strings.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import uuid
 from datetime import UTC, datetime
@@ -33,9 +34,12 @@ from typing import Any
 
 import pytest
 
-from paa.core.errors import StorageError
+from paa.core.errors import LedgerError, StorageError
 from paa.storage.graph.sqlite_backend import SqliteGraphStore
-from paa.storage.relational.connection import translate_sqlite_error
+from paa.storage.relational.connection import (
+    _SQLITE_CONTENTION_PATTERN,
+    translate_sqlite_error,
+)
 from paa.storage.relational.database import Database
 from paa.storage.relational.errors import (
     CheckViolation,
@@ -48,7 +52,11 @@ from paa.storage.relational.errors import (
     SerializationFailure,
     UniqueViolation,
 )
-from paa.storage.relational.postgres import _qmark_to_pyformat, _translate_postgres_error
+from paa.storage.relational.postgres import (
+    _qmark_to_pyformat,
+    _raise_driver_error,
+    _translate_postgres_error,
+)
 
 
 class _FakePostgresError(Exception):
@@ -77,6 +85,19 @@ class ProgrammingError(Exception):
     def __init__(self, message: str) -> None:
         super().__init__(message)
         self.sqlstate = None
+
+
+class _FakePostgresDataError(Exception):
+    """A driver error with no SQLSTATE, from the driver's own module.
+
+    psycopg raises ``DataError`` for a NUL byte in a bound string — before
+    the statement is sent, so there is no code to classify it by. The
+    driver is recognised at the transaction boundary by the *module* its
+    error came from, so the fake declares one; that is what makes it a
+    driver error at all.
+    """
+
+    __module__ = "psycopg.errors"
 
 
 # ---------------------------------------------------------------------------
@@ -308,6 +329,91 @@ class TestSqliteTranslation:
 
 
 # ---------------------------------------------------------------------------
+# The contention pattern's shape
+# ---------------------------------------------------------------------------
+
+
+class TestTheContentionPattern:
+    """The contention match is a *shape*, and the shape is the protection.
+
+    The classifier above evaluates the rejected-query wordings first, so a
+    schema error whose text happens to contain "locked" is caught there and
+    never reaches the contention match. That ordering is what makes the
+    bare-substring version harmless *today* — and it is also what makes it
+    harmless by accident: the moment the ordering changes, a bare
+    ``locked|deadlocked|busy`` would read "no such table: locked_users" as
+    contention, and contention is not caught by the repository layer's
+    fail-closed handler. A batch would go down over a missing table.
+
+    So the shape is asserted here, against the pattern itself and not
+    against the classifier's behaviour. A bare substring fails this test
+    whatever the ordering is; a shape that only happens to work because of
+    the ordering does not.
+
+    The classifier matches against the *lowercased* message, so the
+    wordings below are the lowercased ones.
+    """
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "database is locked",
+            "database table is locked: hot_serving_ledger",
+            "database schema is locked: main",
+            "database main is locked",
+            "database temp is locked",
+            "database is deadlocked",
+            "database is busy",
+        ],
+    )
+    def test_the_pattern_matches_the_wordings_sqlite_actually_uses(self, message: str) -> None:
+        """Every wording the shipped ``libsqlite3`` carries is contention.
+
+        A contention missed here is a retryable failure reported as a
+        generic error, and the repository layer only retries a
+        serialization failure.
+        """
+        assert _SQLITE_CONTENTION_PATTERN.search(message) is not None, message
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "no such table: locked_users",
+            "no such table: busy_flag",
+            "no such table: unlocked_ledger",
+            "no such table: deadlocked_users",
+            "no such table: lock",
+            "the ledger is locked",
+            "database table locked",
+        ],
+    )
+    def test_the_pattern_does_not_match_an_identifier_that_merely_says_locked(
+        self, message: str
+    ) -> None:
+        """A contention word inside a name is not contention.
+
+        The match has to be the *whole phrase* SQLite uses — "database
+        [name] is locked" — and not the word on its own. The name is
+        interpolated by SQLite, so the wording is not known in advance and
+        only its shape is; and a table called ``locked_users`` is a missing
+        table, which is a rejected query and is caught by the handler that
+        fails closed.
+        """
+        assert _SQLITE_CONTENTION_PATTERN.search(message) is None, message
+
+    def test_the_pattern_is_not_a_bare_substring(self) -> None:
+        """The shape, stated as the difference between two spellings.
+
+        A bare ``locked|deadlocked|busy`` matches every positive case
+        above and every negative one too. Asserting the difference
+        directly names what would be lost: the phrase, and not the word.
+        """
+        bare = re.compile(r"locked|deadlocked|busy")
+        assert bare.search("no such table: locked_users") is not None
+        assert _SQLITE_CONTENTION_PATTERN.search("no such table: locked_users") is None
+
+
+# ---------------------------------------------------------------------------
 # The PostgreSQL classifier
 # ---------------------------------------------------------------------------
 
@@ -441,6 +547,56 @@ class TestPostgresTranslation:
 # ---------------------------------------------------------------------------
 # The boundary itself
 # ---------------------------------------------------------------------------
+
+
+class TestTheOpenPathIsABoundary:
+    """Opening the database is a substrate boundary too.
+
+    The server substrate treats it as one: a DSN that names no reachable
+    server arrives from ``PostgresDatabase.connect`` as a
+    ``StorageError``. The embedded substrate did not — a path that cannot
+    be opened escaped as the driver's own ``sqlite3.OperationalError``,
+    so a repository that catches ``StorageError`` to report "the database
+    is unhappy" caught nothing on the substrate that ships on every
+    laptop.
+
+    The failure is reachable without doing anything unusual: SQLite
+    refuses to open a *directory*, and says so in its own vocabulary.
+    """
+
+    async def test_an_unopenable_path_raises_a_storage_error(self, tmp_path: Any) -> None:
+        """A path SQLite cannot open is a neutral error, not a driver one.
+
+        The path here is a directory. SQLite refuses it with "unable to
+        open database file" — a driver exception, which is exactly what
+        must not reach a repository.
+        """
+        unopenable = tmp_path / "a_directory"
+        unopenable.mkdir()
+
+        db = Database(unopenable)
+        with pytest.raises(StorageError) as excinfo:
+            await db.connect()
+
+        assert not isinstance(excinfo.value, sqlite3.Error), excinfo.value
+
+    async def test_the_driver_error_is_kept_as_the_cause(self, tmp_path: Any) -> None:
+        """The translation does not lose the driver's own wording.
+
+        The original is the ``__cause__``, so the operator can still read
+        "unable to open database file" out of the traceback — the
+        translation is a relabelling, not a replacement.
+        """
+        unopenable = tmp_path / "a_directory"
+        unopenable.mkdir()
+
+        db = Database(unopenable)
+        with pytest.raises(StorageError) as excinfo:
+            await db.connect()
+
+        cause = excinfo.value.__cause__
+        assert isinstance(cause, sqlite3.Error), cause
+        assert "unable to open database file" in str(cause), cause
 
 
 class TestTheReadPathIsABoundary:
@@ -726,6 +882,198 @@ class TestTheTransactionControlPath:
             )
             rows = await db.fetch_all("SELECT id FROM hot_serving_entity_index")
             assert [r["id"] for r in rows] == ["e2"]
+        finally:
+            await db.close()
+
+
+# ---------------------------------------------------------------------------
+# The boundary's narrowness
+# ---------------------------------------------------------------------------
+
+
+def _raise_through_the_driver_boundary(exc: Exception) -> None:
+    """Re-raise ``exc`` through the server substrate's driver boundary.
+
+    The boundary translates by re-raising, so it has to be called from
+    inside an ``except`` block — which is exactly where the substrate
+    calls it: the block it wraps is the repository's own code.
+    """
+    try:
+        raise exc
+    except Exception as caught:
+        _raise_driver_error(caught)
+
+
+class TestTheDriverBoundaryIsNarrow:
+    """The transaction boundary translates the driver's errors and nothing else.
+
+    The boundary is the one place where the boundary is *wider* than a
+    single statement: the block it wraps contains the repository's own
+    code, so the exception that comes out may be the driver's, one of
+    ours, or a plain programming error. Only the first is the driver's to
+    translate.
+
+    This is asserted here, without a server. The guarantee used to be
+    pinned only by ``tests/storage/test_postgres_contract.py``, which is
+    skipped unless ``PAA_TEST_POSTGRES_DSN`` names a live server — so on
+    a laptop the guarantee was unproven, and widening the boundary to
+    translate *everything* left the whole default suite green. A rule that
+    only a server can check is a rule nobody checks.
+    """
+
+    def test_the_ledgers_own_error_keeps_its_type(self) -> None:
+        """A lost race is a ``LedgerError``, not a ``StorageError``.
+
+        A caller that catches ``LedgerError`` to recognise a lost race
+        would not catch a ``StorageError`` instead, so the two substrates
+        would report the same domain failure with different exception
+        types.
+        """
+        original = LedgerError("two writers raced for the same state_version")
+
+        with pytest.raises(LedgerError) as excinfo:
+            _raise_through_the_driver_boundary(original)
+
+        assert excinfo.value is original
+
+    def test_a_programming_error_keeps_its_type(self) -> None:
+        """A ``TypeError`` in the repository is a bug in the repository.
+
+        Reported as an infrastructure fault it sends the operator looking
+        in the wrong place.
+        """
+        original = TypeError("a repository bug")
+
+        with pytest.raises(TypeError) as excinfo:
+            _raise_through_the_driver_boundary(original)
+
+        assert excinfo.value is original
+
+    def test_a_storage_error_is_returned_unchanged(self) -> None:
+        """The translation is idempotent at the wider boundary too.
+
+        The statement boundary has already translated the driver's error
+        into a neutral one, and the transaction boundary catches it on
+        the way out. Without the guard, a unique violation would be
+        flattened into a vaguer storage error and the ledger's
+        ``except UniqueViolation`` branch would stop firing.
+        """
+        original = UniqueViolation("constraint violated: x", substrate="postgres")
+
+        with pytest.raises(UniqueViolation) as excinfo:
+            _raise_through_the_driver_boundary(original)
+
+        assert excinfo.value is original
+
+    def test_a_driver_error_is_still_translated(self) -> None:
+        """The boundary is not closed: the driver's errors are still ours.
+
+        A statement the server refuses is a storage failure, and it has
+        to arrive as one — otherwise a repository that catches
+        ``StorageError`` catches nothing on the server.
+        """
+        with pytest.raises(UniqueViolation):
+            _raise_through_the_driver_boundary(_FakePostgresError("23505"))
+
+    def test_a_driver_error_without_a_sqlstate_is_still_a_storage_error(self) -> None:
+        """psycopg's own ``DataError`` carries no SQLSTATE.
+
+        It cannot be classified — there is no code to classify it by — but
+        it must not reach a repository as a driver exception. The driver is
+        recognised by the *module* its error came from, so the fake
+        declares one.
+        """
+        with pytest.raises(StorageError):
+            _raise_through_the_driver_boundary(_FakePostgresDataError("nul byte"))
+
+
+class TestTheTransactionBoundaryIsNarrow:
+    """The same guarantee, on the embedded substrate.
+
+    These are the SQLite counterparts of the two contracts in
+    ``tests/storage/test_postgres_contract.py`` that had no counterpart
+    anywhere: the ledger's own error keeps its type, and a programming
+    error keeps its type. They are here, and driver-free, so the
+    guarantee is proved on the substrate that ships on every laptop.
+
+    The SQLite boundary is narrow for a different reason than the
+    server's, and the difference is worth naming. The server's boundary
+    has to *choose* what to translate, because it catches everything the
+    block raises. SQLite's does not: the statement boundary only ever
+    sees the driver's own errors (``connection.py`` catches
+    ``sqlite3.Error`` and nothing else), and the transaction body's own
+    exceptions are re-raised by a bare ``raise`` — the same exception,
+    with its traceback.
+    """
+
+    async def test_the_ledgers_own_error_keeps_its_type(self, tmp_path: Any) -> None:
+        """A ``LedgerError`` raised in a transaction body is still one.
+
+        The ledger raises it when an insert is refused by a constraint
+        that is not the idempotency key — another writer took the
+        version first. A caller that catches that class to recognise the
+        race has to catch it here too.
+        """
+        db = Database(tmp_path / "paa.db")
+        await db.connect()
+        try:
+            with pytest.raises(LedgerError) as excinfo:
+                async with db.transaction():
+                    raise LedgerError(
+                        "ledger append violated an integrity constraint that is not "
+                        "the idempotency key"
+                    )
+
+            assert not isinstance(excinfo.value, StorageError), excinfo.value
+        finally:
+            await db.close()
+
+    async def test_a_programming_error_keeps_its_type(self, tmp_path: Any) -> None:
+        """A ``TypeError`` in a transaction body is still a ``TypeError``.
+
+        The same argument as on the server: a programming error reported
+        as an infrastructure fault sends the operator looking in the wrong
+        place, and it makes the two substrates disagree about the same
+        code.
+        """
+        db = Database(tmp_path / "paa.db")
+        await db.connect()
+        try:
+            with pytest.raises(TypeError) as excinfo:
+                async with db.transaction():
+                    raise TypeError("a repository bug")
+
+            assert not isinstance(excinfo.value, StorageError), excinfo.value
+        finally:
+            await db.close()
+
+    async def test_the_failure_survives_the_rollback_and_the_connection_is_usable(
+        self, tmp_path: Any
+    ) -> None:
+        """The error the caller needs to see is the one that comes out.
+
+        The rollback that undoes the failed transaction is itself a
+        statement that can fail, and it must never replace the failure
+        that caused it — nor leave the connection inside a transaction
+        the next caller would inherit.
+        """
+        db = Database(tmp_path / "paa.db")
+        await db.connect()
+        try:
+            with pytest.raises(LedgerError):
+                async with db.transaction():
+                    raise LedgerError("a lost race")
+
+            # The connection is handed back usable: the next transaction
+            # begins cleanly and the write lands.
+            await db.execute(
+                "INSERT INTO hot_serving_entity_index "
+                "(id, class, canonical_name, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ("e1", "concept", "E1", "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00"),
+            )
+            rows = await db.fetch_all("SELECT id FROM hot_serving_entity_index")
+            assert [r["id"] for r in rows] == ["e1"]
         finally:
             await db.close()
 

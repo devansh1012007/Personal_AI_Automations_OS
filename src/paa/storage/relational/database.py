@@ -228,11 +228,25 @@ class Database:
         log.info("database.closed", path=str(self._path))
 
     async def _open(self, *, readonly: bool) -> aiosqlite.Connection:
-        if readonly:
-            uri = f"file:{self._path.as_posix()}?mode=ro"
-            conn = await aiosqlite.connect(uri, uri=True, isolation_level=None)
-        else:
-            conn = await aiosqlite.connect(self._path, isolation_level=None)
+        try:
+            if readonly:
+                uri = f"file:{self._path.as_posix()}?mode=ro"
+                conn = await aiosqlite.connect(uri, uri=True, isolation_level=None)
+            else:
+                conn = await aiosqlite.connect(self._path, isolation_level=None)
+        except sqlite3.Error as exc:
+            # The *open* is a substrate boundary too, and it is the one the
+            # server substrate already treats as one: a DSN that names no
+            # reachable server arrives there as a ``StorageError``. Here the
+            # same fault arrives as the driver's own exception —
+            # "unable to open database file", an ``sqlite3.OperationalError``
+            # — and a repository that catches ``StorageError`` catches
+            # nothing. The vocabulary has to be the same on both substrates
+            # or the neutrality it claims is not neutral.
+            #
+            # The original is the ``__cause__``, so the driver's wording is
+            # not lost.
+            raise translate_sqlite_error(exc) from exc
 
         conn.row_factory = sqlite3.Row
 
