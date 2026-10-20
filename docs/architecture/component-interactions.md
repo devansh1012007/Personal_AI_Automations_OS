@@ -67,14 +67,14 @@ flowchart TD
     Qdrant[(Qdrant embedded / server)]
     Kuzu[(KuzuDB)]
     Redis[(Redis)]
-    MinIO[(MinIO / S3)]
+    S3[(S3 object store)]
     Ollama[(Ollama / local LLM)]
     Frontier[(Frontier API — Anthropic / OpenAI / …)]
 
     RT -.->|auto; degrades to numpy| Qdrant
     RT -.->|auto; degrades to SQLite CTE| Kuzu
     RT -.->|optional; degrades to SQLite queue| Redis
-    RT -.->|optional cold-lake backend| MinIO
+    RT -.->|optional cold-lake backend| S3
     RT -->|local tier| Ollama
     RT -.->|frontier tier, escalation only| Frontier
 ```

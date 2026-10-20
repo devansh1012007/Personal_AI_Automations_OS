@@ -108,7 +108,7 @@ DEGRADED/SHEDDING; 11 `StreamName`s; `ORCHESTRATOR_CORE` is control plane.
 
 - `hot_serving_memory_registry` / `hot_serving_agent_registry` defined in
   schema but consumption lightly verified.
-- Docker/Postgres/MinIO live-server run still needs a pass (README build-status).
+- Docker/Postgres/S3 live-server run still needs a pass (README build-status).
 
 ## Related documents
 

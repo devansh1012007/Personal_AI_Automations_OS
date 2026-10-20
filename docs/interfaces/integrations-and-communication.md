@@ -2,7 +2,7 @@
 
 PAA communicates over three boundaries: (1) the ingestion API (HTTP, loopback),
 (2) the model provider layer (local + optional frontier), and (3) optional
-external substrates (Qdrant, Kuzu, Redis, MinIO). There is no service mesh, no
+external substrates (Qdrant, Kuzu, Redis, the S3 object store). There is no service mesh, no
 message broker beyond the durable SQLite/Redis queue, no webhooks, and no
 ingestion bridges (Telegram/email/Slack) yet (`README.md:169`).
 
@@ -70,13 +70,13 @@ package.
 | Qdrant (vector) | `qdrant-client` | embedded at `qdrant_path` | local path or `qdrant_url` | `StorageSettings.backend_vector`, `qdrant_path/url` |
 | Kuzu (graph) | `kuzu` | embedded at `kuzu_path` | local path | `StorageSettings.backend_graph`, `kuzu_path` |
 | Redis (queue/lock) | `redis` | — | `redis_url` | `StorageSettings.backend_queue`, `redis_url` |
-| MinIO / S3 (cold lake) | `boto3` | — | `minio_endpoint` | `StorageSettings.backend_coldlake`, `minio_*` |
+| S3 (cold lake) | `boto3` | — | `s3_endpoint` | `StorageSettings.backend_coldlake`, `s3_*` |
 
 All are optional extras; factories degrade, never raise, in `auto` mode
 (`AGENTS.md:59`). Docker compose publishes **no host ports** for these; only
 the ingestion API on `127.0.0.1:8787` (`AGENTS.md:132`).
 
-MinIO credentials: `minio_access_key_env` / `minio_secret_key_env` store env-var
+S3 credentials: `s3_access_key_env` / `s3_secret_key_env` store env-var
 **names** (default `PAA_MINIO_ACCESS_KEY` / `PAA_MINIO_SECRET_KEY`), never
 values (`config.py:97`–`:99`).
 

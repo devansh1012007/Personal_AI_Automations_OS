@@ -10,7 +10,7 @@ for the laptop.
 ## Context
 
 ADR-0001 through ADR-0006 replaced the RFC's server stack — PostgreSQL, a Qdrant
-server, Redis, MinIO and gVisor — with embedded engines, because the target
+server, Redis, S3 and gVisor — with embedded engines, because the target
 machine was a Windows laptop with ~3.5 GB of free RAM and no Docker. Those were
 **hardware** deviations, not disagreements with the RFC's design: the RFC's
 stack is the right one when the hardware can carry it.
@@ -30,7 +30,7 @@ selected by a `StorageSettings` / `SandboxSettings` field:
 | Substrate  | Embedded (laptop, default)         | Server (Docker)                    | Selector |
 |------------|------------------------------------|------------------------------------|----------|
 | Relational | `Database` (SQLite WAL)            | `PostgresDatabase` (psycopg 3)     | `backend_relational` |
-| Cold lake  | `ContentAddressedStore` (files)   | `S3BlobStore` (MinIO/boto3)        | `backend_coldlake` |
+| Cold lake  | `ContentAddressedStore` (files)   | `S3BlobStore` (S3/boto3)           | `backend_coldlake` |
 | Queue      | `SqliteMessageQueue`              | `RedisMessageQueue`                | `backend_queue` |
 | Vector     | numpy / embedded Qdrant           | Qdrant server                      | `backend_vector` |
 | Sandbox    | subprocess / WSL                  | Docker, optionally `--runtime=runsc` | `sandbox.backend` + `sandbox.container_runtime` |
@@ -69,7 +69,7 @@ The rules that keep this honest:
    and reports `NAMESPACE`. Overstating containment would mislead the policy
    layer, so it is structurally impossible here.
 
-Credentials (MinIO keys, the Postgres password, model API keys) are never stored
+Credentials (S3 keys, the Postgres password, model API keys) are never stored
 in config or the ledger. `StorageSettings.s3_access_key_env` /
 `s3_secret_key_env` name the environment variables that hold the values — the
 same indirection `ModelSettings` uses for API keys — and Compose sources them

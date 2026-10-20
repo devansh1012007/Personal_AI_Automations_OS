@@ -192,7 +192,7 @@ These are deliberate, documented, and cited in source:
 
 | Deviation | Where | Rationale |
 |---|---|---|
-| Embedded SQLite/Qdrant/Kuzu instead of Postgres/Redis/MinIO | ADR-0001–0005, `config.py:55` | Target machine has ~3.5 GB free RAM, no Docker |
+| Embedded SQLite/Qdrant/Kuzu instead of Postgres/Redis/S3 | ADR-0001–0005, `config.py:55` | Target machine has ~3.5 GB free RAM, no Docker |
 | gVisor unavailable; pluggable sandbox | ADR-0006, `config.py:231` | Windows target, no runsc |
 | Provider-agnostic models; explicit escalation | ADR-0007/0015, `config.py:280` | vLLM needs CUDA + 8.5 GB VRAM |
 | Idempotency key includes `attempt` + `discriminator` | ADR-0008, `events.py:68` | Retries must be possible |

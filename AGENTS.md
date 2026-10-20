@@ -28,12 +28,22 @@ Verify in this order before calling work done:
   triggered line by widening the ignore. A single line that legitimately interpolates SQL takes a
   **per-line** `# noqa: S608` (the convention in `memory/facts.py` and `skills/registry.py`) — that is
   narrower than a per-file allow-list and keeps the rest of the file under the rule.
-- **The baseline is red.** `ruff` reports 69 findings and `mypy` 116 at HEAD, all pre-existing; the
-  working tree is at **mypy 108** (the schema-migration change closed eight of them) and
-  `ruff` is unchanged at 69. So does the suite, with 6 environmental failures (the sandbox
-  cannot exec a bare `python` binary). "Do not expand the count" is the gate, not "make it
-  zero" — fixing the 185 pre-existing findings is a project of its own and would bury any
+- **The baseline is red.** `ruff` reports **69** findings and `mypy` **108** at HEAD, all pre-existing.
+  So does the suite, with **6** environmental failures. "Do not expand the count" is the gate, not
+  "make it zero" — fixing the 185 pre-existing findings is a project of its own and would bury any
   change you are making. Do not silence one either.
+- **Those six failures are the host, not the code.** The sandbox builds its child environment from
+  scratch with `PATH=/usr/local/bin:/usr/bin:/bin` — deliberately not the host's `PATH`, because
+  the host's `PATH` leaks the developer's toolchain and can put an attacker-writable directory
+  ahead of the system ones (`sandbox/base.py::build_child_env`). On a host whose `python` is
+  user-local (`~/.local/bin/python`) and which has no `/usr/bin/python`, a plan step that runs
+  `python -c "…"` finds no interpreter, the task never reaches `COMMITTED`, and the six
+  assertions that expect `COMMITTED` fail. The ledger, the CLI and the recovery sweep are all
+  behaving correctly. The host fix is one line — `sudo apt install python-is-python3` — and
+  widening the sandbox's `PATH` would undo the security property it exists for.
+- The **mypy** count went from 116 to 108 because the schema-migration change closed eight
+  pre-existing errors; `ruff` is unchanged at 69. The `requires_postgres` marker and the
+  `PAA_TEST_POSTGRES_DSN` convention are described under *Testing conventions* below.
 - There is no CI config, Makefile, or pre-commit hook in this repo. Nothing enforces the order above
   but you.
 

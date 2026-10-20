@@ -24,6 +24,9 @@ Focused runs:
 - `pytest -m "not slow"` — exclude slow tests
 - `pytest -m chaos` — crash injection
 - `pytest -m requires_graph` — graph-extra tests
+- `pytest -m requires_postgres` — tests that need a live PostgreSQL server
+  (named by `PAA_TEST_POSTGRES_DSN`; the DSN names a *server* and the tests
+  make their own database on it)
 
 ## Test markers and extras
 
@@ -81,8 +84,8 @@ transactions survive, uncommitted vanish (`AGENTS.md:94`). `pytest -m chaos`.
 | Claude-Code features (permissions, hooks, loop, sessions) | tested | 39 |
 | Coder agent (`paa agent`) | tested | 91 |
 | FastAPI ingestion + daemon + CLI | tested | 27 |
-| Docker deployment + Postgres/MinIO backends | built; live-server run needs a pass | parity + backend |
-| Observability | built, **untested** | — |
+| Docker deployment + Postgres/S3 backends | built; live-server run needs a pass | parity + backend |
+| Observability | built, lightly tested | 9 |
 
 Total (per README): 1185 collected — 1104 passing, 75 skipped (optional extras
 not installed), 6 failing. All six failures are environmental and pre-existing:
@@ -93,8 +96,9 @@ identically on a clean checkout.
 ## Coverage gaps (demonstrable from test structure)
 
 - `tests/validation/` is an empty package — no dedicated validation suite.
-- There is no `tests/observability/` — `src/paa/observability/` is exercised
-  nowhere (`AGENTS.md:97`).
+- `tests/observability/` covers the run repository's identifier coercions;
+  the rest of `src/paa/observability/` is exercised only indirectly
+  (`AGENTS.md:97`).
 - Deterministic validation is exercised via agents but has no dedicated suite.
 
 Missing tests ≠ proven defects; these are uncovered areas.

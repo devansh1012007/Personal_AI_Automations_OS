@@ -1,7 +1,7 @@
 # Persistence and storage
 
 PAA is a **polyglot storage substrate** with a parity lock: SQLite (default,
-mandatory) is the relational spine; Qdrant/Kuzu/Redis/MinIO are optional and
+mandatory) is the relational spine; Qdrant/Kuzu/Redis/the object store are optional and
 degrade to in-process fallbacks. Every substrate has an embedded default and a
 server variant selected by `PAA_STORAGE__backend_*` settings. Heavy dependencies
 are **never imported at module scope in a core path** (`AGENTS.md:59`).
@@ -14,7 +14,7 @@ are **never imported at module scope in a core path** (`AGENTS.md:59`).
 | Vector (fact recall) | Qdrant embedded if available | Qdrant server | Numpy brute-force | `storage/vector/__init__.py:get_vector_store` |
 | Graph (provenance) | Kuzu if available | — | SQLite recursive CTE | `storage/graph/__init__.py:get_graph_store` |
 | Queue (durable messages) | SQLite | Redis | — (SQLite is the only alternative) | `storage/queue/__init__.py:get_queue` |
-| Cold lake (immutable blobs) | Filesystem CAS | MinIO/S3 | — (filesystem is the only alternative) | `storage/coldlake/__init__.py:get_blob_store` |
+| Cold lake (immutable blobs) | Filesystem CAS | S3 | — (filesystem is the only alternative) | `storage/coldlake/__init__.py:get_blob_store` |
 
 Settings (`src/paa/config.py:55`):
 - `backend_relational` (`sqlite`\|`postgres`, default `sqlite`)
@@ -158,7 +158,7 @@ Degradation impact:
 - No vector → context gatherer semantic search returns `[]` (`context_agents.py:183`).
 - No graph → graph neighbours returns `[]` (`context_agents.py:214`).
 - No queue → orchestrator submit skips enqueue (`orchestrator.py:230`); daemon dispatch sleeps (`daemon.py:118`).
-- No MinIO → cold lake uses local CAS (`coldlake/__init__.py:66`).
+- No S3 → cold lake uses local CAS (`coldlake/__init__.py:66`).
 
 ## 8. Consistency and parity
 

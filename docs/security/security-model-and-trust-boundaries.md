@@ -31,7 +31,7 @@ never decide whether an action is safe** — that decision is deterministic Pyth
 - `Settings.api_host` validator (`_enforce_loopback`, `config.py:409`) refuses
   non-loopback binds unless `PAA_ALLOW_NON_LOOPBACK=1`. This is a **startup
   check**, not a deployment note (`api/app.py:11`).
-- Docker publishes no host ports for Postgres/Redis/Qdrant/MinIO; only the
+- Docker publishes no host ports for Postgres/Redis/Qdrant/the object store; only the
   ingestion API on `127.0.0.1:8787` (`AGENTS.md:132`).
 
 ### 3. Tamper-evident ledger

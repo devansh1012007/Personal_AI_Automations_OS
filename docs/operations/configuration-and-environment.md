@@ -59,11 +59,18 @@ that change `PAA_HOME` must call `reset_settings_cache()` (`config.py:495`).
 | `qdrant_url` | `None` | Qdrant server |
 | `kuzu_path` | `~/.paa/state/graph` | Graph store |
 | `cold_lake_path` | `~/.paa/cold_lake` | CAS |
-| `minio_endpoint` | `None` | MinIO cold lake |
-| `minio_bucket` | `paa-cold-lake` | MinIO |
-| `minio_secure` | `False` | MinIO TLS |
-| `minio_access_key_env` | `PAA_MINIO_ACCESS_KEY` | name only, never value |
-| `minio_secret_key_env` | `PAA_MINIO_SECRET_KEY` | name only, never value |
+| `s3_endpoint` | `None` | S3 cold lake (ADR-0026) |
+| `s3_bucket` | `paa-cold-lake` | S3 |
+| `s3_secure` | `False` | S3 TLS |
+| `s3_access_key_env` | `PAA_S3_ACCESS_KEY` | name only, never value |
+| `s3_secret_key_env` | `PAA_S3_SECRET_KEY` | name only, never value |
+
+The pre-ADR-0026 names — `minio_endpoint`, `minio_bucket`, `minio_secure`,
+`minio_access_key_env`, `minio_secret_key_env` — are still accepted and are
+normalised onto the `s3_*` fields, so a deployment written against them keeps
+working. `backend_coldlake` likewise takes `"s3"` or the alias `"minio"`. The
+*extra* is the one thing that is deliberately broken: `pip install
+'paa[minio]'` no longer works, and the extra is `paa[s3]`.
 | `redis_url` | `redis://127.0.0.1:6379/0` | Redis queue |
 | `vault_path` | `~/.paa/vault` | World model |
 | `workspace_root` | `~/.paa/workspaces` | Sandbox jail root |
@@ -185,7 +192,7 @@ that change `PAA_HOME` must call `reset_settings_cache()` (`config.py:495`).
 | `PAA_API_HOST` / `PAA_API_PORT` | pydantic-settings | API bind |
 | `ANTHROPIC_API_KEY` | `dotenv_value` via registry | Escalation provider key |
 | `OPENAI_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, … | `dotenv_value` via registry | Provider keys (named per `api_key_env`) |
-| `PAA_MINIO_ACCESS_KEY`, `PAA_MINIO_SECRET_KEY` | `dotenv_value` via registry | MinIO credentials (names in config) |
+| `PAA_S3_ACCESS_KEY`, `PAA_S3_SECRET_KEY` | `dotenv_value` via registry | S3 credentials (names in config) |
 
 Provider `api_key_env` tuples are defined per row in `registry.py:_SPECS`
 (e.g. `anthropic: ("ANTHROPIC_API_KEY",)`, `gemini: ("GEMINI_API_KEY",
@@ -199,7 +206,7 @@ Provider `api_key_env` tuples are defined per row in `registry.py:_SPECS`
 | Vector | Qdrant server | Qdrant embedded / numpy | ADR-0001–0005 |
 | Graph | Kuzu | Kuzu / SQLite CTE | ADR-0001–0005 |
 | Queue | Redis | SQLite | ADR-0001–0005 |
-| Cold lake | MinIO | Filesystem CAS | ADR-0004 |
+| Cold lake | S3 | Filesystem CAS | ADR-0004, ADR-0026 |
 | Sandbox | gVisor (runsc) | subprocess / WSL / Docker | ADR-0006 |
 | Model | vLLM + Llama-3-8B-Q8 | Ollama / local + escalation | ADR-0007, ADR-0015 |
 | Memory rule | ∫Memory·dt > Ceiling | Peak RSS | ADR-0009 |
@@ -216,8 +223,8 @@ Provider `api_key_env` tuples are defined per row in `registry.py:_SPECS`
 ## Deployment vs development
 
 - Docker deployment (`docs/deployment/docker.md`): `cp .env.example .env &&
-  docker compose up -d --build`. Postgres/Redis/Qdrant/MinIO publish no host
-  ports; only ingestion API on `127.0.0.1:8787`.
+  docker compose up -d --build`. Postgres/Redis/Qdrant/the object store
+  publish no host ports; only ingestion API on `127.0.0.1:8787`.
 - gVisor is opt-in, Linux-only (`docker compose -f docker-compose.yml -f
   docker-compose.gvisor.yml up -d`).
 - The laptop default is SQLite WAL + embedded fallbacks (idles at ~0MB,
@@ -237,8 +244,8 @@ Provider `api_key_env` tuples are defined per row in `registry.py:_SPECS`
 - `MemorySettings.prune_confidence_floor` appears unused in `src/` (decay uses
   domain `prune_floor`; curator's usage unverified). It may be reserved for
   callers or dead config.
-- `tests/validation/` is empty; there is no `tests/observability/`
-  (`AGENTS.md:97`).
+- `tests/validation/` is empty. `tests/observability/` now exists and
+  covers the run repository's identifier coercions (`AGENTS.md:97`).
 
 ## Related documents
 

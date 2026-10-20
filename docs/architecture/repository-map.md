@@ -156,7 +156,7 @@ responsibility and the files it contains. All paths are repository-relative.
 | `docs/EXTENSIBILITY_PIPELINES.md` | Pluggable agentic loops |
 | `docs/ROADMAP.md` | 10-phase roadmap |
 | `docs/VISION.md` | Product vision |
-| `docs/deployment/docker.md` | Docker/Postgres/MinIO deployment topology |
+| `docs/deployment/docker.md` | Docker/Postgres/S3 deployment topology |
 | `docs/adr/README.md` | ADR index (claims 0001–0020; only 0008, 0010, 0015, 0019, 0020 exist) |
 | `docs/adr/0008-idempotency-key-with-attempt.md` | Idempotency deviation |
 | `docs/adr/0010-head-projection-not-partial-index.md` | Head projection deviation |

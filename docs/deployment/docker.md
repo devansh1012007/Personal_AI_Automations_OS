@@ -1,16 +1,18 @@
 # Docker deployment — the server topology
 
 This runs PAA with the RFC's original stack: PostgreSQL, a Qdrant server, Redis,
-MinIO, and (optionally) a gVisor-contained sandbox. It is the counterpart to the
-laptop's embedded default. Both are the same codebase; the difference is
-configuration. See `docs/adr/0019-docker-server-deployment.md` for the design.
+an S3-compatible object store, and (optionally) a gVisor-contained sandbox. It
+is the counterpart to the laptop's embedded default. Both are the same codebase;
+the difference is configuration. See `docs/adr/0019-docker-server-deployment.md`
+for the design, and `docs/adr/0026-s3-cold-lake-substrate.md` for why the object
+store is the *S3 protocol* rather than one vendor's server.
 
 ## Laptop vs server: which to run
 
 | | Laptop (embedded, default) | Server (Docker, this doc) |
 |---|---|---|
 | Relational | SQLite (WAL), in-process | PostgreSQL 16 |
-| Cold lake | content-addressed files | MinIO (S3) |
+| Cold lake | content-addressed files | S3 (SeaweedFS) |
 | Queue | SQLite durable queue | Redis (AOF) |
 | Vector | numpy / embedded Qdrant | Qdrant server |
 | Sandbox | subprocess / WSL | Docker, optional gVisor `runsc` |
@@ -40,7 +42,7 @@ docker compose logs -f paa   # watch the runtime boot
 ```
 
 The runtime applies `schema_postgres.sql` on first connect and creates the
-MinIO bucket. The ingestion API is reachable at `http://127.0.0.1:8787` — and
+S3 bucket. The ingestion API is reachable at `http://127.0.0.1:8787` — and
 **only** there.
 
 Stop with `docker compose down`; add `-v` to also drop the named volumes (this
@@ -54,12 +56,14 @@ Security posture is loopback-first by construction:
   `127.0.0.1:8787`. `Settings._enforce_loopback` refuses a non-loopback
   `api_host` unless `PAA_ALLOW_NON_LOOPBACK=1` is set deliberately, so a typo
   cannot expose the runtime.
-- PostgreSQL, Redis, Qdrant and MinIO publish **no host ports**. They are
-  reachable only from the `paa` container over the internal `paa_net` bridge.
-  To administer MinIO, uncomment the loopback-bound console mapping in
-  `docker-compose.yml` (`127.0.0.1:9001:9001`) — never bind it to `0.0.0.0`.
+- PostgreSQL, Redis, Qdrant and the object store publish **no host ports**.
+  They are reachable only from the `paa` container over the internal `paa_net`
+  bridge. The object store's console is not published at all: the `seaweedfs`
+  service in `docker-compose.yml` binds nothing, so there is no port mapping to
+  uncomment — administer it from inside the network, or bind one deliberately
+  and never to `0.0.0.0`.
 - Secrets live in `.env` (git-ignored, `.dockerignore`-d). Config stores only
-  the *names* of the env vars that hold MinIO credentials; the values never
+  the *names* of the env vars that hold the S3 credentials; the values never
   enter config or the ledger.
 
 `paa_net` is not marked `internal` because the runtime needs outbound access for
@@ -273,6 +277,195 @@ actually get" is the question the row exists to answer, and answering
 
 On a non-Linux host the override is inert: the runtime reports `NAMESPACE` (or
 degrades to a weaker backend) and says so in the logs.
+
+## What still needs root, and why
+
+Four things in this deployment cannot be finished without `sudo`. They are
+collected here because each one is a *host* fact, and each one has a
+different failure mode if it is skipped: a silently weaker isolation level, a
+measurement nobody has taken, a stray directory nobody can remove, and a test
+suite that fails for a reason that has nothing to do with the code.
+
+### 1. Registering `runsc` with the daemon
+
+The binary is installed and the daemon does not know about it. On this host:
+
+```bash
+$ ls -l ~/.local/bin/runsc
+-rwxr-xr-x 1 devansh devansh 56950136 … runsc
+$ ~/.local/bin/runsc --version
+runsc version release-20261012.0
+$ docker info --format '{{json .Runtimes}}' | python3 -c 'import json,sys; print(list(json.load(sys.stdin)))'
+['io.containerd.runc.v2', 'runc']
+```
+
+So: the runtime is present, and the daemon offers `runc` and
+`io.containerd.runc.v2` and **not** `runsc`. Three commands close that.
+
+```bash
+sudo install -m 0755 ~/.local/bin/runsc /usr/local/bin/runsc
+sudo cp deploy/docker/daemon.json /etc/docker/daemon.json    # MERGE, do not overwrite
+sudo systemctl restart docker
+```
+
+**Why the copy.** `deploy/docker/daemon.json` points at
+`/usr/local/bin/runsc`, and the daemon runs as root with a minimal `PATH`
+(`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`). The copy in
+`~/.local/bin` is on the *operator's* `PATH` and on nobody else's, so
+without the copy the daemon cannot exec the runtime at all. The installed
+copy is deliberately not on the operator's `PATH` either: `runsc` is the
+daemon's runtime, and the operator drives it through `docker run
+--runtime=runsc`.
+
+**Why "merge, do not overwrite".** On this host `/etc/docker/daemon.json`
+does not exist, so today the copy would *create* it. The rule still stands:
+the daemon refuses to start on a top-level key it does not recognise — which
+is why the file carries no comments and why the explanation lives in
+`deploy/docker/README.md` — and a host that already has a daemon.json
+usually has settings worth keeping (a registry mirror, a log driver, a
+different storage driver). `cp` over it would drop them silently, and the
+daemon would come back up with different behaviour than the operator had.
+
+**Why the restart.** The daemon reads `daemon.json` **once, at startup**.
+There is no reload and no SIGHUP for the runtime registry: without the
+restart the file is a dead file and `docker info` will still show only
+`runc`. The restart is the step that makes the file take effect — and it is
+also the step that interrupts the running containers, so it is the one
+command here with a visible cost.
+
+**How to know it worked.** Two commands, and they answer different questions:
+
+```bash
+docker info --format '{{json .Runtimes}}'    # must list "runsc"
+docker run --rm --runtime=runsc hello-world
+```
+
+The first reads the daemon's own view of the runtimes it will accept. This
+is not a formality: the runtime's logic keys on *exactly* this fact — the
+backend uses `runsc` only when the daemon reports it registered, and reports
+`NAMESPACE` rather than `VM` when it does not — so `docker info` is the
+same fact `paa doctor` reports, read from the daemon instead of through the
+runtime.
+
+The second is the end-to-end proof, and it is not redundant: **registration
+is necessary but not sufficient.** gVisor's `runsc` needs the host Unix socket
+passed into the sandbox explicitly (the `--hostuds` runtimeArgs), and it
+needs the host's namespaces and `/proc` to be what it expects. A
+`hello-world` under `--runtime=runsc` is the cheapest way to find out which
+of those is missing, and none of it is fixable from the application code.
+
+### 2. The cgroup measurement under `runsc`
+
+The memory ceiling is enforced by the runtime, and the two runtimes enforce
+it differently. Under `runc` the measurement is done: `--memory 256m` gives
+exit 137, `oom_kill=1`, and `memory.peak == memory.max` in the cgroup v2
+`memory.events`.
+
+Under gVisor it is not. `runsc` emulates the cgroup interface in the
+sandbox's own user space, and its accounting is reported differently. The
+runtime is honest about this — `SandboxResult.memory_enforcement` names the
+mechanism that was actually in force, and the isolation level follows the
+*effective* runtime — but the **number** under `runsc` has not been taken on
+this host, and until it is, the ledger's `"gvisor"` means "gVisor did the
+accounting", not "the cap was enforced to the byte".
+
+Measuring it needs `runsc` registered, so it is blocked behind step 1:
+
+```bash
+docker run --rm --runtime=runsc --memory 256m --memory-swap 256m \
+  alpine:3 sh -c 'dd if=/dev/zero of=/tmp/x bs=1M count=512 2>/dev/null'
+# then, from the host:
+docker inspect --format '{{.State.OOMKilled}} {{.State.ExitCode}}' <container>
+```
+
+This is the last measurement the container phase needs, and it is a
+*measurement* rather than a fix: nothing in the code changes, but the claim
+the ledger makes about the ceiling becomes one that was taken rather than one
+that was inferred.
+
+### 3. The stray root-owned `/data` on the host
+
+```bash
+$ ls -ld /data /data/workspaces /data/workspaces/task-1
+drwxr-xr-x 3 root root 4096 /data
+drwxr-xr-x 3 root root 4096 /data/workspaces
+drwxr-xr-x 2 root root 4096 /data/workspaces/task-1     # empty
+```
+
+**What it is.** The host-side residue of a sandbox workspace whose path was
+never translated. The runtime's workspace root is `/data/workspaces/<task-id>`
+*inside* the runtime container (`PAA_HOME=/data`); on the host it is
+`${PAA_DATA_DIR}/workspaces/<task-id>`. When the `host_path_map` is missing
+or wrong, the daemon is handed the container-side path as a bind-mount
+source — and **the Docker daemon creates a missing bind-mount source as
+`root:root 0755`**. So a container-side path leaks onto the host's root as
+a root-owned directory. `/data/workspaces/task-1` has exactly that shape:
+`task-1` is a task id, `workspaces` is the runtime's workspace root, and
+`/data` is the runtime's `PAA_HOME`.
+
+**What is deleted.** Three empty directories. The tree is 12 KB in total and
+contains no files.
+
+**What breaks if it is deleted.** Nothing in this repository. No container on
+this host bind-mounts a host `/data` — every `/data` in the mount table is a
+*container-side destination* (`/tmp/opencode/paa-stack-data -> /data`, and
+three named volumes -> `/data` for seaweedfs and redis). The runtime's own
+state is at `${PAA_DATA_DIR:-/srv/paa/data}`, and the stack's is at
+`/tmp/opencode/paa-stack-data`.
+
+**What is at risk.** A host-level `/data` is a common convention for a
+machine's data partition, and *that* is the whole reason this needs the
+operator rather than the agent: something else on this host may own a
+`/data`, and nothing here can see it. `rm -rf` on it would destroy whatever
+that is, irreversibly.
+
+**So use `rmdir`, not `rm -rf`.** `rmdir` refuses to remove a non-empty
+directory, so it cannot delete data even if something else owns the path:
+
+```bash
+sudo rmdir /data/workspaces/task-1 /data/workspaces /data
+```
+
+If the operator knows the host has no other `/data`, `rm -rf` is equivalent —
+but `rmdir` is the form that cannot be wrong.
+
+### 4. The six pre-existing test failures
+
+The suite has six failures that are **not** defects in the code, and they are
+the accepted baseline: the gate is "the failure set must not change", not
+"the suite must be green".
+
+The cause is one deliberate design decision meeting one fact about this
+host. The sandbox builds its child environment **from scratch** —
+`build_child_env` in `paa/sandbox/base.py` — with
+
+```
+PATH=/usr/local/bin:/usr/bin:/bin
+```
+
+and deliberately *not* the host's `PATH`, because the host's `PATH` leaks the
+developer's toolchain and can place an attacker-writable directory ahead of
+the system ones. On this host `python` is at `~/.local/bin/python` (a
+symlink to `/usr/bin/python3`); there is **no** `/usr/bin/python` and no
+`/usr/local/bin/python`. So a plan step that runs `python -c "…"` cannot
+find an interpreter, the task never reaches `COMMITTED`, and the six
+assertions that expect `COMMITTED` fail. The ledger, the CLI and the
+recovery sweep are all behaving correctly.
+
+On a stock Ubuntu with `python-is-python3` installed, `/usr/bin/python`
+exists, the sandbox's minimal `PATH` finds it, and the same six tests pass.
+That is a one-line host fix:
+
+```bash
+sudo apt install python-is-python3
+```
+
+The two alternatives are *not* fixes. Widening the sandbox's `PATH` to
+include `~/.local/bin` would undo the security property the minimal `PATH`
+exists for, and changing the tests to use `python3` would change what they
+exercise — the point of the step is to run a command *by name* in a minimal
+environment. Neither belongs in a change that is not about the sandbox's
+environment.
 
 ## The data directory, and why it is a bind mount
 

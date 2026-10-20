@@ -1144,6 +1144,18 @@ changed the design, so they are recorded here rather than only in the ADR):
 the first two steps; the third is the cgroup measurement, which needs the daemon
 restarted with `runsc` registered.
 
+**`docs/deployment/docker.md` has the full rationale for each of them** — why the
+binary is copied rather than left on the operator's `PATH`, why the daemon
+configuration is *merged* rather than overwritten, what each command actually
+changes, how to tell that it worked, and what the cgroup measurement under
+`runsc` is for. It also covers the two other root-gated things on this host:
+the stray root-owned `/data` left by a sandbox workspace whose path was never
+translated (and why `rmdir`, not `rm -rf`, is the safe form), and the six
+pre-existing test failures, which are the *host* rather than the code — the
+sandbox builds its child environment with a deliberate minimal `PATH`, and on a
+host whose `python` is user-local that `PATH` contains no interpreter. The fix
+is one line on the host: `sudo apt install python-is-python3`.
+
 ```bash
 sudo install -m 0755 ~/.local/bin/runsc /usr/local/bin/runsc   # step 1
 sudo cp deploy/docker/daemon.json /etc/docker/daemon.json   # step 2 — merge, do not overwrite blindly
@@ -1178,6 +1190,14 @@ The work is tracked as **W3–W8** and each item carries its own gate
 (`ruff` → `mypy` → `pytest`, with the failure set unchanged) and its own independent
 review. The ordering below is the ordering they must be done in: each one closes a
 class of defect the previous one made visible.
+
+**W1 and W2 — done.** The substrate contract, the neutral error vocabulary, the
+versioned migration list and the identifier-coercion sweep landed in
+`feat(storage): a substrate contract, a neutral error vocabulary, and a migration list`,
+after two rounds of independent review. The container work landed beside it in
+`feat(deploy): the daemon holds the Docker socket; tool containers run under gVisor`.
+The gate is unchanged across both: ruff 69, mypy 108 (eight below the 116 at the
+previous HEAD), and a pytest failure set byte-identical to the baseline.
 
 #### W3 — Entity resolution is the same answer on both substrates
 
@@ -1253,12 +1273,15 @@ runtime can reach a provider by either route.
 
 #### W4b — The `s3` rename is finished
 
-**Status: the code is done; the documentation is not.** The `minio` extra is now `s3`
-(the rename is deliberately breaking: `pip install 'paa[minio]'` no longer works), the
-legacy `minio_*` configuration names still resolve, and `ADR-0026` records it. What is
-left is the documentation that still says MinIO in six places in
-`docs/deployment/docker.md` — including one that tells the operator to uncomment a
-port mapping that does not exist.
+**Status: done.** The `minio` extra is now `s3` (the rename is deliberately
+breaking: `pip install 'paa[minio]'` no longer works), the legacy `minio_*`
+configuration names still resolve, and `ADR-0026` records it. The
+documentation that still said MinIO has been brought in line with the code:
+the deployment guide, the configuration reference, the architecture and
+operations documents, and the two interfaces documents that name the
+settings fields. The one that told the operator to uncomment a port mapping
+that does not exist now says the object store's console is not published at
+all.
 
 #### W5 — The container's start is not charged to the work
 

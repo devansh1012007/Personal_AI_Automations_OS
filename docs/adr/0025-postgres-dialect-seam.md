@@ -222,8 +222,21 @@ seam would collapse to a handful of `if` statements and the migration list to a 
 Entity resolution uses FTS5's trigram matcher on one engine and `pg_trgm` on the
 other, and the candidate sets the two produce are not the same set — the dialect seam
 covers the SQL, not the semantics, and the semantics are the subject of a separate
-change. The same is true of the representation of an id: the two engines store
-different bytes for the same logical id, and the coercion that hides it is applied at
-the read sites rather than at the write site. (The trace id is the exception that
-has been closed: it is coerced at the *write* site, so a row carries the canonical
-hyphenated form whichever substrate wrote it.)
+change. (That change is W3 in the substrate track in `docs/MCP_AND_PLUGINS.md`: the
+decision is taken — the database must return a candidate set that is a *proven
+superset* of the set the Python acceptance gate would accept, and the gate then
+decides in Python, identically on both engines — and the implementation has not
+started.)
+
+The representation of an id is the other half, and it is closed: the coercion lives
+in `paa.core.types` and is applied at the read sites, so a repository never has to
+know which substrate produced the row. The trace id is coerced at the *write* site
+as well, so a row carries the canonical hyphenated form whichever substrate wrote
+it, and the migration rewrites the rows that were written before that.
+
+**The suites that would have caught this are the point.** The whole change set was
+invisible to the suite, because the suite ran one substrate. The live-server
+contract suite (`tests/storage/test_postgres_contract.py`, gated on
+`PAA_TEST_POSTGRES_DSN`) is what makes the *contract* — not the mechanics —
+testable on both substrates, and `tests/storage/test_postgres_migrations.py` is
+what makes the migration machinery testable at all.

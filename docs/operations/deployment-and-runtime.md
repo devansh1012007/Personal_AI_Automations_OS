@@ -5,7 +5,7 @@ PAA has two deployment topologies documented and implemented:
 1. **Laptop/default** — SQLite WAL + embedded fallbacks (Qdrant embedded,
    Kuzu/SQLite CTE, SQLite queue, local CAS). Idles at ~0MB RAM. No Docker
    required (`README.md:59`).
-2. **Docker/server** — Postgres + Qdrant + Redis + MinIO via compose; only the
+2. **Docker/server** — Postgres + Qdrant + Redis + S3 via compose; only the
    ingestion API on `127.0.0.1:8787` publishes a port (`docs/deployment/docker.md`,
    `AGENTS.md:132`).
 
@@ -15,7 +15,7 @@ PAA has two deployment topologies documented and implemented:
 cp .env.example .env && docker compose up -d --build
 ```
 
-- Postgres, Redis, Qdrant, MinIO publish **no host ports**.
+- Postgres, Redis, Qdrant and the object store publish **no host ports**.
 - gVisor opt-in, Linux-only:
   `docker compose -f docker-compose.yml -f docker-compose.gvisor.yml up -d`.
 - Runtime reports `NAMESPACE` instead of `VM` when `runsc` isn't registered
