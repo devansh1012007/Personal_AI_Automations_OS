@@ -26,15 +26,37 @@ subprocess backend (`base.py:26`).
   read_only_mounts, env (explicit allowlist), memory_mb, cpu_cores,
   timeout_seconds, allow_network (default False), recursion_depth,
   parent_task_id. `from_profile()` builds limits from `MODALITY_PROFILES`
-  (`:190`). `_reject_ambient_env_smell` trips on `env=dict(os.environ)`
-  (`:170`).
+  (`:345`). `_reject_ambient_env_smell` trips on `env=dict(os.environ)`
+  (`:326`). Two fields carry containment decisions the caller makes
+  explicitly:
+  - `network` — the Docker network to attach to. `None` means the backend's
+    default (`none` when the network is denied, the daemon's *default bridge*
+    when it is allowed — which reaches the host and the internet, so it is
+    more than "networked" implies).
+  - `exec_tmpfs` — extra exec-capable scratch paths. `/tmp` is `noexec` on
+    purpose; npm's cache holds executable shims, so an `npx`-started server
+    fails with exit 126 on a noexec mount and gets its own path instead.
 - `SandboxResult`: total outcome — a killed run still produces a result, not an
-  exception (`:217`). `ok`, `to_payload()` (ledger-safe, stdout/stderr capped
+  exception (`:372`). `ok`, `to_payload()` (ledger-safe, stdout/stderr capped
   at 2000 chars).
 - `resolve_workspace()` / `assert_inside_workspace()`: resolve paths (collapse
-  `..`, follow symlinks) then jail (`:282`, `:305`).
+  `..`, follow symlinks) then jail (`:439`, `:462`).
 - `build_child_env()`: builds from empty; never inherits `os.environ`;
-  Windows bootstrap keys inherited by value only when present (`:337`).
+  Windows bootstrap keys inherited by value only when present (`:494`).
+- `Sandbox.diagnose()`: async, returns the facts for `paa doctor`. The base
+  implementation returns `describe()` — the backend's identity and its
+  isolation level — because a backend that reports *nothing* renders as
+  "none (dry-run)", which is false for every backend except the dry-run one:
+  a subprocess backend really does run the workload, on the host, at
+  `PROCESS` isolation. It must never raise: a diagnostic that throws is a
+  diagnostic that lies.
+- `collect_sandbox_facts(backend)`: the one collector both surfaces use, so
+  a failed diagnostic is normalised identically by the CLI and the TUI.
+- `sandbox_report_rows(facts)`: the one renderer both surfaces use, so the
+  two cannot drift into disagreeing about the same host.
+- `Sandbox.describe()`: sync identity — backend, isolation level, rank,
+  `real_containment`. `DockerSandbox` overrides it to add the container
+  facts (`container_runtime`, `runtime_available`, `image`).
 
 ### Backends
 - `SubprocessSandbox` — PROCESS isolation. Windows Job Object memory caps +
@@ -45,6 +67,15 @@ subprocess backend (`base.py:26`).
   available).
 - `DockerSandbox` — NAMESPACE (VM if `runsc` registered); `--read-only`,
   tmpfs, cap-drop ALL, no-new-privileges, pids-limit, cgroups.
+  `runtime_available` is a **tri-state**: `True` / `False` / `None`
+  ("could not determine" — the probe failed, which is not the same as "the
+  daemon does not have it" and must not be reported as though it were).
+  `diagnose()` probes the daemon and reports whether the requested runtime is
+  actually registered, whether the daemon is reachable, and whether the image
+  the sandbox would run is present. `--user` is derived from the workspace's
+  owner, and the workspace path is translated through
+  `SandboxSettings.host_path_map` because the daemon resolves bind mounts
+  against the *host*.
 - `DryRunSandbox` — NONE; records what would run, executes nothing (planning
   mode + tests).
 
@@ -54,9 +85,17 @@ subprocess backend (`base.py:26`).
 and takes first healthy; unreachable fallback raises `RuntimeError`
 (subprocess always healthy) (`:98`).
 
-### `_acquire_sandbox` (`runtime.py:382`)
-5s probe timeout (`asyncio.wait_for(..., timeout=5.0)`) then fallback to
-subprocess — a cold WSL VM can take 10–15s; boot must not wait.
+### `_acquire_sandbox` (`runtime.py:409`)
+A bounded probe (`asyncio.wait_for(..., timeout=_SANDBOX_PROBE_BOUND_SECONDS)`,
+30 s) then fallback to subprocess. The bound is deliberately **longer** than the
+Docker backend's own probe timeout (20 s), so the inner probe is what gives out
+first and it can kill the daemon child it started — a cancelled wait would
+leave that child running. The bound still exists so a wedged daemon cannot
+stall the boot indefinitely.
+
+The acquired backend is stored on the runtime as `Runtime.sandbox`, so the
+diagnostic surface can ask the sandbox what containment it would deliver
+instead of reaching into the worker's private `_sandbox`.
 
 ### `recursion.py` — RecursionGuard
 Depth, node, cycle bounds for delegation (RFC §11). Cycle detection via
@@ -83,7 +122,7 @@ enforcement (ADR-0009); heartbeat liveness with miss tolerance
 |---|---|---|---|
 | `WorkerCell` → `Sandbox` | `run(spec)` | Execute step | `reasoning.py:456` |
 | `PytestRunner` → `Sandbox` | `run(spec)` | Run tests | `validation/test_runner.py` |
-| `Runtime._acquire_sandbox` → `get_sandbox` | select backend | Compose runtime | `runtime.py:394` |
+| `Runtime._acquire_sandbox` → `get_sandbox` | select backend | Compose runtime | `runtime.py:409` |
 | `ClawHubAdapter` → `Sandbox` | `run(SandboxSpec)` | Run skill entrypoint | `skills/adapters/claw_hub.py:435` |
 | `RecursionGuard` → `MODALITY_PROFILES` | read ceilings | Depth/node bounds | `recursion.py:129` |
 
@@ -104,7 +143,7 @@ enforcement (ADR-0009); heartbeat liveness with miss tolerance
   raises; `run()` raises `SandboxError` if unavailable.
 - `sample_rss_mb` returns `(None, ...)` when no tier works — memory ceiling
   not enforced, run proceeds (`watchdog.py`).
-- `_acquire_sandbox` probe timeout → subprocess fallback (`runtime.py:382`).
+- `_acquire_sandbox` probe timeout → subprocess fallback (`runtime.py:430`).
 
 ## Modification impact
 
@@ -112,7 +151,7 @@ enforcement (ADR-0009); heartbeat liveness with miss tolerance
   (`__init__.py`).
 - Changing `IsolationLevel` semantics affects callers branching on
   `is_real_containment`.
-- Tests: `tests/sandbox/` (39 tests per README).
+- Tests: `tests/sandbox/` (134 tests).
 
 ## Known gaps
 

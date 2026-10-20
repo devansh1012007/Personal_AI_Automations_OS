@@ -12,8 +12,33 @@
 #         docker info --format '{{json .Runtimes}}'   # must list "runsc"
 #     Install per https://gvisor.dev/docs/user_guide/install/ and add to
 #     /etc/docker/daemon.json:
-#         { "runtimes": { "runsc": { "path": "/usr/local/bin/runsc" } } }
+#         { "runtimes": { "runsc": {
+#             "path": "/usr/local/bin/runsc",
+#             "runtimeArgs": [
+#                 "--hostuds=/var/run/docker.sock",
+#                 "--hostuds=/run/docker.sock" ] } } }
 #     then `systemctl restart docker`.
+#
+#   * NOTE the `runtimeArgs` above. gVisor does not let a container open a
+#     host Unix socket just because it was bind-mounted in — the socket has to
+#     be named explicitly, or the `docker` client inside the `paa` container
+#     fails with a permission error that reads like a socket problem and not
+#     like a gVisor problem. This is the single most common way to get the
+#     gVisor path half-working.
+#
+#     Both socket spellings are listed because /var/run is a symlink to /run
+#     on the host but not necessarily inside the container, and gVisor
+#     matches the hostuds path against the mount namespace it is given.
+#     deploy/docker/daemon.json carries the same list — keep them in step.
+#
+#   * The `paa` daemon container itself runs under gVisor here. gVisor
+#     implements its own syscall policy, and Docker's default seccomp profile
+#     can conflict with it. If the container fails to start with a seccomp
+#     error, add:
+#         security_opt:
+#           - seccomp=unconfined
+#     That is safe *because* gVisor is the syscall boundary — Docker's seccomp
+#     filter is redundant once Sentry is interposing.
 #
 # What it changes:
 #   * Tells the runtime to request `--runtime=runsc` for the throwaway worker
@@ -21,12 +46,14 @@
 #     DockerSandbox only *uses* runsc when the daemon reports it is registered,
 #     and reports VM-level isolation only then — it never overstates containment
 #     (see paa/sandbox/docker_backend.py and tests/sandbox/test_docker_backend.py).
-#   * Optionally runs the paa container itself under runsc. This is defence in
-#     depth for the daemon process; the security-critical boundary is the worker
+#   * Runs the paa container itself under runsc. This is defence in depth for
+#     the daemon process; the security-critical boundary is the worker
 #     containers, which the runtime controls via the setting above.
 #
 # NOTE: `runtime:` here applies to the *paa* container. The workers it spawns get
 # their runtime from PAA_SANDBOX__CONTAINER_RUNTIME, which is why both are set.
+# The workers are started by the *host's* dockerd, so they run under the
+# host's runsc directly — gVisor is not nested inside gVisor.
 # =====================================================================
 
 services:
@@ -36,7 +63,10 @@ services:
     runtime: runsc
     environment:
       # The worker containers the runtime launches will request runsc.
-      PAA_SANDBOX__CONTAINER_RUNTIME: runsc
+      # Interpolated, so an operator can still choose: the value in this
+      # block takes precedence over `env_file`, so a literal would be
+      # un-overridable.
+      PAA_SANDBOX__CONTAINER_RUNTIME: ${PAA_SANDBOX__CONTAINER_RUNTIME:-runsc}
       # Pin the sandbox backend to docker so an "auto" probe cannot silently
       # degrade to a weaker backend on a host where runsc is expected.
-      PAA_SANDBOX__BACKEND: docker
+      PAA_SANDBOX__BACKEND: ${PAA_SANDBOX__BACKEND:-docker}

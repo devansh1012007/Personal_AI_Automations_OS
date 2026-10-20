@@ -38,8 +38,17 @@ Deviations fall into three classes:
 | [0021](0021-transport-retry.md) | Transport retry for transient model-endpoint failures | **Correctness** |
 | [0022](0022-coder-memory-writes.md) | The coder agent's memory writes go through the cold lake | **Correctness** |
 | [0023](0023-like-pattern-escaping.md) | Every `LIKE` pattern that interpolates text comes from one helper | **Correctness** |
+| [0024](0024-docker-socket-and-gvisor-containment.md) | The daemon holds the Docker socket; tool containers run under gVisor | Direction |
 | [0025](0025-postgres-dialect-seam.md) | The relational substrates are interchangeable only through a dialect seam | **Correctness** |
 | [0026](0026-s3-cold-lake-substrate.md) | The cold lake's blob substrate is S3, not MinIO | **Correctness** |
+
+> ADR 0027 is reserved for the tool-containment and MCP client layer
+> (`docs/MCP_AND_PLUGINS.md`). It is not indexed here because it does not
+> exist yet: an ADR records a decision that has been made, and the
+> decisions that will fill it have not been taken. The container
+> containment that *has* been decided — the Docker socket, gVisor, the
+> `--user` invariant — is recorded in
+> [0024](0024-docker-socket-and-gvisor-containment.md).
 
 ## Template
 

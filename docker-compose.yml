@@ -5,12 +5,19 @@
 #   postgres  relational substrate + ledger (backend_relational=postgres)
 #   qdrant    vector recall server        (backend_vector=qdrant_server)
 #   redis     dispatch fabric, AOF on     (backend_queue=redis)
-#   minio     cold-lake object store       (backend_coldlake=minio)
+#   seaweedfs cold-lake object store       (backend_coldlake=s3)
+#
+# Every image is pinned by digest, not by tag. A tag is a promise about a
+# moving target, and this repository has already been bitten by it: MinIO's
+# community distribution is archived upstream and its registry path now
+# answers 401 for anonymous pulls, so a deployment naming `minio/minio:latest`
+# could not be reproduced at all. A digest names one image, forever.
+# `deploy/fetch-images.sh` fetches them, with retries and a resume.
 #
 # Security posture:
 #   * All backing services live only on the internal `paa_net` bridge. None of
 #     them publish a host port, so nothing but the `paa` container can reach
-#     Postgres, Redis, Qdrant or MinIO.
+#     Postgres, Redis, Qdrant or the object store.
 #   * The only host-exposed port is the runtime's ingestion API, bound to
 #     127.0.0.1 — loopback only, matching Settings._enforce_loopback. There is
 #     no public edge (RFC §6 "no public ingestion").
@@ -24,6 +31,36 @@
 name: paa
 
 services:
+  # Give the runtime's state directory to the runtime's own user, without
+  # asking the operator for sudo.
+  #
+  # Docker creates a *missing* bind-mount source as root:root 0755, and the
+  # runtime container runs as uid 10001 — so on a fresh host the container
+  # cannot write its own state directory and crash-loops with a
+  # PermissionError before a single agent is wired. The usual fix is
+  # `sudo chown 10001:10001 $PAA_DATA_DIR` on the host, which is a root
+  # step in the middle of an unprivileged deployment.
+  #
+  # This service does the chown *inside* a container, as root, over the same
+  # bind mount, before the runtime starts. It runs once, exits, and is
+  # required to have succeeded — so a failure is loud rather than a
+  # crash-looping runtime.
+  paa-init:
+    image: paa/runtime:4.1
+    user: "0:0"
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -eu
+        mkdir -p /data
+        chown -R ${PAA_UID:-10001}:${PAA_GID:-10001} /data
+        chmod 0750 /data
+    volumes:
+      - ${PAA_DATA_DIR:-/srv/paa/data}:/data
+    restart: "no"
+    networks:
+      - paa_net
+
   paa:
     build:
       context: .
@@ -34,7 +71,27 @@ services:
     environment:
       # --- backend selection: the server topology ---
       PAA_HOME: /data
-      PAA_API_HOST: 127.0.0.1
+      # The API binds 0.0.0.0 *inside the container*, and the published port
+      # below is still 127.0.0.1 — so the host exposure is loopback-only,
+      # exactly as Settings._enforce_loopback requires.
+      #
+      # It has to be 0.0.0.0 rather than 127.0.0.1 because of how Docker
+      # publishes a port: the DNAT rule rewrites the destination to the
+      # container's address on its network, and a socket bound to the
+      # container's own loopback does not accept a packet addressed to that
+      # interface. The result is a published port that accepts a connection
+      # and then resets it — the API is up, the logs say so, and nothing can
+      # reach it.
+      #
+      # What this does expose: the API answers on the container's two
+      # bridges, `paa_net` and `paa_tools`. The runtime is on `paa_tools`
+      # because an HTTP-transport MCP server has to be reachable there
+      # (docs/MCP_AND_PLUGINS.md §3.13), so a tool container could in
+      # principle reach the ingestion API. That is a real gap, and it is the
+      # tool layer's authorisation boundary to close — it is listed as such
+      # in the plan's validation section, not quietly left as a footnote.
+      PAA_API_HOST: 0.0.0.0
+      PAA_ALLOW_NON_LOOPBACK: "1"
       PAA_API_PORT: "8787"
       PAA_STORAGE__BACKEND_RELATIONAL: postgres
       PAA_STORAGE__POSTGRES_DSN: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
@@ -42,29 +99,91 @@ services:
       PAA_STORAGE__REDIS_URL: redis://redis:6379/0
       PAA_STORAGE__BACKEND_VECTOR: qdrant_server
       PAA_STORAGE__QDRANT_URL: http://qdrant:6333
-      PAA_STORAGE__BACKEND_COLDLAKE: minio
-      PAA_STORAGE__MINIO_ENDPOINT: http://minio:9000
-      PAA_STORAGE__MINIO_BUCKET: ${MINIO_BUCKET:-paa-cold-lake}
-      PAA_STORAGE__MINIO_SECURE: "false"
+      PAA_STORAGE__BACKEND_COLDLAKE: s3
+      # The object store is S3 — the *protocol* — so the endpoint is a
+      # setting, not a constant. The same client speaks to MinIO, SeaweedFS,
+      # RustFS or anything else that implements the protocol, and the test
+      # suite runs the same lifecycle against more than one of them.
+      PAA_STORAGE__S3_ENDPOINT: http://seaweedfs:8333
+      PAA_STORAGE__S3_BUCKET: ${S3_BUCKET:-paa-cold-lake}
+      PAA_STORAGE__S3_SECURE: "false"
       # Credential indirection: config stores the *names*, these env vars hold
-      # the values (defaults PAA_MINIO_ACCESS_KEY / PAA_MINIO_SECRET_KEY).
-      PAA_MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
-      PAA_MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      # the values (defaults PAA_S3_ACCESS_KEY / PAA_S3_SECRET_KEY).
+      PAA_S3_ACCESS_KEY: ${S3_ROOT_USER}
+      PAA_S3_SECRET_KEY: ${S3_ROOT_PASSWORD}
       # Stock namespaces by default; the gvisor override flips this to runsc.
-      PAA_SANDBOX__CONTAINER_RUNTIME: runc
+      #
+      # The value is *interpolated* rather than hard-coded, because a
+      # variable in this block takes precedence over `env_file` — a literal
+      # here would be un-overridable from `.env`, and the operator's only
+      # way back would be editing this file. The default is the safe one.
+      PAA_SANDBOX__CONTAINER_RUNTIME: ${PAA_SANDBOX__CONTAINER_RUNTIME:-runc}
+      # Pin the backend to docker, for the same reason the gvisor override
+      # does. "auto" degrades to the subprocess backend when the Docker
+      # probe fails — and the most likely reason it fails here is the
+      # socket's GID being wrong, which is precisely the misconfiguration
+      # this file is responsible for making possible. Left on "auto", that
+      # turns containerised plan steps into host-process execution while the
+      # deployment looks healthy. Pinning it makes the failure loud.
+      PAA_SANDBOX__BACKEND: ${PAA_SANDBOX__BACKEND:-docker}
+      # The Docker daemon resolves a bind mount's source against the HOST
+      # filesystem, but the runtime knows /data. Without this translation the
+      # sandbox backend would ask the daemon to mount a path that does not
+      # exist on the host — and Docker would silently create an empty,
+      # root-owned directory there instead of failing.
+      PAA_SANDBOX__HOST_PATH_MAP: "/data=${PAA_DATA_DIR:-/srv/paa/data}"
     ports:
       # Loopback only. The runtime is single-user and local-first.
       - "127.0.0.1:8787:8787"
     volumes:
-      - paa_data:/data
+      # A *bind* mount, not a named volume, and the reason is the sandbox
+      # backend: the Docker daemon has to be told a real path on the host to
+      # mount the task workspace, and a named volume's host path is not
+      # knowable from inside the runtime. PAA_DATA_DIR names the host side;
+      # it must exist and be writable by uid 10001 — see
+      # docs/deployment/docker.md.
+      - ${PAA_DATA_DIR:-/srv/paa/data}:/data
+      # The Docker socket. The runtime daemon launches the throwaway worker
+      # containers the sandbox backend runs commands in, and — once the tool
+      # layer lands — the MCP-server and plugin containers.
+      #
+      # THIS IS HOST ROOT, and it is accepted deliberately rather than
+      # overlooked: anyone who can talk to this socket can start a privileged
+      # container on the host. The mitigations are that the daemon is the only
+      # holder, the daemon runs as a non-root user with no capabilities of its
+      # own, and the containers it launches are hardened (--read-only,
+      # --cap-drop ALL, --no-new-privileges, --network none whenever the
+      # network is denied). See
+      # docs/adr/0024 for the decision and its alternatives.
+      #
+      # Under gVisor the socket also needs `--hostuds` in the daemon's runtime
+      # registration — see docker-compose.gvisor.yml. Both socket spellings
+      # are listed there, because /var/run is a symlink to /run on the host
+      # but not necessarily inside the container.
+      - /var/run/docker.sock:/var/run/docker.sock
+    # The socket is root:<docker-gid> mode 0660. The daemon user is uid 10001
+    # and is not in the host's docker group, so the GID is added as a
+    # supplementary group. It is a host property, so it is configuration:
+    #   DOCKER_GID=$(stat -c %g /var/run/docker.sock)
+    group_add:
+      - "${DOCKER_GID:-999}"
     networks:
-      - paa_net
+      # Priority fixes which bridge supplies the default route. `paa_net` is
+      # the one with external routing (the runtime needs egress for model
+      # escalation); `paa_tools` is internal, so it must not become the
+      # default or the daemon would lose its egress.
+      paa_net:
+        priority: 100
+      paa_tools:
+        priority: 10
     depends_on:
+      paa-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-      minio:
+      seaweedfs:
         condition: service_healthy
       qdrant:
         # Qdrant's image is distroless (no shell/curl), so a container-side
@@ -73,7 +192,7 @@ services:
         condition: service_started
 
   postgres:
-    image: postgres:16
+    image: postgres:16@sha256:ca0bd484cb98bf4b24eb1010e73fb3fcbd6714d240fbc1a10eea5b7dbecb641d
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -97,7 +216,7 @@ services:
       start_period: 10s
 
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.19.2@sha256:b7b0444c4c351c970b98e90a6f89c2ee4287c65b44e52b4cb503fa5b2aa927ad
     restart: unless-stopped
     volumes:
       - qdrant_data:/qdrant/storage
@@ -107,7 +226,7 @@ services:
     # only from `paa` over the internal network at http://qdrant:6333.
 
   redis:
-    image: redis:7
+    image: redis:7@sha256:4fa24486b8bcca8eec45ee0eb166edc674795e53a2b53d1a9ef263eecebaac85
     restart: unless-stopped
     # AOF on: dispatch state is durable across a restart. Redis is still not the
     # source of truth (RFC §17.4) — the ledger in Postgres is — but AOF avoids
@@ -124,37 +243,83 @@ services:
       retries: 5
       start_period: 5s
 
-  minio:
-    image: minio/minio:latest
+  # The cold-lake object store.
+  #
+  # SeaweedFS rather than MinIO, and the reason is not a preference:
+  # MinIO's community distribution is archived upstream, its binaries are no
+  # longer published, and its Docker Hub organisation now answers 401 for
+  # anonymous pulls — a deployment naming it could not be started on a stock
+  # host. SeaweedFS is Apache-2.0, actively maintained, and implements the
+  # same S3 API the runtime's client speaks. The substrate is the protocol;
+  # which server answers is this file's business, and the endpoint is a
+  # setting (PAA_STORAGE__S3_ENDPOINT) so a different S3 can be pointed at
+  # without touching the code.
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d
     restart: unless-stopped
-    command: ["server", "/data", "--console-address", ":9001"]
+    # `server -s3` runs the master, the volume server, the filer and the S3
+    # gateway in one process — the all-in-one mode, which is what a
+    # single-service deployment wants.
+    command: ["server", "-s3", "-dir=/data", "-ip=0.0.0.0"]
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      AWS_ACCESS_KEY_ID: ${S3_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${S3_ROOT_PASSWORD}
     volumes:
-      - minio_data:/data
+      - seaweedfs_data:/data
     networks:
       - paa_net
-    # Console left internal by default. To administer it, uncomment to bind the
-    # console to loopback only — never to 0.0.0.0.
-    # ports:
-    #   - "127.0.0.1:9001:9001"
+    # The S3 API is on 8333. No host port is published: the store is
+    # reachable only from `paa` over the internal network.
+    #
+    # The health check asks the *master* (9333) rather than the S3 gateway
+    # (8333). An unauthenticated request to the S3 root answers 403 — the
+    # gateway is up and refusing an unsigned request — which is a perfectly
+    # good liveness signal but a failing health check. The master's cluster
+    # status answers 200 and says whether it is the leader, which is what
+    # "ready" actually means here.
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9333/cluster/status || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
 
 networks:
+  # The runtime and its substrate. Not internal, because the runtime needs
+  # outbound access for model escalation. The backing services still publish
+  # no host ports, so they remain unreachable from outside the project.
+  #
+  # The names are set explicitly rather than left to Compose's project
+  # prefix: the runtime creates and joins the *tool* networks by name
+  # through the Docker API (not through Compose), and a prefixed name would
+  # not match what it asked for.
   paa_net:
+    name: paa_net
     driver: bridge
-    internal: false  # paa needs egress for model escalation; backing services
-                     # still publish no host ports, so they stay unreachable.
+    internal: false
+
+  # The tool network. `internal: true` means a container attached only to this
+  # network has NO external routing at all — it can reach the daemon and the
+  # other tools, and nothing else. This is where MCP servers and plugin
+  # containers live once the tool layer lands, and it is the network that
+  # makes "the tool stays in our container" mean something.
+  paa_tools:
+    name: paa_tools
+    driver: bridge
+    internal: true
+
+  # The egress network, for a tool that genuinely needs the internet. A tool
+  # container joins EXACTLY ONE of paa_tools / paa_tools_egress: a container
+  # on both would route its egress through this one, which is the mistake the
+  # split exists to prevent. Neither network can reach `paa_net`, so a tool
+  # never sees Postgres, Redis, Qdrant or the object store.
+  paa_tools_egress:
+    name: paa_tools_egress
+    driver: bridge
+    internal: false
 
 volumes:
-  paa_data:
   pg_data:
   qdrant_data:
   redis_data:
-  minio_data:
+  seaweedfs_data:

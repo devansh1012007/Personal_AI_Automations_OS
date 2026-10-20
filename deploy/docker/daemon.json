@@ -1,0 +1,11 @@
+{
+  "runtimes": {
+    "runsc": {
+      "path": "/usr/local/bin/runsc",
+      "runtimeArgs": [
+        "--hostuds=/var/run/docker.sock",
+        "--hostuds=/run/docker.sock"
+      ]
+    }
+  }
+}

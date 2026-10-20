@@ -19,6 +19,12 @@ __pycache__
 tests
 docs
 
+# Deployment scaffolding is mounted by compose from the host, never built into
+# the runtime image: deploy/postgres/initdb (a bind mount for the postgres
+# container) and the worker/toolbox Dockerfiles (built with their own, much
+# smaller contexts).
+deploy
+
 # Local state and secrets must never enter an image layer
 .env
 .env.*

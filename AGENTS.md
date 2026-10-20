@@ -195,18 +195,92 @@ host ports; only the ingestion API on `127.0.0.1:8787`. gVisor is opt-in, Linux-
 `docker compose -f docker-compose.yml -f docker-compose.gvisor.yml up -d`, and the runtime honestly
 reports `NAMESPACE` instead of `VM` when `runsc` isn't registered.
 
+The `paa` container mounts `/var/run/docker.sock` so the daemon can launch the containers the
+sandbox backend runs commands in (ADR-0024). Three things about that are footguns, and all three
+have bitten:
+
+- **The socket's GID must be a supplementary group of the container user.** The socket is
+  `root:<docker-gid>` mode `0660` and the container's `paa` user is uid 10001, so the mount
+  alone is not enough. `docker-compose.yml` passes `group_add: ["${DOCKER_GID:-999}"]`; set
+  `DOCKER_GID=$(stat -c %g /var/run/docker.sock)` in `.env`. Without it: *"permission denied
+  while trying to connect to the docker API"*.
+- **Under gVisor the socket also needs `runtimeArgs: ["--hostuds=/var/run/docker.sock",
+  "--hostuds=/run/docker.sock"]`** in the Docker daemon's runtime registration. gVisor does
+  not pass a host Unix socket through merely because it was bind-mounted in. Both socket
+  spellings are listed because `/var/run` is a symlink to `/run` on the host but not
+  necessarily inside the container. A ready-to-copy file is `deploy/docker/daemon.json`,
+  and the reasoning behind it is in `deploy/docker/README.md` — the file itself
+  must be plain JSON, because the Docker daemon **refuses to start** on a
+  top-level key it does not recognise. The same list appears in
+  `docker-compose.gvisor.yml` and `docs/deployment/docker.md` — keep the three
+  in step.
+- **The socket is host root.** Deliberate, recorded, and reversible — but it means a
+  compromise of the daemon is a compromise of the host. The executor-sidecar design (the
+  daemon never holds the socket) is the real fix and is deferred.
+
+Two container images, both built from this repo: `paa/base_worker:v4.1` (`deploy/worker/`,
+the untrusted plan-step image — deliberately minimal) and `paa/toolbox:v1` (`deploy/toolbox/`,
+the MCP-server and plugin image — carries Node 24 because most MCP servers are npm packages).
+`paa/base_worker:v4.1` is also the ledger's `allocated_worker_image` default, so the recorded
+image and the executed image cannot drift apart.
+
+Two invariants the sandbox backend holds, and that a change to it must not break:
+
+- **The container's uid is never 0, and `--user` is always passed.** Omitting the flag
+  means "whatever the image says", and an image that says nothing runs as root. The uid is
+  the workspace's owner when it is known and not root, otherwise the image's declared
+  user, otherwise `10001:10001`. A root-owned workspace must not select `--user 0:0`.
+- **The isolation level and `memory_enforcement` follow the *effective* runtime**, not the
+  requested one. A host that asks for `runsc` but has not registered it runs under `runc`,
+  with a real cgroup cap, and must record `"cgroup"`.
+
+### Image builds are network-fragile by nature
+
+A container build reaches the network for its dependencies, and the network fails for
+reasons nobody in this repository controls. A build that dies on a dropped connection is
+indistinguishable from a build that died on a real error — so **every network operation
+in every Dockerfile retries**, and only a *persistent* failure is allowed to stop a build.
+
+The rules, applied by convention in `Dockerfile`, `deploy/worker/Dockerfile` and
+`deploy/toolbox/Dockerfile`:
+
+- **apt**: `-o Acquire::Retries=10` on both `update` and `install`.
+- **pip**: `PIP_RETRIES=10` and `PIP_TIMEOUT=120`, *plus* an outer `retry()` shell loop
+  (5 attempts, growing backoff). pip's own retry covers a request that failed mid-flight;
+  the loop covers a download pip considered complete and turned out not to be.
+- **plain downloads** (the Docker client tarball): the same `retry()` loop, and the
+  SHA-256 is verified *after* the download — a corrupt transfer is a failed attempt, not
+  a failed build.
+
+The runtime image is built in three stages arranged around that fragility:
+
+- **`wheelhouse`** — downloads every dependency wheel, into a layer that depends only on
+  `pyproject.toml`. The requirement list is extracted from the project's own metadata
+  with `tomllib`, never maintained by hand: a hand-maintained list is a second place to
+  forget to update, and the failure it produces is an image missing a dependency at
+  *runtime* rather than at build time. A source change does not invalidate this layer,
+  so a rebuild after a code change does no network I/O for dependencies at all.
+- **`builder`** — installs from that wheelhouse with `--no-index`, i.e. **offline**. This
+  is the property that makes the wheelhouse safe: the install either finds every wheel
+  it needs or fails loudly. It can never quietly install less than the project declares.
+  `pip check` runs afterwards as the last line of defence.
+- **`runtime`** — the venv, the Docker client, and a non-root user. No compiler, no pip
+  cache, no source.
+
+Do not "simplify" the builder stage back to a networked `pip install`. The offline
+install is what turns a stale or incomplete wheelhouse into a build failure instead of
+a broken image.
+
 ## Known-stale references (don't chase these)
 
-- `docs/adr/README.md` indexes ADRs 0001–0015 and 0019–0023 (0016–0018 are unindexed), but only
-  `0008`, `0010`, `0015`, `0019`, `0020`, `0021`, `0022`, `0023` exist on disk. Source comments cite
-  `docs/adr/0001`–`0014`, `0016` and `0018` as rationale; the intent is documented even though the
-  file is absent.
-- `docs/architecture.md` is referenced from docstrings (`config.py:4`, `paa/__init__.py:4`) but does
-  not exist — the architecture docs live in `docs/architecture/` (`overview.md`,
-  `component-interactions.md`, `repository-map.md`). Fix the docstring references to point there.
+- `docs/adr/README.md` indexes ADRs 0001–0015 and 0019–0026 (0016–0018 are unindexed), but only
+  `0008`, `0010`, `0015`, `0019`–`0026` exist on disk. Source comments cite
+  `docs/adr/0001`–`0014`, `0016` and `0018` as rationale; the intent is documented
+  even though the file is absent.
 - `README.md`'s Testing section still shows Windows paths, and its per-subsystem test counts in the
   build-status table are approximate — the total line is stale too, so reconcile neither against it.
 - `src/paa/agents/specialists/` is an empty package.
+- `tests/validation/` is an empty package — that subsystem is genuinely uncovered.
 
 ## The coder agent (`paa agent`)
 

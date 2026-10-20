@@ -32,7 +32,7 @@ storage that scales past one disk, and — on Linux — a syscall-boundary sandb
 
 ```bash
 cp .env.example .env
-# edit .env: set POSTGRES_PASSWORD, MINIO_ROOT_USER/PASSWORD, etc.
+# edit .env: set POSTGRES_PASSWORD, S3_ROOT_USER/S3_ROOT_PASSWORD, etc.
 
 docker compose up -d --build
 docker compose ps            # all services healthy except qdrant (started)
@@ -66,30 +66,146 @@ Security posture is loopback-first by construction:
 model escalation. The backing services still publish no host ports, so they
 remain unreachable from outside the compose project regardless.
 
+### The Docker socket — read this before deploying
+
+The `paa` container mounts `/var/run/docker.sock`. The runtime daemon needs it to
+launch the throwaway containers the sandbox backend runs commands in, and — once
+the tool layer lands — the MCP-server and plugin containers.
+
+**This is host root.** Anyone who can talk to that socket can start a privileged
+container on the host. The decision, and the alternatives that were considered
+and deferred, are recorded in [ADR-0024](../adr/0024-docker-socket-and-gvisor-containment.md).
+
+Two things make it work, and both are easy to get wrong:
+
+1. **The socket's group GID must be added to the container's user.** The socket is
+   `root:<docker-gid>` mode `0660`; the container's `paa` user is uid 10001 and is
+   not in the host's `docker` group. `docker-compose.yml` passes it with
+   `group_add`, sourced from `DOCKER_GID` in `.env`:
+
+   ```bash
+   echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)" >> .env
+   ```
+
+   Without it the client fails with `permission denied while trying to connect to
+   the docker API at unix:///var/run/docker.sock` — which reads like a socket
+   problem, and is one.
+
+2. **The image carries the Docker *client*, pinned by SHA-256.** The daemon package is
+   deliberately not installed — the container talks to the host's daemon, it does not run
+   one. The client is Docker's official **static** build, fetched at image-build time and
+   verified against a SHA-256 recorded in the `Dockerfile`. It is static rather than an
+   apt package because a package version is spelled per distribution release and Docker's
+   `stable` channel prunes old versions, so pinning a package would eventually break the
+   build for reasons unrelated to this code.
+
+### The three networks
+
+| Network | `internal` | Who is on it | External routing |
+|---|---|---|---|
+| `paa_net` | no | `paa`, postgres, redis, qdrant, seaweedfs | yes — the runtime needs model-escalation egress |
+| `paa_tools` | **yes** | `paa`, and the tool containers that need none | **no** — a container attached only to this network reaches the daemon and the other tools, and nothing else |
+| `paa_tools_egress` | no | tool containers that genuinely need the internet | yes, but never `paa_net` — so still no Postgres/Redis/Qdrant/S3 |
+
+A tool container joins **exactly one** of `paa_tools` / `paa_tools_egress`. A
+container on both would route its egress through the wrong one, and that is
+exactly the mistake the split exists to prevent. `paa` is on both `paa_net` and
+`paa_tools`, with an explicit `priority` so that `paa_net` supplies the default
+route and the daemon keeps its egress.
+
+Compose only creates the networks a service actually attaches to, so
+`paa_tools_egress` is *declared* here but materialises only once something
+attaches to it. The tool containers are launched by the runtime through the
+Docker API rather than by Compose, so the runtime creates the network it needs
+(`docker network create`) — which is a Phase 4c concern, not this one.
+
 ## Enabling gVisor (`runsc`)
 
 gVisor interposes a user-space kernel between the container and the host — the
 syscall boundary the RFC §13 requires and that namespaces alone do not provide.
 It is **opt-in** and **Linux-only**.
 
-1. Install runsc: https://gvisor.dev/docs/user_guide/install/
-2. Register it with the daemon in `/etc/docker/daemon.json`:
-   ```json
-   { "runtimes": { "runsc": { "path": "/usr/local/bin/runsc" } } }
+1. Install the official static release. The GitHub release tarball
+   (`gvisor-x86_64.tar.bz2`) carries a `SHA256SUMS` file; verify against it:
+
+   ```bash
+   curl -fsSLO https://github.com/google/gvisor/releases/download/release-20261012.0/SHA256SUMS
+   curl -fsSLO https://github.com/google/gvisor/releases/download/release-20261012.0/gvisor-x86_64.tar.bz2
+   sha256sum -c --ignore-missing SHA256SUMS
+   tar -xjf gvisor-x86_64.tar.bz2
+   sudo install -m 0755 runsc /usr/local/bin/runsc
+   runsc --version          # runsc version release-20261012.0
    ```
+
+   The `storage.googleapis.com/gvisor/releases/release/<date>/` mirror lags the
+   GitHub releases, so the GitHub tarball is the authoritative source for a
+   current version.
+
+2. Register it with the daemon in `/etc/docker/daemon.json` — **including the
+   `runtimeArgs`**, which are not optional (see below). A ready-to-copy file
+   is in [`deploy/docker/daemon.json`](../../deploy/docker/daemon.json), and
+   the reasoning behind it is in
+   [`deploy/docker/README.md`](../../deploy/docker/README.md):
+
+   ```json
+   { "runtimes": { "runsc": {
+       "path": "/usr/local/bin/runsc",
+       "runtimeArgs": [
+         "--hostuds=/var/run/docker.sock",
+         "--hostuds=/run/docker.sock" ] } } }
+   ```
+
+   Both socket spellings are listed because `/var/run` is a symlink to `/run` on
+   the host but not necessarily inside the container, and gVisor matches the
+   `hostuds` path against the mount namespace it is given. Keep this list in
+   step with `deploy/docker/daemon.json` and `docker-compose.gvisor.yml`.
+
+   > **The file must be plain JSON.** The Docker daemon has no comment
+   > syntax and *refuses to start* on a top-level key it does not recognise
+   > — so the explanation lives in `deploy/docker/README.md`, not in the
+   > file. Copying the file **overwrites** the host's daemon configuration;
+   > merge it instead if the host already has one.
+
    then `sudo systemctl restart docker`.
+
 3. Verify the daemon sees it:
+
    ```bash
    docker info --format '{{json .Runtimes}}'   # must include "runsc"
+   docker run --rm --runtime=runsc hello-world
    ```
+
 4. Bring the stack up with the override:
+
    ```bash
    docker compose -f docker-compose.yml -f docker-compose.gvisor.yml up -d
    ```
 
-The override sets `PAA_SANDBOX__CONTAINER_RUNTIME=runsc`, so the throwaway
-worker containers the runtime launches request `--runtime=runsc`. The runtime
-uses it **only** when the daemon confirms it is registered, and reports
+### `--hostuds` — the one thing that makes the socket work under gVisor
+
+gVisor does **not** let a container open a host Unix socket merely because the
+socket was bind-mounted into it. The socket has to be named in the runtime's
+`runtimeArgs`, or the Docker client inside the `paa` container fails with
+`permission denied while trying to connect to the docker API` — an error that
+reads like a socket-permission problem and not like a gVisor problem, and that
+makes the whole gVisor path look half-working.
+
+Both spellings are named — `/var/run/docker.sock` and `/run/docker.sock` —
+because `/var/run` is a symlink to `/run` on the host but not necessarily inside
+the container. The three places that carry the list must agree:
+`deploy/docker/daemon.json`, `docker-compose.gvisor.yml`, and this document.
+
+If the `paa` container also fails to *start* under runsc, Docker's default
+seccomp profile can conflict with gVisor's own syscall policy. Add
+`security_opt: [seccomp=unconfined]` to the `paa` service in
+`docker-compose.gvisor.yml`. That is safe **because** gVisor is the syscall
+boundary — Docker's seccomp filter is redundant once Sentry is interposing.
+
+### What gVisor does and does not change
+
+The override sets `PAA_SANDBOX__CONTAINER_RUNTIME=runsc`, so the throwaway worker
+containers the runtime launches request `--runtime=runsc`. The runtime uses it
+**only** when the daemon confirms it is registered, and reports
 `IsolationLevel.VM` only then; if runsc is requested but absent it falls back to
 `runc` and honestly reports `NAMESPACE` rather than claiming containment it does
 not have (`paa/sandbox/docker_backend.py`, verified by
@@ -97,8 +213,232 @@ not have (`paa/sandbox/docker_backend.py`, verified by
 container itself under runsc as defence in depth — comment that line out to keep
 only the worker containers contained, which is the minimal sufficient hardening.
 
+**The syscall boundary gets stronger; the resource ceiling gets weaker.** Docker's
+`--memory` and `--cpus` are cgroup limits, and gVisor on a cgroup v2 host has
+limited cgroup delegation, so those limits are not enforced the way `runc`
+enforces them. `SandboxResult.memory_enforcement` reports which mechanism was
+actually in force, so the ledger never claims a ceiling that was not applied.
+
+That weaker-ceiling claim is a **documented expectation, not a measurement**. gVisor's own
+documentation describes the limited cgroup delegation on a cgroup v2 host, but measuring
+it on *this* host needs `runsc` registered, which needs root. Until that is done, read
+the ledger's `"gvisor"` as "gVisor did the accounting", not as "the cap was enforced to
+the byte".
+
+`paa doctor` reports all of it: the backend, the isolation level, whether the Docker
+daemon is reachable, the OCI runtime and whether the daemon has it, and the image the
+container runs — with the image's presence, because the image name is a string in four
+places and until Phase 0 it named an image nobody had built.
+
+The rows are ordered so they cannot contradict each other: the isolation level is
+read *after* the daemon has been asked, because the level is derived from the
+answer. This is the real output on a host where `runsc` is **not** registered —
+the most informative case, because the runtime says so rather than claiming
+containment it does not have:
+
+```
+$ paa doctor
+┏━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ component       ┃ status                                                     ┃
+┡━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ version         │ 4.1.0                                                      │
+│ home            │ /data                                                      │
+│ permission mode │ ASK                                                        │
+│ relational      │ postgres                                                   │
+│ vector          │ QdrantVectorStore                                          │
+│ graph           │ SqliteGraphStore                                           │
+│ queue           │ RedisMessageQueue                                          │
+│ model router    │ EscalatingModelRouter                                      │
+│ sandbox         │ docker (NAMESPACE)                                         │
+│ docker daemon   │ reachable, but 'runsc' is not registered                   │
+│ oci runtime     │ runsc (NOT registered — falling back to runc, isolation is │
+│                 │ NAMESPACE)                                                 │
+│ sandbox image   │ paa/base_worker:v4.1 (present)                             │
+│ open tasks      │ 0                                                          │
+└─────────────────┴────────────────────────────────────────────────────────────┘
+```
+
+On a host where `runsc` **is** registered, the same command says
+`docker (VM)`, `reachable`, and `runsc (registered)` — the isolation level
+and the runtime row agreeing, which is the whole point of probing before
+rendering.
+
+The same renderer produces both this table and the TUI dashboard's, so the two
+surfaces of one runtime cannot disagree about the same host.
+
+On a non-Docker backend the doctor names the backend and its level instead —
+`subprocess (PROCESS)`, `dryrun (NONE)` — because "what containment will my run
+actually get" is the question the row exists to answer, and answering
+"none (dry-run)" about a subprocess backend would be false.
+
 On a non-Linux host the override is inert: the runtime reports `NAMESPACE` (or
 degrades to a weaker backend) and says so in the logs.
+
+## The data directory, and why it is a bind mount
+
+`PAA_HOME` is `/data` inside the `paa` container, and `/data` is a **bind mount** of
+`${PAA_DATA_DIR:-/srv/paa/data}` on the host — not a named volume.
+
+The reason is the sandbox backend. The Docker daemon resolves a bind mount's
+source path against the **host** filesystem, so the workspace path the runtime
+knows (`/data/workspaces/task-1`) is not the path the daemon must be given.
+Handing it the runtime's path makes the daemon create a *different*, empty,
+root-owned directory in its place — silently, and with no error.
+
+The fix is two halves, and both are needed:
+
+* **The data directory is a host bind mount at a known path.** `PAA_DATA_DIR` names
+  the host side; the runtime's own path is translated by
+  `PAA_SANDBOX__HOST_PATH_MAP`, which `docker-compose.yml` sets to
+  `/data=${PAA_DATA_DIR:-/srv/paa/data}`.
+
+  The map is a **string** with comma-separated `inside=host` pairs, not a JSON
+  blob. That is deliberate: `pydantic-settings` decodes a complex-typed field
+  from an environment variable as JSON, so a tuple-typed field would have
+  demanded `[["/data","/srv/paa/data"]]` and the obvious spelling would have
+  killed the container at import — before it could serve a request, and before
+  it could run the doctor that would explain why. A malformed entry is reported
+  by `paa doctor` as a `host path map` row and refuses the run; it is never
+  silently ignored, because a skipped entry means the daemon mounts the wrong
+  directory and answers by creating an empty, root-owned one.
+
+* **The host directory must exist and be writable by the container's uid.**
+
+  ```bash
+  sudo mkdir -p /srv/paa/data
+  sudo chown 10001:10001 /srv/paa/data     # the image's `paa` user
+  ```
+
+  A named volume gets this right for free; a bind mount does not, and the
+  failure mode — a workspace the daemon cannot write — is quiet.
+
+The container also runs as `--user` derived from the workspace's owner, so a
+workload cannot leave root-owned files in a directory you own. The uid is never
+0: a root-owned workspace falls back to the image's own non-root user rather
+than selecting `--user 0:0`, and the flag is never omitted at all — an image
+that says nothing about its user runs as root.
+
+## The container images
+
+Two images, with different jobs. Both are built from this repository.
+
+| Image | Dockerfile | Job |
+|---|---|---|
+| `paa/base_worker:v4.1` | [`deploy/worker/Dockerfile`](../../deploy/worker/Dockerfile) | The image the sandbox backend launches for a **plan step**. It runs untrusted work, so it is deliberately minimal: Python 3.12, `git`, `ca-certificates`. |
+| `paa/toolbox:v1` | [`deploy/toolbox/Dockerfile`](../../deploy/toolbox/Dockerfile) | The image **MCP servers and plugin commands** run in. It carries Node 24 (most published MCP servers are npm packages started with `npx`), plus `curl`, `jq` and `git`. |
+
+```bash
+docker build -t paa/base_worker:v4.1 deploy/worker
+docker build -t paa/toolbox:v1    deploy/toolbox
+```
+
+Both base images are pinned **by digest**, so a rebuild does not quietly change
+what is underneath. To refresh one, pull it and read the new digest:
+
+```bash
+docker pull python:3.12-slim
+docker image inspect python:3.12-slim --format '{{index .RepoDigests 0}}'
+```
+
+The runtime image (`Dockerfile`) is pinned the same way, and its Docker client
+is pinned by SHA-256 with the digest recorded in the Dockerfile.
+
+### Building the images: the network is the fragile part
+
+A container build reaches the network for its dependencies, and the network
+fails for reasons nobody in this repository controls. A build that dies on a
+dropped connection looks exactly like a build that died on a real error, so
+the two have to be told apart — and the only way to tell them apart is to
+absorb the transient ones first and let only a *persistent* failure stop the
+build.
+
+**Every network operation retries.**
+
+| Operation | Retry policy |
+|---|---|
+| `apt-get update` / `install` | `-o Acquire::Retries=10` on both |
+| `pip download` | `PIP_RETRIES=10`, `PIP_TIMEOUT=120`, **plus** an outer `retry()` loop: 5 attempts with growing backoff |
+| the Docker client tarball | the same `retry()` loop; the SHA-256 is verified *after* the download, so a corrupt transfer is a failed attempt rather than a failed build |
+
+pip's own `--retries` covers a request that failed mid-flight. The outer loop
+covers the case pip cannot see: a download that *completed* from pip's point
+of view and turned out to be truncated or wrong. Backoff grows between
+attempts, so a mirror that is genuinely down is not hammered.
+
+### The wheelhouse, and why the build is fast
+
+The runtime image is built in three stages, and the stages are arranged around
+the network rather than around the source:
+
+| Stage | What it does | When it re-runs |
+|---|---|---|
+| `wheelhouse` | downloads every dependency wheel into `/wheelhouse` | only when `pyproject.toml` changes |
+| `builder` | installs from that wheelhouse with `--no-index` — **offline** | when the source changes |
+| `runtime` | copies the venv, adds the Docker client and a non-root user | when the venv changes |
+
+The requirement list is extracted from the project's own metadata with
+`tomllib`, never maintained by hand. A hand-maintained list is a second place
+to forget to update, and the failure it produces is an image missing a
+dependency at *runtime* rather than at build time.
+
+The **offline install is the property that makes the wheelhouse safe**.
+`pip install --no-index --find-links=/wheelhouse` either finds every wheel it
+needs or fails loudly — it can never quietly install less than the project
+declares. So a stale or incomplete wheelhouse becomes a *build failure*
+instead of a broken image, and `pip check` runs afterwards as the last line of
+defence against a wheelhouse that resolved to a combination the project does
+not work with.
+
+In practice: the first build downloads everything (a few minutes), and a
+rebuild after a code change does **no network I/O for dependencies at all** —
+about half a minute, entirely offline.
+
+```bash
+docker build -t paa/runtime:4.1 .
+```
+
+Two constraints are deliberate. `--only-binary=:all:` on the download means a
+dependency that ships no wheel fails with "no matching distribution" — which
+names the real problem — rather than trying to *build* it in an image that
+carries no compiler. And the build backend (`hatchling`) is part of the
+wheelhouse, not fetched at build time, so the builder stage genuinely needs
+no network.
+
+> Do not "simplify" the builder stage back to a networked `pip install`. The
+> offline install is what turns a stale or incomplete wheelhouse into a build
+> failure instead of a broken image.
+
+### The toolbox needs an exec-capable scratch path
+
+The sandbox backend mounts `/tmp` **`noexec`** — a binary a workload drops there
+should not be executable. But npm's cache holds the *executable shims* that
+`npx` installs, so an `npx`-started MCP server fails with:
+
+```
+sh: 1: <tool>: Permission denied        (exit 126)
+```
+
+The fix is not to drop `noexec` from `/tmp`; it is to give these workloads their
+own exec-capable path. The backend does that through `SandboxSpec.exec_tmpfs`,
+so a toolbox spec carries:
+
+```python
+exec_tmpfs=("/run",)
+```
+
+which mounts `/run` as a writable, exec-capable tmpfs (`mode=1777`, because the
+mount is created by the daemon and is therefore root-owned). The toolbox image
+points npm's cache there.
+
+The `paa` package is deliberately **not** installed in the toolbox: a plugin that
+imported it would expect a database connection and a ledger handle, and the
+container has neither.
+
+`paa/base_worker:v4.1` is the same string as the ledger's `allocated_worker_image`
+default, so the recorded image and the executed image cannot drift apart — and
+`tests/storage/test_schema_parity.py` now *proves* that, by asserting the
+backend's default, the ledger event's default and the two schema defaults are
+the same string.
 
 ## Configuration reference
 
@@ -113,10 +453,25 @@ Backend selection is driven entirely by `PAA_*` environment variables, set in
 | `PAA_STORAGE__REDIS_URL` | `redis://redis:6379/0` | |
 | `PAA_STORAGE__BACKEND_VECTOR` | `qdrant_server` | Qdrant server recall |
 | `PAA_STORAGE__QDRANT_URL` | `http://qdrant:6333` | |
-| `PAA_STORAGE__BACKEND_COLDLAKE` | `minio` | `S3BlobStore` |
-| `PAA_STORAGE__MINIO_ENDPOINT` | `http://minio:9000` | |
-| `PAA_MINIO_ACCESS_KEY` / `PAA_MINIO_SECRET_KEY` | from `.env` | credential values |
+| `PAA_STORAGE__BACKEND_COLDLAKE` | `s3` | `S3BlobStore` |
+| `PAA_STORAGE__S3_ENDPOINT` | `http://seaweedfs:8333` | any S3 server; the deployment runs SeaweedFS |
+| `PAA_S3_ACCESS_KEY` / `PAA_S3_SECRET_KEY` | from `.env` | credential values |
 | `PAA_SANDBOX__CONTAINER_RUNTIME` | `runc` / `runsc` | OCI runtime |
+| `PAA_SANDBOX__BACKEND` | `docker` | the containment backend; `auto` would silently degrade to the subprocess backend if the Docker probe failed |
+| `PAA_SANDBOX__HOST_PATH_MAP` | `/data=/srv/paa/data` | how the runtime's path becomes the host's |
+| `DOCKER_GID` | from `.env` | the host's docker-socket GID, added to the container user as a supplementary group |
+| `PAA_DATA_DIR` | from `.env` | the host side of the `PAA_HOME` bind mount |
+
+`PAA_SANDBOX__BACKEND` and `PAA_SANDBOX__CONTAINER_RUNTIME` are **interpolated**
+from the environment (`${PAA_SANDBOX__BACKEND:-docker}`) rather than written
+literally, so an operator can override them in `.env`. A variable written
+literally in the `environment:` block takes precedence over `env_file:` and
+could not be changed at all — the safe default has to leave a way back.
+`PAA_SANDBOX__HOST_PATH_MAP` is derived from `PAA_DATA_DIR` rather than being
+overridable on its own, because the two have to agree: the map is what tells
+the backend the *host* path for the directory the bind mount puts at `/data`.
+The rest of the `environment:` block is literal, and those variables are the
+deployment's decision rather than the operator's.
 
 To point one substrate back at its embedded engine, change just that variable —
 e.g. `PAA_STORAGE__BACKEND_COLDLAKE=filesystem` keeps Postgres and Redis but
@@ -126,11 +481,41 @@ uses the local content-addressed store for blobs.
 
 - **`paa` restarts / DSN errors** — check `.env` matches the DSN Compose builds;
   `docker compose logs postgres` for auth failures.
+- **"the database's schema is incomplete"** — the schema was applied only part
+  of the way, so the database is at no version at all and the runtime refuses
+  to migrate it. The message names the tables that are missing. Restore the
+  database from a backup, or point the runtime at a database it can create
+  from scratch. Do **not** hand-edit `schema_migrations` to make the message
+  go away: the version log is the only thing that says which shape the
+  database has.
+- **Which migrations ran** — the runtime logs `postgres.schema_migrated` with
+  the version it reached, once per version it carried the database forward
+  through, and `postgres.schema_applied` when it created the schema outright.
+  The embedded substrate logs the same two events under `database.`.
 - **`backend_relational='postgres' requires storage.postgres_dsn`** — the DSN
   env var is unset; confirm `PAA_STORAGE__POSTGRES_DSN` is present in the `paa`
   service environment.
-- **MinIO auth errors** — `PAA_MINIO_ACCESS_KEY` / `PAA_MINIO_SECRET_KEY` must
-  equal `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD`.
+- **S3 auth errors** — `PAA_S3_ACCESS_KEY` / `PAA_S3_SECRET_KEY` must equal
+  `S3_ROOT_USER` / `S3_ROOT_PASSWORD`.
 - **gVisor not used** — `docker info` must list `runsc`; the runtime logs
   `sandbox.docker.runtime_unavailable` when it asked for a runtime the daemon
-  does not have.
+  does not have. `paa doctor` shows the same thing as an `oci runtime` row.
+- **`permission denied while trying to connect to the docker API`** — the socket's
+  GID is not a supplementary group of the container user. Set `DOCKER_GID` in
+  `.env` to `stat -c %g /var/run/docker.sock` and recreate the container.
+- **The same error, but only under gVisor** — the daemon's runtime registration
+  is missing the `hostuds` passthrough. gVisor does not pass a host Unix
+  socket through just because it was bind-mounted, and the socket has to be
+  named in **both** its spellings:
+
+  ```json
+  "runtimeArgs": [
+    "--hostuds=/var/run/docker.sock",
+    "--hostuds=/run/docker.sock"
+  ]
+  ```
+
+  A ready-to-copy file is `deploy/docker/daemon.json`.
+- **`paa` container will not start under runsc** — Docker's default seccomp
+  profile can conflict with gVisor's. Add `security_opt: [seccomp=unconfined]`
+  to the `paa` service in `docker-compose.gvisor.yml`.
