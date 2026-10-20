@@ -43,8 +43,8 @@ embeddings = ["sentence-transformers>=3.3"]
 api = ["fastapi>=0.115", "uvicorn[standard]>=0.32"]
 redis = ["redis>=5.2"]
 postgres = ["psycopg[binary,pool]>=3.2"]
-# S3/MinIO-backed cold lake for the Docker deployment (ADR-0019). boto3 speaks
-# the S3 API MinIO implements; the filesystem CAS remains the laptop default.
+# S3-backed cold lake for the Docker deployment (ADR-0019, ADR-0026). boto3
+# speaks the S3 API; the filesystem CAS remains the laptop default.
 s3 = ["boto3>=1.35"]
 otel = [
     "opentelemetry-api>=1.28",

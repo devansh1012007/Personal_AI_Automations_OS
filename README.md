@@ -56,7 +56,7 @@ The RFC assumes a CUDA workstation. My laptop is not that. I've been running thi
 | vLLM + Llama-3-8B-Q8 at 85% VRAM | vLLM only ships Linux wheels, needs CUDA/ROCm, and I have 2GB VRAM against an ~8.5GB requirement | Provider-agnostic layer, local-first with logged escalation (ADR-0007, ADR-0015) |
 | Concurrent Mistral-7B critic + 8B curator | Would need ~20GB more RAM than I have | One configurable provider — the critic's authority is deterministic, not generative, so it doesn't need its own model |
 | gVisor `runsc` sandbox | It's a Linux userspace kernel, doesn't exist on Windows | Pluggable Sandbox interface; Windows backend uses Job Object caps + workspace jail + AST pre-scan. It's materially weaker than gVisor and I'm not going to pretend otherwise (ADR-0006) |
-| PostgreSQL + Qdrant + Redis + MinIO | No Docker on this box, and that stack idles at 4-6GB RAM | SQLite (WAL) + Qdrant embedded + SQLite queue + content-addressed blob store. Idles at basically 0MB (ADR-0001–0005) |
+| PostgreSQL + Qdrant + Redis + S3 | No Docker on this box, and that stack idles at 4-6GB RAM | SQLite (WAL) + Qdrant embedded + SQLite queue + content-addressed blob store. Idles at basically 0MB (ADR-0001–0005) |
 | KuzuDB embedded | win_amd64 wheel exists, so this one's fine | used as specified |
 | 384-dim embeddings | MiniLM-L6-v2 is 384-dim and runs on CPU, also fine | used as specified |
 
@@ -228,7 +228,7 @@ All three run on the same ledger-backed, crash-recoverable, deterministically-sa
 | Claude-Code features (permissions, hooks, loop, sessions) | tested | 39 |
 | Coder agent (`paa agent` — router-backed tool loop over the runtime) | tested | 91 |
 | FastAPI ingestion + daemon + CLI | tested | 27 |
-| Docker deployment + Postgres/MinIO backends | built, live-server run still needs a pass | parity + backend |
+| Docker deployment + Postgres/S3 backends | built, live-server run still needs a pass | parity + backend |
 | Observability (metrics, tracing, runs, logging) | built, untested | — |
 
 Total: 1185 collected — 1104 passing, 75 skipped (optional extras not installed), 6 failing. All six failures are environmental and pre-existing: the sandbox executes steps with `python`, and on this machine only `python3` exists, so worker steps exhaust their retry budget. They fail identically on a clean checkout.

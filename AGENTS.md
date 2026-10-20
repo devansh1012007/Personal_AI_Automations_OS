@@ -129,6 +129,15 @@ implementation detail, and PostgreSQL promises nothing about ties at all.
 - `config.py::_enforce_loopback` refuses a non-loopback `api_host` unless `PAA_ALLOW_NON_LOOPBACK=1`.
 - Config stores the *names* of secret env vars (`s3_secret_key_env`, `escalation_api_key_env`), never
   values. Keep it that way.
+- **"MinIO" is still in the tree, and every remaining occurrence is deliberate.** The cold lake's
+  substrate is S3 — the *protocol* — and the compose stack's server is SeaweedFS; the extra is
+  `paa[s3]`, and `paa[minio]` is removed on purpose so the break lands at install time
+  (ADR-0026). What survives is a compatibility alias and one filename:
+  `StorageSettings` still accepts `PAA_STORAGE__MINIO_*` and `backend_coldlake="minio"` through
+  `_accept_legacy_minio_names`, so a deployment written against the old names keeps working; and
+  the module is still `storage/coldlake/minio_backend.py` (the file rename is deferred by
+  ADR-0026). Do not "tidy" the alias away — an operator's deployment breaks when a key is renamed
+  under them — and do not read the module name as a dependency: nothing imports `minio`.
 - `get_settings()` is `lru_cache`d. Anything that changes `PAA_HOME` (tests, mostly) **must** call
   `reset_settings_cache()`.
 
@@ -204,8 +213,8 @@ scripted `ModelTurn`s, not schema-shaped dicts.)
 ## Docker / server topology
 
 Separate from the laptop default and documented in `docs/deployment/docker.md`:
-`cp .env.example .env && docker compose up -d --build`. Postgres/Redis/Qdrant/MinIO publish **no**
-host ports; only the ingestion API on `127.0.0.1:8787`. gVisor is opt-in, Linux-only, via
+`cp .env.example .env && docker compose up -d --build`. Postgres/Redis/Qdrant/S3 (SeaweedFS) publish
+**no** host ports; only the ingestion API on `127.0.0.1:8787`. gVisor is opt-in, Linux-only, via
 `docker compose -f docker-compose.yml -f docker-compose.gvisor.yml up -d`, and the runtime honestly
 reports `NAMESPACE` instead of `VM` when `runsc` isn't registered.
 

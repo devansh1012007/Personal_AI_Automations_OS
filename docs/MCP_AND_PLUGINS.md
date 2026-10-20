@@ -175,7 +175,7 @@ separate fact and is recorded separately: the isolation level says `VM` under gV
 ### L3 — Network severance
 
 `--network none` by default → the container has no interfaces but loopback. The MCP server
-cannot reach the internet, the Postgres/Redis/Qdrant/MinIO containers, or the host.
+cannot reach the internet, the Postgres/Redis/Qdrant/SeaweedFS containers, or the host.
 
 **This is the property that makes "the tool stays in our container" true in the way that
 matters.** The stdio pipe is the *only* channel between the tool and the host.
@@ -205,7 +205,7 @@ env is never inherited. The plugin manifest declares env vars **by name**
 (`token_env = "ACME_API_KEY"`); the host resolves the *value* at spawn time from
 `os.environ` / `config.dotenv_value` and passes only the named ones.
 
-The host's own secrets (DB DSNs, `ANTHROPIC_API_KEY`, MinIO keys) are therefore never in a
+The host's own secrets (DB DSNs, `ANTHROPIC_API_KEY`, S3 store keys) are therefore never in a
 plugin's environment. A plugin that needs a secret at *call* time (not launch time) gets it
 through the existing `SecretBroker` (`src/paa/skills/secrets.py`), which checks
 `Permission.SECRET_READ` and returns a `SecretValue` that redacts itself in `str()`/`repr()`.
@@ -845,7 +845,7 @@ in one of two variants:
 | Variant | Network | Reach |
 |---|---|---|
 | default (no egress) | `paa_tools`, `internal: true` | other containers on `paa_tools` and **nothing else** — no external routing, no internet |
-| egress (opt-in, per plugin) | `paa_tools_egress`, a normal bridge | the internet, but **not** `paa_net`, so still no Postgres/Redis/Qdrant/MinIO |
+| egress (opt-in, per plugin) | `paa_tools_egress`, a normal bridge | the internet, but **not** `paa_net`, so still no Postgres/Redis/Qdrant/SeaweedFS |
 
 **A tool container joins exactly one of the two.** A container on both would route egress
 through the non-internal one. This is called out because it is the kind of thing that gets
@@ -998,7 +998,7 @@ syscall boundary**.
 ### The resulting network topology
 
 ```
-paa_net            (bridge, not internal)   paa + postgres + redis + qdrant + minio
+paa_net            (bridge, not internal)   paa + postgres + redis + qdrant + seaweedfs
                     └─ the runtime needs model-API egress; the substrate
                        services publish no host ports.
 

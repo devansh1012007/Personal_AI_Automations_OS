@@ -73,12 +73,12 @@ package.
 | S3 (cold lake) | `boto3` | — | `s3_endpoint` | `StorageSettings.backend_coldlake`, `s3_*` |
 
 All are optional extras; factories degrade, never raise, in `auto` mode
-(`AGENTS.md:59`). Docker compose publishes **no host ports** for these; only
-the ingestion API on `127.0.0.1:8787` (`AGENTS.md:132`).
+(`AGENTS.md:82`). Docker compose publishes **no host ports** for these; only
+the ingestion API on `127.0.0.1:8787` (`AGENTS.md:217`).
 
 S3 credentials: `s3_access_key_env` / `s3_secret_key_env` store env-var
-**names** (default `PAA_MINIO_ACCESS_KEY` / `PAA_MINIO_SECRET_KEY`), never
-values (`config.py:97`–`:99`).
+**names** (default `PAA_S3_ACCESS_KEY` / `PAA_S3_SECRET_KEY`), never
+values (`config.py:110`–`:112`).
 
 ## 3. Internal (in-process) communication
 

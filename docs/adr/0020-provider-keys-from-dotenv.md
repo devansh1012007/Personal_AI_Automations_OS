@@ -17,7 +17,7 @@ A provider API key does not fit that mechanism, because it is not a `Settings`
 field. `ModelSettings` stores `escalation_api_key_env` — the *name* of a
 variable — and `registry.ProviderSpec.api_key_env` names one or more variables
 per registry row. That indirection is deliberate and worth keeping: the same
-reason `StorageSettings` holds `minio_secret_key_env` rather than the key is
+reason `StorageSettings` holds `s3_secret_key_env` rather than the key is
 that a credential must not be able to end up in config, in the ledger, or in an
 image layer. So the value is read out of the environment at build time:
 

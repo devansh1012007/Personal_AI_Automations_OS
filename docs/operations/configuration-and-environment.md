@@ -64,6 +64,12 @@ that change `PAA_HOME` must call `reset_settings_cache()` (`config.py:495`).
 | `s3_secure` | `False` | S3 TLS |
 | `s3_access_key_env` | `PAA_S3_ACCESS_KEY` | name only, never value |
 | `s3_secret_key_env` | `PAA_S3_SECRET_KEY` | name only, never value |
+| `redis_url` | `redis://127.0.0.1:6379/0` | Redis queue |
+| `vault_path` | `~/.paa/vault` | World model |
+| `workspace_root` | `~/.paa/workspaces` | Sandbox jail root |
+| `zstd_level` | `3` (1–22) | CAS compression |
+| `zstd_level` validator | ge=1, le=22 | `config.py:124` |
+| `all_paths()` | — | Directories that must exist before boot |
 
 The pre-ADR-0026 names — `minio_endpoint`, `minio_bucket`, `minio_secure`,
 `minio_access_key_env`, `minio_secret_key_env` — are still accepted and are
@@ -71,12 +77,6 @@ normalised onto the `s3_*` fields, so a deployment written against them keeps
 working. `backend_coldlake` likewise takes `"s3"` or the alias `"minio"`. The
 *extra* is the one thing that is deliberately broken: `pip install
 'paa[minio]'` no longer works, and the extra is `paa[s3]`.
-| `redis_url` | `redis://127.0.0.1:6379/0` | Redis queue |
-| `vault_path` | `~/.paa/vault` | World model |
-| `workspace_root` | `~/.paa/workspaces` | Sandbox jail root |
-| `zstd_level` | `3` (1–22) | CAS compression |
-| `zstd_level` validator | ge=1, le=22 | `config.py:111` |
-| `all_paths()` | — | Directories that must exist before boot |
 
 ### `ContextSettings`
 

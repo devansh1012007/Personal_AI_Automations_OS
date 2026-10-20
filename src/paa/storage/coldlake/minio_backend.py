@@ -1,11 +1,12 @@
-"""S3/MinIO-backed cold lake — the RFC's original object substrate.
+"""S3-backed cold lake — the RFC's original object substrate.
 
 SPEC DEVIATION REVERSAL (docs/adr/0019): ADR-0004 replaced MinIO with a local
 content-addressed directory because the target laptop had no Docker and no RAM
-to spare for an S3 server. The Docker deployment restores MinIO. This module is
-the server-backed sibling of :class:`~paa.storage.coldlake.cas.ContentAddressedStore`
-and presents the *same* interface — ``put``/``get``/``exists``/``delete``/
-``stat``/``put_stream``/``get_stream`` returning
+to spare for an S3 server. The Docker deployment restores an S3 server — the
+compose stack runs SeaweedFS. This module is the server-backed sibling of
+:class:`~paa.storage.coldlake.cas.ContentAddressedStore` and presents the
+*same* interface — ``put``/``get``/``exists``/``delete``/``stat``/``put_stream``/
+``get_stream`` returning
 :class:`~paa.storage.coldlake.cas.BlobRef` — so the signal and artifact
 repositories neither know nor care which one they hold.
 
@@ -109,7 +110,7 @@ def _is_not_found(exc: Exception) -> bool:
 
 
 class S3BlobStore:
-    """Immutable, compressed, deduplicating blob storage over S3/MinIO.
+    """Immutable, compressed, deduplicating blob storage over S3.
 
     Synchronous, exactly like :class:`ContentAddressedStore`: every operation is
     one bounded S3 request. Callers on the event loop that move large payloads

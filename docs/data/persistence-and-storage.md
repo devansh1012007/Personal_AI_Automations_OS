@@ -21,7 +21,7 @@ Settings (`src/paa/config.py:55`):
 - `backend_vector` (`auto`\|`qdrant_local`\|`qdrant_server`\|`numpy`, default `auto`)
 - `backend_graph` (`auto`\|`kuzu`\|`sqlite`, default `sqlite`)
 - `backend_queue` (`sqlite`\|`redis`, default `sqlite`)
-- `backend_coldlake` (`filesystem`\|`minio`, default `filesystem`)
+- `backend_coldlake` (`filesystem`\|`s3`, default `filesystem`; `minio` is accepted as an alias for `s3`)
 
 ## 1. Relational — `src/paa/storage/relational/database.py`
 
