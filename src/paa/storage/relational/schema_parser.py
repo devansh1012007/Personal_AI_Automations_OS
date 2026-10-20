@@ -37,10 +37,26 @@ construct. The reader never guesses: a table it cannot read is a table
 the runtime would otherwise refuse a whole database over, and a column it
 cannot read is a column the parity test would demand.
 
-The reader is not a SQL parser. It understands the constructs the two
-schema files use — ``CREATE TABLE``, ``CREATE INDEX``, ``CREATE TRIGGER``
-(with a ``BEGIN … END`` body), ``CREATE VIRTUAL TABLE``, ``CREATE
-EXTENSION`` — and refuses the rest rather than misreading it.
+A ``CREATE`` the reader does not recognise is refused for the same
+reason, and it is the case that is easiest to get wrong: a reader that
+skips every statement it does not understand turns ``CREATE TABEL foo``
+into a *missing table* rather than into an error, and a missing table is
+exactly what a migration guard is there to notice. The refusal names the
+file, the line and the statement's first words.
+
+The reader is not a SQL parser. It **reads** the tables — ``CREATE
+TABLE`` and its ``TEMP`` / ``TEMPORARY`` / ``UNLOGGED`` spellings — and it
+**recognises and knowingly skips** the other objects the two schema files
+create: ``CREATE INDEX`` (and ``CREATE UNIQUE INDEX``), ``CREATE
+TRIGGER`` (with a ``BEGIN … END`` body), ``CREATE EXTENSION``, and
+``CREATE VIRTUAL TABLE``. Every other ``CREATE`` form is refused rather
+than misread.
+
+The virtual table is skipped *knowingly*, and
+:func:`parse_virtual_tables` reports it separately: the engine creates
+shadow tables beside it, and a caller that compares a database's catalog
+against the schema has to know their names to tell them from a table
+nobody declared.
 """
 
 from __future__ import annotations
@@ -53,6 +69,7 @@ __all__ = [
     "SchemaParseError",
     "SchemaTable",
     "parse_tables",
+    "parse_virtual_tables",
     "split_statements",
     "split_top_level",
     "strip_comments",
@@ -114,11 +131,48 @@ _IDENTIFIER: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 #: semicolons that do **not** end the trigger.
 _TOKEN: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|;")
 
-#: The keywords that introduce a table rather than another kind of
-#: object.
-_TABLE_KEYWORDS: Final[frozenset[str]] = frozenset(
-    {"TABLE", "TEMP", "TEMPORARY", "UNLOGGED"}
+#: The words that may sit between ``CREATE`` and the word that says what
+#: is being created.
+#:
+#: ``TEMP`` / ``TEMPORARY`` / ``UNLOGGED`` qualify a table or a trigger,
+#: and ``UNIQUE`` qualifies an index. They say nothing about *what* is
+#: created, so the reader folds them away before it decides what the
+#: statement is.
+_CREATE_MODIFIERS: Final[frozenset[str]] = frozenset(
+    {"TEMP", "TEMPORARY", "UNLOGGED", "UNIQUE"}
 )
+
+#: The modifiers that can qualify a **table**.
+#:
+#: Derived from :data:`_CREATE_MODIFIERS` rather than written out, so
+#: the two cannot drift: a modifier that qualifies a table here and not
+#: there would make the reader read a statement one way in one place and
+#: another way in the other.
+_TABLE_MODIFIERS: Final[frozenset[str]] = _CREATE_MODIFIERS - {"UNIQUE"}
+
+#: The ``CREATE`` forms the reader knows and does **not** read.
+#:
+#: The key is the form's canonical name — the words that follow
+#: ``CREATE``, in upper case, with the modifiers folded away. The value
+#: says what the object is, because a form that is skipped *knowingly* is
+#: a decision and a form that is skipped by accident is a defect.
+#:
+#: Every entry is a form one of the two schema files actually uses. The
+#: set is closed on purpose: a ``CREATE`` outside it is refused rather
+#: than skipped, because a skipped ``CREATE`` is a table the runtime
+#: would never know about — and a table the runtime does not know about
+#: is a database it refuses as incomplete, for a reason the operator
+#: cannot see.
+_KNOWN_NON_TABLE_FORMS: Final[dict[str, str]] = {
+    "INDEX": "an index is not a table",
+    "TRIGGER": "a trigger is not a table",
+    "EXTENSION": "an extension is not a table",
+    "VIRTUAL TABLE": (
+        "a virtual table has no columns in the ordinary sense and no "
+        "PostgreSQL equivalent, and the shadow tables the engine creates "
+        "beside it are its own bookkeeping rather than the schema's"
+    ),
+}
 
 
 def _blank(chars: list[str], start: int, end: int) -> None:
@@ -447,7 +501,7 @@ def _table_from_statement(
         )
     index = _skip_space(statement_code, index)
     word, index = _read_word(statement_code, index)
-    if word.upper() in ("TEMP", "TEMPORARY", "UNLOGGED"):
+    if word.upper() in _TABLE_MODIFIERS:
         # ``CREATE TEMP TABLE`` and friends: the ``TABLE`` keyword is
         # still to come.
         index = _skip_space(statement_code, index)
@@ -457,22 +511,10 @@ def _table_from_statement(
             f"{source}: line {line}: expected TABLE, found {word!r}"
         )
     index = _skip_space(statement_code, index)
-    following, after = _read_word(statement_code, index)
+    following, _after = _read_word(statement_code, index)
     if following.upper() == "IF":
         # ``IF NOT EXISTS``
-        not_exists, after_not = _read_word(statement_code, _skip_space(statement_code, after))
-        if not_exists.upper() != "NOT":
-            raise SchemaParseError(
-                f"{source}: line {line}: expected IF NOT EXISTS, found "
-                f"{following!r} {not_exists!r}"
-            )
-        exists, after = _read_word(statement_code, _skip_space(statement_code, after_not))
-        if exists.upper() != "EXISTS":
-            raise SchemaParseError(
-                f"{source}: line {line}: expected IF NOT EXISTS, found "
-                f"{following!r} {not_exists!r} {exists!r}"
-            )
-        index = after
+        index = _skip_if_not_exists(statement_code, index, source, line)
     name, index = _read_identifier(statement, statement_code, index, source)
     index = _skip_space(statement_code, index)
     if index >= len(statement_code) or statement_code[index] != "(":
@@ -506,13 +548,168 @@ def _table_from_statement(
     )
 
 
+def _skip_if_not_exists(
+    statement_code: str, index: int, source: str, line: int
+) -> int:
+    """Where the object's name starts, past an optional ``IF NOT EXISTS``.
+
+    ``CREATE TABLE IF NOT EXISTS`` and ``CREATE VIRTUAL TABLE IF NOT
+    EXISTS`` are the spellings the two schema files use, and the clause
+    says nothing about the name — so it is stepped over rather than read
+    as one.
+
+    A clause that is half-written is an error: a reader that stepped
+    over ``IF`` alone would read ``NOT`` as the name of the table.
+    """
+    following, after = _read_word(statement_code, _skip_space(statement_code, index))
+    if following.upper() != "IF":
+        return index
+    not_exists, after_not = _read_word(statement_code, _skip_space(statement_code, after))
+    if not_exists.upper() != "NOT":
+        raise SchemaParseError(
+            f"{source}: line {line}: expected IF NOT EXISTS, found "
+            f"{following!r} {not_exists!r}"
+        )
+    exists, after_exists = _read_word(statement_code, _skip_space(statement_code, after_not))
+    if exists.upper() != "EXISTS":
+        raise SchemaParseError(
+            f"{source}: line {line}: expected IF NOT EXISTS, found "
+            f"{following!r} {not_exists!r} {exists!r}"
+        )
+    return after_exists
+
+
+def _create_form(statement_code: str, index: int, source: str, line: int) -> tuple[str, int]:
+    """What a ``CREATE`` statement creates, and where its name starts.
+
+    The first half is ``"TABLE"`` for a table this reader reads, the
+    canonical name of a known non-table form for one it skips knowingly,
+    and a :class:`SchemaParseError` for a form it does not know. The
+    second half is the offset at which the object's **name** begins — the
+    name always follows the form's own keyword, so a caller that wants
+    the name does not have to know the form's spelling.
+
+    The form is decided from the words that follow ``CREATE``, with the
+    modifiers folded away: ``CREATE UNIQUE INDEX`` and ``CREATE INDEX``
+    are the same form, and ``CREATE TEMP TABLE`` is a table.
+
+    A form the reader does not know is an **error**, not a skip. A
+    skipped ``CREATE`` is a table the runtime would never know about,
+    and a database missing a table is one the runtime refuses as
+    incomplete — so a typo in the schema file would present as a
+    database that is broken for a reason nobody can see.
+    """
+    spelled: list[str] = []
+    words: list[str] = []
+    after_each: list[int] = []
+    cursor = index
+    while len(words) < 4:
+        word, after = _read_word(statement_code, _skip_space(statement_code, cursor))
+        if not word:
+            break
+        if "(" in statement_code[cursor:after]:
+            # The statement has reached its body: the words after that
+            # belong to the object, not to the form.
+            break
+        spelled.append(word)
+        words.append(word.upper())
+        after_each.append(after)
+        cursor = after
+    # The head is the statement's first words **as they were written**:
+    # the refusal quotes the file, and a quote that has been shouted
+    # back at the reader is not the file's text.
+    head = " ".join(spelled) if spelled else ""
+
+    def refuse() -> SchemaParseError:
+        return SchemaParseError(
+            f"{source}: line {line}: a CREATE statement this reader does not "
+            f"understand: {head!r}. The reader knows CREATE TABLE, CREATE "
+            "INDEX, CREATE TRIGGER, CREATE EXTENSION and CREATE VIRTUAL "
+            "TABLE, and refuses the rest rather than misreading it"
+        )
+
+    if not words or words[0] != "CREATE":
+        raise refuse()
+    rest = words[1:]
+    # The offset of the form's own keyword: one past ``CREATE``, plus one
+    # more when a modifier sits between them.
+    at = 1
+    if rest and rest[0] in _CREATE_MODIFIERS:
+        rest = rest[1:]
+        at = 2
+    if not rest:
+        raise refuse()
+    form = rest[0]
+    if form == "TABLE":
+        return "TABLE", after_each[at]
+    if form == "VIRTUAL":
+        # ``CREATE VIRTUAL TABLE`` — and only that: a ``VIRTUAL`` that
+        # is not followed by ``TABLE`` is a form the reader does not
+        # know.
+        if len(rest) > 1 and rest[1] == "TABLE":
+            return "VIRTUAL TABLE", after_each[at + 1]
+        raise refuse()
+    if form in _KNOWN_NON_TABLE_FORMS:
+        return form, after_each[at]
+    raise refuse()
+
+
+def parse_virtual_tables(sql: str, *, source: str = "<sql>") -> frozenset[str]:
+    """The virtual tables the schema file declares.
+
+    A ``CREATE VIRTUAL TABLE`` (SQLite's FTS5) *is* a table the file
+    declares, and the reader knows it — but it is not a table the
+    parity comparison can talk about: it has no PostgreSQL equivalent,
+    and the shadow tables the engine creates beside it are the engine's
+    own bookkeeping rather than the schema's.
+
+    So it is reported separately rather than in the table set. A caller
+    that compares the *catalog* against the schema needs the name: the
+    engine creates ``<name>_data``, ``<name>_idx`` and the rest beside
+    the virtual table, and a table the schema never declared is not
+    evidence of anything.
+    """
+    code, _ = _scan(sql, source)
+    names: set[str] = set()
+    for start, end in _statement_spans(sql, source):
+        statement = sql[start:end]
+        statement_code = code[start:end]
+        line = sql.count("\n", 0, start) + 1
+        index = _skip_space(statement_code, 0)
+        word, _after = _read_word(statement_code, index)
+        if word.upper() != "CREATE":
+            continue
+        form, name_at = _create_form(statement_code, index, source, line)
+        if form != "VIRTUAL TABLE":
+            continue
+        name_at = _skip_if_not_exists(statement_code, name_at, source, line)
+        name, _ = _read_identifier(
+            statement, statement_code, _skip_space(statement_code, name_at), source
+        )
+        names.add(name)
+    return frozenset(names)
+
+
 def parse_tables(sql: str, *, source: str = "<sql>") -> dict[str, SchemaTable]:
     """Every table the schema file declares.
 
-    ``CREATE VIRTUAL TABLE`` (SQLite FTS5) is intentionally not matched —
-    those have no PostgreSQL table equivalent, and the shadow tables SQLite
-    creates beside them are the engine's own bookkeeping rather than the
-    schema's.
+    The reader reads ``CREATE TABLE`` — and the ``TEMP`` / ``TEMPORARY``
+    / ``UNLOGGED`` spellings of it — and recognises, and knowingly skips,
+    the other objects the two schema files create: an index, a trigger,
+    an extension, and the FTS5 virtual table, which has no PostgreSQL
+    equivalent and whose shadow tables are the engine's own bookkeeping
+    rather than the schema's.
+
+    A ``CREATE`` form outside that set is **refused**. The reader used
+    to skip anything it did not recognise, which turned ``CREATE TABEL
+    foo`` into a missing table rather than into an error — and a missing
+    table is exactly what a migration guard exists to notice, so the
+    typo would present as a database that is broken for a reason nobody
+    can see.
+
+    A statement that is not a ``CREATE`` at all — an ``ALTER``, an
+    ``INSERT``, a pragma — is skipped, and is not the reader's business:
+    it creates no object, so there is nothing for it to misread.
 
     The statements are read one at a time, so a ``;`` inside a trigger's
     body does not end a statement, and the table set is the set of
@@ -526,18 +723,13 @@ def parse_tables(sql: str, *, source: str = "<sql>") -> dict[str, SchemaTable]:
         statement_code = code[start:end]
         line = sql.count("\n", 0, start) + 1
         index = _skip_space(statement_code, 0)
-        word, after = _read_word(statement_code, index)
+        word, _after = _read_word(statement_code, index)
         if word.upper() != "CREATE":
             continue
-        index = _skip_space(statement_code, after)
-        second, after = _read_word(statement_code, index)
-        if second.upper() == "VIRTUAL":
-            # A virtual table has no columns in the ordinary sense and no
-            # PostgreSQL equivalent, so it is deliberately not a table
-            # this reader reports.
-            continue
-        if second.upper() not in _TABLE_KEYWORDS:
-            # An index, a trigger, an extension, a view: not a table.
+        if _create_form(statement_code, index, source, line)[0] != "TABLE":
+            # A known non-table form: an index, a trigger, an extension,
+            # a virtual table. It is skipped *knowingly* — the reader
+            # knows what it is and why it is not a table.
             continue
         table = _table_from_statement(statement, statement_code, source, line)
         if table.name in tables:

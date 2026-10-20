@@ -232,6 +232,24 @@ async def _versions(db: Database) -> list[int]:
     return [int(r["version"]) for r in rows]
 
 
+async def _shape(db: Database) -> dict[str, Any]:
+    """Everything about a database's shape, in one comparable value.
+
+    The same parts the fresh-versus-migrated comparison covers, gathered
+    in one place so a second comparison does not have to repeat the
+    list — and forget one of them.
+    """
+    return {
+        "columns": await _columns(db),
+        "triggers": await _triggers(db),
+        "indexes": await _index_sql(db),
+        "index_lists": await _index_lists(db),
+        "foreign_keys": await _foreign_keys(db),
+        "checks": await _check_constraints(db),
+        "strict": await _strict_flags(db),
+    }
+
+
 def _raw(path: Path) -> sqlite3.Connection:
     """A plain connection, for reaching behind the runtime.
 
@@ -254,6 +272,29 @@ def _tables(path: Path) -> list[str]:
     return [row[0] for row in rows]
 
 
+def _rewind_versions(path: Path, version: int) -> None:
+    """Rewind the version log to ``version``.
+
+    The log is the database's own record of how far it has been carried,
+    and a database at an earlier version is one whose log says so. The
+    row for the version itself is rewritten rather than only the rows
+    above it deleted, so the log is a contiguous run from 1 — a gap is
+    refused, so a rewind that left a hole would not be a database the
+    runner would accept at all.
+    """
+    conn = _raw(path)
+    try:
+        conn.execute("DELETE FROM schema_migrations WHERE version > ?", (version,))
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at, description) "
+            "VALUES (?, ?, ?)",
+            (version, "2026-01-01T00:00:00+00:00", description_for(version)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _downgrade_to_v1(path: Path) -> None:
     """Turn a current database back into the version-1 shape.
 
@@ -267,17 +308,41 @@ def _downgrade_to_v1(path: Path) -> None:
         for table, trigger in ARRIVAL_TRIGGERS.items():
             conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
             conn.execute(f"ALTER TABLE {table} DROP COLUMN arrival_seq")
-        conn.execute(
-            "DELETE FROM schema_migrations WHERE version > ?", (BASE_SCHEMA_VERSION,)
-        )
-        conn.execute(
-            "INSERT OR IGNORE INTO schema_migrations(version, applied_at, description) "
-            "VALUES (?, ?, ?)",
-            (BASE_SCHEMA_VERSION, "2026-01-01T00:00:00+00:00", description_for(1)),
-        )
         conn.commit()
     finally:
         conn.close()
+    _rewind_versions(path, BASE_SCHEMA_VERSION)
+
+
+def _downgrade_to_v2(path: Path) -> None:
+    """Turn a current database back into the version-2 state.
+
+    The inverse of versions 3 and 4, which is what separates a version-2
+    database from a current one. Version 3 changes no shape on SQLite at
+    all — its columns were always text — so there is no shape to
+    reverse; version 4 changes the *contents* of one column rather than
+    the shape of the database, so what is reversed is the **form** of the
+    trace id: the unhyphenated one that version 4's step rewrites.
+
+    So on SQLite a version-2 database has the current *shape* and differs
+    from a current database in two ways: its log stops at version 2, and
+    the run rows it holds carry the old form of the trace id. The
+    PostgreSQL half of this is a real shape to reverse — the JSON
+    columns are still ``JSONB`` there — and it is covered by
+    ``tests/storage/test_postgres_migrations.py``.
+    """
+    _write_run_raw(path, "0123456789abcdef0123456789abcdef")
+    _rewind_versions(path, 2)
+
+
+def _downgrade_to_v3(path: Path) -> None:
+    """Turn a current database back into the version-3 state.
+
+    The inverse of version 4 alone: the run rows carry the old form of
+    the trace id again, and the log stops at version 3.
+    """
+    _write_run_raw(path, "0123456789abcdef0123456789abcdef")
+    _rewind_versions(path, 3)
 
 
 def _enqueue_raw(path: Path, message_id: str) -> None:
@@ -665,6 +730,112 @@ async def test_a_migrated_database_has_the_same_shape_as_a_fresh_one(
         await migrated.close()
 
 
+# ---------------------------------------------------------------------------
+# Starting from an intermediate version
+# ---------------------------------------------------------------------------
+
+
+def _raw_versions(path: Path) -> list[int]:
+    """The version log, read behind the runtime's back."""
+    conn = _raw(path)
+    try:
+        rows = conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()
+    finally:
+        conn.close()
+    return [int(row[0]) for row in rows]
+
+
+def _raw_trace_ids(path: Path) -> list[str]:
+    """The trace ids the run table holds, read behind the runtime's back."""
+    conn = _raw(path)
+    try:
+        rows = conn.execute("SELECT trace_id FROM hot_serving_execution_runs").fetchall()
+    finally:
+        conn.close()
+    return [str(row[0]) for row in rows]
+
+
+async def _fresh_shape(tmp_path: Path) -> dict[str, Any]:
+    """The shape of a database created from the schema file outright."""
+    fresh = Database(tmp_path / "fresh.db")
+    await fresh.connect()
+    try:
+        return await _shape(fresh)
+    finally:
+        await fresh.close()
+
+
+async def test_a_version_2_database_is_migrated_forward(tmp_path: Path) -> None:
+    """A database at an intermediate version is carried the rest of the way.
+
+    The suite's other starting points are a fresh database, a
+    reconstructed version 1, a version from the future (a refusal) and an
+    empty log. Version 2 is one of the two in between, and ``pending()``
+    is unit-tested as a function — but a function that is unit-tested is
+    not a function that is *exercised*, and the path from an intermediate
+    version is the one a deployment that skipped a release actually
+    takes.
+
+    The reversal is a **checked fact**, not an assumption: the database
+    is looked at before the migration runs, and it is looked at *after*,
+    because a reversal that quietly stopped being a reversal would leave
+    a test that passes while exercising nothing.
+    """
+    path = tmp_path / "paa.db"
+    db = Database(path)
+    await db.connect()
+    await db.close()
+    _downgrade_to_v2(path)
+
+    # Before: the log stops at version 2, and the run row carries the
+    # old form of the trace id — so version 4's step has work to do.
+    assert _raw_versions(path) == [1, 2]
+    assert _raw_trace_ids(path) == ["0123456789abcdef0123456789abcdef"]
+
+    fresh_shape = await _fresh_shape(tmp_path)
+
+    db = Database(path)
+    await db.connect()
+    try:
+        # After: the log is whole, the shape is a fresh install's, and
+        # version 4's step really ran.
+        assert await _versions(db) == list(range(1, SCHEMA_VERSION + 1))
+        assert await _shape(db) == fresh_shape
+        rows = await db.fetch_all("SELECT trace_id FROM hot_serving_execution_runs")
+        assert [r["trace_id"] for r in rows] == ["01234567-89ab-cdef-0123-456789abcdef"]
+    finally:
+        await db.close()
+
+
+async def test_a_version_3_database_is_migrated_forward(tmp_path: Path) -> None:
+    """The same for version 3, the other intermediate version.
+
+    Version 3 is the last version before the current one, so this is the
+    shortest hop the runner ever takes: one migration, one version row,
+    and the trace id it rewrites.
+    """
+    path = tmp_path / "paa.db"
+    db = Database(path)
+    await db.connect()
+    await db.close()
+    _downgrade_to_v3(path)
+
+    assert _raw_versions(path) == [1, 2, 3]
+    assert _raw_trace_ids(path) == ["0123456789abcdef0123456789abcdef"]
+
+    fresh_shape = await _fresh_shape(tmp_path)
+
+    db = Database(path)
+    await db.connect()
+    try:
+        assert await _versions(db) == list(range(1, SCHEMA_VERSION + 1))
+        assert await _shape(db) == fresh_shape
+        rows = await db.fetch_all("SELECT trace_id FROM hot_serving_execution_runs")
+        assert [r["trace_id"] for r in rows] == ["01234567-89ab-cdef-0123-456789abcdef"]
+    finally:
+        await db.close()
+
+
 async def test_the_arrival_column_is_the_last_column_of_its_table(db: Database) -> None:
     """The migration appends the column, so the schema has to declare it last.
 
@@ -953,6 +1124,109 @@ async def test_a_half_applied_schema_with_an_empty_version_log_is_refused(
     assert "cold_lake_signals" in message
     assert "no such table" not in message.lower()
     assert _tables(path) == ["schema_migrations", "system_state_ledger"]
+
+
+async def test_the_refusal_names_the_tables_the_runtime_does_not_use(
+    tmp_path: Path,
+) -> None:
+    """A refusal that names half of what it found is a partial report.
+
+    The extra table is not the reason for the refusal — a table the
+    runtime does not use is not evidence of a broken schema — but it is
+    what the operator needs to see to understand *which* database they
+    are looking at, and a database that is missing tables *and* carries
+    ones the runtime has never heard of is a database somebody should
+    look at twice.
+    """
+    path = tmp_path / "paa.db"
+    conn = _raw(path)
+    try:
+        conn.execute("CREATE TABLE system_state_ledger (sequence_id INTEGER PRIMARY KEY)")
+        conn.execute("CREATE TABLE an_operator_added_this (x TEXT)")
+        conn.commit()
+    finally:
+        conn.close()
+
+    db = Database(path)
+    with pytest.raises(SchemaVersionError) as caught:
+        await db.connect()
+    await db.close()
+
+    message = str(caught.value)
+    assert "an_operator_added_this" in message
+    # and the missing tables are still named
+    assert "cold_lake_signals" in message
+
+
+async def test_an_extra_table_alone_is_not_a_refusal(tmp_path: Path) -> None:
+    """An extra table is reported, and the database is migrated.
+
+    A database may carry a table this build does not know about — one
+    written by a later build, or one an operator added. That is not
+    evidence of a broken schema, and refusing it would strand a database
+    the runtime can work with. So the extra table is logged and the
+    migration goes ahead.
+    """
+    path = tmp_path / "paa.db"
+    db = Database(path)
+    await db.connect()
+    await db.close()
+    conn = _raw(path)
+    try:
+        conn.execute("CREATE TABLE an_operator_added_this (x TEXT)")
+        # an empty version log is the "tables present, log empty" case:
+        # the database is at the base version and is migrated forward.
+        conn.execute("DELETE FROM schema_migrations")
+        conn.commit()
+    finally:
+        conn.close()
+
+    with structlog.testing.capture_logs() as captured:
+        db = Database(path)
+        await db.connect()
+        try:
+            assert await _versions(db) == list(range(1, SCHEMA_VERSION + 1))
+        finally:
+            await db.close()
+
+    events = {entry["event"]: entry for entry in captured}
+    assert "database.schema_extra_tables" in events
+    assert events["database.schema_extra_tables"]["tables"] == ["an_operator_added_this"]
+
+
+async def test_an_extra_table_in_an_otherwise_empty_database_is_reported(
+    tmp_path: Path,
+) -> None:
+    """A database with no runtime table at all is created — and the extra is named.
+
+    This is the third acceptance path: the database holds none of the tables
+    the runtime needs, so the schema is applied outright rather than
+    migrated. The operator's table survives that, and it is not a refusal —
+    an extra table is not evidence of a broken schema — but it is still
+    named, so a database that was not empty does not pass in silence.
+    """
+    path = tmp_path / "paa.db"
+    conn = _raw(path)
+    try:
+        conn.execute("CREATE TABLE an_operator_added_this (x TEXT)")
+        conn.commit()
+    finally:
+        conn.close()
+
+    with structlog.testing.capture_logs() as captured:
+        db = Database(path)
+        await db.connect()
+        try:
+            assert await _versions(db) == list(range(1, SCHEMA_VERSION + 1))
+        finally:
+            await db.close()
+
+    events = {entry["event"]: entry for entry in captured}
+    assert "database.schema_extra_tables" in events
+    assert events["database.schema_extra_tables"]["tables"] == ["an_operator_added_this"]
+    # and the table the runtime does not use is still there
+    assert _tables(path) != []
+    assert "an_operator_added_this" in _tables(path)
 
 
 class _BrokenSchemaDatabase(Database):

@@ -78,9 +78,16 @@ in three states:
 ``INCOMPLETE``
     *Some* of the tables are present. This is not a database at any version:
     it is the shape a schema application leaves behind when it is interrupted
-    half-way, and it is refused with a message that names what is missing.
-    Migrating it would produce a database whose version log describes a shape
-    it does not have.
+    half-way, and it is refused with a message that names what is missing —
+    and what is there that the runtime does not use, because a refusal that
+    names half of what it found reads as a partial report. Migrating it would
+    produce a database whose version log describes a shape it does not have.
+
+An **extra** table — one the runtime does not use — is not a refusal. It is
+not evidence of a broken schema: a database may carry a table this build
+does not know about, and a missing table *is* evidence. So an extra table is
+named in the refusal when something is missing, and reported at info level
+when the database is accepted.
 
 The expected table set is read from the ``.sql`` file rather than written out
 here, so a table added to the schema cannot be forgotten here. The reader
@@ -100,6 +107,29 @@ in that state is indistinguishable, to a naive reader, from a database at the
 base version. The SQLite backend therefore applies the file inside a
 transaction of its own; see
 :meth:`paa.storage.relational.database.Database._apply_ddl`.
+
+**The DDL is atomic; the version rows follow it.** They are not one
+transaction, and this module does not pretend that they are. A version row
+is a claim about a shape, so it must never be written *ahead* of the shape
+it describes; the rows are therefore written in a **following** transaction
+— and the log they go into is itself created by the schema, so the rows
+cannot be written before it either. A crash in the window between the two
+leaves a database with all the tables and no version rows.
+
+That window is not a mystery state, and it is covered by the rule above: a
+database with the tables and an empty log is a database at the base version,
+and it is migrated forward. What makes that safe is the two properties the
+rest of this module already has — the runner asks the *catalog* rather than
+the log, so what it finds in the window is a shape it can reason about
+rather than an absence it has to interpret; and every guard tests the
+*effect* of its step rather than a counter, so re-running a step that has
+already landed changes nothing.
+
+For a **migration** the window does not exist: a version's steps and its
+version row are written in the *same* transaction, so a step that fails
+leaves the database at the version it was at, with no row claiming
+otherwise. The window is only ever between the initial application of the
+schema and the first version row.
 
 One connection, one schema, one lock
 ------------------------------------
@@ -150,6 +180,7 @@ from paa.storage.relational.schema_parser import (
     SchemaParseError,
     SchemaTable,
     parse_tables,
+    parse_virtual_tables,
 )
 
 __all__ = [
@@ -328,6 +359,19 @@ class GuardedStatement:
     mis-ordered guard matches no row, so the step is skipped, and the
     version row is written anyway. A database that claims a shape it does
     not have is exactly what this module exists to prevent.
+
+    Where the schema appears in the statement it appears in one of two
+    forms, and the form follows what the schema is *doing* there. A
+    statement that **names** an object — ``ALTER TABLE
+    $schema$.queue_messages …`` — carries the schema as a quoted
+    identifier. A guard that **compares** the catalog's ``table_schema``
+    column against the schema it means carries it as a quoted
+    **literal**: ``AND table_schema = '<schema>'``, because ``"paa"`` in
+    that position would name a *column* called ``paa``, and the
+    comparison would fail with "column does not exist" rather than match.
+    Both are rendered into the statement; see
+    :meth:`MigrationRunner._render` and
+    :meth:`MigrationRunner._render_comparison`.
     """
 
     guard: str
@@ -460,6 +504,21 @@ def runtime_tables(engine: Engine) -> frozenset[str]:
     and a database that predates it is still a database at the base version.
     """
     return frozenset(schema_tables(engine)) - {VERSION_LOG_TABLE}
+
+
+@cache
+def schema_virtual_tables(engine: Engine) -> frozenset[str]:
+    """The virtual tables the engine's schema file declares.
+
+    A virtual table (SQLite's FTS5) is a table the file declares but the
+    reader does not report: it has no PostgreSQL equivalent, and the shadow
+    tables the engine creates beside it are the engine's own bookkeeping.
+
+    The runner needs the names anyway — to tell those shadow tables from a
+    table nobody declared, when it compares the catalog against the schema.
+    """
+    path = schema_file(engine)
+    return parse_virtual_tables(schema_ddl(engine), source=path.name)
 
 
 @cache
@@ -987,6 +1046,15 @@ def _quote_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def _plural(count: int, noun: str) -> str:
+    """``3 tables`` — ``1 table``.
+
+    A refusal that says "1 tables" is a refusal nobody reads, and the
+    refusals are read by an operator at the worst possible moment.
+    """
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
 def _applied_at() -> str:
     """The timestamp a version row carries.
 
@@ -1041,6 +1109,12 @@ class MigrationRunner:
     the catalog rather than the log: a log that is empty is not the same
     thing as a database that is empty. Case 3 is the same question asked
     of a database that *does* have a log.
+
+    A table the runtime does **not** use is not a refusal, in any of the
+    six. It is named in the refusal when something *is* missing — a
+    refusal that names half of what it found reads as a partial report —
+    and reported at info level when the database is accepted. An extra
+    table is not evidence of a broken schema; a missing one is.
 
     Every refusal is a :class:`~paa.storage.relational.errors.SchemaVersionError`,
     so a caller that catches that class catches every way the runner can
@@ -1129,12 +1203,20 @@ class MigrationRunner:
         expected = self._expected_tables()
 
         if not present & expected:
+            # No runtime table at all: the schema is created outright. A
+            # table the runtime does not use is not evidence of a broken
+            # schema and is never a refusal — but the database was not
+            # empty, and the operator is the only one who can say what the
+            # extra table is, so it is named rather than passed over in
+            # silence.
+            self._log_extra_tables(self._extra_tables(present, expected))
             await self._create_schema()
             await self._record_versions(range(1, SCHEMA_VERSION + 1))
             self._log.info(f"{self._log_prefix}.schema_applied", version=SCHEMA_VERSION)
             return
 
         missing = expected - present
+        extra = self._extra_tables(present, expected)
         if missing:
             # Some of the tables are there and some are not. This is what a
             # schema application leaves behind when it is interrupted half-
@@ -1146,25 +1228,86 @@ class MigrationRunner:
             # a caller that catches that class catches every way the
             # runner can refuse a database, rather than having to know
             # that one of the three arrives as a bare storage error.
+            #
+            # The extra tables are named too. They are not the reason for
+            # the refusal — a table the runtime does not use is not
+            # evidence of a broken schema — but they are what the
+            # operator needs to see to understand *which* database they
+            # are looking at, and a refusal that names half of what it
+            # found is a refusal that reads as a partial report.
             raise SchemaVersionError(
                 "the database's schema is incomplete: "
                 f"{len(missing)} of the {len(expected)} tables the runtime "
                 "needs are missing ("
                 + ", ".join(sorted(missing))
-                + "). The schema was applied only part of the way, so the "
+                + ")"
+                + self._describe_extra_tables(extra)
+                + ". The schema was applied only part of the way, so the "
                 "database is not at any schema version and is not migrated. "
                 "Restore it from a backup, or point the runtime at a "
                 "database it can create from scratch",
                 substrate=self._substrate,
                 missing_tables=sorted(missing),
+                extra_tables=extra,
                 **self._error_details(),
             )
 
         # Every runtime table is present and the log is empty: a database at
         # the base version whose version was never written down.
+        self._log_extra_tables(extra)
         await self._record_versions(range(1, BASE_SCHEMA_VERSION + 1))
         for migration in pending(BASE_SCHEMA_VERSION):
             await self._run_migration(migration)
+
+    def _extra_tables(self, present: set[str], expected: frozenset[str]) -> list[str]:
+        """The tables the database holds that the runtime does not use.
+
+        Two kinds of table are not extras:
+
+        * the **version log**, which is the runner's own bookkeeping; and
+        * a **virtual table** and the shadow tables the engine creates
+          beside it (``fts_data``, ``fts_idx`` and the rest), which are
+          the engine's own bookkeeping. The schema file declares the
+          virtual table and none of its shadow tables, so a catalog that
+          holds them is a catalog that matches the schema.
+        """
+        ignored = {VERSION_LOG_TABLE}
+        for virtual in schema_virtual_tables(self._engine):
+            ignored.add(virtual)
+            ignored.update(name for name in present if name.startswith(f"{virtual}_"))
+        return sorted(present - expected - ignored)
+
+    def _describe_extra_tables(self, extra: Sequence[str]) -> str:
+        """How the refusal names the tables the runtime does not use.
+
+        An empty list is an empty string, so the refusal reads the same
+        whether or not the database holds anything extra.
+        """
+        if not extra:
+            return ""
+        return (
+            f", and it holds {_plural(len(extra), 'table')} the runtime does "
+            f"not use ({', '.join(extra)})"
+        )
+
+    def _log_extra_tables(self, extra: Sequence[str]) -> None:
+        """Report the tables the runtime does not use, and carry on.
+
+        An extra table is **not** evidence of a broken schema: a database
+        may carry a table this build does not know about — one written by
+        a later build, or one an operator added — and a missing table is
+        evidence, and a missing table is refused. So the extra tables are
+        reported at info level and the database is migrated.
+
+        A refusal that named them as well would be wrong: it would make
+        a database the runtime can work with look broken.
+        """
+        if not extra:
+            return
+        self._log.info(
+            f"{self._log_prefix}.schema_extra_tables",
+            tables=list(extra),
+        )
 
     def _expected_tables(self) -> frozenset[str]:
         """The tables a database at the base version has.
@@ -1194,20 +1337,32 @@ class MigrationRunner:
         catalog: a database that records version 4 but is missing a table
         the runtime needs is not a database at version 4, and migrating it
         would write a version row over a shape that does not exist.
+
+        The tables the runtime does *not* use are named in the refusal too,
+        and reported at info level when the shape is the one the log
+        claims. An extra table is not evidence of a broken schema — a
+        missing one is — so it is never a refusal on its own.
         """
         present = await self._present_tables()
         missing = expected - present
+        extra = self._extra_tables(present, expected)
         if not missing:
+            # The shape is the one the log claims. The tables the runtime
+            # does not use are reported, and the database is migrated: an
+            # extra table is not evidence of a broken schema.
+            self._log_extra_tables(extra)
             return
         raise SchemaVersionError(
             f"the schema version log records version {current}, but the "
             f"database does not have the shape that version describes: "
             f"{len(missing)} of the {len(expected)} tables the runtime needs "
-            "are missing (" + ", ".join(sorted(missing)) + "). The log is not "
-            "believed, and the database is not migrated",
+            "are missing (" + ", ".join(sorted(missing)) + ")"
+            + self._describe_extra_tables(extra)
+            + ". The log is not believed, and the database is not migrated",
             substrate=self._substrate,
             schema_version=current,
             missing_tables=sorted(missing),
+            extra_tables=extra,
             **self._error_details(),
         )
 

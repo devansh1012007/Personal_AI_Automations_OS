@@ -154,9 +154,70 @@ because the alternative is a step that can half-land and never finish.
 
 The version row is written last, so the version is never ahead of the shape it
 describes. The version log is also *checked*, not just written: a gap in it, or a
-database whose log claims a shape the database does not have, is refused rather than
-believed, because the highest version in the log is the only thing the build would
-otherwise use to decide what to run.
+database whose log claims a shape the database does not have, is refused rather
+than believed, because the highest version in the log is the only thing the build
+would otherwise use to decide what to run.
+
+**The DDL is atomic; the version rows follow it.** They are *not* one
+transaction, and this record used to read as if they were. The real invariant is
+narrower, and the gap it leaves is deliberate:
+
+* the schema file is applied in a transaction of its own — on SQLite
+  `executescript("BEGIN IMMEDIATE; … COMMIT;")`, on PostgreSQL one statement
+  inside one transaction — so a failure half-way through leaves **none** of the
+  schema behind, and the database is exactly as it was;
+* the version rows are written in a **following** transaction. A version row
+  is a claim about a shape, so it must never be written *ahead* of the shape
+  it describes — and the log the rows go into is itself created by the
+  schema, so the rows cannot be written before it either. (This is the
+  *initial* application; a migration's own version row is written in the
+  same transaction as its steps — see below.)
+
+A crash in the window between the two leaves a database that has all the tables
+and no version rows. That is not a mystery state: it is the *"tables present, log
+empty"* case, which the runner treats as a database at the base version and
+migrates forward. What makes that safe is two properties the rest of the design
+already has. The runner asks the **catalog** rather than the log, so what it finds
+in the window is a shape it can reason about rather than an absence it has to
+interpret. And every guard tests the *effect* of its step rather than a counter,
+so re-running a step that has already landed changes nothing, and the version
+rows that were never written are written then — the migration converges on the
+same shape it would have reached without the crash.
+
+For a *migration* the gap does not exist at all: a version's steps and its
+version row are written in the **same** transaction, so a step that fails leaves
+the database at the version it was at, with no row claiming otherwise. The window
+is only ever between the *initial* application of the schema and the first
+version row.
+
+**The schema is rendered into the guard, not bound into it.** The guards that
+read one schema's catalog — every `information_schema` guard on PostgreSQL —
+carry the schema as a **rendered literal**, `AND table_schema = '<schema>'`,
+written in by the runner through the `SCHEMA_PLACEHOLDER` token. They do **not**
+carry it as a bound `?` parameter, and there are two reasons, the first of which
+decides it:
+
+* a schema is an **identifier**, and an identifier cannot be a parameter. The one
+  place the schema appears as a *value* rather than as a name — the comparison
+  against the catalog's `table_schema` column — is therefore written in as a
+  quoted literal, because `"paa"` there would name a *column* called `paa`, and
+  the comparison would fail with "column does not exist" rather than match.
+* a parameter's position is a promise. A guard whose own parameters come first
+  and whose schema comes last is a silent trap: a mis-ordered guard matches no
+  row, so the step is skipped, and the version row is written anyway — a
+  database claiming a shape it does not have, which is exactly what this
+  machinery exists to prevent. Writing the schema into the *statement* removes
+  the ordering rule altogether: the placeholder count and the parameter list
+  cannot drift out of step, because the schema is not on that side of the
+  ledger at all.
+
+The version log is read and written through a **name-qualified** identifier —
+`"paa".schema_migrations` on PostgreSQL — and the qualification is rendered by
+the same mechanism. (The log's own `CREATE TABLE` is the schema file's own
+statement, unqualified, and lands in the schema the runner resolved on the
+connection it applies the file on.) The per-engine driver files never query the
+log at all: the log is the runner's own bookkeeping, the runner is shared, and
+so the log's spelling is the runner's business rather than the driver's.
 
 A database with the tables but *no* log is not refused — it is **migrated**. That is
 the case of a database created before the version log existed, and it is a real
@@ -185,6 +246,17 @@ because the column's *name* is a constant the two engines spell the same way but
 which a repository has to name without knowing which engine it is talking to: the
 alternative is a literal at each call site, and a literal at a call site is a
 place the two engines can drift.
+
+**`Dialect.as_uuid` was never a member of the dialect protocol, and nothing was
+removed from it.** The protocol was introduced with the `as_uuid` **function** in
+`paa.core.types` — the coercion that turns a row's id into a `uuid.UUID` whichever
+substrate the row came from — and the protocol has never had an `as_uuid` member.
+A record that says the protocol "lost" the member, or that the member "was removed
+from the dialect", is describing a removal that never happened: the coercion was
+never in the seam to begin with, and the seam's own documentation says so. The
+distinction matters because the two are different failures: a coercion that *was* in
+the seam and was moved out is a change to the seam, and one that was never in it is
+not.
 
 **8. The two DDL files stay table- and column-identical.**
 `tests/storage/test_schema_parity.py` parses both with a small DDL lexer and fails the

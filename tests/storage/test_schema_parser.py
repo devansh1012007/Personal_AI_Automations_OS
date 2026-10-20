@@ -34,6 +34,7 @@ import pytest
 from paa.storage.relational.schema_parser import (
     SchemaParseError,
     parse_tables,
+    parse_virtual_tables,
     split_statements,
     split_top_level,
     strip_comments,
@@ -206,6 +207,120 @@ def test_the_error_names_the_file_it_came_from() -> None:
     with pytest.raises(SchemaParseError) as caught:
         parse_tables("CREATE TABLE real (123abc TEXT);", source="schema_postgres.sql")
     assert "schema_postgres.sql" in str(caught.value)
+
+
+# ---------------------------------------------------------------------------
+# The forms the reader skips, and the one it refuses
+# ---------------------------------------------------------------------------
+
+
+def test_a_create_form_the_reader_does_not_know_is_an_error() -> None:
+    """A typo must not become a missing table.
+
+    The reader used to skip every statement it did not recognise, so
+    ``CREATE TABEL foo`` was not an error: the table was simply absent
+    from the parsed set. And a missing table is exactly what a migration
+    guard is there to notice — so the typo would present as a database
+    that is refused as incomplete, for a reason nobody can see.
+    """
+    with pytest.raises(SchemaParseError) as caught:
+        parse_tables("CREATE TABEL real (a TEXT);", source="probe.sql")
+    message = str(caught.value)
+    assert "probe.sql" in message
+    assert "CREATE TABEL real" in message
+
+
+def test_the_refusal_names_the_file_and_the_line() -> None:
+    """A refusal that does not say where it is a puzzle."""
+    with pytest.raises(SchemaParseError) as caught:
+        parse_tables("CREATE TABLE real (a TEXT);\nCREATE SEQUENCE s;\n", source="probe.sql")
+    message = str(caught.value)
+    assert "probe.sql" in message
+    assert "line 2" in message
+
+
+def test_a_create_form_that_is_not_a_table_is_skipped_not_refused() -> None:
+    """The other half: the forms the files use must keep parsing.
+
+    A reader that refused every ``CREATE`` that is not a table would
+    refuse the two schema files themselves — they create indexes,
+    triggers, an extension and a virtual table. Each of those is
+    recognised *knowingly* and skipped, and the table around it is
+    still read.
+    """
+    probes = (
+        "CREATE INDEX idx_probe ON probe (a);",
+        "CREATE UNIQUE INDEX idx_probe ON probe (a);",
+        "CREATE TRIGGER trg_probe AFTER INSERT ON probe BEGIN SELECT 1; END;",
+        "CREATE EXTENSION IF NOT EXISTS probe_ext;",
+        "CREATE VIRTUAL TABLE IF NOT EXISTS probe_fts USING fts5(a);",
+    )
+    for probe in probes:
+        sql = f"CREATE TABLE probe (a TEXT);\n{probe}\n"
+        assert _names(sql) == {"probe"}, probe
+
+
+def test_the_real_files_use_every_form_the_reader_skips() -> None:
+    """The probe list above is not decorative.
+
+    Each of the forms the reader skips knowingly is a form one of the
+    two schema files actually uses, so a change to the files that
+    introduced a *new* form would be a form the reader has to be taught
+    — and this test is what says the list is still complete.
+    """
+    sqlite = _SQLITE_SQL.read_text(encoding="utf-8")
+    postgres = _POSTGRES_SQL.read_text(encoding="utf-8")
+    assert "CREATE INDEX" in sqlite
+    assert "CREATE UNIQUE INDEX" in sqlite
+    assert "CREATE TRIGGER" in sqlite
+    assert "CREATE VIRTUAL TABLE" in sqlite
+    assert "CREATE EXTENSION" in postgres
+
+
+def test_the_real_files_still_parse() -> None:
+    """The whole point: the files the runtime reads must still read.
+
+    A reader that raises on a legitimate statement in the schema files
+    would refuse every database at connect time, so this is asserted
+    rather than assumed.
+    """
+    sqlite = parse_tables(_SQLITE_SQL.read_text(encoding="utf-8"), source="schema_sqlite.sql")
+    postgres = parse_tables(
+        _POSTGRES_SQL.read_text(encoding="utf-8"), source="schema_postgres.sql"
+    )
+    assert set(sqlite) == set(postgres)
+    assert len(sqlite) >= 20
+
+
+def test_the_virtual_table_is_reported_separately() -> None:
+    """The reader skips the virtual table knowingly, and names it.
+
+    The engine creates shadow tables beside it — ``fts_data``,
+    ``fts_idx`` and the rest — and a caller that compares a database's
+    catalog against the schema has to know the name to tell those from a
+    table nobody declared.
+    """
+    sql = "CREATE VIRTUAL TABLE IF NOT EXISTS probe_fts USING fts5(a);"
+    assert parse_virtual_tables(sql, source="probe.sql") == {"probe_fts"}
+    # and it is still not a table the parity comparison can talk about
+    assert _names(sql) == set()
+
+
+def test_the_real_files_declare_one_virtual_table() -> None:
+    """The SQLite file has the FTS5 table; the PostgreSQL file has none.
+
+    PostgreSQL expresses the same trigram search as a ``pg_trgm`` GIN
+    index on the base table, so the virtual table has no counterpart
+    there.
+    """
+    sqlite = parse_virtual_tables(
+        _SQLITE_SQL.read_text(encoding="utf-8"), source="schema_sqlite.sql"
+    )
+    postgres = parse_virtual_tables(
+        _POSTGRES_SQL.read_text(encoding="utf-8"), source="schema_postgres.sql"
+    )
+    assert sqlite == {"hot_serving_entity_fts"}
+    assert not postgres
 
 
 # ---------------------------------------------------------------------------
