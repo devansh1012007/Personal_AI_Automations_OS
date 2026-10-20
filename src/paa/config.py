@@ -1,8 +1,8 @@
 """Runtime configuration.
 
 Every tunable constant that appears as a magic number in the RFC lives here
-with its RFC section cited, so the maths in ``docs/architecture.md`` and the
-behaviour of the code cannot drift apart silently.
+with its RFC section cited, so the maths in ``docs/architecture/overview.md``
+and the behaviour of the code cannot drift apart silently.
 
 Configuration precedence: explicit kwargs > environment (``PAA_*``) >
 ``.env`` file > defaults.
@@ -13,11 +13,11 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from dotenv import dotenv_values
-from pydantic import BaseModel, Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import BaseModel, Field, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from paa.core.types import ComplexityModality, PermissionMode
 
@@ -68,10 +68,18 @@ class StorageSettings(BaseModel):
     backend_queue: Literal["sqlite", "redis"] = "sqlite"
 
     #: Cold-lake object substrate. ``filesystem`` is the content-addressed local
-    #: store (ADR-0004, the laptop default); ``minio`` restores the RFC's S3
-    #: server for the Docker deployment (ADR-0019). Both are content-addressed
-    #: and verify sha256 on read, so they are interchangeable behind one factory.
-    backend_coldlake: Literal["filesystem", "minio"] = "filesystem"
+    #: store (ADR-0004, the laptop default); ``s3`` is an S3-compatible server
+    #: (ADR-0019, ADR-0026). Both are content-addressed and verify sha256 on
+    #: read, so they are interchangeable behind one factory.
+    #:
+    #: ``minio`` is accepted as an alias for ``s3``. The RFC named MinIO
+    #: specifically, and a deployment written against it should keep working —
+    #: but the substrate is the S3 *protocol*, and the server behind it is a
+    #: choice, not a contract. MinIO's community distribution is archived
+    #: upstream and its registry path now answers 401 for anonymous pulls, so
+    #: naming one vendor in the selector made a setting that could not be
+    #: satisfied on a stock host.
+    backend_coldlake: Literal["filesystem", "s3", "minio"] = "filesystem"
 
     sqlite_path: Path = Field(default_factory=lambda: _default_home() / "state" / "paa.db")
     postgres_dsn: str | None = None
@@ -84,19 +92,24 @@ class StorageSettings(BaseModel):
     #: Content-addressed blob store. Replaces MinIO on the laptop (ADR-0004).
     cold_lake_path: Path = Field(default_factory=lambda: _default_home() / "cold_lake")
 
-    #: MinIO / S3 endpoint for ``backend_coldlake == "minio"`` (ADR-0019), e.g.
-    #: ``http://minio:9000`` inside Docker. ``None`` on the laptop topology.
-    minio_endpoint: str | None = None
-    minio_bucket: str = "paa-cold-lake"
-    #: TLS to the object store. Compose runs MinIO on the internal network, so
-    #: the in-cluster hop defaults to plaintext there; a public S3 must set True.
-    minio_secure: bool = False
+    #: S3 endpoint for ``backend_coldlake == "s3"`` (ADR-0019, ADR-0026), e.g.
+    #: ``http://seaweedfs:8333`` inside Docker. ``None`` on the laptop topology.
+    #:
+    #: The field is named for the *protocol*, not for a server: the client is
+    #: the S3 API, and which server answers is the deployment's business. The
+    #: legacy ``minio_*`` names still work — see the alias validator below.
+    s3_endpoint: str | None = None
+    s3_bucket: str = "paa-cold-lake"
+    #: TLS to the object store. Compose runs the object store on the internal
+    #: network, so the in-cluster hop defaults to plaintext there; a public S3
+    #: must set True.
+    s3_secure: bool = False
     #: SPEC DEVIATION (docs/adr/0019): credentials are read from these named
     #: environment variables at construction, never stored in config or the
     #: ledger — the same indirection ModelSettings uses for API keys.
-    minio_access_key_env: str = "PAA_MINIO_ACCESS_KEY"
+    s3_access_key_env: str = "PAA_S3_ACCESS_KEY"
     # S105: this is the *name* of an environment variable, not a secret value.
-    minio_secret_key_env: str = "PAA_MINIO_SECRET_KEY"
+    s3_secret_key_env: str = "PAA_S3_SECRET_KEY"
 
     redis_url: str = "redis://127.0.0.1:6379/0"
 
@@ -124,6 +137,40 @@ class StorageSettings(BaseModel):
             self.vault_path,
             self.workspace_root,
         ]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_minio_names(cls, data: Any) -> Any:
+        """Accept the pre-ADR-0026 ``minio_*`` names, and normalise them.
+
+        The object substrate is S3, and the server behind it is the
+        deployment's choice — so the *fields* are named for the protocol.
+        A deployment written against the earlier names should keep working
+        without editing its ``.env``, so the legacy spellings are read and
+        mapped here rather than being broken.
+
+        The legacy name wins only when the new one is absent: an operator
+        who has both set is asking for two different things, and the
+        explicit new name is the one they meant.
+        """
+        if not isinstance(data, dict):
+            return data
+        legacy = {
+            "minio_endpoint": "s3_endpoint",
+            "minio_bucket": "s3_bucket",
+            "minio_secure": "s3_secure",
+            "minio_access_key_env": "s3_access_key_env",
+            "minio_secret_key_env": "s3_secret_key_env",
+        }
+        for old, new in legacy.items():
+            if old in data:
+                if new not in data or data[new] is None:
+                    data[new] = data.pop(old)
+                else:
+                    data.pop(old)
+        if data.get("backend_coldlake") == "minio":
+            data["backend_coldlake"] = "s3"
+        return data
 
 
 class ContextSettings(BaseModel):
@@ -251,6 +298,24 @@ class SandboxSettings(BaseModel):
     #: Wall-clock kill switch when the modality does not pin one.
     default_timeout_seconds: float = Field(default=30.0, gt=0)
 
+    #: Time charged to the *container's start*, over and above the step's own
+    #: timeout.
+    #:
+    #: A modality profile's timeout is a budget on the step's **work**, and
+    #: the two backends have wildly different overheads. The subprocess
+    #: backend spawns a process in milliseconds, so the budget is effectively
+    #: all work. The docker backend has to ask the daemon to create a
+    #: container, mount the workspace, and start the process — around half a
+    #: second on a warm host and several seconds on a loaded one.
+    #:
+    #: Without the allowance the SIMPLE profile's quarter-of-a-second budget
+    #: is spent *entirely* on the start, and every simple step times out
+    #: before it has run a single instruction — a deployment that looks
+    #: healthy and fails every trivial task. The overhead is the backend's,
+    #: so it is charged to the backend, and it is a setting because the
+    #: right value depends on how loaded the host is.
+    container_start_grace_seconds: float = Field(default=5.0, ge=0)
+
     #: SPEC DEVIATION (docs/adr/0009): the RFC's termination rule integrates
     #: memory over time (``∫MemoryUsage(t)dt > Ceiling``), which yields
     #: MB-seconds — dimensionally not a memory bound. We enforce peak RSS,
@@ -275,6 +340,115 @@ class SandboxSettings(BaseModel):
 
     #: Nested delegation ceiling (RFC §2.2). Modality profiles may lower it.
     absolute_recursion_ceiling: int = Field(default=4, ge=0)
+
+    #: Host↔container path translation for the Docker backend.
+    #:
+    #: The Docker daemon resolves a bind mount's source path against the
+    #: **host** filesystem. When the runtime itself runs in a container, the
+    #: path it knows is not the path the daemon must be given: a workspace at
+    #: ``/data/workspaces/task-1`` inside the runtime is at
+    #: ``<host>/workspaces/task-1`` on the host, and passing the former to
+    #: ``docker run -v`` silently mounts a *different* directory — one the
+    #: host creates, empty and root-owned.
+    #:
+    #: The format is comma-separated ``inside=host`` pairs, and the longest
+    #: matching prefix wins. Empty means "the same path", which is the
+    #: correct answer when the runtime is not containerised.
+    #:
+    #: It is a **string**, not a tuple of pairs, on purpose. pydantic-settings
+    #: decodes a complex-typed field from an environment variable as JSON, so
+    #: a tuple field would demand ``[["/data","/srv/paa/data"]]`` in the
+    #: environment — and an operator who writes the obvious
+    #: ``/data=/srv/paa/data`` would get a settings error at boot, with the
+    #: container dying before it could print a diagnostic. ``NoDecode`` stops
+    #: the JSON decode; the parsing happens here, where the error message can
+    #: name the format.
+    #:
+    #: Example (this is what docker-compose.yml sets)::
+    #:
+    #:     PAA_SANDBOX__HOST_PATH_MAP="/data=/srv/paa/data"
+    host_path_map: Annotated[str, NoDecode] = ""
+
+    @property
+    def host_path_pairs(self) -> tuple[tuple[str, str], ...]:
+        """The parsed form of :attr:`host_path_map`.
+
+        Strict: a malformed pair raises :class:`ValueError` naming the format
+        and the offending text. It is strict because the alternative is
+        *silent* degradation — a dropped pair means the Docker daemon is
+        handed a path it does not recognise, and it answers by creating an
+        empty, root-owned directory in its place. A wrong mount that fails
+        loudly is strictly better than one that quietly mounts the wrong
+        thing.
+
+        The error is raised at the point of use, not at construction. The
+        runtime must still boot on a misconfigured host: a container that
+        dies during settings import cannot run ``paa doctor``, and the doctor
+        is exactly the run that tells the operator what is wrong.
+        :attr:`host_path_map_error` is the lenient view, for the diagnostic.
+        """
+        pairs: list[tuple[str, str]] = []
+        for chunk in self.host_path_map.split(","):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            if "=" not in chunk:
+                raise ValueError(
+                    f"host_path_map entry {chunk!r} is not 'inside=host'. "
+                    "Entries are comma-separated, e.g. "
+                    "'/data=/srv/paa/data'"
+                )
+            inside, _, host = chunk.partition("=")
+            inside = inside.strip()
+            host = host.strip()
+            # A trailing slash is noise, except on "/" itself — which is a
+            # meaningful mapping ("everything under this root") and must not
+            # be stripped into the empty string.
+            if inside != "/":
+                inside = inside.rstrip("/")
+            if host != "/":
+                host = host.rstrip("/")
+            if not inside.startswith("/"):
+                raise ValueError(
+                    f"host_path_map entry {chunk!r} has a non-absolute "
+                    f"'inside' path {inside!r}; it must be an absolute path "
+                    "as the runtime sees it"
+                )
+            if not host.startswith("/"):
+                raise ValueError(
+                    f"host_path_map entry {chunk!r} has a non-absolute 'host' "
+                    f"path {host!r}; it must be an absolute path on the "
+                    "machine running the Docker daemon"
+                )
+            pairs.append((inside, host))
+        return tuple(pairs)
+
+    @property
+    def host_path_map_error(self) -> str | None:
+        """Why :attr:`host_path_map` cannot be parsed, or ``None``.
+
+        The lenient counterpart to :attr:`host_path_pairs`: a diagnostic must
+        be able to *report* a broken setting without raising on it.
+        """
+        if not self.host_path_map.strip():
+            return None
+        try:
+            _ = self.host_path_pairs
+        except ValueError as exc:
+            return str(exc)
+        return None
+
+    #: The network a container with ``allow_network=True`` joins when the
+    #: spec does not name one. Empty means the Docker daemon's default
+    #: bridge, which has full host and internet reachability.
+    #:
+    #: The server topology does **not** set this: the tool layer chooses a
+    #: network per plugin (the internal ``paa_tools`` for one that needs no
+    #: egress, ``paa_tools_egress`` for one that does), and a value set
+    #: globally would silently give every networked container the same
+    #: reachability. Leaving it empty is the loud option — the backend logs
+    #: that it is about to use the default bridge.
+    default_container_network: str = ""
 
 
 class ModelSettings(BaseModel):
@@ -414,21 +588,39 @@ class Settings(BaseSettings):
     api_host: str = "127.0.0.1"
     api_port: int = Field(default=8787, ge=1, le=65535)
 
-    @field_validator("api_host")
-    @classmethod
-    def _enforce_loopback(cls, v: str) -> str:
+    #: Escape hatch for the loopback constraint.
+    #:
+    #: RFC §6 "Out of Scope" forbids public ingestion routes, and the default
+    #: enforces that. But a containerised runtime *has* to bind something
+    #: other than loopback: Docker publishes a port by rewriting the
+    #: destination to the container's address, and a socket bound to the
+    #: container's own loopback does not accept a packet addressed to that
+    #: interface. The host-side binding stays loopback-only, so the escape
+    #: hatch loosens the *container's* bind, not the host's exposure.
+    #:
+    #: It is a *field* rather than a bare environment variable read inside a
+    #: validator, so that it appears in the settings schema, in ``paa doctor``,
+    #: and in the deployment guide's configuration table — and so that the
+    #: compose file's variable list can be checked against the schema, which
+    #: is exactly the check that caught it being invisible.
+    allow_non_loopback: bool = False
+
+    @model_validator(mode="after")
+    def _enforce_loopback(self) -> Settings:
         """Refuse non-loopback binds unless explicitly overridden.
 
-        RFC §6 "Out of Scope" forbids public ingestion routes. Making this a
-        validator means a typo in ``.env`` cannot silently expose the runtime.
+        A model validator rather than a field validator, because the check
+        needs both ``api_host`` and ``allow_non_loopback`` — a field
+        validator sees one field at a time and cannot ask its sibling.
         """
         allowed = {"127.0.0.1", "localhost", "::1"}
-        if v not in allowed and os.environ.get("PAA_ALLOW_NON_LOOPBACK") != "1":
+        if self.api_host not in allowed and not self.allow_non_loopback:
             raise ValueError(
-                f"api_host {v!r} is not loopback. The runtime is single-user and "
-                "local-first; set PAA_ALLOW_NON_LOOPBACK=1 to override deliberately."
+                f"api_host {self.api_host!r} is not loopback. The runtime is "
+                "single-user and local-first; set PAA_ALLOW_NON_LOOPBACK=1 to "
+                "override deliberately."
             )
-        return v
+        return self
 
     @model_validator(mode="after")
     def _propagate_home(self) -> Settings:

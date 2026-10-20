@@ -25,7 +25,7 @@ import structlog
 from paa.memory.domains import MemoryDomain, domain_policy
 
 if TYPE_CHECKING:
-    from paa.storage.relational.database import Database
+    from paa.storage.relational.base import RelationalBackend
 
 __all__ = [
     "DecayReport",
@@ -141,7 +141,7 @@ class DecaySweeper:
 
     def __init__(
         self,
-        db: Database,
+        db: RelationalBackend,
         *,
         archive_writer: object | None = None,
         batch_size: int = 500,

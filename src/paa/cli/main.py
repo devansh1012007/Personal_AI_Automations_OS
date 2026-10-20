@@ -28,6 +28,7 @@ from rich.table import Table
 from paa import __version__
 from paa.cli.coder import register_agent
 from paa.core.types import ComplexityModality, PermissionMode
+from paa.sandbox.base import collect_sandbox_facts, sandbox_report_rows
 
 app = typer.Typer(
     name="paa",
@@ -218,7 +219,14 @@ def doctor() -> None:
             table.add_row("version", __version__)
             table.add_row("home", str(settings.home))
             table.add_row("permission mode", settings.policy.mode.value)
-            table.add_row("relational", settings.storage.backend_relational)
+            # The live substrate, not the configured one. This row used to
+            # print ``settings.storage.backend_relational`` — the *setting* —
+            # so a deployment configured for Postgres reported "postgres"
+            # while the process was using a local SQLite file. A diagnostic
+            # that reads a setting instead of the object it describes is a
+            # diagnostic that lies, and this one lies about the substrate
+            # the ledger is stored in.
+            table.add_row("relational", type(rt.db).__name__)
             table.add_row("vector", type(rt.vector_store).__name__ if rt.vector_store else "none")
             table.add_row("graph", type(rt.graph_store).__name__ if rt.graph_store else "none")
             table.add_row("queue", type(rt.queue).__name__ if rt.queue else "none")
@@ -226,14 +234,22 @@ def doctor() -> None:
                 "model router",
                 type(rt.model_router).__name__ if rt.model_router else "none",
             )
-            worker = rt.agents.get("worker")
-            sandbox = getattr(worker, "_sandbox", None)
+            sandbox = rt.sandbox
             if sandbox is not None:
-                level = getattr(sandbox, "isolation_level", None)
-                table.add_row(
-                    "sandbox",
-                    f"{sandbox.name} ({getattr(level, 'name', '?')})",
-                )
+                # ORDERING IS LOAD-BEARING. ``diagnose()`` is what asks the
+                # Docker daemon whether the requested OCI runtime is
+                # registered, and the isolation level is derived from that
+                # answer. Reading the level first would print a stale
+                # snapshot — "NAMESPACE" — on the row directly above
+                # "runsc (registered)", which is how a diagnostic ends up
+                # contradicting itself.
+                facts = await _sandbox_facts(sandbox)
+                rows = sandbox_report_rows(facts)
+                if rows:
+                    for label, value in rows:
+                        table.add_row(label, value)
+                else:
+                    table.add_row("sandbox", "none (dry-run)")
             else:
                 table.add_row("sandbox", "none (dry-run)")
             table.add_row("open tasks", str(len(await rt.ledger.open_correlations())))
@@ -242,6 +258,16 @@ def doctor() -> None:
             await rt.close()
 
     _run(_do())
+
+
+async def _sandbox_facts(sandbox: Any) -> dict[str, Any]:
+    """The backend's self-report, for :func:`sandbox_report_rows` to render.
+
+    A thin wrapper over :func:`collect_sandbox_facts`, so the CLI and the TUI
+    normalise a failed diagnostic the same way — the difference between the
+    two surfaces is how they *draw* the facts, not how they obtain them.
+    """
+    return await collect_sandbox_facts(sandbox)
 
 
 @app.command()

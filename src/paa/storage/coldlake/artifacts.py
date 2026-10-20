@@ -26,7 +26,6 @@ same way. A 500 MB artifact must cost chunk-sized memory, not 500 MB (RFC §11.2
 from __future__ import annotations
 
 import hashlib
-import sqlite3
 import uuid
 from collections.abc import Iterator
 from datetime import datetime
@@ -37,13 +36,16 @@ import structlog
 from pydantic import BaseModel, ConfigDict
 
 from paa.core.errors import StorageError
+from paa.core.types import as_text
+from paa.storage.coldlake.base import BlobStore
 from paa.storage.coldlake.cas import (
     BlobRef,
-    ContentAddressedStore,
     copy_file_into,
     export_to_file,
 )
-from paa.storage.relational.database import Database, from_iso, to_iso, utc_now
+from paa.storage.relational.base import RelationalBackend
+from paa.storage.relational.database import from_iso, to_iso, utc_now
+from paa.storage.relational.errors import UniqueViolation
 
 __all__ = ["ArchivedArtifact", "ArtifactArchive"]
 
@@ -87,7 +89,7 @@ class ArchivedArtifact(BaseModel):
 class ArtifactArchive:
     """Archive and retrieve host files, backed by the content-addressed store."""
 
-    def __init__(self, db: Database, cas: ContentAddressedStore) -> None:
+    def __init__(self, db: RelationalBackend, cas: BlobStore) -> None:
         self._db = db
         self._cas = cas
 
@@ -167,7 +169,7 @@ class ArtifactArchive:
                     to_iso(artifact.archived_at),
                 ),
             )
-        except sqlite3.IntegrityError as exc:
+        except UniqueViolation as exc:
             # Lost a race on the UNIQUE virtual_uri. The winner archived the same
             # content (same URI implies same hash under the default scheme), so
             # returning theirs is correct.
@@ -333,9 +335,9 @@ class ArtifactArchive:
 
 def _artifact_from_row(row: Any) -> ArchivedArtifact:
     return ArchivedArtifact(
-        id=row["id"],
-        signal_id=row["signal_id"],
-        correlation_id=row["correlation_id"],
+        id=as_text(row["id"]),
+        signal_id=as_text(row["signal_id"]) if row["signal_id"] else None,
+        correlation_id=as_text(row["correlation_id"]) if row["correlation_id"] else None,
         virtual_uri=row["virtual_uri"],
         absolute_host_path=row["absolute_host_path"],
         sha256_checksum=row["sha256_checksum"],

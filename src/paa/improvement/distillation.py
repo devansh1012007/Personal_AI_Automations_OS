@@ -16,14 +16,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import structlog
 
 from paa.core.types import ComplexityModality
-
-if TYPE_CHECKING:
-    from paa.storage.relational.database import Database
+from paa.storage.relational.base import RelationalBackend
 
 __all__ = ["Recipe", "SkillDistiller", "generalize_arguments"]
 
@@ -75,7 +73,7 @@ def generalize_arguments(value: Any) -> Any:
 class SkillDistiller:
     """Mines recipes from committed tasks and (optionally) registers them."""
 
-    def __init__(self, db: Database, *, sandbox_tester: object | None = None) -> None:
+    def __init__(self, db: RelationalBackend, *, sandbox_tester: object | None = None) -> None:
         self._db = db
         self._tester = sandbox_tester
 

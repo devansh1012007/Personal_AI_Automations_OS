@@ -34,7 +34,8 @@ from paa.core.types import EventType
 from paa.ledger.events import LedgerEvent
 from paa.ledger.replay import TaskPhase, TaskProjection, project
 from paa.ledger.store import CorrelationHead, LedgerStore
-from paa.storage.relational.database import Database, dumps, loads, to_iso, utc_now
+from paa.storage.relational.base import RelationalBackend
+from paa.storage.relational.database import dumps, loads, to_iso, utc_now
 
 __all__ = [
     "CorrelationRecovery",
@@ -142,7 +143,7 @@ class RecoveryEngine:
     def __init__(
         self,
         store: LedgerStore,
-        db: Database,
+        db: RelationalBackend,
         *,
         snapshotter: WorkspaceSnapshotter | None = None,
         requeuer: Requeuer | None = None,
@@ -179,9 +180,12 @@ class RecoveryEngine:
         manifest_hash = self._snapshotter.manifest_hash(manifest)
 
         await self._db.execute(
-            "INSERT OR REPLACE INTO hot_serving_recovery_marks "
+            "INSERT INTO hot_serving_recovery_marks "
             "(id, correlation_id, state_version, workspace_path, manifest, manifest_hash, "
-            " created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            " created_at) VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(correlation_id, state_version) DO UPDATE SET "
+            "workspace_path = excluded.workspace_path, manifest = excluded.manifest, "
+            "manifest_hash = excluded.manifest_hash, created_at = excluded.created_at",
             (
                 str(uuid.uuid4()),
                 str(correlation_id),

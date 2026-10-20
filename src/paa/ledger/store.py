@@ -17,18 +17,20 @@ already been told it succeeded.
 
 from __future__ import annotations
 
-import sqlite3
 import uuid
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 import structlog
 
 from paa.core.errors import LedgerError
-from paa.core.types import TERMINAL_EVENTS, CorrelationId, EventType
+from paa.core.types import TERMINAL_EVENTS, CorrelationId, EventType, as_uuid
 from paa.ledger.events import GENESIS_HASH, LedgerEvent
-from paa.storage.relational.database import Database, dumps, from_iso, loads, to_iso, utc_now
+from paa.storage.relational.base import RelationalBackend
+from paa.storage.relational.connection import TransactionConnection
+from paa.storage.relational.database import dumps, from_iso, loads, to_iso, utc_now
+from paa.storage.relational.errors import UniqueViolation
 
 __all__ = ["CorrelationHead", "LedgerStore"]
 
@@ -40,6 +42,7 @@ INSERT INTO system_state_ledger (
     idempotency_key, attempt, discriminator, event_type, execution_mode,
     agent_role, allocated_worker_image, payload, prev_hash, event_hash, recorded_at
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING sequence_id
 """
 
 _HEAD_UPSERT_SQL = """
@@ -81,9 +84,9 @@ class CorrelationHead:
         "updated_at",
     )
 
-    def __init__(self, row: sqlite3.Row) -> None:
-        self.correlation_id = uuid.UUID(row["correlation_id"])
-        self.session_id = uuid.UUID(row["session_id"]) if row["session_id"] else None
+    def __init__(self, row: Any) -> None:
+        self.correlation_id = as_uuid(row["correlation_id"])
+        self.session_id = as_uuid(row["session_id"]) if row["session_id"] else None
         self.latest_sequence_id: int = row["latest_sequence_id"]
         self.latest_state_version: int = row["latest_state_version"]
         self.latest_event_type = EventType(row["latest_event_type"])
@@ -105,7 +108,7 @@ class CorrelationHead:
 class LedgerStore:
     """The append-only event log."""
 
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: RelationalBackend) -> None:
         self._db = db
 
     # -- writes ------------------------------------------------------------
@@ -121,6 +124,15 @@ class LedgerStore:
         key = event.idempotency_key
 
         async with self._db.transaction() as conn:
+            # Serialise writers for this lineage before the tip is read. The
+            # read-then-write that assigns ``state_version`` is only atomic
+            # if two writers for the same lineage cannot interleave — on
+            # SQLite the backend's write lock covers it, on a server
+            # substrate the lock has to be taken in the server. Without it a
+            # second writer would collide with the first on the unique
+            # constraint and the append would fail where SQLite succeeds.
+            await self._db.dialect.lock_correlation(conn, str(event.correlation_id))
+
             existing = await self._find_by_key(conn, key)
             if existing is not None:
                 log.debug(
@@ -138,22 +150,44 @@ class LedgerStore:
                 prev_hash=prev_hash,
             )
 
+            # A savepoint around the insert, so that a duplicate can be
+            # recovered from on a substrate that aborts the transaction when
+            # a statement fails. See the comment in the handler.
+            await self._savepoint(conn)
             try:
-                cursor = await conn.execute(_INSERT_SQL, self._insert_params(sealed, key))
-            except sqlite3.IntegrityError as exc:
+                async with conn.execute(_INSERT_SQL, self._insert_params(sealed, key)) as cur:
+                    row = await cur.fetchone()
+            except UniqueViolation as exc:
                 # A concurrent writer in *another process* beat us to it. The
                 # in-process lock cannot cover that case, so re-read and return
                 # whatever landed.
+                #
+                # The re-read has to happen on a *usable* transaction. SQLite
+                # leaves the transaction usable after a failed statement, but
+                # PostgreSQL aborts it — the next statement would be refused
+                # with "current transaction is aborted" — so the insert is
+                # wrapped in a savepoint and rolled back to before the re-read.
+                # The savepoint statements are portable; only the reason they
+                # are needed is engine-specific.
+                await self._rollback_to_savepoint(conn)
                 if (duplicate := await self._find_by_key(conn, key)) is not None:
                     return duplicate
+                # The key is not on disk, so this was the *other* unique
+                # constraint: two writers raced for the same state_version.
+                # That is a real collision and not a suppressed retry, and it
+                # is reported as one.
                 raise LedgerError(
-                    "ledger append violated an integrity constraint",
+                    "ledger append violated an integrity constraint that is not "
+                    "the idempotency key — two writers raced for the same "
+                    "state_version",
                     correlation_id=str(event.correlation_id),
                     event_type=event.event_type.value,
                     detail=str(exc),
                 ) from exc
+            finally:
+                await self._release_savepoint(conn)
 
-            sequence_id = int(cursor.lastrowid or 0)
+            sequence_id = int(row["sequence_id"]) if row is not None else 0
             sealed = sealed.model_copy(update={"sequence_id": sequence_id})
             await self._update_head(conn, sealed)
 
@@ -165,6 +199,42 @@ class LedgerStore:
             correlation_id=str(sealed.correlation_id),
         )
         return sealed
+
+    async def _savepoint(self, conn: TransactionConnection) -> None:
+        """Mark a point the transaction can be rolled back to.
+
+        The savepoint is named for the recovery it is for: the insert that
+        a concurrent writer may have made redundant. The name is written
+        into each of the three statements as a literal rather than
+        interpolated, so that no statement in this module is assembled at
+        runtime.
+        """
+        async with conn.execute("SAVEPOINT ledger_append_insert"):
+            pass
+
+    async def _rollback_to_savepoint(self, conn: TransactionConnection) -> None:
+        """Undo everything since the savepoint, keeping the transaction alive.
+
+        On SQLite this is a no-op in practice — a failed statement leaves
+        the transaction usable, and there is nothing since the savepoint to
+        undo. On PostgreSQL it is what makes the recovery possible at all:
+        a failed statement aborts the transaction, and the re-read that
+        follows would be refused with "current transaction is aborted".
+        """
+        async with conn.execute("ROLLBACK TO SAVEPOINT ledger_append_insert"):
+            pass
+
+    async def _release_savepoint(self, conn: TransactionConnection) -> None:
+        """End the savepoint, keeping the work done since it.
+
+        Best-effort: the savepoint is a recovery aid, and failing to
+        release one must not mask the error that made it necessary.
+        """
+        try:
+            async with conn.execute("RELEASE SAVEPOINT ledger_append_insert"):
+                pass
+        except Exception:  # pragma: no cover - cleanup must not mask
+            log.debug("ledger.savepoint_release_failed")
 
     async def append_many(self, events: Sequence[LedgerEvent]) -> list[LedgerEvent]:
         """Append a batch. Not atomic across the batch by design.
@@ -195,7 +265,7 @@ class LedgerStore:
         )
 
     async def _chain_tip(
-        self, conn: sqlite3.Connection, correlation_id: uuid.UUID
+        self, conn: TransactionConnection, correlation_id: uuid.UUID
     ) -> tuple[int, str]:
         """Highest ``state_version`` and its digest for a correlation.
 
@@ -211,7 +281,7 @@ class LedgerStore:
             return 0, GENESIS_HASH
         return int(row["state_version"]), str(row["event_hash"])
 
-    async def _find_by_key(self, conn: sqlite3.Connection, key: str) -> LedgerEvent | None:
+    async def _find_by_key(self, conn: TransactionConnection, key: str) -> LedgerEvent | None:
         async with conn.execute(
             f"SELECT {_SELECT_COLUMNS} FROM system_state_ledger WHERE idempotency_key = ?",
             (key,),
@@ -219,7 +289,7 @@ class LedgerStore:
             row = await cur.fetchone()
         return _row_to_event(row) if row else None
 
-    async def _update_head(self, conn: sqlite3.Connection, event: LedgerEvent) -> None:
+    async def _update_head(self, conn: TransactionConnection, event: LedgerEvent) -> None:
         now = to_iso(event.recorded_at)
         await conn.execute(
             _HEAD_UPSERT_SQL,
@@ -354,7 +424,7 @@ class LedgerStore:
         report: dict[str, list[str]] = {}
         for row in rows:
             cid = row["correlation_id"]
-            ok, problems = await self.verify_chain(uuid.UUID(cid))
+            ok, problems = await self.verify_chain(as_uuid(cid))
             if not ok:
                 report[cid] = problems
         return report
@@ -369,8 +439,10 @@ class LedgerStore:
     ) -> None:
         """Checkpoint a projection so replay can skip earlier events."""
         await self._db.execute(
-            "INSERT OR REPLACE INTO system_state_snapshots "
-            "(correlation_id, state_version, projection, created_at) VALUES (?, ?, ?, ?)",
+            "INSERT INTO system_state_snapshots "
+            "(correlation_id, state_version, projection, created_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(correlation_id, state_version) DO UPDATE SET "
+            "projection = excluded.projection, created_at = excluded.created_at",
             (str(correlation_id), state_version, dumps(projection), to_iso(utc_now())),
         )
 
@@ -387,13 +459,13 @@ class LedgerStore:
         return int(row["state_version"]), loads(row["projection"], {})
 
 
-def _row_to_event(row: sqlite3.Row) -> LedgerEvent:
+def _row_to_event(row: Any) -> LedgerEvent:
     return LedgerEvent(
         sequence_id=row["sequence_id"],
-        event_id=uuid.UUID(row["event_id"]),
-        correlation_id=uuid.UUID(row["correlation_id"]),
-        session_id=uuid.UUID(row["session_id"]) if row["session_id"] else None,
-        causation_id=uuid.UUID(row["causation_id"]) if row["causation_id"] else None,
+        event_id=as_uuid(row["event_id"]),
+        correlation_id=as_uuid(row["correlation_id"]),
+        session_id=as_uuid(row["session_id"]) if row["session_id"] else None,
+        causation_id=as_uuid(row["causation_id"]) if row["causation_id"] else None,
         state_version=row["state_version"],
         attempt=row["attempt"],
         discriminator=row["discriminator"],
@@ -404,5 +476,5 @@ def _row_to_event(row: sqlite3.Row) -> LedgerEvent:
         payload=loads(row["payload"], {}),
         prev_hash=row["prev_hash"],
         event_hash=row["event_hash"],
-        recorded_at=datetime.fromisoformat(row["recorded_at"]).astimezone(UTC),
+        recorded_at=from_iso(row["recorded_at"]),
     )

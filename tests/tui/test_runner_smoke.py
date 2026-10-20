@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -69,27 +70,38 @@ class FakeOrchestrator:
         return proj
 
 
+class _Mode:
+    value = "ask"
+
+
+class _Storage:
+    backend_relational = "sqlite"
+
+
 class FakeSettings:
     home: Any
     policy: Any
     storage: Any
 
-    class _Mode:
-        value = "ask"
-
     mode = _Mode()
-
-    class _Storage:
-        backend_relational = "sqlite"
-
     storage = _Storage()
+
+    def __init__(self) -> None:
+        self.home = "/tmp/paa-tui-test"
+        self.policy = self
 
 
 class FakeRuntime:
     def __init__(self) -> None:
         self.settings = FakeSettings()
-        self.agents = {"worker": type("W", (), {"_sandbox": None})()}
+        #: The runtime owns the containment backend; the TUI reads it from
+        #: here rather than reaching into the worker's private attribute.
+        self.sandbox = None
         self.ledger = FakeLedger()
+        #: The relational substrate. The panel reports the *live* backend, so
+        #: the fake has to carry one — a diagnostic that reads a setting
+        #: instead of the object it describes is a diagnostic that lies.
+        self.db = SimpleNamespace()
         self.orchestrator = FakeOrchestrator()
         self.vector_store = None
         self.graph_store = None
@@ -98,6 +110,69 @@ class FakeRuntime:
 
     async def close(self) -> None:
         pass
+
+
+class FakeSandbox:
+    """A backend whose facts the TUI must actually carry to the panel."""
+
+    name = "docker"
+    isolation_level = "NAMESPACE"
+
+    def __init__(self, facts: dict[str, Any]) -> None:
+        self._facts = facts
+
+    async def diagnose(self) -> dict[str, Any]:
+        return self._facts
+
+
+async def test_the_tui_carries_the_sandbox_facts_to_the_panel() -> None:
+    """The TUI must *collect* the facts, not merely be able to draw them.
+
+    A test that hands ``sandbox_facts`` straight to the renderer only proves
+    the renderer is shared. If the TUI stopped collecting — say the
+    dashboard quietly showed a stale isolation level — that test would
+    still pass, and the operator would be told the wrong containment.
+    """
+    from paa.tui.runner import _build_info
+
+    fake_rt = FakeRuntime()
+    fake_rt.sandbox = FakeSandbox(
+        {
+            "backend": "docker",
+            "isolation_level": "NAMESPACE",
+            "container_runtime": "runsc",
+            "runtime_available": False,
+            "image": "paa/base_worker:v4.1",
+            "image_present": True,
+        }
+    )
+    info = await _build_info(fake_rt.settings, fake_rt)
+    assert info["sandbox_facts"]["container_runtime"] == "runsc"
+    assert info["sandbox_facts"]["image"] == "paa/base_worker:v4.1"
+    assert info["sandbox_facts"]["runtime_available"] is False
+
+
+async def test_the_tui_reports_a_failed_diagnostic_instead_of_crashing() -> None:
+    """A backend that breaks its own contract must not take the TUI down.
+
+    And the failure must be *reported*: a diagnostic that throws is a
+    diagnostic that lies, and the operator needs to know the facts are
+    missing rather than being shown a stale level as if it were fresh.
+    """
+
+    class BrokenSandbox:
+        name = "docker"
+        isolation_level = "NAMESPACE"
+
+        async def diagnose(self) -> dict[str, Any]:
+            raise RuntimeError("the daemon timed out")
+
+    from paa.tui.runner import _build_info
+
+    fake_rt = FakeRuntime()
+    fake_rt.sandbox = BrokenSandbox()
+    info = await _build_info(fake_rt.settings, fake_rt)
+    assert "the daemon timed out" in info["sandbox_facts"]["diagnostic_error"]
 
 
 @pytest.mark.asyncio

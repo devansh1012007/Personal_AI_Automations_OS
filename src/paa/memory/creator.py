@@ -43,7 +43,6 @@ import asyncio
 import enum
 import hashlib
 import re
-import sqlite3
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -53,13 +52,15 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 import structlog
 
 from paa.core.errors import PaaError
+from paa.ledger.events import canonical_json
 from paa.memory.domains import MemoryDomain
 from paa.memory.facts import Fact, FactRepository, trigram_similarity
+from paa.storage.relational.base import RelationalBackend
+from paa.storage.relational.errors import SerializationFailure
 
 if TYPE_CHECKING:
     from paa.memory.contradiction import ContradictionDetector
-    from paa.storage.relational.database import Database
-
+    
 __all__ = [
     "CandidateFact",
     "EmbeddingSink",
@@ -692,7 +693,7 @@ class MemoryCreator:
 
     def __init__(
         self,
-        db: Database,
+        db: RelationalBackend,
         *,
         repository: FactRepository | None = None,
         detector: ContradictionDetector | None = None,
@@ -834,9 +835,11 @@ class MemoryCreator:
         rows: list[Any] = []
         async with self._db.transaction() as conn:
             async with conn.execute(
-                "SELECT id, channel, external_id, raw_payload, received_at "
+                # The dialect's fragment is a constant column name, never
+                # caller input; the values are bound with ``?``.
+                "SELECT id, channel, external_id, raw_payload, received_at "  # noqa: S608
                 "FROM cold_lake_signals WHERE sync_status = 'unprocessed' "
-                "ORDER BY received_at ASC, id ASC LIMIT ?",
+                f"ORDER BY received_at ASC, {self._db.dialect.arrival_seq()} ASC LIMIT ?",
                 (limit,),
             ) as cur:
                 rows = list(await cur.fetchall())
@@ -930,8 +933,11 @@ class MemoryCreator:
         while True:
             try:
                 return await self._commit(envelope, resolved, now=now)
-            except sqlite3.OperationalError as exc:
-                if attempt >= self._max_retries or not _is_contention(exc):
+            except SerializationFailure:
+                # Contention is a *type*, not a message match: the substrate
+                # translates "locked" / "busy" / a deadlock detection into it,
+                # so there is no risk of retrying a real fault three times.
+                if attempt >= self._max_retries:
                     raise
                 delay = self._backoff * (2**attempt)
                 attempt += 1
@@ -1039,11 +1045,21 @@ class MemoryCreator:
             return row
 
         keys = row.keys() if hasattr(row, "keys") else ()
-        raw = str(row["raw_payload"] if "raw_payload" in keys else row.get("raw", "null"))
+        stored = row["raw_payload"] if "raw_payload" in keys else row.get("raw", "null")
+        # The raw payload is the *bytes* the signal arrived as, and the
+        # scanner below reads them for control characters and escape
+        # sequences. A substrate that stores a document rather than text
+        # cannot hand the bytes back — it hands back a parsed value — so the
+        # text is re-serialised canonically. That is lossy for a payload
+        # carrying an escape sequence (the re-serialised form escapes it
+        # rather than reproducing it), which is why the raw payload is
+        # stored as TEXT on every substrate: the scanner must see what
+        # actually arrived.
+        raw = stored if isinstance(stored, str) else canonical_json(stored)
         signal_id = str(row["id"])
         received = row["received_at"] if "received_at" in keys else None
 
-        payload = loads(raw, _UNPARSEABLE)
+        payload = loads(stored, _UNPARSEABLE)
         if payload is _UNPARSEABLE:
             # Deliberately *not* raised here. Parse failure is an extraction
             # outcome, and routing it through the extractor keeps every
@@ -1057,7 +1073,7 @@ class MemoryCreator:
             payload=payload,
             raw=raw,
             external_id=row["external_id"] if "external_id" in keys else None,
-            received_at=from_iso(received) if isinstance(received, str) else None,
+            received_at=from_iso(received) if received is not None else None,
             persisted=bool(row["persisted"]) if "persisted" in keys else True,
         )
 
@@ -1250,17 +1266,6 @@ def _challenger_of(candidate: CandidateFact, entity_id: str) -> dict[str, Any]:
         "initial_confidence": candidate.confidence,
         "provenance": dict(candidate.provenance),
     }
-
-
-def _is_contention(exc: sqlite3.OperationalError) -> bool:
-    """Whether an OperationalError is write contention rather than a real fault.
-
-    Matched on the message because sqlite3 does not expose SQLITE_BUSY as a
-    distinct exception class. A schema error retried three times would only
-    delay the inevitable, so anything unrecognised propagates immediately.
-    """
-    text = str(exc).lower()
-    return "locked" in text or "busy" in text
 
 
 def _unparseable_guard(payload: Any, signal_id: str) -> None:

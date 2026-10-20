@@ -18,12 +18,13 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from datetime import timedelta
+from typing import Any
 
 import structlog
 
-if TYPE_CHECKING:
-    from paa.storage.relational.database import Database
+from paa.storage.relational.base import RelationalBackend
+from paa.storage.relational.database import to_iso, utc_now
 
 __all__ = ["RunMetrics", "WeightOptimizer", "performance_score", "update_weight"]
 
@@ -99,7 +100,7 @@ def optimize_tool_ranking_weights(
 class WeightOptimizer:
     """Persists optimised weights to ``improvement_skill_weights`` and the registry."""
 
-    def __init__(self, db: Database, *, alpha: float = 0.1) -> None:
+    def __init__(self, db: RelationalBackend, *, alpha: float = 0.1) -> None:
         self._db = db
         self._alpha = alpha
 
@@ -110,13 +111,19 @@ class WeightOptimizer:
         every completed run nudges its weight, so the ranking self-tunes as the
         system is used.
         """
+        # The cutoff is computed here rather than in the statement. SQLite's
+        # ``datetime('now', ?)`` has no portable spelling — the server
+        # substrate would need ``now() - interval`` — and a cutoff the
+        # *caller* computes is the same cutoff on every engine, with the
+        # clock in one place.
+        cutoff = utc_now() - timedelta(days=int(since_days))
         rows = await self._db.fetch_all(
             "SELECT skill_name, exit_code, duration_ms, escalated, telemetry "
             "FROM hot_serving_execution_runs "
             "WHERE skill_name IS NOT NULL "
-            "  AND started_at >= datetime('now', ?) "
+            "  AND started_at >= ? "
             "ORDER BY started_at ASC",
-            (f"-{int(since_days)} days",),
+            (to_iso(cutoff),),
         )
         current = await self._current_weights()
         runs: list[RunMetrics] = []
@@ -144,8 +151,6 @@ class WeightOptimizer:
         return {r["skill_name"]: r["reliability"] for r in rows}
 
     async def _persist(self, weights: dict[str, float], runs: Sequence[RunMetrics]) -> None:
-        from paa.storage.relational.database import to_iso, utc_now
-
         counts: dict[str, int] = {}
         for run in runs:
             counts[run.skill_name] = counts.get(run.skill_name, 0) + 1

@@ -20,7 +20,14 @@
 -- silently coerce a bad insert, and a ledger must never accept a malformed row.
 -- =====================================================================
 
-PRAGMA foreign_keys = ON;
+-- Foreign keys are NOT enabled by this file. `PRAGMA foreign_keys` is a
+-- no-op inside a transaction, and the runtime applies this file inside
+-- one, so a pragma here would be inert on the only path that reads it.
+-- The pragma is set on the *connection* when it is opened
+-- (paa.storage.relational.database.Database._open), which is what makes
+-- the database's foreign keys real — and that is the path the runtime
+-- takes. A file applied with the `sqlite3` CLI does not get the
+-- constraints enforced; open the connection with the pragma set.
 
 -- =====================================================================
 -- 1. SYSTEM STATE LEDGER — the append-only source of truth
@@ -133,6 +140,14 @@ CREATE TABLE IF NOT EXISTS cold_lake_signals (
     sync_status    TEXT NOT NULL DEFAULT 'unprocessed',
     processed_at   TEXT,
     error_detail   TEXT,
+    -- Arrival order. Two signals ingested inside the same clock tick share a
+    -- `received_at`, and the id is a random UUID, so "oldest first" needs an
+    -- explicit secondary key or ingestion order stops meaning anything under
+    -- load. SQLite's rowid is monotonic in insertion order; it is captured
+    -- into this column by the trigger below so that the column — not an
+    -- implementation detail of the engine — carries the ordering on both
+    -- dialects. See docs/adr/0025-postgres-dialect-seam.md.
+    arrival_seq    INTEGER NOT NULL DEFAULT 0,
     CONSTRAINT ck_signal_status CHECK (
         sync_status IN ('unprocessed', 'processing', 'processed', 'malformed', 'quarantined')
     ),
@@ -145,6 +160,29 @@ CREATE INDEX IF NOT EXISTS idx_cold_signals_unprocessed
     ON cold_lake_signals(received_at ASC) WHERE sync_status = 'unprocessed';
 CREATE UNIQUE INDEX IF NOT EXISTS uq_cold_signals_external
     ON cold_lake_signals(channel, external_id) WHERE external_id IS NOT NULL;
+
+-- Fill arrival_seq on insert.
+--
+-- SQLite has no identity column, so the value comes from a trigger that
+-- copies the row's rowid. A rowid is reused once the row that held it is
+-- deleted — but it is reused only after being freed, so no two *live* rows
+-- ever carry the same one, and the order among the live rows is still the
+-- order they were written in. The migration that adds this column backfills
+-- it from the rowid too, so the column means the same thing for a row
+-- written before the migration as for one written after it.
+--
+-- This trigger is written here and in schema version 2's migration (see
+-- storage/relational/migrations.py), and the two are locked together by a
+-- test: a database created from this file and a database migrated forward
+-- must end up with the same trigger, or the column is filled on one
+-- substrate and not the other. The duplication is deliberate — the schema
+-- file is what a brand-new database looks like, and the migration is what
+-- carries an existing one there — and the drift is what the test is for.
+CREATE TRIGGER IF NOT EXISTS trg_cold_signals_arrival
+AFTER INSERT ON cold_lake_signals
+BEGIN
+    UPDATE cold_lake_signals SET arrival_seq = NEW.rowid WHERE rowid = NEW.rowid;
+END;
 
 CREATE TABLE IF NOT EXISTS cold_lake_artifacts_archive (
     id                 TEXT PRIMARY KEY,
@@ -504,6 +542,10 @@ CREATE TABLE IF NOT EXISTS queue_messages (
     enqueued_at     TEXT NOT NULL,
     completed_at    TEXT,
     last_error      TEXT,
+    -- Arrival order, for the same reason as cold_lake_signals.arrival_seq:
+    -- two messages enqueued inside the same clock tick must still dispatch
+    -- in insertion order.
+    arrival_seq     INTEGER NOT NULL DEFAULT 0,
     CONSTRAINT ck_queue_status CHECK (status IN ('ready','claimed','done','dead')),
     CONSTRAINT ck_queue_payload_json CHECK (json_valid(payload))
 ) STRICT;
@@ -516,6 +558,16 @@ CREATE INDEX IF NOT EXISTS idx_queue_reclaim
     ON queue_messages(visible_after ASC) WHERE status = 'claimed';
 CREATE INDEX IF NOT EXISTS idx_queue_dead
     ON queue_messages(stream, enqueued_at DESC) WHERE status = 'dead';
+
+-- Arrival order, for the same reason as cold_lake_signals.arrival_seq: two
+-- messages enqueued inside the same clock tick must still dispatch in
+-- insertion order. The trigger that fills it is written here and in schema
+-- version 2's migration, and the two are locked together by a test.
+CREATE TRIGGER IF NOT EXISTS trg_queue_messages_arrival
+AFTER INSERT ON queue_messages
+BEGIN
+    UPDATE queue_messages SET arrival_seq = NEW.rowid WHERE rowid = NEW.rowid;
+END;
 
 CREATE TABLE IF NOT EXISTS queue_locks (
     lock_key    TEXT PRIMARY KEY,

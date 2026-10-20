@@ -52,7 +52,7 @@ The rules that keep this honest:
    that exists in one and not the other. It runs without a database.
 
 3. **Server clients import lazily.** psycopg, boto3 and redis are optional
-   extras (`postgres`, `minio`, `redis`). Each is imported only inside the
+   extras (`postgres`, `s3`, `redis`). Each is imported only inside the
    factory or method that needs it, so a laptop install without them stays
    importable and the full test suite runs with none of them present.
 
@@ -70,8 +70,8 @@ The rules that keep this honest:
    layer, so it is structurally impossible here.
 
 Credentials (MinIO keys, the Postgres password, model API keys) are never stored
-in config or the ledger. `StorageSettings.minio_access_key_env` /
-`minio_secret_key_env` name the environment variables that hold the values — the
+in config or the ledger. `StorageSettings.s3_access_key_env` /
+`s3_secret_key_env` name the environment variables that hold the values — the
 same indirection `ModelSettings` uses for API keys — and Compose sources them
 from a git-ignored `.env`.
 

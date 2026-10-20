@@ -34,6 +34,7 @@ from rich.text import Text
 
 from paa.core.types import ComplexityModality, CorrelationId
 from paa.ledger.replay import project as project_lineage
+from paa.sandbox.base import collect_sandbox_facts
 from paa.tui.dashboard import (
     render_dashboard,
     render_doctor,
@@ -85,17 +86,37 @@ async def _gather_rows(rt: Any) -> list[CorrelationRow]:
 
 
 async def _build_info(settings: Any, rt: Any) -> dict[str, Any]:
-    sandbox = getattr(rt.agents.get("worker"), "_sandbox", None)
+    sandbox = rt.sandbox
+    # The TUI and the CLI must not disagree about the same fact. The CLI
+    # probes the backend before it renders the isolation level, because the
+    # level is derived from the probe; the TUI has to do the same or it
+    # reports a stale "not probed" forever.
+    #
+    # The collector is the *same* one the CLI uses, so a failed diagnostic is
+    # normalised identically on both surfaces. Doing it here instead would
+    # put the two back on the "one of them lies" footing that the shared
+    # renderer exists to prevent — and would let a backend that breaks its
+    # own contract take the TUI down.
+    sandbox_facts: dict[str, Any] = {}
+    if sandbox is not None:
+        sandbox_facts = await collect_sandbox_facts(sandbox)
+        if sandbox_facts.get("diagnostic_error"):
+            log.warning(
+                "tui.sandbox_diagnostics_failed", error=sandbox_facts["diagnostic_error"]
+            )
     open_tasks = [str(cid) for cid in await rt.ledger.open_correlations()]
     return {
         "home": str(settings.home),
         "policy_mode": settings.policy.mode.value,
-        "relational": settings.storage.backend_relational,
+        # The live substrate, not the configured one — see the note on the
+        # doctor's relational row.
+        "relational": type(rt.db).__name__,
         "vector_store": rt.vector_store,
         "graph_store": rt.graph_store,
         "queue": rt.queue,
         "model_router": rt.model_router,
         "sandbox": sandbox,
+        "sandbox_facts": sandbox_facts,
         "open_tasks": open_tasks,
     }
 

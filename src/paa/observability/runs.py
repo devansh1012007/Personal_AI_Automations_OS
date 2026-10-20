@@ -20,7 +20,6 @@ duplicating it into one would create a second answer that could drift.
 
 from __future__ import annotations
 
-import sqlite3
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -28,13 +27,41 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from paa.core.types import ComplexityModality, CorrelationId, PermissionMode, SessionId
+from paa.core.errors import PaaError
+from paa.core.types import (
+    ComplexityModality,
+    CorrelationId,
+    PermissionMode,
+    SessionId,
+    as_text,
+    as_uuid,
+)
 from paa.storage.relational.database import dumps, from_iso, loads, to_iso, utc_now
 
 if TYPE_CHECKING:
-    from paa.storage.relational.database import Database
+    from paa.storage.relational.base import RelationalBackend
 
-__all__ = ["ExecutionRun", "ExecutionRunRepository", "SkillStats"]
+__all__ = ["ExecutionRun", "ExecutionRunRepository", "InvalidTraceIdError", "SkillStats"]
+
+
+class InvalidTraceIdError(PaaError):
+    """A caller-supplied trace id is not a UUID.
+
+    A trace id is a UUID, and a UUID has two spellings — the hyphenated
+    one and the 32-character hex one — but it has no third. A value that
+    is neither is refused at the write, because the column is a ``UUID``
+    on one substrate and free text on the other: a value that is not a
+    UUID would be stored by one and refused by the other, and the join
+    between a run row and the span that owns it would match on one and
+    not on the other.
+
+    It is a :class:`~paa.core.errors.PaaError` rather than a bare
+    ``ValueError`` because it is a failure of the *runtime's* contract
+    with its caller, and the runtime's contract is expressed in
+    ``PaaError``\\ s: a caller that catches ``PaaError`` at the edge of
+    the system should not have to know that this one failure arrives as
+    a different kind of exception.
+    """
 
 log = structlog.get_logger(__name__)
 
@@ -170,7 +197,7 @@ class SkillStats:
 class ExecutionRunRepository:
     """Reads and writes ``hot_serving_execution_runs``."""
 
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: RelationalBackend) -> None:
         self._db = db
 
     # -- writes ------------------------------------------------------------
@@ -199,9 +226,27 @@ class ExecutionRunRepository:
 
         Accepts a caller-supplied ``trace_id`` so a run can adopt the id of an
         already-open :class:`~paa.observability.tracing.Span` and the two views
-        line up.
+        line up. A supplied id is **normalised** to the canonical hyphenated
+        form, because the two substrates store a trace id differently
+        otherwise: SQLite stores the text it was given, and PostgreSQL's
+        ``UUID`` column normalises it to the hyphenated form. A caller that
+        passed ``uuid4().hex`` would write the very form the schema
+        version 4 migration exists to repair, and the join between a run row
+        and its span would match on one substrate and not the other.
+
+        :raises InvalidTraceIdError: if a supplied ``trace_id`` is not a
+            UUID at all. The refusal happens at the write, where the
+            mistake is, rather than at one substrate's insert, where the
+            message would be about a column.
         """
-        resolved_trace_id = trace_id or uuid.uuid4().hex
+        # The hyphenated form, not ``uuid4().hex``: a PostgreSQL ``UUID``
+        # column normalises to the hyphenated form on the way in, so the
+        # two substrates would store different bytes for the same id
+        # otherwise — and a join between a run row and a span would match
+        # on one substrate and not the other. A caller-supplied id is put
+        # through the same normalisation, so the form the row carries does
+        # not depend on who wrote it.
+        resolved_trace_id = _canonical_trace_id(trace_id) if trace_id else str(uuid.uuid4())
         started = started_at or utc_now()
 
         await self._db.execute(
@@ -440,12 +485,39 @@ def _enum_value(value: Any) -> str:
     return value.value if hasattr(value, "value") else str(value)
 
 
-def _row_to_run(row: sqlite3.Row) -> ExecutionRun:
+def _canonical_trace_id(trace_id: str) -> str:
+    """The canonical hyphenated form of a trace id.
+
+    A trace id is a UUID, and a UUID has two spellings: the hyphenated one
+    and the 32-character hex one. Both substrates store the hyphenated
+    form — SQLite because the repository writes it that way, PostgreSQL
+    because its ``UUID`` column normalises it — so a caller-supplied id is
+    put through the same normalisation here rather than being trusted to
+    arrive in that form.
+
+    :raises InvalidTraceIdError: if the id is not a UUID at all. The
+        column is a UUID on one substrate and free text on the other, so a
+        value that is not a UUID would be stored by one and refused by the
+        other; saying so at the write is better than a substrate-specific
+        failure later.
+    """
+    try:
+        return str(uuid.UUID(trace_id))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise InvalidTraceIdError(
+            f"a trace id must be a UUID, and {trace_id!r} is not one",
+            trace_id=trace_id,
+        ) from exc
+
+
+def _row_to_run(row: Any) -> ExecutionRun:
     return ExecutionRun(
-        trace_id=row["trace_id"],
-        correlation_id=uuid.UUID(row["correlation_id"]),
-        session_id=uuid.UUID(row["session_id"]) if row["session_id"] else None,
-        span_parent_id=row["span_parent_id"],
+        trace_id=as_text(row["trace_id"]),
+        correlation_id=as_uuid(row["correlation_id"]),
+        session_id=as_uuid(row["session_id"]) if row["session_id"] else None,
+        span_parent_id=(
+            as_text(row["span_parent_id"]) if row["span_parent_id"] is not None else None
+        ),
         agent_role=row["agent_role"],
         skill_name=row["skill_name"],
         modality=row["modality"],

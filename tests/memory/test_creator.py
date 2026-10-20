@@ -131,3 +131,37 @@ class TestBatchIsolation:
         # Both good signals produced facts despite the poison in the middle.
         written = await db.fetch_value("SELECT COUNT(*) FROM hot_serving_active_facts")
         assert written == 2
+
+
+class TestClaimOrder:
+    """Signals are claimed in arrival order, not in random-id order.
+
+    Two signals ingested inside the same clock tick share a
+    ``received_at``, and the id is a random UUID — so "oldest first" needs
+    an explicit secondary key or ingestion order stops meaning anything
+    under load. The secondary key is ``arrival_seq``, which is what the
+    column is for.
+    """
+
+    async def test_same_tick_signals_are_claimed_in_insertion_order(
+        self, db: Database
+    ) -> None:
+        from paa.storage.relational.database import to_iso, utc_now
+
+        creator = MemoryCreator(db)
+        stamp = to_iso(utc_now())
+        for index in range(4):
+            await db.execute(
+                "INSERT INTO cold_lake_signals (id, received_at, channel, raw_payload, "
+                "content_hash, sync_status) VALUES (?, ?, 'test', '{}', ?, 'unprocessed')",
+                (f"sig-{index}", stamp, f"hash-{index}"),
+            )
+
+        claimed = await creator._claim(10)
+
+        assert [envelope.id for envelope in claimed] == [
+            "sig-0",
+            "sig-1",
+            "sig-2",
+            "sig-3",
+        ]

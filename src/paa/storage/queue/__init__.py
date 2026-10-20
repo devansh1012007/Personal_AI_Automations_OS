@@ -36,7 +36,7 @@ from paa.storage.queue.base import (
     StreamName,
 )
 from paa.storage.queue.sqlite_backend import SqliteDistributedLock, SqliteMessageQueue
-from paa.storage.relational.database import Database
+from paa.storage.relational.base import RelationalBackend
 
 __all__ = [
     "CONTROL_PLANE_STREAMS",
@@ -55,7 +55,7 @@ __all__ = [
 ]
 
 
-def get_queue(settings: Settings, db: Database | None = None) -> MessageQueue:
+def get_queue(settings: Settings, db: RelationalBackend | None = None) -> MessageQueue:
     """Build the queue named by ``StorageSettings.backend_queue``.
 
     ``db`` is required for the SQLite backend and ignored by Redis. Passing a
@@ -75,7 +75,7 @@ def get_queue(settings: Settings, db: Database | None = None) -> MessageQueue:
     return SqliteMessageQueue(db, settings.queue)
 
 
-def get_lock(settings: Settings, db: Database | None = None) -> DistributedLock:
+def get_lock(settings: Settings, db: RelationalBackend | None = None) -> DistributedLock:
     """Build the distributed lock matching the configured queue backend.
 
     Locks follow the queue backend rather than taking their own setting: a lock

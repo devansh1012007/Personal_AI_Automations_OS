@@ -49,13 +49,13 @@ import structlog
 
 from paa.agents.base import Agent, AgentContext, AgentMessage, AgentResult
 from paa.context.gatherer import BoundedContextGatherer, ContextElement
-from paa.core.types import AgentRole
+from paa.core.types import AgentRole, as_text
 from paa.memory.decay import effective_confidence
 from paa.memory.domains import narrative_domains
 from paa.storage.relational.like import like_pattern, like_predicate
 
 if TYPE_CHECKING:
-    from paa.storage.relational.database import Database
+    from paa.storage.relational.base import RelationalBackend
 
 __all__ = ["PlannerContextBuilder", "QueryExpander", "WorkerContextBuilder"]
 
@@ -111,7 +111,7 @@ class _BaseContextBuilder(Agent):
     def __init__(
         self,
         *,
-        db: Database | None = None,
+        db: RelationalBackend | None = None,
         vector_store: Any = None,
         graph_store: Any = None,
         embedder: Any = None,
@@ -229,7 +229,7 @@ class _BaseContextBuilder(Agent):
                 confidence = row["initial_confidence"]
             elements.append(
                 ContextElement(
-                    id=row["id"],
+                    id=as_text(row["id"]),
                     content=f"{row['canonical_name']} {row['predicate']} {row['object_value']}",
                     relevance=1.0,  # matched literally against a search term
                     confidence=confidence,

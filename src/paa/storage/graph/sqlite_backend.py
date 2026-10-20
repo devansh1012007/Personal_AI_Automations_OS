@@ -27,13 +27,13 @@ one still leaves the other standing.
 
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Iterable, Sequence
 from typing import Any, Final
 
 import structlog
 
 from paa.core.errors import StorageError
+from paa.core.types import as_text
 from paa.storage.graph.base import (
     DEFAULT_MAX_HOPS,
     EDGE_TYPES,
@@ -50,7 +50,9 @@ from paa.storage.graph.base import (
     sort_paths,
     validate_max_hops,
 )
-from paa.storage.relational.database import Database, from_iso, to_iso, utc_now
+from paa.storage.relational.base import RelationalBackend
+from paa.storage.relational.database import from_iso, to_iso, utc_now
+from paa.storage.relational.errors import ConstraintViolation
 
 __all__ = ["SqliteGraphStore"]
 
@@ -110,7 +112,7 @@ class SqliteGraphStore(GraphStore):
     would take the ledger down with it.
     """
 
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: RelationalBackend) -> None:
         self._db = db
 
     # -- schema ------------------------------------------------------------
@@ -123,10 +125,12 @@ class SqliteGraphStore(GraphStore):
         a graph store pointed at a database that was never migrated, which
         otherwise fails much later with a confusing "no such table" mid-traversal.
         """
+        # The table list comes from the backend, not from a query written for
+        # one engine: SQLite has ``sqlite_master`` and the server substrate
+        # has ``pg_tables``, and the substrate already knows how to ask.
+        present = set(await self._db.table_names())
         for table in ("hot_serving_entity_index", "hot_serving_relationships"):
-            found = await self._db.fetch_value(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)
-            )
+            found = table if table in present else None
             if found is None:
                 raise StorageError(
                     f"required table {table!r} is missing; the relational schema "
@@ -143,7 +147,7 @@ class SqliteGraphStore(GraphStore):
             await self._db.execute(
                 _UPSERT_ENTITY_SQL, (entity_id, class_, canonical_name, now, now)
             )
-        except sqlite3.IntegrityError as exc:
+        except ConstraintViolation as exc:
             # Almost always the UNIQUE on canonical_name: two ids claiming one
             # name. That is a resolution failure upstream in entity linking, and
             # guessing which one wins here would corrupt provenance silently.
@@ -179,7 +183,7 @@ class SqliteGraphStore(GraphStore):
         )
         try:
             await self._db.execute(_UPSERT_EDGE_SQL, params)
-        except sqlite3.IntegrityError as exc:
+        except ConstraintViolation as exc:
             # FOREIGN KEY failure means an endpoint was never registered. See the
             # ABC: we refuse rather than conjuring a placeholder entity.
             raise StorageError(
@@ -277,7 +281,14 @@ class SqliteGraphStore(GraphStore):
         return [
             Neighbor(
                 entity=GraphEntity(
-                    id=row["n_id"], class_=row["n_class"], canonical_name=row["n_name"]
+                    # The joined entity id is a UUID column on the server
+                    # substrate, so it arrives as a ``uuid.UUID`` — and
+                    # ``GraphEntity.id`` is a pydantic field declared as
+                    # text, so handing it the raw value is a validation
+                    # error rather than a coercion.
+                    id=as_text(row["n_id"]),
+                    class_=row["n_class"],
+                    canonical_name=row["n_name"],
                 ),
                 edge=_edge_from_row(row),
                 direction=direction,
@@ -373,7 +384,11 @@ class SqliteGraphStore(GraphStore):
         )
         if row is None:
             return None
-        return GraphEntity(id=row["id"], class_=row["class"], canonical_name=row["canonical_name"])
+        return GraphEntity(
+            id=as_text(row["id"]),
+            class_=row["class"],
+            canonical_name=row["canonical_name"],
+        )
 
     async def _rehydrate(self, rows: Sequence[Any]) -> list[GraphPath]:
         """Turn ``(node_path, edge_path)`` accumulator strings into full paths.
@@ -430,8 +445,10 @@ class SqliteGraphStore(GraphStore):
                 chunk,
             )
             for row in rows:
-                out[row["id"]] = GraphEntity(
-                    id=row["id"], class_=row["class"], canonical_name=row["canonical_name"]
+                out[as_text(row["id"])] = GraphEntity(
+                    id=as_text(row["id"]),
+                    class_=row["class"],
+                    canonical_name=row["canonical_name"],
                 )
         return out
 
@@ -445,7 +462,7 @@ class SqliteGraphStore(GraphStore):
                 chunk,
             )
             for row in rows:
-                out[row["id"]] = _edge_from_row(row)
+                out[as_text(row["id"])] = _edge_from_row(row)
         return out
 
 
@@ -481,9 +498,9 @@ def _rel_type_clause(
 
 def _edge_from_row(row: Any) -> GraphEdge:
     return GraphEdge(
-        id=row["id"],
-        from_entity_id=row["from_entity_id"],
-        to_entity_id=row["to_entity_id"],
+        id=as_text(row["id"]),
+        from_entity_id=as_text(row["from_entity_id"]),
+        to_entity_id=as_text(row["to_entity_id"]),
         rel_type=row["rel_type"],
         weight=row["weight"],
         confidence_decay=row["confidence_decay"],

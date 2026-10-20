@@ -19,6 +19,7 @@ from rich.text import Text
 
 from paa.core.types import ComplexityModality
 from paa.ledger.replay import TaskPhase
+from paa.sandbox.base import sandbox_report_rows
 from paa.tui.snapshot import Snapshot
 
 __all__ = [
@@ -193,13 +194,25 @@ def render_doctor(info: dict[str, Any]) -> Panel:
     table.add_row("queue", queue_label)
     table.add_row("model router", mr_label)
     sandbox = info.get("sandbox")
+    facts = info.get("sandbox_facts") or {}
     if sandbox is not None:
-        level = getattr(sandbox, "isolation_level", None)
-        sb_name = sandbox.name if not isinstance(sandbox, str) else sandbox
-        table.add_row(
-            "sandbox",
-            f"{sb_name} ({getattr(level, 'name', '?')})" if level else sb_name,
-        )
+        # The same formatter the CLI uses, so the two surfaces of one runtime
+        # cannot disagree about the same host.
+        rows = sandbox_report_rows(facts)
+        if rows:
+            for label, value in rows:
+                table.add_row(label, value)
+        else:
+            # A backend that reported no facts at all still has a name and a
+            # level; showing nothing would look like "no sandbox". The level
+            # is compared against ``None`` and not for truthiness:
+            # ``IsolationLevel.NONE`` is 0, and 0 is falsy.
+            level = getattr(sandbox, "isolation_level", None)
+            sb_name = sandbox.name if not isinstance(sandbox, str) else sandbox
+            table.add_row(
+                "sandbox",
+                f"{sb_name} ({getattr(level, 'name', '?')})" if level is not None else sb_name,
+            )
     else:
         table.add_row("sandbox", "[dim]none (dry-run)[/dim]")
     open_tasks = len(info.get("open_tasks", []))

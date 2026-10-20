@@ -70,6 +70,11 @@ def create_app(runtime: Runtime) -> FastAPI:
             status="ok",
             version=__version__,
             backends={
+                # The *live* substrate, named from the object the runtime
+                # actually holds. The relational backend was missing here
+                # entirely, which made the one thing the deployment is most
+                # particular about — the ledger's substrate — invisible.
+                "relational": type(runtime.db).__name__,
                 "vector": type(runtime.vector_store).__name__ if runtime.vector_store else None,
                 "graph": type(runtime.graph_store).__name__ if runtime.graph_store else None,
                 "queue": type(runtime.queue).__name__ if runtime.queue else None,
@@ -217,12 +222,21 @@ async def _admit(runtime: Runtime, *, essential: bool) -> bool:
 
 
 def _signal_repo(runtime: Runtime) -> Any:
-    """Build a SignalRepository over the runtime's db + cold-lake CAS."""
+    """Build a SignalRepository over the runtime's db + cold-lake store.
+
+    The store comes from the *factory*, not from a direct construction: the
+    factory reads ``storage.backend_coldlake`` and builds the local
+    content-addressed store or the S3 client accordingly. Constructing the
+    filesystem store here directly — which is what this used to do — meant
+    that a deployment configured for S3 silently kept its payloads on the
+    container's own disk, and the object store it had been given went
+    unused.
+    """
     try:
-        from paa.storage.coldlake.cas import ContentAddressedStore
+        from paa.storage.coldlake import get_blob_store
         from paa.storage.coldlake.signals import SignalRepository
 
-        cas = ContentAddressedStore(runtime.settings.storage.cold_lake_path)
+        cas = get_blob_store(runtime.settings.storage)
         return SignalRepository(runtime.db, cas)
     except Exception as exc:
         log.warning("api.signal_repo_unavailable", error=str(exc))

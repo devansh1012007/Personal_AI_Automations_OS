@@ -24,7 +24,7 @@ from paa.config import PolicySettings, get_settings
 from paa.core.types import AgentRole, Permission, PermissionMode
 
 if TYPE_CHECKING:
-    from paa.storage.relational.database import Database
+    from paa.storage.relational.base import RelationalBackend
 
 __all__ = ["PolicyRiskAgent", "PolicyVerdict"]
 
@@ -119,7 +119,7 @@ class PolicyRiskAgent(Agent):
     def __init__(
         self,
         *,
-        db: Database | None = None,
+        db: RelationalBackend | None = None,
         vector_store: Any = None,
         embedder: Any = None,
         settings: PolicySettings | None = None,

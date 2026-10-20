@@ -18,13 +18,14 @@ under load, which is exactly when duplication is most expensive.
 
 from __future__ import annotations
 
-import sqlite3
 import uuid
 from datetime import timedelta
+from typing import Any
 
 import structlog
 
 from paa.config import QueueSettings
+from paa.core.types import as_text, as_uuid
 from paa.storage.queue.base import (
     DEFAULT_PRIORITY,
     DistributedLock,
@@ -32,7 +33,8 @@ from paa.storage.queue.base import (
     QueueMessage,
     StreamName,
 )
-from paa.storage.relational.database import Database, dumps, from_iso, loads, to_iso, utc_now
+from paa.storage.relational.base import RelationalBackend
+from paa.storage.relational.database import dumps, from_iso, loads, to_iso, utc_now
 
 __all__ = ["SqliteDistributedLock", "SqliteMessageQueue"]
 
@@ -56,15 +58,18 @@ INSERT INTO queue_messages (
 """
 
 # Dispatch order is the RFC §6 contract: priority band first, FIFO inside it.
-# ``rowid`` breaks exact ``enqueued_at`` ties — two messages enqueued inside the
-# same clock tick must still dispatch in insertion order, and on Windows the
-# system clock is coarse enough for that to happen in practice.
+# ``arrival_seq`` breaks exact ``enqueued_at`` ties — two messages enqueued
+# inside the same clock tick must still dispatch in insertion order, and on
+# Windows the system clock is coarse enough for that to happen in practice.
+# The column is filled by the engine (a rowid capture on SQLite, an identity
+# column on the server substrate), so the ordering does not depend on which
+# one is in use.
 _SELECT_READY_SQL = """
 SELECT id, stream, correlation_id, session_id, priority, payload,
        attempts, max_attempts, enqueued_at, visible_after
 FROM queue_messages
 WHERE stream = ? AND status = 'ready' AND visible_after <= ?
-ORDER BY priority ASC, enqueued_at ASC, rowid ASC
+ORDER BY priority ASC, enqueued_at ASC, arrival_seq ASC
 LIMIT ?
 """
 
@@ -140,7 +145,7 @@ class SqliteMessageQueue(MessageQueue):
     convert a fast dispatch into an ``SQLITE_BUSY`` retry storm.
     """
 
-    def __init__(self, db: Database, settings: QueueSettings | None = None) -> None:
+    def __init__(self, db: RelationalBackend, settings: QueueSettings | None = None) -> None:
         self._db = db
         self._settings = settings or QueueSettings()
 
@@ -413,7 +418,7 @@ class SqliteDistributedLock(DistributedLock):
     not merely across coroutines in one interpreter.
     """
 
-    def __init__(self, db: Database, settings: QueueSettings | None = None) -> None:
+    def __init__(self, db: RelationalBackend, settings: QueueSettings | None = None) -> None:
         self._db = db
         self._settings = settings or QueueSettings()
 
@@ -498,12 +503,12 @@ class SqliteDistributedLock(DistributedLock):
         return str(row["holder"])
 
 
-def _row_to_message(row: sqlite3.Row) -> QueueMessage:
+def _row_to_message(row: Any) -> QueueMessage:
     return QueueMessage(
-        id=row["id"],
+        id=as_text(row["id"]),
         stream=StreamName(row["stream"]),
-        correlation_id=uuid.UUID(row["correlation_id"]) if row["correlation_id"] else None,
-        session_id=uuid.UUID(row["session_id"]) if row["session_id"] else None,
+        correlation_id=as_uuid(row["correlation_id"]) if row["correlation_id"] else None,
+        session_id=as_uuid(row["session_id"]) if row["session_id"] else None,
         priority=int(row["priority"]),
         payload=loads(row["payload"], {}),
         attempts=int(row["attempts"]),

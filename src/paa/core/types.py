@@ -26,6 +26,8 @@ __all__ = [
     "PermissionMode",
     "SessionId",
     "TaskId",
+    "as_text",
+    "as_uuid",
     "new_correlation_id",
     "new_session_id",
     "new_task_id",
@@ -57,6 +59,59 @@ def new_session_id() -> SessionId:
 
 def new_task_id() -> TaskId:
     return TaskId(uuid.uuid4())
+
+
+def as_uuid(value: str | uuid.UUID) -> uuid.UUID:
+    """Coerce a stored identifier to a :class:`uuid.UUID`.
+
+    The same row is read through two substrates. SQLite stores an id as TEXT
+    and hands back a ``str``; a Postgres ``UUID`` column hands back a
+    :class:`uuid.UUID`. ``uuid.UUID(existing_uuid)`` is a ``TypeError`` — it
+    accepts a string and nothing else — so a repository that re-wraps the
+    value it just read works on one substrate and raises on the other. The
+    coercion belongs here, next to the id vocabulary, so that no repository
+    has to know which substrate produced the row.
+
+    A malformed string raises :class:`ValueError` from :func:`uuid.UUID`,
+    which is the same failure the caller would have seen from the direct
+    call — this widens the accepted *type*, it does not soften the check.
+    """
+    if isinstance(value, uuid.UUID):
+        return value
+    return uuid.UUID(value)
+
+
+def as_text(value: str | uuid.UUID) -> str:
+    """Coerce a stored identifier to its canonical text form.
+
+    The mirror of :func:`as_uuid`, for the other direction. A Postgres
+    ``UUID`` column hands back a :class:`uuid.UUID`, and the models that
+    carry an id declare it as a ``str`` — the ledger's events, the cold
+    lake's signals, the queue's messages. The model is the contract, so
+    the *reader* coerces, and the two substrates produce the same value.
+
+    The text form is the canonical hyphenated lowercase form, which is
+    what SQLite stores, so the two agree byte for byte.
+
+    A value that is neither a ``str`` nor a :class:`uuid.UUID` raises
+    :class:`TypeError`, exactly as :func:`as_uuid` does for the same
+    mistake. This used to return whatever it was handed — ``as_text(5)``
+    produced the integer ``5`` under a signature that promised a string —
+    and a silent pass-through is how a value that arrived as something
+    else entirely reaches a model that declares it as text.
+
+    ``None`` is **not** accepted, and a NULL is never turned into the
+    string ``"None"`` or ``""``. A nullable column is guarded at the call
+    site — ``as_text(row["x"]) if row["x"] else None`` — which is the
+    same pattern :func:`as_uuid` is used with everywhere else.
+    """
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    if isinstance(value, str):
+        return value
+    raise TypeError(
+        f"cannot coerce a {type(value).__name__} to text: expected str or UUID"
+    )
 
 
 # ---------------------------------------------------------------------------

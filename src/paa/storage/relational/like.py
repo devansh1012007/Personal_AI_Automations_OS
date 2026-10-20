@@ -60,6 +60,7 @@ from __future__ import annotations
 from typing import Final
 
 __all__ = [
+    "JSONB_DEFAULT_PATTERN",
     "LIKE_ESCAPE",
     "LIKE_ESCAPE_SQL",
     "escape_like",
@@ -82,6 +83,21 @@ LIKE_ESCAPE: Final[str] = "\\"
 #: :mod:`paa.storage.relational.postgres` does not turn it off; a deployment
 #: that did would need the fragment written as ``ESCAPE '\\'`` instead.
 LIKE_ESCAPE_SQL: Final[str] = f"ESCAPE '{LIKE_ESCAPE}'"
+
+#: The pattern that matches a column default the catalog still describes in
+#: terms of ``jsonb``.
+#:
+#: A *catalog* pattern rather than a search pattern: it is matched against
+#: the way PostgreSQL renders a column's default in
+#: ``information_schema.columns``, so what it looks for is the literal text
+#: ``::jsonb`` inside that rendering. There is no user text in it, so
+#: there is nothing to escape — but it is a LIKE pattern, and it lives here
+#: with every other one rather than in the call site, so that "every LIKE
+#: pattern in the relational layer has one home" stays true.
+#:
+#: It is used as a **bound parameter**, not written into the statement: a
+#: pattern is a value, and a value belongs in the parameter list.
+JSONB_DEFAULT_PATTERN: Final[str] = "%::jsonb%"
 
 
 def escape_like(value: str) -> str:

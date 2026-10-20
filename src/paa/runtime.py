@@ -40,7 +40,8 @@ from paa.config import Settings, get_settings
 from paa.core.types import ComplexityModality, CorrelationId, PermissionMode
 from paa.ledger.recovery import RecoveryEngine
 from paa.ledger.store import LedgerStore
-from paa.storage.relational.database import Database
+from paa.storage.relational import get_database
+from paa.storage.relational.base import RelationalBackend
 
 if TYPE_CHECKING:
     from paa.agents.base import Agent
@@ -50,6 +51,15 @@ if TYPE_CHECKING:
 __all__ = ["CriticValidatorAdapter", "RouterModelAdapter", "Runtime"]
 
 log = structlog.get_logger(__name__)
+
+#: How long boot waits for the sandbox probe to answer.
+#:
+#: It has to be **longer** than the Docker backend's own probe timeout
+#: (``_HEALTHCHECK_TIMEOUT_SECONDS``), so the inner probe is what gives out
+#: first and it can kill the daemon child it started. A shorter outer bound
+#: would cancel the inner wait instead, and a cancelled wait leaves that
+#: child running — a leaked process per boot.
+_SANDBOX_PROBE_BOUND_SECONDS = 30.0
 
 
 class _ValidationVerdict:
@@ -150,7 +160,7 @@ class Runtime:
     """
 
     settings: Settings
-    db: Database
+    db: RelationalBackend
     ledger: LedgerStore
     orchestrator: ChiefOrchestrator
     recovery: RecoveryEngine
@@ -159,6 +169,15 @@ class Runtime:
     graph_store: Any = None
     queue: Any = None
     agents: dict[str, Agent] = field(default_factory=dict)
+    sandbox: Any = None
+    """The containment backend the worker executes plan steps in.
+
+    Exposed on the runtime rather than reached for through the worker's
+    private ``_sandbox``: the sandbox is a *runtime* property, not an agent
+    implementation detail, and the diagnostic surface (``paa doctor``) needs
+    to ask it what containment it would actually deliver. The tool layer
+    needs the same instance for the same reason.
+    """
     _boot_report: Any = None
 
     # -- lifecycle ---------------------------------------------------------
@@ -256,10 +275,15 @@ class Runtime:
         settings = settings or get_settings()
         settings.ensure_directories()
 
-        db = Database(
-            settings.storage.sqlite_path,
-            busy_timeout_ms=settings.storage.sqlite_busy_timeout_ms,
-        )
+        # The substrate is *selected by configuration*, never by code: the
+        # factory reads ``storage.backend_relational`` and builds the SQLite
+        # or the PostgreSQL backend. Hard-coding the SQLite class here is what
+        # made ``PAA_STORAGE__BACKEND_RELATIONAL=postgres`` a setting the
+        # runtime silently ignored — the deployment advertised a Postgres
+        # topology and used a local file, and the diagnostic that reported
+        # the backend read the *setting* rather than the object, so it
+        # agreed with the advertisement and not with the process.
+        db = get_database(settings)
         await db.connect()
         ledger = LedgerStore(db)
 
@@ -282,6 +306,13 @@ class Runtime:
             graph_store = _try_graph(settings, db)
             queue = _try_queue(settings, db)
 
+        # The containment backend is acquired here rather than inside
+        # ``_build_agents`` so the runtime owns it: the diagnostic surface
+        # (``paa doctor``) has to ask the sandbox what containment it would
+        # actually deliver, and reaching into the worker's private attribute
+        # to do that is how a diagnostic ends up lying.
+        sandbox = await _acquire_sandbox(settings)
+
         agents = await _build_agents(
             settings=settings,
             db=db,
@@ -289,6 +320,7 @@ class Runtime:
             vector_store=vector_store,
             graph_store=graph_store,
             embedder=embedder,
+            sandbox=sandbox,
         )
 
         recovery = RecoveryEngine(ledger, db, requeuer=queue, max_attempts=settings.queue.max_delivery_attempts)
@@ -325,6 +357,7 @@ class Runtime:
             graph_store=graph_store,
             queue=queue,
             agents=agents,
+            sandbox=sandbox,
         )
 
         if run_recovery:
@@ -359,7 +392,7 @@ def _try_vector(settings: Settings) -> tuple[Any, Any]:
         return None, None
 
 
-def _try_graph(settings: Settings, db: Database) -> Any:
+def _try_graph(settings: Settings, db: RelationalBackend) -> Any:
     try:
         from paa.storage.graph import get_graph_store
 
@@ -369,7 +402,7 @@ def _try_graph(settings: Settings, db: Database) -> Any:
         return None
 
 
-def _try_queue(settings: Settings, db: Database) -> Any:
+def _try_queue(settings: Settings, db: RelationalBackend) -> Any:
     try:
         from paa.storage.queue import get_queue
 
@@ -383,10 +416,16 @@ async def _acquire_sandbox(settings: Settings) -> Any:
     """Select a sandbox backend without letting a slow probe stall boot.
 
     ``get_sandbox("auto")`` probes docker then WSL; a cold WSL VM can take
-    10-15s to answer its healthcheck. Boot must not wait that long, so the
-    probe is bounded — on timeout or any failure it degrades to the always-
-    available subprocess backend. This mirrors the factory's own philosophy
-    (auto degrades, never fails) while making the degradation *fast*.
+    10-15s to answer its healthcheck. Boot must not wait for that
+    indefinitely, so the probe is bounded — on timeout or any failure it
+    degrades to the always-available subprocess backend. This mirrors the
+    factory's own philosophy (auto degrades, never fails) while making the
+    degradation *fast*.
+
+    The bound is **longer than the backend's own probe timeout**, so the
+    inner probe is what gives out first and it can clean up after itself. A
+    shorter outer bound would cancel the inner wait instead, and a cancelled
+    wait leaves the daemon's child process running.
     """
     import asyncio
 
@@ -394,24 +433,37 @@ async def _acquire_sandbox(settings: Settings) -> Any:
     from paa.sandbox import get_sandbox
 
     try:
-        return await asyncio.wait_for(get_sandbox(settings.sandbox), timeout=5.0)
-    except (TimeoutError, Exception) as exc:
+        return await asyncio.wait_for(
+            get_sandbox(settings.sandbox), timeout=_SANDBOX_PROBE_BOUND_SECONDS
+        )
+    except TimeoutError:
+        # A bare TimeoutError carries no message, and this log line is the
+        # one that announces a containment downgrade. It has to say *why*.
+        log.warning(
+            "runtime.sandbox_probe_fell_back_to_subprocess",
+            error=(
+                f"the sandbox probe did not answer within "
+                f"{_SANDBOX_PROBE_BOUND_SECONDS}s"
+            ),
+        )
+    except Exception as exc:
         log.warning("runtime.sandbox_probe_fell_back_to_subprocess", error=str(exc))
-        try:
-            return await get_sandbox(SandboxSettings(backend="subprocess"))
-        except Exception as inner:
-            log.warning("runtime.sandbox_unavailable", error=str(inner))
-            return None
+    try:
+        return await get_sandbox(SandboxSettings(backend="subprocess"))
+    except Exception as inner:
+        log.warning("runtime.sandbox_unavailable", error=str(inner))
+        return None
 
 
 async def _build_agents(
     *,
     settings: Settings,
-    db: Database,
+    db: RelationalBackend,
     model_adapter: Any,
     vector_store: Any,
     graph_store: Any,
     embedder: Any,
+    sandbox: Any = None,
 ) -> dict[str, Agent]:
     """Construct the core agent hierarchy, each with its dependencies."""
     anti_goals = _load_anti_goals(settings)
@@ -446,9 +498,7 @@ async def _build_agents(
     critic = CriticReviewer(model=model_adapter, validation_engine=validator)
     router = TaskRouter(model=model_adapter, min_agents=3)
 
-    sandbox = await _acquire_sandbox(settings)
     worker = WorkerCell(sandbox=sandbox)
-
     return {
         "context_builder_planner": planner_ctx,
         "context_builder_worker": worker_ctx,

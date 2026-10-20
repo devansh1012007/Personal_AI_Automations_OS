@@ -45,7 +45,7 @@ redis = ["redis>=5.2"]
 postgres = ["psycopg[binary,pool]>=3.2"]
 # S3/MinIO-backed cold lake for the Docker deployment (ADR-0019). boto3 speaks
 # the S3 API MinIO implements; the filesystem CAS remains the laptop default.
-minio = ["boto3>=1.35"]
+s3 = ["boto3>=1.35"]
 otel = [
     "opentelemetry-api>=1.28",
     "opentelemetry-sdk>=1.28",
@@ -60,7 +60,7 @@ dev = [
     "mypy>=1.13",
 ]
 all = [
-    "paa[vector,graph,embeddings,api,redis,postgres,minio,otel]",
+    "paa[vector,graph,embeddings,api,redis,postgres,s3,otel]",
 ]
 
 [project.scripts]
@@ -81,6 +81,7 @@ markers = [
     "requires_graph: needs the kuzu extra",
     "requires_embeddings: needs the sentence-transformers extra",
     "requires_api: needs the fastapi/uvicorn extra",
+    "requires_postgres: needs the psycopg extra and a live PostgreSQL server",
     "chaos: crash-injection and recovery tests",
 ]
 filterwarnings = ["error::DeprecationWarning:paa.*"]
@@ -125,7 +126,7 @@ ignore = [
 # Both are capability names, not credentials.
 "src/paa/core/types.py" = ["S105"]
 "src/paa/validation/engine.py" = ["S105"]
-# config.py names *env var names* for secrets (e.g. `minio_secret_key_env`,
+# config.py names *env var names* for secrets (e.g. `s3_secret_key_env`,
 # `escalation_api_key_env`) — the names of where to read a secret from, never a
 # secret value. S105 cannot tell the difference.
 "src/paa/config.py" = ["S105"]

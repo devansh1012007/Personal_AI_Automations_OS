@@ -23,11 +23,11 @@ from paa.storage.graph.base import (
     Neighbor,
 )
 from paa.storage.graph.sqlite_backend import SqliteGraphStore
+from paa.storage.relational.base import RelationalBackend
 
 if TYPE_CHECKING:
     from paa.config import StorageSettings
-    from paa.storage.relational.database import Database
-
+    
 __all__ = [
     "DEFAULT_MAX_HOPS",
     "EDGE_TYPES",
@@ -60,7 +60,7 @@ def kuzu_available() -> bool:
     return True
 
 
-def get_graph_store(settings: StorageSettings, db: Database) -> GraphStore:
+def get_graph_store(settings: StorageSettings, db: RelationalBackend) -> GraphStore:
     """Build the configured graph store.
 
     ``backend_graph``:

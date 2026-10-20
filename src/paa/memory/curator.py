@@ -35,7 +35,7 @@ from paa.memory.decay import DecaySweeper
 
 if TYPE_CHECKING:
     from paa.config import MemorySettings
-    from paa.storage.relational.database import Database
+    from paa.storage.relational.base import RelationalBackend
 
 __all__ = ["CurationPhase", "CurationReport", "MemoryCurator"]
 
@@ -113,7 +113,7 @@ class MemoryCurator:
 
     def __init__(
         self,
-        db: Database,
+        db: RelationalBackend,
         *,
         settings: MemorySettings | None = None,
         sweeper: DecaySweeper | None = None,

@@ -32,6 +32,12 @@ comparable across queries, so a bm25 score cannot be thresholded. We rank with
 bm25 but *gate* with an explicit character-trigram Jaccard similarity, which is
 bounded in [0,1] and means the same thing for every query — otherwise "xyz"
 would resolve to whatever row happened to come back first.
+
+A note on the ``# noqa: S608`` markers below: they sit on the **first**
+fragment of a statement that is assembled from several string literals,
+because that is where ruff reports the finding — ruff reads the implicit
+concatenation as one expression. A line ruff does not report carries no
+marker, because an unused marker is itself a finding.
 """
 
 from __future__ import annotations
@@ -41,16 +47,15 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import structlog
 
+from paa.core.types import as_text
 from paa.memory.decay import effective_confidence
 from paa.memory.domains import MemoryDomain
+from paa.storage.relational.base import RelationalBackend
 from paa.storage.relational.like import like_pattern, like_predicate
-
-if TYPE_CHECKING:
-    from paa.storage.relational.database import Database
 
 __all__ = [
     "EMBEDDING_STATUSES",
@@ -72,6 +77,25 @@ EMBEDDING_STATUSES: frozenset[str] = frozenset({"pending", "indexed", "failed", 
 _MIN_TRIGRAM_CHARS = 3
 
 _WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
+
+
+def _has_nul(value: str) -> bool:
+    """Whether a term carries a NUL byte.
+
+    A NUL is the one character the two relational engines refuse in
+    *different* places, and the difference is the reason it is refused
+    here rather than left to them. SQLite truncates a string at a NUL when
+    it reads it through the C string API, so a NUL inside a ``LIKE``
+    pattern turns the pattern into a bare ``%`` that matches every row.
+    psycopg refuses the *bound parameter* outright, before the statement
+    is sent, with a ``DataError`` that carries no SQLSTATE — and therefore
+    no classification a caller could catch.
+
+    Refusing it in one place makes the behaviour the same on both
+    substrates, and it is the same place the two engines' behaviour would
+    otherwise diverge on.
+    """
+    return "\x00" in value
 
 
 def trigram_similarity(left: str, right: str) -> float:
@@ -192,7 +216,7 @@ _FACT_COLUMNS = """
 class FactRepository:
     """The only writer of ``hot_serving_entity_index`` and ``hot_serving_active_facts``."""
 
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: RelationalBackend) -> None:
         self._db = db
 
     # -- entities ----------------------------------------------------------
@@ -279,13 +303,17 @@ class FactRepository:
             log.debug("memory.entity_created", entity_id=entity_id, name=name)
             return entity_id
 
-        entity_id = str(row["id"])
+        entity_id = as_text(row["id"])
         merged = _merge_aliases(loads(row["aliases"], []) or [], incoming, exclude=name)
         attrs = dict(loads(row["attributes"], {}) or {})
         attrs.update(attributes or {})
+        # The interpolated fragment is a dialect constant — a closed set of
+        # two spellings chosen by the engine, with no user input in it.
+        keep_max = self._db.dialect.scalar_max("importance_weight", "?")
         await conn.execute(
-            "UPDATE hot_serving_entity_index SET class = ?, aliases = ?, "
-            "importance_weight = MAX(importance_weight, ?), attributes = ?, updated_at = ? "
+            "UPDATE hot_serving_entity_index SET class = ?, aliases = ?, "  # noqa: S608
+            f"importance_weight = {keep_max}, "
+            "attributes = ?, updated_at = ? "
             "WHERE id = ?",
             (class_, dumps(merged), importance, dumps(attrs), stamp, entity_id),
         )
@@ -319,6 +347,25 @@ class FactRepository:
         term = " ".join(name_or_alias.split())
         if not term:
             return None
+        if _has_nul(term):
+            # A NUL is refused here, on both substrates, rather than left to
+            # the engine. The two engines refuse it differently: SQLite's
+            # full-text matcher rejects the *statement* ("unterminated
+            # string"), which the candidate query catches and fails closed on,
+            # while psycopg refuses the *bound parameter* before the
+            # statement is sent — with a ``DataError`` that carries no
+            # SQLSTATE, and therefore no classification the repository layer
+            # could catch.
+            #
+            # Refusing it here makes the behaviour the same on both
+            # substrates and the same on every rung of the ladder, rather
+            # than a property of where the term happens to be bound. The
+            # refusal is the internal-path one: the term resolves to no
+            # match, and the caller carries on. (The tool path, where the
+            # term is a model-supplied argument, refuses it as an error
+            # value instead — see ``coder/runtime_tools.py``.)
+            log.warning("memory.entity_term_refused", reason="nul_byte")
+            return None
 
         exact = await self._db.fetch_one(
             "SELECT * FROM hot_serving_entity_index WHERE lower(canonical_name) = lower(?)",
@@ -327,17 +374,47 @@ class FactRepository:
         if exact is not None:
             return _to_entity(exact)
 
-        alias = await self._db.fetch_one(
-            "SELECT e.* FROM hot_serving_entity_index e, json_each(e.aliases) a "
-            "WHERE lower(a.value) = lower(?) LIMIT 1",
-            (term,),
-        )
+        # The interpolated fragment is a dialect constant — a closed set of
+        # two spellings chosen by the engine, with no user input in it.
+        alias = await self._alias_lookup(term)
         if alias is not None:
             return _to_entity(alias, match="alias")
 
         if not fuzzy or len(term) < _MIN_TRIGRAM_CHARS:
             return None
         return await self._fuzzy_resolve(term, fuzzy_floor, candidate_limit)
+
+    async def _alias_lookup(self, term: str) -> Any:
+        """The entity that carries ``term`` as an alias, if one does.
+
+        The alias columns are JSON held as *text* on both substrates, and
+        the server dialect casts them back to ``jsonb`` to expand them
+        (``jsonb_array_elements_text``). A row whose JSON is corrupt makes
+        that cast fail with ``22P02 invalid_text_representation`` — and
+        because the expansion scans the table, ONE corrupt row makes the
+        lookup fail for *every* term.
+
+        That is a data problem, not a query problem, and the vocabulary says
+        so: the error is a
+        :class:`~paa.storage.relational.errors.MalformedDocument`. But the
+        resolution ladder is written to fail closed — the ingestion batch
+        that asked the question must not go down because one row in the
+        table is unreadable — so the corrupt row degrades to "no alias
+        matches" here rather than taking the caller with it.
+        """
+        from paa.storage.relational.errors import QueryRejected
+
+        alias_values = self._db.dialect.alias_values("e.aliases")
+        try:
+            return await self._db.fetch_one(
+                "SELECT e.* FROM hot_serving_entity_index e, "  # noqa: S608
+                f"{alias_values} a "
+                "WHERE lower(a.value) = lower(?) LIMIT 1",
+                (term,),
+            )
+        except QueryRejected as exc:
+            log.warning("memory.entity_alias_lookup_rejected", term=term, error=str(exc))
+            return None
 
     async def _fuzzy_resolve(self, term: str, floor: float, limit: int) -> Entity | None:
         """Trigram search over ``hot_serving_entity_fts``.
@@ -389,17 +466,14 @@ class FactRepository:
         )
 
     async def _fts_candidates(self, query: str, limit: int) -> list[Any]:
-        import sqlite3
+        from paa.storage.relational.errors import QueryRejected
 
         try:
             return await self._db.fetch_all(
-                "SELECT e.* FROM hot_serving_entity_fts f "
-                "JOIN hot_serving_entity_index e ON e.rowid = f.rowid "
-                "WHERE hot_serving_entity_fts MATCH ? "
-                "ORDER BY bm25(hot_serving_entity_fts) LIMIT ?",
+                self._db.dialect.entity_candidates_sql(query, limit),
                 (query, limit),
             )
-        except sqlite3.OperationalError as exc:
+        except QueryRejected as exc:
             # A malformed MATCH expression is a bad *query*, not a broken
             # database. Resolution failing closed (no match) is correct; taking
             # the whole ingestion batch down with it is not.
@@ -773,7 +847,7 @@ def _to_entity(row: Any, *, match: str = "exact") -> Entity:
 
     aliases = tuple(str(a) for a in (loads(row["aliases"], []) or []))
     return Entity(
-        id=str(row["id"]),
+        id=as_text(row["id"]),
         class_=str(row["class"]),
         canonical_name=str(row["canonical_name"]),
         aliases=aliases,
@@ -807,8 +881,8 @@ def _to_fact(row: Any, *, now: datetime | None = None) -> Fact:
 
     keys = row.keys()
     return Fact(
-        id=str(row["id"]),
-        entity_id=str(row["entity_id"]),
+        id=as_text(row["id"]),
+        entity_id=as_text(row["entity_id"]),
         predicate=str(row["predicate"]),
         object_value=str(row["object_value"]),
         domain=domain,
@@ -817,11 +891,15 @@ def _to_fact(row: Any, *, now: datetime | None = None) -> Fact:
         confidence=confidence,
         importance=float(row["importance"]),
         use_count=int(row["use_count"]),
-        source_signal_id=row["source_signal_id"],
+        source_signal_id=(
+            as_text(row["source_signal_id"]) if row["source_signal_id"] is not None else None
+        ),
         provenance=loads(row["provenance"], {}) or {},
         embedding_status=str(row["embedding_status"]),
         created_at=from_iso(row["created_at"]),
         last_queried_at=last_queried,
-        superseded_by=row["superseded_by"],
+        superseded_by=(
+            as_text(row["superseded_by"]) if row["superseded_by"] is not None else None
+        ),
         entity_name=row["entity_name"] if "entity_name" in keys else None,
     )

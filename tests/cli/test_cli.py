@@ -62,6 +62,84 @@ class TestTaskLifecycle:
         assert "sqlite" in result.stdout
         assert "sandbox" in result.stdout
 
+    def test_doctor_reports_the_container_facts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The container facts decide the containment, so the doctor must show them.
+
+        A backend asking for ``runsc`` that the daemon does not have still
+        reports NAMESPACE isolation, and the isolation level alone cannot say
+        why. The rows exist so the operator can tell "runsc, and the daemon
+        has it" from "runsc was asked for and is not there".
+
+        The daemon is faked rather than reached for: a test that shells out to
+        whatever Docker the host happens to have is a test whose result
+        depends on the machine, and a wedged daemon turns it into a 20-second
+        test.
+
+        The fake is installed on ``DockerSandbox._exec`` — the backend's
+        single seam for every ``docker`` call — rather than on
+        ``asyncio.create_subprocess_exec``. The latter is the *global*
+        asyncio module, so faking it there fakes it for every other
+        coroutine in the process, including the ones the runtime under test
+        spawns.
+        """
+        from paa.sandbox import docker_backend
+
+        monkeypatch.setenv("PAA_SANDBOX__BACKEND", "docker")
+        monkeypatch.setenv("PAA_SANDBOX__CONTAINER_RUNTIME", "runsc")
+        from paa.config import reset_settings_cache
+
+        reset_settings_cache()
+
+        class _FakeProc:
+            def __init__(self, stdout: bytes = b"", returncode: int = 0) -> None:
+                self._stdout = stdout
+                self.returncode = returncode
+
+            async def communicate(self) -> tuple[bytes, bytes]:
+                return self._stdout, b""
+
+            async def wait(self) -> int:
+                return self.returncode
+
+        async def fake_exec(*args: object, **_kwargs: object) -> _FakeProc:
+            if "info" in args:
+                # The daemon has runsc registered.
+                return _FakeProc(b'{"runc":{"path":"runc"},"runsc":{"path":"/usr/bin/runsc"}}')
+            if "inspect" in args:
+                return _FakeProc(b"[]", returncode=0)
+            return _FakeProc(b"29.9.0")
+
+        monkeypatch.setattr(docker_backend.DockerSandbox, "_exec", fake_exec)
+        monkeypatch.setattr(docker_backend.shutil, "which", lambda _n: "/usr/bin/docker")
+
+        result = runner.invoke(app, ["doctor"])
+        assert result.exit_code == 0
+        assert "docker daemon" in result.stdout
+        assert "oci runtime" in result.stdout
+        assert "sandbox image" in result.stdout
+        # The values, not just the labels: runsc is registered, so the
+        # isolation level must be VM — the row above the facts must not
+        # contradict the row below it.
+        assert "runsc (registered)" in result.stdout
+        assert "docker (VM)" in result.stdout
+        assert "paa/base_worker:v4.1" in result.stdout
+
+    def test_doctor_names_the_backend_it_is_actually_using(self) -> None:
+        """The doctor must not say "dry-run" when a sandbox is configured.
+
+        A backend that reports nothing beyond its identity would render as
+        "none (dry-run)" — which is not merely unhelpful, it is *false*: the
+        subprocess backend really does run the workload, on the host, at
+        PROCESS isolation. An operator reading that row has to be able to
+        tell what containment a run will get.
+        """
+        result = runner.invoke(app, ["doctor"])
+        assert result.exit_code == 0
+        assert "subprocess (PROCESS)" in result.stdout
+        assert "dry-run" not in result.stdout
+
     def test_submit_runs_to_committed(self) -> None:
         result = runner.invoke(app, ["submit", "write a greeting", "--agent", "worker"])
         assert result.exit_code == 0

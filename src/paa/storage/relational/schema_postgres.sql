@@ -15,8 +15,15 @@
 --
 --   * SQLite TEXT holding a uuid4      -> UUID
 --   * SQLite TEXT holding JSON + a
---     ``CHECK (json_valid(...))``      -> JSONB (validity is intrinsic, so the
---                                        json_valid CHECKs are dropped)
+--     ``CHECK (json_valid(...))``      -> TEXT (the bytes a writer produced are
+--                                        the bytes that are stored — a JSONB
+--                                        column would re-serialise them, and
+--                                        the ledger hashes its payload while
+--                                        the cold lake scans its raw bytes
+--                                        for hostile control characters.
+--                                        The price is that the server no
+--                                        longer checks JSON validity for us;
+--                                        SQLite still does, via json_valid)
 --   * SQLite TEXT ISO-8601 timestamp   -> TIMESTAMPTZ
 --   * SQLite INTEGER 0/1 boolean flag  -> SMALLINT ... CHECK (x IN (0,1))
 --                                        (kept as 0/1, not BOOLEAN, so the
@@ -61,7 +68,7 @@ CREATE TABLE IF NOT EXISTS system_state_ledger (
     agent_role         TEXT,
     allocated_worker_image TEXT NOT NULL DEFAULT 'paa/base_worker:v4.1',
 
-    payload            JSONB   NOT NULL DEFAULT '{}'::jsonb,
+    payload            TEXT   NOT NULL DEFAULT '{}',
 
     -- Tamper-evident chain. prev_hash of the first event in a correlation is
     -- 64 zeroes (GENESIS_HASH).
@@ -111,7 +118,7 @@ CREATE INDEX IF NOT EXISTS idx_head_open
 CREATE TABLE IF NOT EXISTS system_state_snapshots (
     correlation_id     UUID    NOT NULL,
     state_version      INTEGER NOT NULL,
-    projection         JSONB   NOT NULL,
+    projection         TEXT   NOT NULL,
     created_at         TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (correlation_id, state_version)
 );
@@ -125,7 +132,7 @@ CREATE TABLE IF NOT EXISTS cold_lake_signals (
     received_at    TIMESTAMPTZ NOT NULL,
     channel        TEXT NOT NULL,
     external_id    TEXT,
-    raw_payload    JSONB NOT NULL,
+    raw_payload    TEXT NOT NULL,
     content_hash   TEXT NOT NULL,
     -- Pointer into the content-addressed blob store for oversized payloads.
     -- On the server topology this is a MinIO/S3 object key (ADR-0019); on the
@@ -134,6 +141,13 @@ CREATE TABLE IF NOT EXISTS cold_lake_signals (
     sync_status    TEXT NOT NULL DEFAULT 'unprocessed',
     processed_at   TIMESTAMPTZ,
     error_detail   TEXT,
+    -- Arrival order. Two signals ingested inside the same clock tick share a
+    -- `received_at`, and the id is a random UUID, so "oldest first" needs an
+    -- explicit secondary key or ingestion order stops meaning anything under
+    -- load. PostgreSQL has no monotonic rowid, so the ordering is an identity
+    -- column here and a rowid capture there — the column carries it on both
+    -- dialects. See docs/adr/0025-postgres-dialect-seam.md.
+    arrival_seq    BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL,
     CONSTRAINT ck_signal_status CHECK (
         sync_status IN ('unprocessed', 'processing', 'processed', 'malformed', 'quarantined')
     )
@@ -174,10 +188,10 @@ CREATE TABLE IF NOT EXISTS hot_serving_entity_index (
     id                UUID PRIMARY KEY,
     class             TEXT NOT NULL,
     canonical_name    TEXT NOT NULL UNIQUE,
-    aliases           JSONB NOT NULL DEFAULT '[]'::jsonb,
+    aliases           TEXT NOT NULL DEFAULT '[]',
     importance_weight DOUBLE PRECISION NOT NULL DEFAULT 0.5,
     confidence_rating DOUBLE PRECISION NOT NULL DEFAULT 1.0,
-    attributes        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    attributes        TEXT NOT NULL DEFAULT '{}',
     created_at        TIMESTAMPTZ NOT NULL,
     updated_at        TIMESTAMPTZ NOT NULL,
     CONSTRAINT ck_entity_importance CHECK (importance_weight BETWEEN 0.0 AND 1.0),
@@ -215,7 +229,7 @@ CREATE TABLE IF NOT EXISTS hot_serving_active_facts (
     use_count          INTEGER NOT NULL DEFAULT 0,
 
     source_signal_id   UUID REFERENCES cold_lake_signals(id) ON DELETE SET NULL,
-    provenance         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    provenance         TEXT NOT NULL DEFAULT '{}',
     embedding_status   TEXT NOT NULL DEFAULT 'pending',
 
     created_at         TIMESTAMPTZ NOT NULL,
@@ -241,8 +255,8 @@ CREATE TABLE IF NOT EXISTS hot_serving_unresolved_buffer (
     id                UUID PRIMARY KEY,
     entity_id         UUID NOT NULL,
     predicate         TEXT NOT NULL,
-    incumbent_fact    JSONB NOT NULL,
-    challenger_fact   JSONB NOT NULL,
+    incumbent_fact    TEXT NOT NULL,
+    challenger_fact   TEXT NOT NULL,
     conflict_score    DOUBLE PRECISION NOT NULL,
     correlation_id    UUID,
     detected_at       TIMESTAMPTZ NOT NULL,
@@ -293,7 +307,7 @@ CREATE TABLE IF NOT EXISTS hot_serving_sessions (
     status         TEXT NOT NULL DEFAULT 'QUEUED',
     permission_mode TEXT NOT NULL DEFAULT 'ASK',
     workspace_path TEXT,
-    metadata       JSONB NOT NULL DEFAULT '{}'::jsonb,
+    metadata       TEXT NOT NULL DEFAULT '{}',
     created_at     TIMESTAMPTZ NOT NULL,
     updated_at     TIMESTAMPTZ NOT NULL,
     closed_at      TIMESTAMPTZ,
@@ -326,12 +340,12 @@ CREATE TABLE IF NOT EXISTS hot_serving_skill_registry (
     provider             TEXT NOT NULL DEFAULT 'claw_hub',
     version              TEXT NOT NULL DEFAULT '0.1.0',
     description          TEXT NOT NULL,
-    input_schema         JSONB NOT NULL,
-    output_schema        JSONB NOT NULL,
+    input_schema         TEXT NOT NULL,
+    output_schema        TEXT NOT NULL,
     risk_profile         DOUBLE PRECISION NOT NULL DEFAULT 0.5,
-    required_permissions JSONB NOT NULL DEFAULT '[]'::jsonb,
+    required_permissions TEXT NOT NULL DEFAULT '[]',
     reliability_weight   DOUBLE PRECISION NOT NULL DEFAULT 1.0,
-    invocation           JSONB NOT NULL DEFAULT '{}'::jsonb,
+    invocation           TEXT NOT NULL DEFAULT '{}',
     source_uri           TEXT,
     source_checksum      TEXT,
     signature            TEXT,
@@ -352,8 +366,8 @@ CREATE TABLE IF NOT EXISTS hot_serving_agent_registry (
     agent_name        TEXT NOT NULL UNIQUE,
     role              TEXT NOT NULL,
     description       TEXT NOT NULL DEFAULT '',
-    allowed_tools     JSONB NOT NULL DEFAULT '[]'::jsonb,
-    granted_permissions JSONB NOT NULL DEFAULT '[]'::jsonb,
+    allowed_tools     TEXT NOT NULL DEFAULT '[]',
+    granted_permissions TEXT NOT NULL DEFAULT '[]',
     recursion_ceiling INTEGER NOT NULL DEFAULT 0,
     max_retries       INTEGER NOT NULL DEFAULT 1,
     token_ceiling     INTEGER NOT NULL DEFAULT 2048,
@@ -370,7 +384,7 @@ CREATE TABLE IF NOT EXISTS hot_serving_execution_runs (
     trace_id          UUID PRIMARY KEY,
     correlation_id    UUID NOT NULL,
     session_id        UUID,
-    span_parent_id    UUID,
+    span_parent_id    TEXT,
     agent_role        TEXT NOT NULL,
     skill_name        TEXT,
     modality          TEXT NOT NULL,
@@ -383,7 +397,7 @@ CREATE TABLE IF NOT EXISTS hot_serving_execution_runs (
     peak_rss_mb       DOUBLE PRECISION,
     model_used        TEXT,
     escalated         SMALLINT NOT NULL DEFAULT 0,
-    telemetry         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    telemetry         TEXT NOT NULL DEFAULT '{}',
     error_detail      TEXT,
     CONSTRAINT ck_run_escalated_bool CHECK (escalated IN (0,1))
 );
@@ -398,7 +412,7 @@ CREATE TABLE IF NOT EXISTS hot_serving_evaluation_results (
     evaluator      TEXT NOT NULL,
     verdict        TEXT NOT NULL,
     score          DOUBLE PRECISION,
-    findings       JSONB NOT NULL DEFAULT '[]'::jsonb,
+    findings       TEXT NOT NULL DEFAULT '[]',
     evaluated_at   TIMESTAMPTZ NOT NULL,
     CONSTRAINT ck_eval_verdict CHECK (verdict IN ('PASS','FAIL_REJECT_RETRY','FAIL_ESCALATE','SKIPPED'))
 );
@@ -411,7 +425,7 @@ CREATE TABLE IF NOT EXISTS hot_serving_recovery_marks (
     correlation_id UUID NOT NULL,
     state_version  INTEGER NOT NULL,
     workspace_path TEXT NOT NULL,
-    manifest       JSONB NOT NULL,
+    manifest       TEXT NOT NULL,
     manifest_hash  TEXT NOT NULL,
     created_at     TIMESTAMPTZ NOT NULL,
     CONSTRAINT uq_recovery_mark UNIQUE (correlation_id, state_version)
@@ -462,7 +476,7 @@ CREATE TABLE IF NOT EXISTS queue_messages (
     correlation_id  UUID,
     session_id      UUID,
     priority        INTEGER NOT NULL DEFAULT 100,
-    payload         JSONB NOT NULL,
+    payload         TEXT NOT NULL,
     status          TEXT NOT NULL DEFAULT 'ready',
     attempts        INTEGER NOT NULL DEFAULT 0,
     max_attempts    INTEGER NOT NULL DEFAULT 3,
@@ -472,6 +486,8 @@ CREATE TABLE IF NOT EXISTS queue_messages (
     enqueued_at     TIMESTAMPTZ NOT NULL,
     completed_at    TIMESTAMPTZ,
     last_error      TEXT,
+    -- Arrival order, for the same reason as cold_lake_signals.arrival_seq.
+    arrival_seq     BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL,
     CONSTRAINT ck_queue_status CHECK (status IN ('ready','claimed','done','dead'))
 );
 
@@ -504,7 +520,7 @@ CREATE TABLE IF NOT EXISTS marketplace_packages (
     publisher       TEXT NOT NULL,
     publisher_key   TEXT,
     description     TEXT NOT NULL DEFAULT '',
-    manifest        JSONB NOT NULL,
+    manifest        TEXT NOT NULL,
     content_hash    TEXT NOT NULL,
     signature       TEXT,
     signature_state TEXT NOT NULL DEFAULT 'unverified',

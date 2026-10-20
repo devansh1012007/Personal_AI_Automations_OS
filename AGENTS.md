@@ -20,17 +20,20 @@ Verify in this order before calling work done:
 ```
 
 - Focused runs: `pytest tests/ledger -q`, `pytest tests/ledger/test_replay.py::test_x -q`,
-  `pytest -m "not slow"`, `pytest -m chaos`, `pytest -m requires_graph`.
+  `pytest -m "not slow"`, `pytest -m chaos`, `pytest -m requires_graph`,
+  `pytest -m requires_postgres` (needs `PAA_TEST_POSTGRES_DSN`; see below).
 - mypy is `strict = true` with `warn_unreachable` — `disallow_untyped_defs` is relaxed only for `tests.*`.
 - ruff `line-length = 100`, and `S` (bandit) is on. The `S608` / `S105` ignores in `pyproject.toml` are
   per-file allow-lists for known-safe patterns; do **not** add new files to them, and do not "fix" a
   triggered line by widening the ignore. A single line that legitimately interpolates SQL takes a
   **per-line** `# noqa: S608` (the convention in `memory/facts.py` and `skills/registry.py`) — that is
   narrower than a per-file allow-list and keeps the rest of the file under the rule.
-- **The baseline is red.** `ruff` reports 69 findings and `mypy` 116 at HEAD, all pre-existing; so
-  does the suite, with 6 environmental failures (the sandbox cannot exec a bare `python` binary).
-  "Do not expand the count" is the gate, not "make it zero" — fixing the 185 pre-existing findings is
-  a project of its own and would bury any change you are making. Do not silence one either.
+- **The baseline is red.** `ruff` reports 69 findings and `mypy` 116 at HEAD, all pre-existing; the
+  working tree is at **mypy 108** (the schema-migration change closed eight of them) and
+  `ruff` is unchanged at 69. So does the suite, with 6 environmental failures (the sandbox
+  cannot exec a bare `python` binary). "Do not expand the count" is the gate, not "make it
+  zero" — fixing the 185 pre-existing findings is a project of its own and would bury any
+  change you are making. Do not silence one either.
 - There is no CI config, Makefile, or pre-commit hook in this repo. Nothing enforces the order above
   but you.
 
@@ -110,7 +113,7 @@ implementation detail, and PostgreSQL promises nothing about ties at all.
   including test runs). Environment still wins; `reset_dotenv_cache()` exists for tests that chdir.
   If you add anything else configured by name rather than by field, use `dotenv_value` too.
 - `config.py::_enforce_loopback` refuses a non-loopback `api_host` unless `PAA_ALLOW_NON_LOOPBACK=1`.
-- Config stores the *names* of secret env vars (`minio_secret_key_env`, `escalation_api_key_env`), never
+- Config stores the *names* of secret env vars (`s3_secret_key_env`, `escalation_api_key_env`), never
   values. Keep it that way.
 - `get_settings()` is `lru_cache`d. Anything that changes `PAA_HOME` (tests, mostly) **must** call
   `reset_settings_cache()`.
@@ -123,6 +126,11 @@ implementation detail, and PostgreSQL promises nothing about ties at all.
   fails the test. Fix the code, don't silence it.
 - Extras-gated tests use a `pytest.mark.requires_*` marker **and** a `skipif`/`importorskip` guard
   (see `tests/storage/test_vector.py`, `tests/api/conftest.py`). `--strict-markers` is on.
+- The **PostgreSQL** tests are the exception that proves the rule: they need a *server*, not just
+  the extra, so they are marked `requires_postgres` **and** skipped unless `PAA_TEST_POSTGRES_DSN`
+  names one. The DSN names a *server*: `tests/storage/test_postgres_migrations.py` creates a
+  database of its own on it and drops it afterwards, so a run can never touch the database a
+  deployment is using.
 - `paa_home` (tests/conftest.py) isolates state; `snapshotter` is a byte-oriented fake on purpose —
   `write_text`/`read_text` would translate newlines on Windows and report phantom manifest drift.
 - Set `PAA_TEST_VERBOSE=1` to un-silence structlog.
@@ -137,8 +145,7 @@ implementation detail, and PostgreSQL promises nothing about ties at all.
   sometimes misses it.
 - Crash/chaos tests simulate power loss by closing the DB mid-lineage and reopening — committed
   transactions survive, uncommitted vanish.
-- `tests/validation/` is an empty package and there is no `tests/observability/` — those subsystems are
-  genuinely uncovered. `src/paa/observability/` in particular is exercised nowhere.
+- `tests/validation/` is an empty package — that subsystem is genuinely uncovered.
 
 ## Model layer
 

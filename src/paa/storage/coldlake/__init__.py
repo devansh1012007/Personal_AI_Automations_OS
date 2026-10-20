@@ -67,18 +67,23 @@ def get_blob_store(settings: StorageSettings) -> Any:
     """Build the cold-lake object store named by ``backend_coldlake``.
 
     ``"filesystem"`` (default, ADR-0004) returns the local
-    :class:`ContentAddressedStore`; ``"minio"`` (ADR-0019) returns an
+    :class:`ContentAddressedStore`; ``"s3"`` (ADR-0019, ADR-0026) returns an
     :class:`~paa.storage.coldlake.minio_backend.S3BlobStore` talking to the
-    MinIO/S3 server configured on :class:`~paa.config.StorageSettings`. Both
+    S3 server configured on :class:`~paa.config.StorageSettings`. Both
     satisfy the identical put/get/exists/delete/stat/put_stream/get_stream
     contract and both mint ``cas://`` :class:`BlobRef` URIs, so a ``blob_uri``
     written by one resolves against the other — the signal and artifact
     repositories are backend-agnostic.
 
-    The MinIO backend (and its ``boto3`` dependency) is imported lazily, so a
-    laptop install without the ``minio`` extra stays importable.
+    The substrate is *S3*, not a particular server: the endpoint is a
+    setting, so the same client works against MinIO, SeaweedFS, RustFS or
+    anything else that speaks the protocol, and the test suite runs the same
+    lifecycle against more than one of them.
+
+    The S3 backend (and its ``boto3`` dependency) is imported lazily, so a
+    laptop install without the ``s3`` extra stays importable.
     """
-    if settings.backend_coldlake == "minio":
+    if settings.backend_coldlake in ("s3", "minio"):
         from paa.storage.coldlake.minio_backend import _blob_store_from_settings
 
         return _blob_store_from_settings(settings)

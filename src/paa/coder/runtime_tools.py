@@ -47,7 +47,6 @@ from typing import TYPE_CHECKING, Any
 from paa.ledger.replay import project
 from paa.memory.creator import MemoryCreator, ProcessingOutcome, SignalEnvelope
 from paa.memory.facts import Fact, FactRepository
-from paa.storage.coldlake.cas import ContentAddressedStore
 from paa.storage.coldlake.signals import Signal, SignalRepository
 from paa.storage.relational.database import dumps
 
@@ -144,13 +143,14 @@ class _CheckRuntime(_RuntimeTool):
     async def run(self, arguments: Mapping[str, Any]) -> str:
         settings = self._rt.settings
         router = self._rt.model_router
-        worker = self._rt.agents.get("worker")
-        sandbox = getattr(worker, "_sandbox", None)
+        sandbox = self._rt.sandbox
         return self._emit(
             {
                 "permission_mode": settings.policy.mode.value,
                 "home": str(settings.home),
-                "relational_backend": settings.storage.backend_relational,
+                # The live substrate, not the configured one — see the note
+                # on the doctor's relational row.
+                "relational_backend": type(self._rt.db).__name__,
                 "vector_backend": type(self._rt.vector_store).__name__
                 if self._rt.vector_store
                 else None,
@@ -164,7 +164,16 @@ class _CheckRuntime(_RuntimeTool):
                 if router and router.frontier
                 else None,
                 "sandbox": sandbox.name if sandbox is not None else None,
-                "sandbox_isolation": str(getattr(sandbox, "isolation_level", "none")),
+                # The level's NAME, not its number: `IsolationLevel` is an
+                # IntEnum, so `str()` of it is "3", and a model reading
+                # "3" learns nothing — while the doctor, which prints the
+                # name, says "VM". Two surfaces of the same runtime must
+                # use the same vocabulary.
+                "sandbox_isolation": getattr(
+                    getattr(sandbox, "isolation_level", None), "name", "none"
+                ),
+                "sandbox_runtime": getattr(sandbox, "runtime", None),
+                "sandbox_image": getattr(sandbox, "image", None),
                 "open_tasks": len(await self._rt.ledger.open_correlations()),
             }
         )
@@ -543,13 +552,15 @@ class _RememberFact(_RuntimeTool):
     def _signal_repo(self) -> SignalRepository:
         """The cold-lake front door over this runtime's database.
 
-        The content-addressed store is the one the ingestion API already uses
-        (:func:`paa.api.app._signal_repo`): constructing it creates the two
-        directories it needs and it is only *used* for a payload over 64 KB,
-        which an assertion never is. The tool does not get to pick a different
-        archive from the rest of the runtime.
+        The store is the one the ingestion API already uses
+        (:func:`paa.api.app._signal_repo`), built by the same factory, so it
+        is the substrate the deployment configured — the local
+        content-addressed store or the S3 client — and not a different
+        archive. The tool does not get to pick one.
         """
-        cas = ContentAddressedStore(self._rt.settings.storage.cold_lake_path)
+        from paa.storage.coldlake import get_blob_store
+
+        cas = get_blob_store(self._rt.settings.storage)
         return SignalRepository(self._rt.db, cas)
 
     async def _claim(self, signal_id: str) -> bool:

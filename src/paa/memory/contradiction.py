@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 if TYPE_CHECKING:
-    from paa.storage.relational.database import Database
+    from paa.storage.relational.base import RelationalBackend
 
 __all__ = [
     "ConflictAssessment",
@@ -116,7 +116,7 @@ class ContradictionDetector:
 
     def __init__(
         self,
-        db: Database,
+        db: RelationalBackend,
         *,
         threshold: float = 0.75,
         degraded_confidence: float = 0.20,

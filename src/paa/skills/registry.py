@@ -39,7 +39,7 @@ from paa.storage.relational.database import dumps, loads, to_iso, utc_now
 from paa.storage.relational.like import like_pattern, like_predicate
 
 if TYPE_CHECKING:
-    from paa.storage.relational.database import Database
+    from paa.storage.relational.base import RelationalBackend
 
 __all__ = ["SkillRegistry", "SkillVectorStore"]
 
@@ -94,7 +94,7 @@ class SkillRegistry:
     over the same database can never disagree.
     """
 
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: RelationalBackend) -> None:
         self._db = db
 
     # -- registration ------------------------------------------------------

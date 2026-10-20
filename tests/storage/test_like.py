@@ -234,6 +234,36 @@ class TestTheTwoHalvesAgree:
         assert LIKE_ESCAPE_SQL in translated
         assert translated.count(LIKE_ESCAPE_SQL) == 2
 
+    def test_a_percent_inside_a_literal_is_still_escaped(self) -> None:
+        """psycopg's parser does not stop at quotes.
+
+        A ``%`` is a placeholder marker to psycopg whether it is inside a
+        string literal or not, so a query that contains one — a ``LIKE``
+        pattern written into the statement, say — has to double it. The
+        error psycopg raises otherwise is about the *placeholder*, which
+        says nothing about what was actually wrong.
+        """
+        from paa.storage.relational.postgres import _qmark_to_pyformat
+
+        translated = _qmark_to_pyformat(
+            "SELECT 1 FROM t WHERE column_default LIKE '%::jsonb%' AND x = ?"
+        )
+
+        # The ``%`` of the LIKE pattern is doubled, so psycopg un-doubles it
+        # and the server sees the pattern that was written.
+        assert "'%%::jsonb%%'" in translated
+        # The placeholder is still a placeholder.
+        assert translated.count("%s") == 1
+
+    def test_a_question_mark_inside_a_literal_is_not_a_placeholder(self) -> None:
+        """A ``?`` inside a string is a character on both engines."""
+        from paa.storage.relational.postgres import _qmark_to_pyformat
+
+        translated = _qmark_to_pyformat("SELECT 1 FROM t WHERE name = 'a?b' AND x = ?")
+
+        assert translated.count("%s") == 1
+        assert "'a?b'" in translated
+
 
 class TestPatternShape:
     def test_the_pattern_is_a_substring_match(self) -> None:

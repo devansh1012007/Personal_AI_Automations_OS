@@ -37,7 +37,7 @@ from paa.marketplace.package import SkillPackage
 from paa.marketplace.signing import SignatureState, signing_is_secure, verify
 
 if TYPE_CHECKING:
-    from paa.storage.relational.database import Database
+    from paa.storage.relational.base import RelationalBackend
 
 __all__ = ["InstallGate", "InstallOutcome", "InstallReport", "PackageInstaller"]
 
@@ -76,7 +76,7 @@ class PackageInstaller:
 
     def __init__(
         self,
-        db: Database,
+        db: RelationalBackend,
         *,
         scanner: Any = None,
         sandbox: Any = None,
@@ -234,8 +234,11 @@ class PackageInstaller:
         from paa.storage.relational.database import to_iso, utc_now
 
         await self._db.execute(
-            "INSERT OR REPLACE INTO marketplace_trusted_keys "
-            "(key_id, public_key, owner, added_at) VALUES (?, ?, ?, ?)",
+            "INSERT INTO marketplace_trusted_keys "
+            "(key_id, public_key, owner, added_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(key_id) DO UPDATE SET "
+            "public_key = excluded.public_key, owner = excluded.owner, "
+            "added_at = excluded.added_at",
             (key_id, public_key, owner, to_iso(utc_now())),
         )
 

@@ -1,7 +1,7 @@
 """PAA — Personal Autonomous Cognitive Operating System Runtime.
 
 A local-first, event-sourced substrate for running autonomous agents on
-personal hardware. See ``docs/architecture.md`` for the design and
+personal hardware. See ``docs/architecture/overview.md`` for the design and
 ``docs/adr/`` for the reasoning behind each deviation from the v4.0 RFC.
 """
 

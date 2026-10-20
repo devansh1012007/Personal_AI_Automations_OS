@@ -69,10 +69,17 @@ class SpanStatus:
 class Span:
     """One timed unit of work.
 
-    Ids are hex strings of the OpenTelemetry widths (128-bit trace, 64-bit span)
-    so a span can cross the OTLP bridge without re-identification, and so a
-    ``trace_id`` written into ``hot_serving_execution_runs`` means the same
-    thing whether or not a collector was ever attached.
+    The trace id is a **UUID** in the canonical hyphenated form, and the
+    span id is sixteen hex characters. Neither is an OpenTelemetry id:
+    a trace id is 128 bits *and* a UUID, and it is the UUID that decides
+    how it is spelled, because the two substrates store a trace id
+    differently otherwise — SQLite stores the text it was given, and
+    PostgreSQL's ``UUID`` column normalises it — and a
+    ``trace_id`` written into ``hot_serving_execution_runs`` has to mean
+    the same thing whether or not a collector was ever attached.
+
+    The span id is 64 bits and is *not* a UUID, which is why the column
+    that holds a parent span id is text on both substrates.
     """
 
     name: str
@@ -121,10 +128,24 @@ class Span:
 
 
 def _new_trace_id() -> str:
-    return uuid.uuid4().hex  # 128-bit, 32 hex chars
+    """A fresh trace id, in the canonical hyphenated UUID form.
+
+    The hyphenated form, not ``uuid4().hex``: a PostgreSQL ``UUID`` column
+    normalises to it on the way in, so a trace id written as 32 hex
+    characters would be stored in two different forms by the two
+    substrates — and a join between a span and the run that owns it would
+    match on one and not the other.
+    """
+    return str(uuid.uuid4())
 
 
 def _new_span_id() -> str:
+    """A fresh span id.
+
+    Sixteen hex characters, not a UUID: a span id is 64 bits, and it is
+    *not* a UUID — the column that holds a parent span id is therefore
+    text on both substrates, because a ``UUID`` column would refuse it.
+    """
     return uuid.uuid4().hex[:16]  # 64-bit, 16 hex chars
 
 

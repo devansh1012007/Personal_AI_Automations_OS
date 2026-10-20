@@ -38,6 +38,8 @@ Deviations fall into three classes:
 | [0021](0021-transport-retry.md) | Transport retry for transient model-endpoint failures | **Correctness** |
 | [0022](0022-coder-memory-writes.md) | The coder agent's memory writes go through the cold lake | **Correctness** |
 | [0023](0023-like-pattern-escaping.md) | Every `LIKE` pattern that interpolates text comes from one helper | **Correctness** |
+| [0025](0025-postgres-dialect-seam.md) | The relational substrates are interchangeable only through a dialect seam | **Correctness** |
+| [0026](0026-s3-cold-lake-substrate.md) | The cold lake's blob substrate is S3, not MinIO | **Correctness** |
 
 ## Template
 

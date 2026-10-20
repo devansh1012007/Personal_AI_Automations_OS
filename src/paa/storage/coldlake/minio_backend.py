@@ -28,7 +28,7 @@ trustworthy, not implementation details:
   from the response body. A 500 MB artifact never becomes a 500 MB ``bytes``.
 
 ``boto3`` is imported lazily so this module stays importable — and the package
-installable — without the ``minio`` extra. Only constructing a store that must
+installable — without the ``s3`` extra. Only constructing a store that must
 create its own client reaches for it; an injected client (the test path) does
 not.
 """
@@ -87,8 +87,8 @@ def _require_boto3() -> Any:
         import boto3
     except ModuleNotFoundError as exc:  # pragma: no cover - depends on install
         raise StorageError(
-            "the minio cold-lake backend requires the 'minio' extra "
-            "(pip install 'paa[minio]')",
+            "the S3 cold-lake backend requires the 's3' extra "
+            "(pip install 'paa[s3]')",
             substrate=_SUBSTRATE,
         ) from exc
     return boto3
@@ -505,18 +505,29 @@ def _blob_store_from_settings(settings: Any) -> S3BlobStore:
     """Construct an :class:`S3BlobStore` from :class:`StorageSettings`.
 
     Credentials are read from the environment variables *named* by the settings
-    (``minio_access_key_env`` / ``minio_secret_key_env``), never from the config
+    (``s3_access_key_env`` / ``s3_secret_key_env``), never from the config
     object itself — the same indirection the model layer uses for API keys, so a
     DSN or a ledger dump never carries a secret.
+
+    The bucket is created if it does not exist. A cold lake whose bucket is
+    missing would otherwise fail on the *first write* with an opaque
+    ``NoSuchBucket``, long after the deployment was declared healthy — so the
+    store makes the bucket part of its own construction.
     """
-    access_key = os.environ.get(settings.minio_access_key_env)
-    secret_key = os.environ.get(settings.minio_secret_key_env)
+    access_key = os.environ.get(settings.s3_access_key_env)
+    secret_key = os.environ.get(settings.s3_secret_key_env)
+    if not settings.s3_endpoint:
+        raise StorageError(
+            "backend_coldlake='s3' requires storage.s3_endpoint to be set "
+            "(e.g. PAA_STORAGE__S3_ENDPOINT=http://seaweedfs:8333)",
+            substrate=_SUBSTRATE,
+        )
     return S3BlobStore(
-        settings.minio_bucket,
-        endpoint_url=settings.minio_endpoint,
+        settings.s3_bucket,
+        endpoint_url=settings.s3_endpoint,
         access_key=access_key,
         secret_key=secret_key,
-        secure=settings.minio_secure,
+        secure=settings.s3_secure,
         zstd_level=settings.zstd_level,
         ensure_bucket=True,
     )

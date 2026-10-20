@@ -32,7 +32,9 @@ from __future__ import annotations
 import abc
 import enum
 import os
+import posixpath
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Self
 
@@ -47,7 +49,9 @@ __all__ = [
     "SandboxResult",
     "SandboxSpec",
     "build_child_env",
+    "collect_sandbox_facts",
     "resolve_workspace",
+    "sandbox_report_rows",
 ]
 
 
@@ -99,6 +103,91 @@ class IsolationLevel(enum.IntEnum):
         return self >= IsolationLevel.NAMESPACE
 
 
+#: Container paths an ``exec_tmpfs`` mount must not shadow, **and everything
+#: under them**.
+#:
+#: A tmpfs mount *replaces* whatever was at the path it is mounted on. Mounting
+#: one over ``/usr`` does not give the workload a scratch directory — it gives
+#: it an empty filesystem where the image's own binaries were, and the failure
+#: that follows names the wrong cause entirely.
+#:
+#: The list is the set of paths a container cannot start without: the
+#: kernel's pseudo-filesystems, the loader and the binary directories, the
+#: configuration directory, and the workspace mount itself.
+#:
+#: The rule is **by prefix**, not by exact match. ``/usr/bin`` is just as
+#: fatal as ``/usr`` — it holds the shell — and an exact-match list would
+#: wave it through. On Debian (usrmerge) ``/bin`` is a symlink to
+#: ``/usr/bin``, so refusing ``/bin`` protects nothing on its own; refusing
+#: ``/usr`` covers the real location.
+#:
+#: ``/tmp`` is here for a different reason, and it matters: the backend
+#: mounts ``/tmp`` ``noexec`` on purpose. A second ``--tmpfs /tmp`` with
+#: ``exec`` would *win* — Docker takes the last one — and the ``noexec``
+#: property would silently disappear. The invariant is stated in ADR-0024 and
+#: in the deployment guide, so it is enforced here rather than assumed.
+#:
+#: ``/run`` and ``/var`` are deliberately *not* here: they are ordinary
+#: scratch locations, and ``/run`` is exactly where the toolbox image puts
+#: npm's cache — a path that has to be exec-capable.
+_SHADOWED_CONTAINER_PATHS = frozenset(
+    {
+        "/",
+        "/bin",
+        "/sbin",
+        "/lib",
+        "/lib32",
+        "/lib64",
+        "/usr",
+        "/etc",
+        "/proc",
+        "/sys",
+        "/boot",
+        "/root",
+        "/tmp",  # noqa: S108 - a container path in a denylist, not a temp file
+        "/workspace",
+    }
+)
+
+#: Paths that are protected **exactly**, but whose subdirectories are not.
+#:
+#: ``/dev`` holds the device nodes a container cannot start without — no
+#: ``/dev/null``, no ``/dev/urandom``. But everything *under* it is a mount
+#: point the runtime already manages (``/dev/shm``, ``/dev/pts``), and
+#: replacing one of those with a scratch tmpfs is a normal thing to do.
+_SHADOWED_CONTAINER_EXACT = frozenset({"/dev"})
+
+
+def _shadows_a_container_path(path: str) -> str | None:
+    """The protected root ``path`` sits under, or ``None`` if it is safe.
+
+    ``/usr/bin`` sits under ``/usr``; ``/usr`` *is* ``/usr``; ``/usrlocal``
+    sits under neither, because the match is on a path boundary.
+    """
+    for protected in _SHADOWED_CONTAINER_PATHS:
+        if path == protected or path.startswith(protected + "/"):
+            return protected
+    for protected in _SHADOWED_CONTAINER_EXACT:
+        if path == protected:
+            return protected
+    return None
+
+
+def _normalise_container_path(raw: str) -> str:
+    """Collapse a container path to the form the container will see.
+
+    ``posixpath.normpath`` is lexical — it does not touch the filesystem, so
+    it works for paths that do not exist yet, which is the normal case for a
+    scratch directory. The one thing it does not do on its own is collapse a
+    leading ``//``, which POSIX keeps as a distinct, implementation-defined
+    root; a container has one root, so it is collapsed here.
+    """
+    path = posixpath.normpath(raw.strip())
+    while path.startswith("//"):
+        path = path[1:]
+    return path
+
+
 class SandboxSpec(BaseModel):
     """One unit of contained work.
 
@@ -144,6 +233,35 @@ class SandboxSpec(BaseModel):
     """Default-deny. Read :meth:`SubprocessSandbox.run` before trusting this on
     the subprocess backend — it cannot enforce it and does not claim to."""
 
+    network: str | None = None
+    """An explicit Docker network to attach the container to.
+
+    ``None`` means the backend's default: ``--network none`` when the network
+    is denied, and the Docker daemon's *default bridge* when it is allowed.
+    The default bridge has full host and internet reachability — including
+    the host's gateway address — so a caller that wants a networked container
+    to be reachable from the runtime but not from the substrate services must
+    name the network explicitly. The tool layer pins ``paa_tools`` (no
+    external routing at all) or ``paa_tools_egress`` here.
+    """
+
+    exec_tmpfs: tuple[str, ...] = ()
+    """Extra tmpfs mounts that are **exec**-capable, by container path.
+
+    ``/tmp`` is mounted ``noexec`` on purpose: a binary dropped there by a
+    workload should not be executable. Some runtimes need the opposite — npm's
+    cache holds the executable shims that ``npx`` installs, and a server
+    started through ``npx`` fails with ``Permission denied`` (exit 126) when
+    the cache is on a ``noexec`` mount. Those workloads get their own
+    exec-capable scratch path here rather than the whole image losing the
+    ``noexec`` property.
+
+    The paths are validated: they must be absolute, must not be ``/``, and
+    must not shadow a path the container's own filesystem needs. A tmpfs
+    mount replaces whatever was at that path, so ``("/etc",)`` would hand the
+    workload an empty ``/etc`` — not a scratch directory, a broken image.
+    """
+
     recursion_depth: int = Field(default=0, ge=0)
     """Delegation depth that produced this spec. Enforced by
     :class:`paa.sandbox.recursion.RecursionGuard`, carried here so the ledger
@@ -166,6 +284,43 @@ class SandboxSpec(BaseModel):
         if v is not None and v <= 0:
             raise ValueError(f"timeout_seconds must be positive or None, got {v}")
         return v
+
+    @field_validator("exec_tmpfs")
+    @classmethod
+    def _safe_exec_tmpfs(cls, v: tuple[str, ...]) -> tuple[str, ...]:
+        """Refuse exec tmpfs paths that would break the container.
+
+        A tmpfs mount *replaces* the path it is mounted on. ``/etc`` or
+        ``/usr`` would not be a scratch directory — they would be an empty
+        filesystem where the image's own configuration lived, and the
+        workload would fail with errors that name the wrong cause. The
+        container's root is worse than useless for the same reason.
+
+        The paths are **normalised before they are judged**, because the
+        comparison is against the path the container will actually see.
+        ``/run/../etc`` resolves to ``/etc``, and a validator that compared
+        the literal string would wave it through — and the tmpfs would then
+        replace the container's ``/etc`` with an empty, exec-capable
+        filesystem, which is the exact failure this check exists to prevent.
+        """
+        normalised: list[str] = []
+        for raw in v:
+            path = _normalise_container_path(raw)
+            if not path.startswith("/"):
+                raise ValueError(
+                    f"exec_tmpfs paths must be absolute container paths, got {raw!r}"
+                )
+            if path == "/":
+                raise ValueError("exec_tmpfs must not be the container root")
+            protected = _shadows_a_container_path(path)
+            if protected is not None:
+                raise ValueError(
+                    f"exec_tmpfs must not shadow {path!r}: a tmpfs mount replaces "
+                    f"the path, so the workload would lose the image's own files "
+                    f"under {protected!r}"
+                )
+            normalised.append(path)
+        return tuple(normalised)
 
     @model_validator(mode="after")
     def _reject_ambient_env_smell(self) -> Self:
@@ -251,7 +406,9 @@ class SandboxResult(BaseModel):
 
     memory_enforcement: str = "none"
     """How ``memory_mb`` was actually enforced: ``"job_object"`` (kernel),
-    ``"cgroup"``, ``"watchdog"`` (sampled, best-effort), or ``"none"``."""
+    ``"cgroup"`` (runc), ``"gvisor"`` (gVisor's own accounting, which is *not*
+    the same thing as a cgroup limit and is not enforced as one on a cgroup v2
+    host), ``"watchdog"`` (sampled, best-effort), or ``"none"``."""
 
     @property
     def ok(self) -> bool:
@@ -422,6 +579,27 @@ class Sandbox(abc.ABC):
         healthcheck that throws would take down backend selection itself.
         """
 
+    async def diagnose(self) -> dict[str, Any]:
+        """What the backend can say about itself, for ``paa doctor``.
+
+        The base implementation returns :meth:`describe` — the backend's
+        identity and its isolation level. A backend with nothing *extra* to
+        report says so by saying nothing extra, and every caller can render
+        the result unconditionally.
+
+        Returning the identity rather than an empty dict matters: the
+        operator's question is "what is my sandbox, and what does it actually
+        contain me?", and a doctor that answers "none (dry-run)" for a
+        subprocess backend is not merely unhelpful — it is false, because the
+        workload *does* run, on the host, at ``PROCESS`` isolation.
+
+        Implementations **must not raise**. This is a diagnostic, and a
+        diagnostic that throws is a diagnostic that lies — a `paa doctor` that
+        crashes on the one host where the backend is broken is exactly the run
+        whose output the operator needs. Swallow the failure and report it.
+        """
+        return self.describe()
+
     def describe(self) -> dict[str, Any]:
         """Backend identity for the ledger and the ``paa doctor`` command."""
         return {
@@ -433,3 +611,113 @@ class Sandbox(abc.ABC):
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(isolation={self.isolation_level.name})"
+
+
+async def collect_sandbox_facts(backend: Sandbox) -> dict[str, Any]:
+    """Collect a backend's self-report, normalising every failure mode.
+
+    One collector, so every surface that shows a sandbox's facts handles the
+    failures the same way. There are three ways this can go wrong and all
+    three have to be *reported* rather than crashed on:
+
+    * ``diagnose()`` raises — a diagnostic that throws is a diagnostic that
+      lies, and the doctor is exactly the run whose output the operator needs
+      on the one host where the backend is broken;
+    * ``diagnose()`` returns something that is not a mapping — a backend
+      that breaks its own contract should not take the doctor down with it;
+    * it returns a mapping that is missing the identity — the collector
+      fills in what it can, so the row is never blank.
+
+    The failure becomes a ``diagnostic_error`` fact, which
+    :func:`sandbox_report_rows` renders as its own row. A failure that is
+    swallowed here is a failure the operator never hears about.
+    """
+    name = "sandbox"
+    try:
+        # Inside the try on purpose: a backend whose ``name`` property
+        # raises must not take the doctor down either. The function's whole
+        # contract is that it reports the failure rather than propagating
+        # it, and that has to hold for *every* step of the collection, not
+        # just the call to ``diagnose()``.
+        name = getattr(backend, "name", "sandbox")
+        facts = await backend.diagnose()
+        if not isinstance(facts, Mapping):
+            raise TypeError(f"diagnose() returned {type(facts).__name__}, not a mapping")
+        collected = dict(facts)
+    except Exception as exc:
+        return {"backend": name, "diagnostic_error": str(exc)}
+    collected.setdefault("backend", name)
+    return collected
+
+
+def sandbox_report_rows(facts: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """Render a backend's self-report as ``(label, value)`` rows.
+
+    This lives here, in the package that *produces* the facts, rather than in
+    each surface that displays them. The facts are part of the backend
+    contract — the vocabulary of "daemon", "oci runtime", "sandbox image" and
+    the meaning of a tri-state ``runtime_available`` are all defined by the
+    backends that report them. Two renderers, each with its own copy of that
+    vocabulary, drift: and when they do, the same runtime tells the operator
+    two different things about the same host depending on which surface they
+    happened to open. A disagreement between the CLI and the TUI is worse
+    than either of them being wrong on its own, because the operator has no
+    way to tell which one to believe.
+
+    Returns an empty list for a backend with nothing to report, which the
+    caller renders as its own "no sandbox" row.
+    """
+    backend = facts.get("backend")
+    if not backend:
+        return []
+
+    # A diagnostic that failed is the most important thing there is to say.
+    # The doctor exists to report the broken thing, and a failure that is
+    # swallowed here is a failure the operator never hears about.
+    diagnostic_error = facts.get("diagnostic_error")
+    if diagnostic_error:
+        return [
+            ("sandbox", f"{backend} (diagnostics failed)"),
+            ("diagnostics", f"unavailable — {diagnostic_error}"),
+        ]
+
+    level = str(facts.get("isolation_level", "?"))
+    rows: list[tuple[str, str]] = [("sandbox", f"{backend} ({level})")]
+
+    daemon = facts.get("daemon")
+    if daemon is not None:
+        rows.append(("docker daemon", str(daemon)))
+
+    runtime = facts.get("container_runtime")
+    if runtime is not None:
+        available = facts.get("runtime_available")
+        if available is True:
+            state = "registered"
+        elif available is False:
+            # The runtime that was asked for is not the runtime that will be
+            # used, so the fallback is named — and the isolation level it
+            # implies, because that is the number the policy layer reads.
+            state = f"NOT registered — falling back to runc, isolation is {level}"
+        else:
+            state = "could not determine"
+        rows.append(("oci runtime", f"{runtime} ({state})"))
+
+    image = facts.get("image")
+    if image is not None:
+        present = facts.get("image_present")
+        if present is True:
+            suffix = " (present)"
+        elif present is False:
+            suffix = " (NOT present on the daemon — the run will fail)"
+        else:
+            suffix = ""
+        rows.append(("sandbox image", f"{image}{suffix}"))
+
+    # A backend that cannot translate host paths is a backend whose mounts go
+    # to the wrong place. It is reported as its own row because the fix is a
+    # configuration change, not a code change.
+    map_error = facts.get("host_path_map_error")
+    if map_error:
+        rows.append(("host path map", f"MISCONFIGURED — {map_error}"))
+
+    return rows

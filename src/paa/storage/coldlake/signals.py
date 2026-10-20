@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 import uuid
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from datetime import datetime
@@ -36,8 +35,12 @@ import structlog
 from pydantic import BaseModel, ConfigDict
 
 from paa.core.errors import StorageError
-from paa.storage.coldlake.cas import BlobRef, ContentAddressedStore
-from paa.storage.relational.database import Database, dumps, from_iso, to_iso, utc_now
+from paa.core.types import as_text
+from paa.storage.coldlake.base import BlobStore
+from paa.storage.coldlake.cas import BlobRef
+from paa.storage.relational.base import RelationalBackend
+from paa.storage.relational.database import dumps, from_iso, to_iso, utc_now
+from paa.storage.relational.errors import UniqueViolation
 
 __all__ = ["DEFAULT_INLINE_THRESHOLD_BYTES", "Signal", "SignalRepository", "SignalStatus"]
 
@@ -110,8 +113,8 @@ class SignalRepository:
 
     def __init__(
         self,
-        db: Database,
-        cas: ContentAddressedStore,
+        db: RelationalBackend,
+        cas: BlobStore,
         *,
         inline_threshold_bytes: int = DEFAULT_INLINE_THRESHOLD_BYTES,
     ) -> None:
@@ -181,7 +184,7 @@ class SignalRepository:
                     None,
                 ),
             )
-        except sqlite3.IntegrityError as exc:
+        except UniqueViolation as exc:
             if external_id is not None:
                 racer = await self.get_by_external_id(channel, external_id)
                 if racer is not None:
@@ -217,15 +220,19 @@ class SignalRepository:
             raise ValueError(f"limit must be at least 1, got {limit}")
 
         async with self._db.transaction() as conn:
-            # Tiebreak on rowid, not id. Signals arriving in the same clock tick
-            # share a `received_at`, and `id` is a random UUID — ordering by it
-            # would shuffle same-instant arrivals into an arbitrary order, so
-            # "oldest first" would silently stop being true under load, which is
-            # exactly when ingestion order matters. rowid is monotonic in
-            # insertion order and gives the real arrival sequence.
+            # Tiebreak on arrival order, not id. Signals arriving in the same
+            # clock tick share a `received_at`, and `id` is a random UUID —
+            # ordering by it would shuffle same-instant arrivals into an
+            # arbitrary order, so "oldest first" would silently stop being true
+            # under load, which is exactly when ingestion order matters. The
+            # column that carries arrival order is engine-specific: SQLite's
+            # `rowid` is monotonic in insertion order, and the server substrate
+            # carries an identity column of its own.
+            arrival = self._db.dialect.arrival_seq()
             async with conn.execute(
                 f"SELECT {_COLUMNS} FROM cold_lake_signals "
-                "WHERE sync_status = 'unprocessed' ORDER BY received_at ASC, rowid ASC LIMIT ?",
+                "WHERE sync_status = 'unprocessed' "
+                f"ORDER BY received_at ASC, {arrival} ASC LIMIT ?",
                 (limit,),
             ) as cur:
                 rows = list(await cur.fetchall())
@@ -423,7 +430,7 @@ def _as_json_text(payload: str | bytes | Mapping[str, Any] | Sequence[Any]) -> s
 
 def _signal_from_row(row: Any) -> Signal:
     return Signal(
-        id=row["id"],
+        id=as_text(row["id"]),
         received_at=from_iso(row["received_at"]),
         channel=row["channel"],
         external_id=row["external_id"],

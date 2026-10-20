@@ -51,6 +51,7 @@ from paa.ledger.events import LedgerEvent
 from paa.ledger.store import LedgerStore
 from paa.memory.creator import MemoryCreator
 from paa.memory.facts import FactRepository
+from paa.sandbox.base import IsolationLevel
 from paa.storage.relational.database import Database, dumps, to_iso, utc_now
 
 
@@ -73,12 +74,26 @@ class StubRuntime:
             storage=SimpleNamespace(
                 backend_relational="sqlite",
                 cold_lake_path=cold_lake_path,
+                # The cold-lake substrate and its knobs. The tool builds the
+                # blob store through the factory, so the fake has to answer
+                # the same questions the real settings do.
+                backend_coldlake="filesystem",
+                zstd_level=3,
+                s3_endpoint=None,
+                s3_bucket="paa-cold-lake",
+                s3_secure=False,
+                s3_access_key_env="PAA_S3_ACCESS_KEY",
+                s3_secret_key_env="PAA_S3_SECRET_KEY",
             ),
         )
         self.model_router = SimpleNamespace(local=FakeProvider(), frontier=None)
         self.vector_store = None
         self.graph_store = None
         self.queue = None
+        #: The runtime owns the containment backend; ``None`` here means "no
+        #: sandbox configured", which ``check_runtime`` must report as absent
+        #: rather than assume.
+        self.sandbox = None
         self.agents: dict[str, Any] = {}
         self.submitted: list[dict[str, Any]] = []
         self.ran: list[Any] = []
@@ -362,6 +377,34 @@ class TestCheckRuntime:
 
         assert result["sandbox"] is None
         assert result["sandbox_isolation"] == "none"
+        assert result["sandbox_runtime"] is None
+        assert result["sandbox_image"] is None
+
+    async def test_sandbox_facts_are_reported_when_a_sandbox_is_configured(
+        self, tools: dict[str, Any], rt: StubRuntime
+    ) -> None:
+        """The container facts are what decide the containment, so they belong
+        in the same view — an operator asking "what is actually live" should
+        not have to ask twice.
+        """
+        rt.sandbox = SimpleNamespace(
+            name="docker",
+            isolation_level=IsolationLevel.VM,
+            runtime="runsc",
+            image="paa/base_worker:v4.1",
+        )
+
+        result = json.loads(await tools["check_runtime"].run({}))
+
+        assert result["sandbox"] == "docker"
+        # The level's NAME, not its number. ``IsolationLevel`` is an IntEnum, so
+        # ``str()`` of it is "3" — which tells a model nothing, and disagrees
+        # with the doctor, which says "VM". Two surfaces of one runtime must use
+        # the same vocabulary.
+        assert result["sandbox_isolation"] == IsolationLevel.VM.name
+        assert result["sandbox_isolation"] == "VM"
+        assert result["sandbox_runtime"] == "runsc"
+        assert result["sandbox_image"] == "paa/base_worker:v4.1"
 
 
 class TestRememberAndRecall:

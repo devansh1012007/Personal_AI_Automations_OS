@@ -148,3 +148,44 @@ def test_doctor_renders() -> None:
     assert "SQLite" in out or "sqlite" in out
     assert "VectorStoreX" in out
     assert "open tasks" in out
+
+
+def test_doctor_renders_the_shared_sandbox_rows() -> None:
+    """The TUI must use the *same* renderer as the CLI.
+
+    Two copies of the vocabulary drift, and a runtime that tells the
+    operator two different things about the same host — depending on which
+    surface they opened — is worse than either of them being wrong alone,
+    because the operator has no way to tell which to believe. This test is
+    what would notice if the TUI grew its own copy again.
+    """
+    info = {
+        "home": "/tmp/paa",
+        "policy_mode": "ask",
+        "relational": "sqlite",
+        "vector_store": "VectorStoreX",
+        "graph_store": "GraphStoreY",
+        "queue": "QueueZ",
+        "model_router": "RouterA",
+        "sandbox": "docker",
+        "sandbox_facts": {
+            "backend": "docker",
+            "isolation_level": "NAMESPACE",
+            "daemon": "reachable, but 'runsc' is not registered",
+            "container_runtime": "runsc",
+            "runtime_available": False,
+            "image": "paa/base_worker:v4.1",
+            "image_present": True,
+        },
+        "open_tasks": [],
+    }
+    console = _console()
+    console.print(render_doctor(info))
+    out = console.file.getvalue()
+    assert "docker daemon" in out
+    assert "oci runtime" in out
+    assert "sandbox image" in out
+    # The same words the CLI uses, character for character.
+    assert "NOT registered" in out
+    assert "NAMESPACE" in out
+    assert "paa/base_worker:v4.1" in out
