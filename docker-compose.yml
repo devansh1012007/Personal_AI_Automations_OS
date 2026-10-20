@@ -94,7 +94,10 @@ services:
       PAA_ALLOW_NON_LOOPBACK: "1"
       PAA_API_PORT: "8787"
       PAA_STORAGE__BACKEND_RELATIONAL: postgres
-      PAA_STORAGE__POSTGRES_DSN: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      # Every substitution here is REQUIRED. A bare ${VAR} substitutes the
+      # empty string, so a stale .env would produce a DSN with no password and
+      # the stack would come up unable to reach its database. See .env.example.
+      PAA_STORAGE__POSTGRES_DSN: postgresql://${POSTGRES_USER:?POSTGRES_USER must be set — see .env.example}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set — see .env.example}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB must be set — see .env.example}
       PAA_STORAGE__BACKEND_QUEUE: redis
       PAA_STORAGE__REDIS_URL: redis://redis:6379/0
       PAA_STORAGE__BACKEND_VECTOR: qdrant_server
@@ -109,8 +112,16 @@ services:
       PAA_STORAGE__S3_SECURE: "false"
       # Credential indirection: config stores the *names*, these env vars hold
       # the values (defaults PAA_S3_ACCESS_KEY / PAA_S3_SECRET_KEY).
-      PAA_S3_ACCESS_KEY: ${S3_ROOT_USER}
-      PAA_S3_SECRET_KEY: ${S3_ROOT_PASSWORD}
+      #
+      # The `:?` guard makes an unset credential a *loud* failure. A bare
+      # `${S3_ROOT_USER}` substitutes an empty string and only warns, so the
+      # stack comes up with an empty key, looks healthy, and cannot reach its
+      # object store — the failure surfaces as an S3 auth error at the first
+      # write, long after the operator stopped watching the startup logs. The
+      # same variable is guarded the same way for the store itself (see the
+      # `seaweedfs` service below), so the two can never disagree.
+      PAA_S3_ACCESS_KEY: ${S3_ROOT_USER:?S3_ROOT_USER must be set — see .env.example}
+      PAA_S3_SECRET_KEY: ${S3_ROOT_PASSWORD:?S3_ROOT_PASSWORD must be set — see .env.example}
       # Stock namespaces by default; the gvisor override flips this to runsc.
       #
       # The value is *interpolated* rather than hard-coded, because a
@@ -195,9 +206,12 @@ services:
     image: postgres:16@sha256:ca0bd484cb98bf4b24eb1010e73fb3fcbd6714d240fbc1a10eea5b7dbecb641d
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      # Required, for the same reason the runtime's DSN is: an unset variable
+      # interpolates to the empty string, and the server would then come up
+      # with a superuser nobody can authenticate as.
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER must be set — see .env.example}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set — see .env.example}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB must be set — see .env.example}
       # Enforce a strong hash for the superuser and enable pg_trgm below.
       POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
     # Create the pg_trgm extension the entity trigram index needs, on first init.
@@ -262,8 +276,11 @@ services:
     # single-service deployment wants.
     command: ["server", "-s3", "-dir=/data", "-ip=0.0.0.0"]
     environment:
-      AWS_ACCESS_KEY_ID: ${S3_ROOT_USER}
-      AWS_SECRET_ACCESS_KEY: ${S3_ROOT_PASSWORD}
+      # The same credentials the runtime uses, and the same required-variable
+      # guard: an unset variable here would start a store that rejects the
+      # runtime's own client, which is a worse failure than refusing to start.
+      AWS_ACCESS_KEY_ID: ${S3_ROOT_USER:?S3_ROOT_USER must be set — see .env.example}
+      AWS_SECRET_ACCESS_KEY: ${S3_ROOT_PASSWORD:?S3_ROOT_PASSWORD must be set — see .env.example}
     volumes:
       - seaweedfs_data:/data
     networks:
