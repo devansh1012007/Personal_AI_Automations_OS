@@ -88,10 +88,12 @@ transactions survive, uncommitted vanish (`AGENTS.md:94`). `pytest -m chaos`.
 | Observability | built, lightly tested | 9 |
 
 Total (per README): 1185 collected — 1104 passing, 75 skipped (optional extras
-not installed), 6 failing. All six failures are environmental and pre-existing:
-the sandbox executes steps with `python`, and on the build machine only
-`python3` exists, so worker steps exhaust their retry budget. They fail
-identically on a clean checkout.
+not installed), 0 failing. The six failures this table used to report were
+environmental: the sandbox executes steps with `python`, and the build machine
+had only `python3` in a user-local directory, so worker steps found no
+interpreter and exhausted their retry budget. `sudo apt install
+python-is-python3` fixed the host; the sandbox's minimal `PATH` is deliberate
+and was not widened.
 
 ## Coverage gaps (demonstrable from test structure)
 

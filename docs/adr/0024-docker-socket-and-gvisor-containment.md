@@ -72,23 +72,40 @@ explicitly.**
 { "runtimes": { "runsc": {
     "path": "/usr/local/bin/runsc",
     "runtimeArgs": [
-      "--hostuds=/var/run/docker.sock",
-      "--hostuds=/run/docker.sock" ] } } }
+      "--host-uds=all" ] } } }
 ```
 
 The `runtimeArgs` are not decoration. gVisor does not let a container open a host Unix
-socket merely because it was bind-mounted in; the socket must be named. Without
-`--hostuds`, the Docker client inside the `paa` container fails with a permission error
-that reads like a socket problem and not like a gVisor problem, and the whole gVisor path
-looks half-working. This is the single most likely way to get the deployment wrong, which
-is why `deploy/docker/daemon.json` carries it and
+socket merely because it was bind-mounted in; the permission must be given to the
+*runtime*. Without it, the Docker client inside the `paa` container fails with a
+permission error that reads like a socket problem and not like a gVisor problem, and the
+whole gVisor path looks half-working. This is the single most likely way to get the
+deployment wrong, which is why `deploy/docker/daemon.json` carries it and
 `docker-compose.gvisor.yml` documents it.
 
-Both spellings are listed because `/var/run` is a symlink to `/run` on the host but not
-necessarily inside the container, and gVisor matches the `hostuds` path against the mount
-namespace it is given. Four files carry the list — `deploy/docker/daemon.json`,
-`docker-compose.gvisor.yml`, `docs/deployment/docker.md` and `docs/MCP_AND_PLUGINS.md` — and
-they must agree; a test asserts that the first three carry both spellings.
+**The flag's spelling changed, and the old one fails in a way that misleads.** The
+pinned build (`release-20261012.0`) spells the permission `--host-uds` and takes a
+*category* — `none|open|create|all` — rather than a path. The older `--hostuds=<path>`
+is gone: a runtime handed it exits 2 with "flag provided but not defined", and the
+daemon reports `failed to create shim task … did not terminate successfully: exit
+status 2`. The daemon does **not** validate a runtime's flags when it registers one,
+so `docker info` lists `runsc` and the deployment looks configured while nothing can
+start. A registration that lists a runtime is therefore not evidence that the runtime
+works; the evidence is a container that starts under it.
+
+Four files carry the flag — `deploy/docker/daemon.json`, `docker-compose.gvisor.yml`,
+`docs/deployment/docker.md` and `docs/MCP_AND_PLUGINS.md` — and they must agree; a test
+asserts that the first three carry the same one, and that the removed spelling is
+absent.
+
+**The installation is more than one binary.** The release tarball ships `runsc`
+*and* a `gvisor-bin/` directory of sidecars — `gvisor_sentry`, `checkpointgofer`,
+`runsc-fd-parking`, `runsc-metric-server` — and the tarball's own
+`containerd-shim-runsc-v1`. `runsc` looks for the sentry next to itself, at
+`<dir-of-runsc>/gvisor-bin/gvisor_sentry`, and a runtime with no sentry beside it
+fails with `sidecar "gvisor_sentry" not usable: stat …: no such file or directory`.
+Installing only `runsc` — which is what the procedure used to say — therefore produces
+a runtime that is registered and cannot start a container. The whole set goes in.
 
 **`deploy/docker/daemon.json` is plain JSON, and the explanation lives beside it.** The
 Docker daemon has no comment syntax and *refuses to start* on a top-level key it does not
@@ -182,28 +199,41 @@ service that owns the socket over the loopback API and never holds it itself. Un
 the daemon should run under `runsc` as well (the `docker-compose.gvisor.yml` override
 does), so the daemon's own syscall surface is bounded.
 
-**gVisor changes what "the memory limit" means.** Docker's `--memory` and `--cpus` are
-cgroup limits, and gVisor on a cgroup v2 host has limited cgroup delegation, so those
-limits are not enforced the way `runc` enforces them. The syscall boundary is *stronger*
-under gVisor and the resource ceiling is *weaker*; both are stated rather than traded
-away silently. `SandboxResult.memory_enforcement` reports the **mechanism** — `"gvisor"`
-or `"cgroup"` — not the aspiration, so the ledger never records a ceiling that was not
-applied. (The first draft of this ADR claimed the field already did that; it did not,
-and the review caught it.)
+**gVisor strengthens the syscall boundary, and does not weaken the resource
+ceiling.** Docker's `--memory` and `--cpus` are *daemon*-level limits: the daemon
+caps the container's cgroup and refuses to start a container whose limit it cannot
+apply. The OCI runtime in charge does not change that.
+
+**This was measured, and the first draft of this ADR was wrong.** The draft claimed
+that gVisor's cgroup delegation is limited enough on a cgroup v2 host that `--memory`
+is not a hard ceiling, and that the ledger's `"gvisor"` string should be read as
+"gVisor did the accounting" rather than "the cap was enforced to the byte". That
+was gVisor's own documentation, taken on authority; the claim had not been measured,
+and the ADR said so.
+
+It has now been measured on this host, with `runsc` registered. With `--memory 256m`
+and a process that touches 512 MiB:
+
+==================  ==========  ========  =========================
+runtime            exit code   OOMKilled  cgroup ``memory.events``
+==================  ==========  ========  =========================
+``runc``           137         true      ``oom 1 oom_kill 1``
+``runsc`` (gVisor) 137         true      ``oom 1 oom_kill 1``
+==================  ==========  ========  =========================
+
+and in both cases ``memory.peak`` reached ``memory.max`` exactly. The kernel's own
+``oom_kill`` counter is what fired, under gVisor as much as under runc. So the cap
+was a hard ceiling in both, and the ledger's mechanism field now says `"cgroup"` for
+both — a claim the host's own accounting supports, rather than one it contradicts.
+
+Which runtime ran the container is a different fact and is recorded separately:
+``isolation_level`` says ``VM`` under gVisor and ``NAMESPACE`` under runc. The
+syscall boundary and the resource ceiling are two questions, and conflating them is
+what the weaker claim did.
 
 The mechanism follows the **effective** runtime, not the requested one. A host that asks
-for gVisor but has not registered it runs the container under runc, with a real cgroup
-cap, and that run records `"cgroup"`. Keying it on the request would put a ceiling in
-the ledger on every host where gVisor is not installed — which is every host, by default.
-
-**The resource ceiling under gVisor is documented, not measured.** That gVisor's cgroup
-delegation is limited enough on a cgroup v2 host that `--memory` is not a hard ceiling is
-stated in this ADR and in the deployment guide on the authority of gVisor's own
-documentation. It has **not** been measured on this host, because `runsc` is not
-registered here — that needs root, and it is the one Phase 0 item still outstanding.
-Until it is measured, the claim is a documented expectation rather than a verified fact,
-and the ledger's `"gvisor"` string should be read as "gVisor did the accounting", not as
-"the cap was enforced to the byte".
+for gVisor but has not registered it runs the container under runc, with the same
+cgroup cap and a different isolation level.
 
 **The tool image needs an exec-capable scratch path, and `/tmp` must stay
 `noexec`.** npm's cache holds the executable shims `npx` installs, so an

@@ -82,7 +82,7 @@ These were traced against actual source (file:line cited in the documents):
 2. Whether `hot_serving_policy_rules` has a management UI/API — no rule-management endpoint found in `api/app.py`; mechanism unverified.
 3. Whether the marketplace installer's five gates are end-to-end wired into the runtime (package module inspected via subagent; installer output truncated in investigation). **Not documented in depth** — `modules/marketplace.md` was not created.
 4. Exact observability behavior beyond structlog + `ObservabilitySettings` defaults — `src/paa/observability/` is untested (`AGENTS.md:97`).
-5. The six pre-existing test failures (sandbox runs `python` where only `python3` exists) — environmental, pre-existing (README build-status table).
+5. The six pre-existing test failures (sandbox runs `python` where only `python3` exists) — environmental and pre-existing; **fixed on the host** by `sudo apt install python-is-python3`.
 
 ## Modules/workflows partially documented
 
@@ -112,7 +112,7 @@ These were traced against actual source (file:line cited in the documents):
 
 These are behaviors observed in the source, reported for completeness — they are **not** introduced or endorsed by this documentation:
 
-1. Sandbox subprocess backend runs `python`; the build machine has only `python3` — worker steps exhaust their retry budget (6 pre-existing test failures, README build-status table).
+1. Sandbox subprocess backend runs `python`; the build machine had only `python3` in a user-local directory — worker steps exhausted their retry budget (6 pre-existing test failures, now fixed on the host).
 2. `MemorySettings.decay_lambda` duplicates `domains.py` but is not read by them (potential config drift, unverified).
 3. `tests/validation/` empty; `tests/observability/` covers only the run repository's identifier coercions (`AGENTS.md:97`).
 4. Docker live-server run still needs a pass (README build-status table).

@@ -405,10 +405,17 @@ class SandboxResult(BaseModel):
     the work happened, not what is configured now."""
 
     memory_enforcement: str = "none"
-    """How ``memory_mb`` was actually enforced: ``"job_object"`` (kernel),
-    ``"cgroup"`` (runc), ``"gvisor"`` (gVisor's own accounting, which is *not*
-    the same thing as a cgroup limit and is not enforced as one on a cgroup v2
-    host), ``"watchdog"`` (sampled, best-effort), or ``"none"``."""
+    """How ``memory_mb`` was actually enforced: ``"cgroup"`` (the kernel's own
+    limit on the container's cgroup — which is what the Docker backend's
+    ``--memory`` is, under *either* OCI runtime, measured), ``"job_object"``
+    (the Windows kernel), ``"watchdog"`` (sampled, best-effort), or
+    ``"none"``.
+
+    Which runtime ran the container is a separate fact, and it is recorded
+    separately: ``isolation_level`` says ``VM`` under gVisor and
+    ``NAMESPACE`` under runc. The two are not the same question — the
+    isolation level is about the syscall boundary, this is about the
+    ceiling."""
 
     @property
     def ok(self) -> bool:

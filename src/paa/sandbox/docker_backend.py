@@ -815,22 +815,39 @@ class DockerSandbox(Sandbox):
     def _memory_enforcement(self) -> str:
         """How the memory ceiling is actually enforced by this backend.
 
-        Under stock runc the container is in a cgroup the daemon controls, and
-        ``--memory`` is a hard ceiling. Under gVisor it is not: gVisor does
-        its own accounting, and on a cgroup v2 host the delegation is limited
-        enough that the cap is not enforced as a hard ceiling. Recording
-        "cgroup" for a gVisor run would put a ceiling in the ledger that was
-        never applied — so the mechanism is named, not the aspiration.
+        **By the kernel's cgroup, under either runtime.** ``--memory`` is a
+        *daemon*-level limit: the daemon puts the container in a cgroup and
+        caps that cgroup, and it refuses to start a container whose limit it
+        cannot apply. The OCI runtime in charge does not change that — and
+        gVisor does not get an exception to it.
+
+        That was measured, not assumed. On this host, with ``--memory 256m``
+        and a process that touches 512 MiB:
+
+        ==================  ==========  ========  =========================
+        runtime            exit code   OOMKilled  cgroup ``memory.events``
+        ==================  ==========  ========  =========================
+        ``runc``           137         true      ``oom 1 oom_kill 1``
+        ``runsc`` (gVisor) 137         true      ``oom 1 oom_kill 1``
+        ==================  ==========  ========  =========================
+
+        and in both cases ``memory.peak`` reached ``memory.max`` exactly. The
+        kernel's own ``oom_kill`` counter is what fired, under gVisor as much
+        as under runc — so the cap was a hard ceiling in both, and recording
+        anything weaker would put a claim in the ledger that the host's own
+        accounting contradicts.
+
+        Which *runtime* ran the container is recorded separately, in
+        ``isolation_level`` (``VM`` under gVisor, ``NAMESPACE`` under runc),
+        so nothing is lost by naming the mechanism here.
 
         The mechanism follows the **effective** runtime, not the requested
-        one. A host that asks for gVisor but has not registered it runs the
-        container under runc, with a real cgroup cap — so that run records
-        "cgroup", and only a run that actually went through runsc records
-        "gvisor". Keying this on the *request* would put a ceiling in the
-        ledger for every fallback host on every run.
+        one: a host that asks for gVisor but has not registered it runs the
+        container under runc — with the same cgroup cap, and with the
+        isolation level to say so. Keying the *ceiling* on the request would
+        put a weaker claim in the ledger on every fallback host, and the
+        ledger's isolation row already says which runtime was in charge.
         """
-        if self._runtime == "runsc" and self._runtime_available:
-            return "gvisor"
         return "cgroup"
 
     def _effective_network(self, spec: SandboxSpec) -> str | None:

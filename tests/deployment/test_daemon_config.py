@@ -93,34 +93,43 @@ def test_every_top_level_directive_is_one_the_daemon_knows() -> None:
     )
 
 
-def test_the_runsc_runtime_is_registered_with_both_socket_spellings() -> None:
-    """The socket has to be named, or the gVisor path looks half-working.
+def test_the_runsc_runtime_is_registered_with_the_host_uds_flag() -> None:
+    """The socket has to be permitted, or the gVisor path looks half-working.
 
     gVisor does not let a container open a host Unix socket merely because
-    it was bind-mounted in. Both spellings are listed because ``/var/run`` is
-    a symlink to ``/run`` on the host but not necessarily inside the
-    container.
+    it was bind-mounted in. The permission is a *flag on the runtime* — the
+    pinned build spells it ``--host-uds`` and takes a category
+    (``none|open|create|all``), not a path.
+
+    The older spelling, ``--hostuds=<path>``, is **gone** from the pinned
+    build: a runtime handed it exits 2 with "flag provided but not
+    defined", and the daemon reports "failed to create shim task" with no
+    hint that the runtime's own flags are the problem. The daemon does not
+    validate a runtime's flags when it registers one, so ``docker info``
+    listing ``runsc`` proves nothing about the runtime working — which is
+    why the deployment guide verifies with a container as well.
     """
     parsed = json.loads(DAEMON_JSON.read_text(encoding="utf-8"))
     runsc = parsed["runtimes"]["runsc"]
     assert runsc["path"].endswith("runsc")
     args = runsc["runtimeArgs"]
-    assert "--hostuds=/var/run/docker.sock" in args
-    assert "--hostuds=/run/docker.sock" in args
+    assert "--host-uds=all" in args
+    # The old spelling would be accepted by the daemon and refused by the
+    # runtime, so its absence is worth asserting rather than assuming.
+    assert not any("hostuds" in arg for arg in args), args
 
 
-def test_the_hostuds_list_agrees_with_the_compose_override() -> None:
-    """Three files carry the list; they have to carry the same one.
+def test_the_host_uds_flag_agrees_with_the_compose_override() -> None:
+    """Three files carry the flag; they have to carry the same one.
 
     The deployment guide, the compose override and this file all document
-    the same registration. A list that differs between them is a list that
+    the same registration. A flag that differs between them is a flag that
     is wrong in one of them, and the operator cannot tell which.
     """
     compose = (REPO_ROOT / "docker-compose.gvisor.yml").read_text(encoding="utf-8")
     guide = (REPO_ROOT / "docs" / "deployment" / "docker.md").read_text(encoding="utf-8")
     for text in (compose, guide):
-        assert "--hostuds=/var/run/docker.sock" in text
-        assert "--hostuds=/run/docker.sock" in text
+        assert "--host-uds=all" in text
 
 
 @pytest.mark.parametrize("name", ["daemon.json", "README.md"])

@@ -969,19 +969,30 @@ def test_home_and_tmpdir_name_the_containers_workspace(tmp_path: Path) -> None:
 def test_memory_enforcement_names_the_mechanism_not_the_aspiration(
     tmp_path: Path,
 ) -> None:
-    """A gVisor run is not a cgroup limit, and must not be recorded as one.
+    """The ceiling is the kernel's cgroup, under either runtime.
 
-    gVisor does its own accounting, and on a cgroup v2 host the delegation is
-    limited enough that the cap is not enforced as a hard ceiling. Recording
-    "cgroup" would put a ceiling in the ledger that was never applied.
+    ``--memory`` is a *daemon*-level limit: the daemon caps the container's
+    cgroup and refuses to start a container whose limit it cannot apply.
+    The OCI runtime in charge does not change that, and gVisor does not get
+    an exception to it.
+
+    That was measured rather than assumed. With ``--memory 256m`` and a
+    process touching 512 MiB, both runtimes produced exit 137,
+    ``OOMKilled=true``, ``memory.peak == memory.max`` and the kernel's own
+    ``oom_kill 1`` — so recording anything weaker than "cgroup" for a
+    gVisor run would put a claim in the ledger that the host's own
+    accounting contradicts.
+
+    Which runtime ran the container is a *different* fact, and it is
+    recorded separately: ``isolation_level`` says ``VM`` under gVisor.
     """
     runsc = DockerSandbox(SandboxSettings(container_runtime="runsc"))
     runsc._runtime_available = True
     args = runsc._build_args(_spec(tmp_path), tmp_path, "paa-test")
     assert "--runtime" in args  # sanity: this is the gVisor path
 
-    # The enforcement string is chosen by the runtime, not by the spec.
-    assert runsc._memory_enforcement() == "gvisor"
+    # The enforcement string is chosen by the mechanism, not by the spec.
+    assert runsc._memory_enforcement() == "cgroup"
     runc = DockerSandbox(SandboxSettings(container_runtime="runc"))
     assert runc._memory_enforcement() == "cgroup"
 

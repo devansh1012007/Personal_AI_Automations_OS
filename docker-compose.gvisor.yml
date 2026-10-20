@@ -15,8 +15,7 @@
 #         { "runtimes": { "runsc": {
 #             "path": "/usr/local/bin/runsc",
 #             "runtimeArgs": [
-#                 "--hostuds=/var/run/docker.sock",
-#                 "--hostuds=/run/docker.sock" ] } } }
+#                 "--host-uds=all" ] } } }
 #     then `systemctl restart docker`.
 #
 #   * NOTE the `runtimeArgs` above. gVisor does not let a container open a
@@ -28,7 +27,10 @@
 #
 #     Both socket spellings are listed because /var/run is a symlink to /run
 #     on the host but not necessarily inside the container, and gVisor
-#     matches the hostuds path against the mount namespace it is given.
+#     grants access to host Unix-domain sockets at all. The older
+#     `--hostuds=<path>` spelling is gone from the pinned build: a runtime
+#     given it exits 2, and the daemon reports a failed task with no hint
+#     that the RUNTIME's flags are the problem.
 #     deploy/docker/daemon.json carries the same list — keep them in step.
 #
 #   * The `paa` daemon container itself runs under gVisor here. gVisor

@@ -156,7 +156,7 @@ services:
       # network is denied). See
       # docs/adr/0024 for the decision and its alternatives.
       #
-      # Under gVisor the socket also needs `--hostuds` in the daemon's runtime
+      # Under gVisor the socket also needs `--host-uds=all` in the daemon's runtime
       # registration — see docker-compose.gvisor.yml. Both socket spellings
       # are listed there, because /var/run is a symlink to /run on the host
       # but not necessarily inside the container.

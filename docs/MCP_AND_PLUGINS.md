@@ -157,11 +157,20 @@ that is actually configured.
 `--cap-drop ALL`, `--security-opt no-new-privileges`, `--pids-limit 128`,
 `--memory`/`--memory-swap` (pinned equal), `--cpus`.
 
-**One caveat that must be measured, not assumed:** gVisor on cgroup v2 (Ubuntu 24.04's
-default) has limited cgroup delegation. `--memory`/`--cpus` may not be enforced the way
-runc enforces them. The `SandboxResult.memory_enforcement` field already exists to report
-this honestly — under runsc it should report `"gvisor"`, not `"cgroup"`. Phase 0 includes a
-measurement; the number goes in the docs.
+**The caveat was measured, and it did not survive the measurement.** gVisor on cgroup v2
+(Ubuntu 24.04's default) has *limited cgroup delegation* — so the plan expected
+`--memory`/`--cpus` not to be enforced the way runc enforces them, and expected
+`SandboxResult.memory_enforcement` to report `"gvisor"` under runsc. Measured on this
+host with `runsc` registered, `--memory 256m` and a process touching 512 MiB gave, under
+**both** runtimes: exit 137, `OOMKilled=true`, `memory.peak == memory.max` exactly, and
+the kernel's own `memory.events` recording `oom 1 oom_kill 1`. The kernel's `oom_kill`
+counter is what fired, under gVisor as much as under runc.
+
+`--memory` is a *daemon*-level limit — the daemon caps the container's cgroup and
+refuses to start a container whose limit it cannot apply — and the OCI runtime in
+charge does not change that. So the ceiling was a hard ceiling in both cases, and
+`memory_enforcement` reports `"cgroup"` for both. Which *runtime* ran the container is a
+separate fact and is recorded separately: the isolation level says `VM` under gVisor.
 
 ### L3 — Network severance
 
@@ -303,9 +312,9 @@ src/paa/core/types.py            (edit)  + TOOL_INVOKED / TOOL_COMPLETED / TOOL_
 src/paa/ledger/replay.py         (edit)  + _NO_PHASE_CHANGE entries
 
 deploy/toolbox/Dockerfile         (new)   → paa/toolbox:v1 (python + node; NOT paa)
-deploy/docker/daemon.json         (new)   gVisor runtime registration, with --hostuds
+deploy/docker/daemon.json         (new)   gVisor runtime registration, with --host-uds
 docker-compose.yml                (edit)  + docker socket, + docker CLI image, + paa_tools net
-docker-compose.gvisor.yml         (edit)  + --hostuds note, + seccomp=unconfined note
+docker-compose.gvisor.yml         (edit)  + --host-uds note, + seccomp=unconfined note
 ```
 
 ### 3.2 The sandbox session primitive
@@ -939,8 +948,7 @@ into it. The daemon's runtime registration must carry the passthrough:
     "runsc": {
       "path": "/usr/local/bin/runsc",
       "runtimeArgs": [
-        "--hostuds=/var/run/docker.sock",
-        "--hostuds=/run/docker.sock"
+        "--host-uds=all"
       ]
     }
   }
@@ -1017,9 +1025,13 @@ Each phase is independently verifiable, and each ends with the mandated
 
 ### Phase 0 — Host preparation and measurement
 
-**Status: implemented and verified, except for the three root-gated host steps
-(registering `runsc` with the Docker daemon, restarting it, and measuring the cgroup
-ceiling under it), which need `sudo` and are listed at the end of this section.**
+**Status: implemented and verified, including the three root-gated host steps.**
+`runsc` is registered with the daemon, the daemon restarts with the
+registration in place, a container starts under it, the host Unix socket is
+reachable from inside a gVisor container, and the cgroup ceiling has been
+measured under both runtimes. Two of those measurements changed the *code* — the
+socket flag's spelling and the ledger's memory-enforcement string — and
+`docs/deployment/docker.md` has the full reasoning for each.
 
 * Install the **official gVisor `release-20261012.0` static binary** (Decision 6): from
   the GitHub release tarball `gvisor-x86_64.tar.bz2`, checksum-verified against the
@@ -1027,23 +1039,25 @@ ceiling under it), which need `sudo` and are listed at the end of this section.*
   mirror lags the GitHub releases — `20261012.0` is not on it — so the GitHub tarball is
   the authoritative source for a current version.) `runsc --version` reports
   `runsc version release-20261012.0`.
-* Register with Docker in `/etc/docker/daemon.json`, **including the `--hostuds`
+* Register with Docker in `/etc/docker/daemon.json`, **including the `--host-uds`
   passthrough the `paa` container needs** (§3.14.1). A ready-to-copy file is in
   `deploy/docker/daemon.json`:
   ```json
   { "runtimes": { "runsc": {
       "path": "/usr/local/bin/runsc",
-      "runtimeArgs": ["--hostuds=/var/run/docker.sock", "--hostuds=/run/docker.sock"] } } }
+      "runtimeArgs": ["--host-uds=all"] } } }
   ```
   `systemctl restart docker`.
 * Verify: `docker info --format '{{json .Runtimes}}'` lists `runsc`; then
   `docker run --rm --runtime=runsc hello-world` succeeds.
 * **Measure** cgroup enforcement under runsc (allocate 1 GB under `--memory 256m` and see
   whether it is OOM-killed). Record the honest answer; it goes into
-  `SandboxResult.memory_enforcement` and into the docs. *This is root-gated: it needs
-  `runsc` registered, so it is one of the three outstanding steps below. Until it is
-  measured, the "gVisor's cgroup delegation is limited" claim is a documented
-  expectation from gVisor's own documentation, not a verified fact on this host.*
+  `SandboxResult.memory_enforcement` and into the docs. **Done.** Both runtimes gave
+  exit 137, `OOMKilled=true`, `memory.peak == memory.max` and the kernel's
+  `oom_kill 1` — so the ceiling is the kernel's cgroup under either runtime, and the
+  ledger says `"cgroup"`. The plan's expectation (a weaker ceiling under gVisor) came
+  from gVisor's own documentation and was not measured; the measurement disagreed with
+  it.
 * Author `deploy/toolbox/Dockerfile` → `paa/toolbox:v1` — `python:3.12-slim` + Node 24 +
   `git`/`curl`/`jq`. **The `paa` package is deliberately excluded**: a plugin that
   imported it would expect a database connection and a ledger handle, and the container
@@ -1140,9 +1154,10 @@ changed the design, so they are recorded here rather than only in the ADR):
   with the facts it renders — `sandbox_report_rows` in `paa/sandbox/base.py` —
   and both surfaces call it.
 
-**Three root-gated steps remain, and they need `sudo`.** The three *commands* below are
+**The three root-gated steps, and they need `sudo`.** The three *commands* below are
 the first two steps; the third is the cgroup measurement, which needs the daemon
-restarted with `runsc` registered.
+restarted with `runsc` registered. All three are done on the reference host;
+`docs/deployment/docker.md` has what they changed.
 
 **`docs/deployment/docker.md` has the full rationale for each of them** — why the
 binary is copied rather than left on the operator's `PATH`, why the daemon
@@ -1531,7 +1546,7 @@ the baseline is red — *do not expand the count* is the gate, not "make it zero
 | Risk | Handling |
 |---|---|
 | gVisor is not installed / not registered | Phase 0 makes it a hard prerequisite; `DockerSandbox` already reports `NAMESPACE` honestly when `runsc` is absent, and the plugin loader **refuses to start a container** whose isolation level is below what the plugin's risk profile demands. |
-| The `paa` container cannot reach the Docker socket (gVisor blocks host Unix sockets by default) | §3.14.1 — `--hostuds` in the daemon's runtime registration, verified in Phase 0 from *inside* a runsc-hosted container. This is the most likely first-hour failure, so it is verified first. |
+| The `paa` container cannot reach the Docker socket (gVisor blocks host Unix sockets by default) | §3.14.1 — `--host-uds=all` in the daemon's runtime registration, verified in Phase 0 from *inside* a runsc-hosted container. This is the most likely first-hour failure, so it is verified first. |
 | The docker socket is host root | Accepted deliberately (Decision 2). Recorded in §3.14.3 so it reads as a decision, not an oversight. The daemon is the only holder; it runs under gVisor; its own exposure is a loopback API. |
 | A plugin escapes the container | gVisor's syscall boundary is the answer. Residual risk: a gVisor escape. Mitigated by minimal images, `--read-only`, no socket *inside* the tool container, all caps dropped, no egress by default. |
 | A plugin silently becomes read-only because its name matches no glob | The declared-mutating union, fail-closed default, and `mutating_tools=(*DEFAULT_MUTATING_TOOLS, *MUTATING_RUNTIME_TOOLS, *runtime.tools.mutating_names())`. |
@@ -1542,7 +1557,7 @@ the baseline is red — *do not expand the count* is the gate, not "make it zero
 | Tool output carries a prompt injection | Tool output is untrusted input. The deterministic policy agent and the ledger are the backstop. A tool-output-specific policy rule is worth considering in a later phase. |
 | The skills subsystem and the new tools layer duplicate each other | Decision 1: the new layer is authoritative for tools; the skill registry is left alone, and the debt is written down. A follow-up decides whether the skill registry is retired, absorbed, or projected onto the tool registry. |
 | The tool catalogue grows past the model's context budget | The registry can rank/filter by intent (the skill registry already has `search()`). Deferred; the model-side budget is the constraint that forces it. |
-| gVisor + cgroup v2 means memory limits are not enforced | Phase 0 measures it; `memory_enforcement` reports the truth. |
+| gVisor + cgroup v2 means memory limits are not enforced | **Measured, and false**: the kernel's cgroup enforced the cap under both runtimes (`oom_kill 1`, `memory.peak == memory.max`). `memory_enforcement` reports `"cgroup"`. |
 
 ---
 
@@ -1604,7 +1619,7 @@ forgotten.
 ## 8. Deliverable sequence at a glance
 
 ```
-Phase 0   host: runsc (official) + daemon.json w/ --hostuds + toolbox image
+Phase 0   host: runsc (official) + daemon.json w/ --host-uds + toolbox image
           + docker CLI + socket + the three networks + measure cgroups   (no code)
 W3–W8    substrate track: entity-resolution parity, the deployment's images,
           the container's start budget, the suites that catch all of it,

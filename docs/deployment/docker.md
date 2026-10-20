@@ -137,13 +137,32 @@ It is **opt-in** and **Linux-only**.
    curl -fsSLO https://github.com/google/gvisor/releases/download/release-20261012.0/gvisor-x86_64.tar.bz2
    sha256sum -c --ignore-missing SHA256SUMS
    tar -xjf gvisor-x86_64.tar.bz2
-   sudo install -m 0755 runsc /usr/local/bin/runsc
    runsc --version          # runsc version release-20261012.0
    ```
 
    The `storage.googleapis.com/gvisor/releases/release/<date>/` mirror lags the
    GitHub releases, so the GitHub tarball is the authoritative source for a
    current version.
+
+   **The whole tarball goes in, not just `runsc`.** The release ships `runsc`
+   *and* a `gvisor-bin/` directory of sidecars — `gvisor_sentry`,
+   `checkpointgofer`, `runsc-fd-parking`, `runsc-metric-server` — plus the
+   tarball's own `containerd-shim-runsc-v1`. `runsc` looks for the sentry
+   *next to itself*, at `<dir-of-runsc>/gvisor-bin/gvisor_sentry`, so a
+   runtime installed on its own is a runtime that is registered and cannot
+   start a container:
+
+   ```bash
+   sudo install -m 0755 runsc /usr/local/bin/runsc
+   sudo install -d -m 0755 /usr/local/bin/gvisor-bin
+   sudo install -m 0755 gvisor-bin/* /usr/local/bin/gvisor-bin/
+   sudo install -m 0755 containerd-shim-runsc-v1 /usr/local/bin/containerd-shim-runsc-v1
+   ```
+
+   The symptom of getting this wrong is
+   `sidecar "gvisor_sentry" not usable: stat /usr/local/bin/gvisor-bin/gvisor_sentry:
+   no such file or directory`, and it arrives as a *failed task* rather than
+   as anything that names the sidecar.
 
 2. Register it with the daemon in `/etc/docker/daemon.json` — **including the
    `runtimeArgs`**, which are not optional (see below). A ready-to-copy file
@@ -155,14 +174,23 @@ It is **opt-in** and **Linux-only**.
    { "runtimes": { "runsc": {
        "path": "/usr/local/bin/runsc",
        "runtimeArgs": [
-         "--hostuds=/var/run/docker.sock",
-         "--hostuds=/run/docker.sock" ] } } }
+         "--host-uds=all" ] } } }
    ```
 
-   Both socket spellings are listed because `/var/run` is a symlink to `/run` on
-   the host but not necessarily inside the container, and gVisor matches the
-   `hostuds` path against the mount namespace it is given. Keep this list in
-   step with `deploy/docker/daemon.json` and `docker-compose.gvisor.yml`.
+   The permission is a **category**, not a path: `--host-uds=all` lets the
+   sandbox connect to host Unix-domain sockets. Keep this flag in step with
+   `deploy/docker/daemon.json` and `docker-compose.gvisor.yml`.
+
+   > **The spelling changed, and the old one is worse than useless.** The
+   > pinned build (`release-20261012.0`) spells the flag `--host-uds` and
+   > takes `none|open|create|all`. The older `--hostuds=<path>` — which
+   > named one socket — is **gone**: a runtime handed it exits 2 with
+   > "flag provided but not defined", and the daemon reports
+   > `failed to create shim task … did not terminate successfully: exit
+   > status 2`. The daemon does **not** validate a runtime's flags when it
+   > registers one, so `docker info` listing `runsc` proves nothing about
+   > the runtime working. That is why step 3 runs a container and not just
+   > a query.
 
    > **The file must be plain JSON.** The Docker daemon has no comment
    > syntax and *refuses to start* on a top-level key it does not recognise
@@ -185,19 +213,19 @@ It is **opt-in** and **Linux-only**.
    docker compose -f docker-compose.yml -f docker-compose.gvisor.yml up -d
    ```
 
-### `--hostuds` — the one thing that makes the socket work under gVisor
+### `--host-uds` — the one thing that makes the socket work under gVisor
 
 gVisor does **not** let a container open a host Unix socket merely because the
-socket was bind-mounted into it. The socket has to be named in the runtime's
-`runtimeArgs`, or the Docker client inside the `paa` container fails with
+socket was bind-mounted into it. The permission has to be given to the
+*runtime*, or the Docker client inside the `paa` container fails with
 `permission denied while trying to connect to the docker API` — an error that
 reads like a socket-permission problem and not like a gVisor problem, and that
 makes the whole gVisor path look half-working.
 
-Both spellings are named — `/var/run/docker.sock` and `/run/docker.sock` —
-because `/var/run` is a symlink to `/run` on the host but not necessarily inside
-the container. The three places that carry the list must agree:
-`deploy/docker/daemon.json`, `docker-compose.gvisor.yml`, and this document.
+The flag is `--host-uds=all`: it permits the sandbox to connect to host
+Unix-domain sockets. The three places that carry it must agree:
+`deploy/docker/daemon.json`, `docker-compose.gvisor.yml`, and this document —
+and `tests/deployment/test_daemon_config.py` is what keeps them in step.
 
 If the `paa` container also fails to *start* under runsc, Docker's default
 seccomp profile can conflict with gVisor's own syscall policy. Add
@@ -217,17 +245,28 @@ not have (`paa/sandbox/docker_backend.py`, verified by
 container itself under runsc as defence in depth — comment that line out to keep
 only the worker containers contained, which is the minimal sufficient hardening.
 
-**The syscall boundary gets stronger; the resource ceiling gets weaker.** Docker's
-`--memory` and `--cpus` are cgroup limits, and gVisor on a cgroup v2 host has
-limited cgroup delegation, so those limits are not enforced the way `runc`
-enforces them. `SandboxResult.memory_enforcement` reports which mechanism was
-actually in force, so the ledger never claims a ceiling that was not applied.
+**The syscall boundary gets stronger; the resource ceiling does not get weaker.**
+Docker's `--memory` and `--cpus` are *daemon*-level limits — the daemon caps the
+container's cgroup and refuses to start a container whose limit it cannot apply —
+and the OCI runtime in charge does not change that. gVisor strengthens the syscall
+boundary; it does not get an exception to the ceiling.
 
-That weaker-ceiling claim is a **documented expectation, not a measurement**. gVisor's own
-documentation describes the limited cgroup delegation on a cgroup v2 host, but measuring
-it on *this* host needs `runsc` registered, which needs root. Until that is done, read
-the ledger's `"gvisor"` as "gVisor did the accounting", not as "the cap was enforced to
-the byte".
+This was **measured**, on this host, with `runsc` registered. With `--memory 256m`
+and a process that touches 512 MiB:
+
+==================  ==========  ========  =========================
+runtime            exit code   OOMKilled  cgroup ``memory.events``
+==================  ==========  ========  =========================
+``runc``           137         true      ``oom 1 oom_kill 1``
+``runsc`` (gVisor) 137         true      ``oom 1 oom_kill 1``
+==================  ==========  ========  =========================
+
+and in both cases ``memory.peak`` reached ``memory.max`` exactly — the kernel's own
+``oom_kill`` counter is what fired, under gVisor as much as under runc.
+`SandboxResult.memory_enforcement` therefore reports `"cgroup"` for both: a claim
+the host's own accounting supports rather than contradicts. Which *runtime* ran the
+container is a separate fact, and the ledger records it separately — the isolation
+level says `VM` under gVisor.
 
 `paa doctor` reports all of it: the backend, the isolation level, whether the Docker
 daemon is reachable, the OCI runtime and whether the daemon has it, and the image the
@@ -278,34 +317,51 @@ actually get" is the question the row exists to answer, and answering
 On a non-Linux host the override is inert: the runtime reports `NAMESPACE` (or
 degrades to a weaker backend) and says so in the logs.
 
-## What still needs root, and why
+## What needs root, and what it is done
 
-Four things in this deployment cannot be finished without `sudo`. They are
-collected here because each one is a *host* fact, and each one has a
-different failure mode if it is skipped: a silently weaker isolation level, a
-measurement nobody has taken, a stray directory nobody can remove, and a test
-suite that fails for a reason that has nothing to do with the code.
+Four things in this deployment need `sudo`. They are collected here because each
+one is a *host* fact, and each one fails differently if it is skipped: a
+runtime that is registered but cannot start a container, a measurement nobody
+has taken, a stray directory nobody can remove, and a test suite that fails for
+a reason that has nothing to do with the code.
+
+**All four are done on the reference host.** What follows is the reasoning, so
+that the next host can be set up the same way — and so that the two that
+changed the *code* are not undone by someone who assumes they were mistakes.
 
 ### 1. Registering `runsc` with the daemon
 
-The binary is installed and the daemon does not know about it. On this host:
+Before: the binary was installed and the daemon did not know about it.
 
 ```bash
 $ ls -l ~/.local/bin/runsc
--rwxr-xr-x 1 devansh devansh 56950136 … runsc
+-rwxr-xr-x 1 devansh devansh 56950133 … runsc
 $ ~/.local/bin/runsc --version
 runsc version release-20261012.0
 $ docker info --format '{{json .Runtimes}}' | python3 -c 'import json,sys; print(list(json.load(sys.stdin)))'
 ['io.containerd.runc.v2', 'runc']
 ```
 
-So: the runtime is present, and the daemon offers `runc` and
-`io.containerd.runc.v2` and **not** `runsc`. Three commands close that.
+The daemon offered `runc` and `io.containerd.runc.v2` and **not** `runsc`.
+Four commands close that, and the fourth is the one that is easy to miss:
 
 ```bash
 sudo install -m 0755 ~/.local/bin/runsc /usr/local/bin/runsc
+sudo install -d -m 0755 /usr/local/bin/gvisor-bin
+sudo install -m 0755 /tmp/gvisor/gvisor-bin/* /usr/local/bin/gvisor-bin/
 sudo cp deploy/docker/daemon.json /etc/docker/daemon.json    # MERGE, do not overwrite
 sudo systemctl restart docker
+```
+
+**The sidecars are not optional.** The tarball ships `runsc` *and* a
+`gvisor-bin/` directory, and `runsc` looks for the sentry next to itself at
+`<dir-of-runsc>/gvisor-bin/gvisor_sentry`. Installing only `runsc` — which is
+what the procedure used to say — gives a runtime that is registered and cannot
+start a container:
+
+```
+sidecar "gvisor_sentry" not usable: stat /usr/local/bin/gvisor-bin/gvisor_sentry:
+no such file or directory
 ```
 
 **Why the copy.** `deploy/docker/daemon.json` points at
@@ -349,39 +405,51 @@ runtime.
 
 The second is the end-to-end proof, and it is not redundant: **registration
 is necessary but not sufficient.** gVisor's `runsc` needs the host Unix socket
-passed into the sandbox explicitly (the `--hostuds` runtimeArgs), and it
+passed into the sandbox explicitly (the `--host-uds` runtimeArgs), and it
 needs the host's namespaces and `/proc` to be what it expects. A
 `hello-world` under `--runtime=runsc` is the cheapest way to find out which
 of those is missing, and none of it is fixable from the application code.
 
 ### 2. The cgroup measurement under `runsc`
 
-The memory ceiling is enforced by the runtime, and the two runtimes enforce
-it differently. Under `runc` the measurement is done: `--memory 256m` gives
-exit 137, `oom_kill=1`, and `memory.peak == memory.max` in the cgroup v2
-`memory.events`.
+The memory ceiling is the daemon's `--memory`, which is a *cgroup* limit: the
+daemon caps the container's cgroup and refuses to start a container whose limit
+it cannot apply. The question was whether gVisor changes that.
 
-Under gVisor it is not. `runsc` emulates the cgroup interface in the
-sandbox's own user space, and its accounting is reported differently. The
-runtime is honest about this — `SandboxResult.memory_enforcement` names the
-mechanism that was actually in force, and the isolation level follows the
-*effective* runtime — but the **number** under `runsc` has not been taken on
-this host, and until it is, the ledger's `"gvisor"` means "gVisor did the
-accounting", not "the cap was enforced to the byte".
+It does not, and the answer was taken rather than assumed. With `--memory 256m`
+and a process that touches 512 MiB:
 
-Measuring it needs `runsc` registered, so it is blocked behind step 1:
+==================  ==========  ========  =========================
+runtime            exit code   OOMKilled  cgroup ``memory.events``
+==================  ==========  ========  =========================
+``runc``           137         true      ``oom 1 oom_kill 1``
+``runsc`` (gVisor) 137         true      ``oom 1 oom_kill 1``
+==================  ==========  ========  =========================
+
+and in both cases ``memory.peak`` reached ``memory.max`` exactly. The kernel's
+own ``oom_kill`` counter is what fired, under gVisor as much as under runc.
+
+The measurement is a few commands, and the *timing* matters: the cgroup is
+removed when the container is, so the accounting has to be read while it is
+still there.
 
 ```bash
-docker run --rm --runtime=runsc --memory 256m --memory-swap 256m \
-  alpine:3 sh -c 'dd if=/dev/zero of=/tmp/x bs=1M count=512 2>/dev/null'
-# then, from the host:
-docker inspect --format '{{.State.OOMKilled}} {{.State.ExitCode}}' <container>
+cid=$(docker run -d --runtime=runsc --memory 256m --memory-swap 256m \
+      python:3.12-slim python -c 'b = bytearray(512*1024*1024); [b.__setitem__(i,1) for i in range(0,len(b),4096)]')
+# poll the cgroup until the kernel records the kill, then read it
+cg=/sys/fs/cgroup/docker/$cid
+while ! grep -q 'oom_kill [1-9]' $cg/memory.events 2>/dev/null; do sleep 0.05; done
+cat $cg/memory.max $cg/memory.peak; grep -E '^(oom|oom_kill)' $cg/memory.events
+docker wait $cid; docker rm -f $cid
 ```
 
-This is the last measurement the container phase needs, and it is a
-*measurement* rather than a fix: nothing in the code changes, but the claim
-the ledger makes about the ceiling becomes one that was taken rather than one
-that was inferred.
+**This changed the code.** The plan expected a *weaker* ceiling under gVisor —
+gVisor's own documentation describes limited cgroup delegation on a cgroup v2
+host — and the ledger's mechanism field was written to say `"gvisor"` for a
+gVisor run. The measurement disagreed: the ceiling was the kernel's cgroup in
+both cases, so `SandboxResult.memory_enforcement` now reports `"cgroup"` for
+both. Which *runtime* ran the container is a separate fact and is recorded
+separately — the isolation level says `VM` under gVisor.
 
 ### 3. The stray root-owned `/data` on the host
 
@@ -427,13 +495,17 @@ sudo rmdir /data/workspaces/task-1 /data/workspaces /data
 ```
 
 If the operator knows the host has no other `/data`, `rm -rf` is equivalent —
-but `rmdir` is the form that cannot be wrong.
+but `rmdir` is the form that cannot be wrong. On the reference host the
+`rmdir` form was used, and the tree was empty, so it removed all three
+directories and nothing else.
 
-### 4. The six pre-existing test failures
+### 4. The six test failures that were the host's
 
-The suite has six failures that are **not** defects in the code, and they are
-the accepted baseline: the gate is "the failure set must not change", not
-"the suite must be green".
+The suite used to have six failures that were **not** defects in the code: the
+gate was "the failure set must not change", not "the suite must be green".
+They are fixed on this host now — the suite is green — but the mechanism is
+worth keeping, because the next host that lacks a system `python` will have
+them again.
 
 The cause is one deliberate design decision meeting one fact about this
 host. The sandbox builds its child environment **from scratch** —
@@ -454,7 +526,7 @@ recovery sweep are all behaving correctly.
 
 On a stock Ubuntu with `python-is-python3` installed, `/usr/bin/python`
 exists, the sandbox's minimal `PATH` finds it, and the same six tests pass.
-That is a one-line host fix:
+That is a one-line host fix, and it has been applied here:
 
 ```bash
 sudo apt install python-is-python3
@@ -697,18 +769,21 @@ uses the local content-addressed store for blobs.
   GID is not a supplementary group of the container user. Set `DOCKER_GID` in
   `.env` to `stat -c %g /var/run/docker.sock` and recreate the container.
 - **The same error, but only under gVisor** — the daemon's runtime registration
-  is missing the `hostuds` passthrough. gVisor does not pass a host Unix
-  socket through just because it was bind-mounted, and the socket has to be
-  named in **both** its spellings:
+  is missing the host-Unix-socket permission. gVisor does not pass a host
+  Unix socket through just because it was bind-mounted; the permission is
+  given to the *runtime*:
 
   ```json
-  "runtimeArgs": [
-    "--hostuds=/var/run/docker.sock",
-    "--hostuds=/run/docker.sock"
-  ]
+  "runtimeArgs": [ "--host-uds=all" ]
   ```
 
   A ready-to-copy file is `deploy/docker/daemon.json`.
+- **`failed to create shim task … did not terminate successfully: exit status 2`**
+  under `--runtime=runsc` — the runtime was given a flag it does not have.
+  The pinned build spells the socket permission `--host-uds=all`; the older
+  `--hostuds=<path>` was removed, and a runtime handed it exits 2 with "flag
+  provided but not defined". The daemon does not validate a runtime's flags
+  when it registers one, so `docker info` will still list `runsc`.
 - **`paa` container will not start under runsc** — Docker's default seccomp
   profile can conflict with gVisor's. Add `security_opt: [seccomp=unconfined]`
   to the `paa` service in `docker-compose.gvisor.yml`.

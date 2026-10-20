@@ -57,8 +57,7 @@ runtime's `runtimeArgs`:
 
 ```json
 "runtimeArgs": [
-  "--hostuds=/var/run/docker.sock",
-  "--hostuds=/run/docker.sock"
+  "--host-uds=all"
 ]
 ```
 
@@ -70,7 +69,7 @@ way to get the deployment wrong.
 
 **Both** socket spellings are listed because `/var/run` is a symlink to `/run`
 on the host but not necessarily inside the container, and gVisor matches the
-`hostuds` path against the mount namespace it is given. The same list appears
+host Unix-domain sockets. The same flag appears
 in `docker-compose.gvisor.yml` and `docs/deployment/docker.md` — keep the
 three in step.
 
