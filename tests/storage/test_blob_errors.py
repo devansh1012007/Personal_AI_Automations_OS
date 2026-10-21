@@ -27,6 +27,19 @@ The tests below run without a server and without ``boto3``: the translators
 are pure functions of an exception, the S3 error codes are a table of
 strings, and the store's boundaries are exercised against a duck-typed stub
 whose errors are shaped like the driver's.
+
+**What this file pins, and what it cannot.** Most of it is a unit test of
+*new* code — the vocabulary and the translator — so it passes against the
+pre-change sources by construction: the pre-change sources have no
+vocabulary to pin. The five filesystem-boundary cases at the bottom are the
+ones that fail against the pre-change boundaries, and they are the
+regression net for the *raw exception* residue. The transport paths of the
+S3 substrate are pinned in ``tests/storage/test_minio_backend.py`` (a stub
+that can fail a single call, not only the HEAD) and the contract is pinned
+in ``tests/storage/test_blobstore_contract.py`` (the same condition, the
+same class, on either substrate). The S3 code tables are pinned *here*, by
+their members, against literals written out in this file — a table checked
+against itself is not checked.
 """
 
 from __future__ import annotations
@@ -54,6 +67,12 @@ from paa.storage.coldlake.errors import (
     translate_blob_error,
 )
 from paa.storage.coldlake.minio_backend import (
+    _S3_BUCKET_MISSING_CODES,
+    _S3_OBJECT_MISSING_CODES,
+    _S3_REFUSED_CLASS_NAMES,
+    _S3_REFUSED_CODES,
+    _S3_RETRYABLE_CODES,
+    _S3_UNREACHABLE_CLASS_NAMES,
     _translate_s3_error,
 )
 
@@ -67,6 +86,13 @@ VOCABULARY: tuple[type[BlobError], ...] = (
     NotSupported,
     Unreachable,
 )
+
+#: How long a probe subprocess may take before it is killed.
+#:
+#: A subprocess with no timeout is a hung suite waiting to happen: the
+#: script is three imports, and a probe that cannot finish is a failure
+#: that has to be reported rather than a suite that stops.
+_SUBPROCESS_TIMEOUT_SECONDS = 60
 
 
 class _DriverError(Exception):
@@ -150,15 +176,20 @@ class TestTheVocabulary:
 
 
 class TestTheSharedTranslation:
-    def test_the_translation_is_idempotent(self) -> None:
+    @pytest.mark.parametrize("member", VOCABULARY)
+    def test_the_translation_is_idempotent(self, member: type[BlobError]) -> None:
         """A wider boundary must not flatten a specific failure.
 
         The store's boundaries nest — a method catches the driver's error and
         translates it, and the code above may translate again — and without
         the guard a specific failure would be flattened into a vaguer one on
         its way out.
+
+        It is asserted for **every** member and not for one of them: the
+        guard that makes it work is the ``PaaError`` branch, so a member
+        that is not a ``PaaError`` would be the one that failed.
         """
-        original = NotFound("blob not found", substrate="s3")
+        original = member("something went wrong", substrate="s3")
         assert translate_blob_error(original, substrate="s3") is original
 
     def test_a_storage_error_that_is_not_ours_is_not_touched(self) -> None:
@@ -396,8 +427,14 @@ class TestTheS3Translation:
         assert excinfo.value.__context__ is not None
         assert isinstance(_translate_s3_error(excinfo.value), NotFound)
 
-    def test_the_translation_is_idempotent(self) -> None:
-        original = NotFound("blob not found", substrate="s3")
+    @pytest.mark.parametrize("member", VOCABULARY)
+    def test_the_translation_is_idempotent(self, member: type[BlobError]) -> None:
+        """The S3 dialect is idempotent for every member, too.
+
+        The boundaries nest here as well: the store translates the driver's
+        error, and the code above the store may translate again.
+        """
+        original = member("something went wrong", substrate="s3")
         assert _translate_s3_error(original) is original
 
     def test_a_domain_error_is_not_translated(self) -> None:
@@ -425,18 +462,154 @@ class UploadFailedError(Exception):
     """Stands for boto3's ``S3UploadFailedError``."""
 
 
+#: The codes the dialect names, **written out here** rather than read from
+#: the table. A table checked against itself is not checked: the
+#: parametrisation below is generated from the expected members, so a
+#: member deleted from the table would take its own case with it and the
+#: suite would stay green. These literals are the pin.
+_EXPECTED_OBJECT_MISSING_CODES: frozenset[str] = frozenset(
+    {"404", "NoSuchKey", "NoSuchVersion", "NotFound"}
+)
+_EXPECTED_BUCKET_MISSING_CODES: frozenset[str] = frozenset({"NoSuchBucket"})
+_EXPECTED_REFUSED_CODES: frozenset[str] = frozenset(
+    {
+        "401",
+        "403",
+        "AccessDenied",
+        "AllAccessDisabled",
+        "ExpiredToken",
+        "InvalidAccessKeyId",
+        "InvalidToken",
+        "SignatureDoesNotMatch",
+        "Unauthorized",
+    }
+)
+_EXPECTED_RETRYABLE_CODES: frozenset[str] = frozenset(
+    {
+        "500",
+        "500InternalError",
+        "502",
+        "503",
+        "InternalError",
+        "RequestTimeout",
+        "RequestTimeoutException",
+        "ServiceUnavailable",
+        "SlowDown",
+    }
+)
+_EXPECTED_REFUSED_CLASS_NAMES: frozenset[str] = frozenset(
+    {"NoCredentialsError", "PartialCredentialsError"}
+)
+_EXPECTED_UNREACHABLE_CLASS_NAMES: frozenset[str] = frozenset(
+    {
+        "ConnectTimeoutError",
+        "ConnectionClosedError",
+        "ConnectionError",
+        "EndpointConnectionError",
+        "ProxyConnectionError",
+        "ReadTimeoutError",
+        "ResponseStreamingError",
+        "SSLError",
+    }
+)
+
+
+class TestTheS3CodeTables:
+    """Every entry of every table, pinned **by the code alone**.
+
+    The other cases in this file build their errors with an HTTP status
+    that maps to the same class as the code, so the status fallback alone
+    would produce the expected answer and the code would never be
+    consulted. Deleting ``"SlowDown"`` from the retryable table, or
+    ``"NoSuchBucket"`` from the bucket table, or either credential class
+    name, changed **nothing** in this suite.
+
+    So each member is pinned with an error that carries the code and *no*
+    status: the code is then the only signal there is, which is what the
+    dialect's own design says it should be — "the code is the portable part
+    of the driver's vocabulary".
+
+    The class-name tables are pinned the same way, by building an exception
+    whose class carries the name: the classifier reads the names off the
+    MRO and never imports the driver.
+    """
+
+    def test_the_tables_hold_exactly_what_is_pinned(self) -> None:
+        """The membership of every table, against a literal.
+
+        A member that is added to a table has to be classified and pinned
+        before it is believed; a member that is removed from one has to be
+        removed from the expectation too, deliberately, and not by
+        accident.
+        """
+        assert _S3_OBJECT_MISSING_CODES == _EXPECTED_OBJECT_MISSING_CODES
+        assert _S3_BUCKET_MISSING_CODES == _EXPECTED_BUCKET_MISSING_CODES
+        assert _S3_REFUSED_CODES == _EXPECTED_REFUSED_CODES
+        assert _S3_RETRYABLE_CODES == _EXPECTED_RETRYABLE_CODES
+        assert _S3_REFUSED_CLASS_NAMES == _EXPECTED_REFUSED_CLASS_NAMES
+        assert _S3_UNREACHABLE_CLASS_NAMES == _EXPECTED_UNREACHABLE_CLASS_NAMES
+
+    @pytest.mark.parametrize("code", sorted(_EXPECTED_OBJECT_MISSING_CODES))
+    def test_an_object_missing_code_is_not_found(self, code: str) -> None:
+        assert code in _S3_OBJECT_MISSING_CODES
+        translated = _translate_s3_error(ClientError(code))
+        assert isinstance(translated, NotFound)
+        assert "namespace" not in translated.details
+
+    @pytest.mark.parametrize("code", sorted(_EXPECTED_BUCKET_MISSING_CODES))
+    def test_a_bucket_missing_code_names_the_namespace(self, code: str) -> None:
+        assert code in _S3_BUCKET_MISSING_CODES
+        translated = _translate_s3_error(ClientError(code))
+        assert isinstance(translated, NotFound)
+        assert translated.details["namespace"] == "bucket"
+
+    @pytest.mark.parametrize("code", sorted(_EXPECTED_REFUSED_CODES))
+    def test_a_refused_code_is_access_denied(self, code: str) -> None:
+        assert code in _S3_REFUSED_CODES
+        translated = _translate_s3_error(ClientError(code))
+        assert isinstance(translated, AccessDenied)
+
+    @pytest.mark.parametrize("code", sorted(_EXPECTED_RETRYABLE_CODES))
+    def test_a_retryable_code_is_unreachable(self, code: str) -> None:
+        assert code in _S3_RETRYABLE_CODES
+        translated = _translate_s3_error(ClientError(code))
+        assert isinstance(translated, Unreachable)
+
+    @pytest.mark.parametrize("name", sorted(_EXPECTED_REFUSED_CLASS_NAMES))
+    def test_a_credential_class_name_is_a_refusal(self, name: str) -> None:
+        """The server never saw the request, so the class name is all there is."""
+        assert name in _S3_REFUSED_CLASS_NAMES
+        error = type(name, (Exception,), {})()
+        translated = _translate_s3_error(error)
+        assert isinstance(translated, AccessDenied)
+        assert translated.details["driver_error"] == name
+
+    @pytest.mark.parametrize("name", sorted(_EXPECTED_UNREACHABLE_CLASS_NAMES))
+    def test_an_unreachable_class_name_is_unreachable(self, name: str) -> None:
+        assert name in _S3_UNREACHABLE_CLASS_NAMES
+        error = type(name, (Exception,), {})()
+        translated = _translate_s3_error(error)
+        assert isinstance(translated, Unreachable)
+        assert translated.details["driver_error"] == name
+
+
 # ---------------------------------------------------------------------------
 # The filesystem substrate's boundaries
 # ---------------------------------------------------------------------------
 
 
 class TestTheFilesystemBoundaries:
-    """The local substrate had two raw escapes of its own.
+    """The local substrate had raw escapes of its own.
 
     A raw ``OSError`` out of the streaming read, and a raw
     ``zstandard.ZstdError`` out of a corrupt frame. Neither is a driver's
     exception, but both broke the same contract: a caller that catches
     ``StorageError`` caught nothing when they happened.
+
+    And a raw exception that is not a ``PaaError`` is worse than a
+    misclassified one: every ``except PaaError`` at the edge of the
+    runtime misses it, so a health sweep over a damaged archive *raised*
+    instead of reporting.
     """
 
     def test_a_file_that_vanished_is_not_found(self, tmp_path: Path) -> None:
@@ -476,6 +649,58 @@ class TestTheFilesystemBoundaries:
         with pytest.raises(Corrupt):
             store.get(ref.sha256)
 
+    def test_a_corrupt_frame_is_corrupt_in_the_metadata_path(self, tmp_path: Path) -> None:
+        """The metadata path used to leak a raw ``zstandard.ZstdError``.
+
+        The same file, the same damage, and the read path reported it as
+        ``Corrupt`` while ``stat()`` reported it as a codec exception. That
+        is the divergence the vocabulary exists to remove, and ``stat()`` is
+        a *protocol* method, so a caller writing against the contract could
+        hit it.
+        """
+        store = ContentAddressedStore(tmp_path / "cold_lake")
+        ref = store.put(b"payload")
+        path = store.root / "blobs" / ref.sha256[:2] / ref.sha256[2:4] / f"{ref.sha256}.zst"
+        path.write_bytes(b"not a zstd frame at all")
+
+        with pytest.raises(Corrupt):
+            store.stat(ref.sha256)
+
+    def test_an_unreadable_archive_is_a_refusal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The lookup is the boundary, so every method inherits the answer.
+
+        ``Path.exists()`` re-raises every errno except the four that mean
+        "not there", so an unreadable archive used to leak a raw
+        ``PermissionError`` out of five methods at once — and the S3
+        substrate raises ``AccessDenied`` for the same condition, so the two
+        substrates did not fail the same way for the same reason.
+
+        The permission is simulated rather than arranged: a directory's
+        mode does not stop a process that is running as root, and this
+        suite has to mean the same thing on every host.
+        """
+        store = ContentAddressedStore(tmp_path / "cold_lake")
+        store.put(b"payload")
+        digest = "a" * 64
+
+        def refuse(self: Path) -> bool:
+            raise PermissionError(errno.EACCES, "permission denied")
+
+        monkeypatch.setattr(Path, "exists", refuse)
+
+        for call in (
+            lambda: store.exists(digest),
+            lambda: store.stat(digest),
+            lambda: store.delete(digest),
+            lambda: store.get(digest),
+            lambda: store.put(b"payload"),
+        ):
+            with pytest.raises(AccessDenied) as excinfo:
+                call()
+            assert isinstance(excinfo.value, StorageError)
+
     def test_a_hostile_digest_is_a_malformed_request(self, tmp_path: Path) -> None:
         """A digest becomes path components, so it is refused at the door.
 
@@ -489,10 +714,24 @@ class TestTheFilesystemBoundaries:
 
         assert len(excinfo.value.details["value"]) <= 128
 
-    def test_a_lying_size_hint_is_a_malformed_request(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("compress", [True, False])
+    @pytest.mark.parametrize("declared", [999, 3])
+    def test_a_lying_size_hint_is_a_malformed_request(
+        self, tmp_path: Path, compress: bool, declared: int
+    ) -> None:
+        """The declared size is checked on the **uncompressed** path too.
+
+        The compressed path has zstd's own frame check, which raises before
+        the explicit check can run — so the explicit check is load-bearing
+        exactly where there is no frame check, and that is the uncompressed
+        path. The old test only used the compressed path, and removing the
+        explicit check changed nothing it could see.
+        """
         store = ContentAddressedStore(tmp_path / "cold_lake")
         with pytest.raises(MalformedRequest):
-            store.put_stream(io.BytesIO(b"twelve bytes"), size=999)
+            store.put_stream(
+                io.BytesIO(b"twelve bytes"), compress=compress, size=declared
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -523,6 +762,7 @@ def test_the_driver_is_never_imported_at_module_scope() -> None:
         capture_output=True,
         text=True,
         check=False,
+        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, result.stderr
 
@@ -540,6 +780,7 @@ def test_the_vocabulary_module_imports_without_the_driver() -> None:
         capture_output=True,
         text=True,
         check=False,
+        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, result.stderr
 

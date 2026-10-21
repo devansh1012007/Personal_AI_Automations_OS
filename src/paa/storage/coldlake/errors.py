@@ -71,23 +71,36 @@ otherwise have to report them as "something went wrong":
 Every member is a :class:`paa.core.errors.StorageError`, so the existing
 ``except StorageError`` handlers at the edges keep working, and each carries
 the ``substrate`` that produced it.
-
 The one rule about the boundary
 -------------------------------
+
 **The boundary translates the substrate's errors and nothing else.** An error
 that is already one of ours comes back unchanged (the translation is
 *idempotent*), and a :class:`paa.core.errors.PaaError` that is not ours is
-passed through untouched — a ``LedgerError`` stays a ``LedgerError`` and a
-``TypeError`` stays a ``TypeError`` rather than being reported as an
-infrastructure fault. That is the rule ADR-0025 established for the
-relational substrates, and it is the reason the two blob substrates can be
-interchangeable at all.
+passed through untouched — a ``LedgerError`` stays a ``LedgerError``, because
+a caller that catches it to recognise a lost race must not find a
+``StorageError`` instead.
+
+Everything else that reaches the boundary is reported as the unclassified
+``BlobFailure``, with the original as the ``__cause__`` — including a
+``TypeError`` raised by our own code. That is a deliberate narrowing of the
+rule ADR-0025 established for the relational substrates, and it is the right
+narrowing *for a narrow boundary*: this one wraps a single filesystem or
+driver call, so the exception that arrives is the substrate's, and the only
+question is which of the named judgements it is. A ``TypeError`` from our own
+code is a programming error, and it is reported as a failure of the call
+rather than as a failure of the substrate — but it is reported, with its
+type in the details, instead of escaping raw, because a raw exception
+reaching a caller breaks the contract just as surely as a misclassified one
+does. The domain errors are the ones that must survive untouched, and they
+do.
 """
 
 from __future__ import annotations
 
 import errno
-from typing import Any, Final
+from collections.abc import Callable
+from typing import Any, Final, NoReturn
 
 import zstandard
 
@@ -102,6 +115,7 @@ __all__ = [
     "NotFound",
     "NotSupported",
     "Unreachable",
+    "raise_blob_error",
     "translate_blob_error",
 ]
 
@@ -122,11 +136,18 @@ class NotFound(BlobError):
     """The addressed blob is not there.
 
     A missing object and a missing bucket are the same judgement — "it is
-    not there" — and the details say which: ``sha256`` for an object,
-    ``bucket`` for a bucket. They are one class because a caller that has to
+    not there" — and they are one class because a caller that has to
     answer "is this blob absent, or is the store unreachable?" wants one
     answer, and splitting the class would give two types to catch where the
     judgement is one.
+
+    Which of the two it was is **not** in the class. It is in the
+    **message** ("blob not found" against "bucket not found") and, on the
+    S3 substrate, in a ``namespace="bucket"`` detail — present if and only
+    if the substrate's namespace is the thing that is missing. A detail
+    that is present ⇔ a condition holds is a rule a caller can test; "the
+    details that happen to be there" is not one, and an earlier version of
+    this vocabulary promised the latter.
 
     Not retryable and not damage: nothing is wrong, the thing simply is not
     there.
@@ -268,10 +289,18 @@ def translate_blob_error(exc: BaseException, *, substrate: str, **details: Any) 
 
     A :class:`paa.core.errors.PaaError` that is **not** ours is returned
     unchanged as well, and is not translated. A ``LedgerError`` that a caller
-    catches to recognise a lost race must not arrive as a ``StorageError``,
-    and a ``TypeError`` that is a bug in the calling code must not be
-    reported as an infrastructure fault. This is the rule ADR-0025
-    established for the relational substrates.
+    catches to recognise a lost race must not arrive as a ``StorageError``.
+    That is the rule ADR-0025 established for the relational substrates.
+
+    Anything else — a driver's exception, a codec error, a ``TypeError``
+    from our own code — is translated. A ``TypeError`` is a programming
+    error, and it is reported as the *unclassified* failure rather than
+    allowed to escape raw: this boundary wraps a single substrate call, so
+    the exception that arrives is the substrate's, and the only question is
+    which of the named judgements it is. The original is the ``__cause__``,
+    so the programming error is still visible to whoever reads the
+    traceback — and the type of the original is in the details, so the
+    mistake is nameable without being quoted.
 
     The details are merged into the error, and they are **identifiers**:
     ``key``, ``sha256``, ``bucket``, ``path``, ``errno``. They are merged
@@ -282,13 +311,10 @@ def translate_blob_error(exc: BaseException, *, substrate: str, **details: Any) 
     :mod:`paa.storage.coldlake.minio_backend`, beside the client that raises
     it, and it is applied before this function is called.
     """
-    if isinstance(exc, StorageError):
-        # Already neutral — ours, or somebody else's. Either way it is not
-        # the substrate's raw error and it is not this function's to relabel.
-        return exc
     if isinstance(exc, PaaError):
-        # A domain error raised by the code above the substrate. Translating
-        # it would report a bug in the caller as an infrastructure fault.
+        # Already neutral — ours, or somebody else's. A domain error raised
+        # by the code above the substrate is not this function's to relabel,
+        # and neither is a storage error from another substrate.
         return exc
     if isinstance(exc, zstandard.ZstdError):
         # A frame that is not a frame. The codec's own exception is a
@@ -305,6 +331,41 @@ def translate_blob_error(exc: BaseException, *, substrate: str, **details: Any) 
         substrate=substrate,
         **{**details, "driver_error": type(exc).__name__},
     )
+
+
+def raise_blob_error(
+    exc: BaseException,
+    *,
+    substrate: str,
+    translate: Callable[..., Exception] = translate_blob_error,
+    **details: Any,
+) -> NoReturn:
+    """Translate a substrate failure and raise it, keeping the original.
+
+    The helper exists so that the *cause* is set correctly in one place.
+    ``raise translated from exc`` is right when the translation produced a
+    new exception and wrong when it did not: the translation returns an
+    error that is already ours unchanged, and ``raise exc from exc`` would
+    make the exception its own ``__cause__``. CPython's traceback printer
+    does not loop on that, so nothing breaks today — and a self-referential
+    cause is a trap for anything that walks the chain.
+
+    So the two cases are spelled apart: a translation that produced a new
+    exception is raised with the original as its ``__cause__``; an error
+    that is already ours is re-raised unchanged, with a bare ``raise``, so
+    its own cause and context stay exactly as they were. The bare ``raise``
+    re-raises the exception currently being handled, which is the original
+    — so **this must be called from inside an ``except`` block**, which is
+    where a substrate failure is caught in the first place.
+
+    The driver's own wording is never in the message, because the message
+    reaches the ledger through ``PaaError.to_payload()``; it is the
+    ``__cause__``, where it stays available to whoever reads the traceback.
+    """
+    translated = translate(exc, substrate=substrate, **details)
+    if translated is exc:
+        raise
+    raise translated from exc
 
 
 def _translate_os_error(exc: OSError, *, substrate: str, **details: Any) -> Exception:

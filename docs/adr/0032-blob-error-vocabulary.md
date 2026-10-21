@@ -55,8 +55,9 @@ edges keeps catching what it caught before — and every member carries the
 has to make:
 
 - **`NotFound`** — the addressed thing is not there. A missing object and a
-  missing *bucket* are the same judgement, and the details (`sha256=` against
-  `bucket=`) say which.
+  missing *bucket* are the same judgement, and the `namespace="bucket"`
+  detail says which (amended 2026-10-22 — see the Amendment at the end of
+  this record).
 - **`AccessDenied`** — the substrate refused: wrong credentials, or not
   permitted. **Not** retryable.
 - **`Unreachable`** — the substrate could not be reached, or could not complete
@@ -161,6 +162,15 @@ The cost is recorded: `exists()`, `stat()` and `delete()` raise `NotFound` on a
 missing bucket where they used to return `False`/`None`/`False`. That is a
 behaviour change, and it is the honest one.
 
+**Amended 2026-10-22** — the *how* changed, and the Amendment at the end of
+this record says how. A HEAD response carries no body, so the driver has no
+code to report and reports the status as the code: a HEAD's 404 is the same
+404 whether the key or the bucket is missing, and the bucket-level code lives
+in a body a HEAD never has. The discrimination is therefore now **earned** by
+a `head_bucket` probe rather than assumed from a code the HEAD cannot carry.
+The decision above — a missing bucket raises, from every method — stands, and
+the code now does it.
+
 ### 6. The message names the concept; the driver's wording is the cause
 
 `PaaError.to_payload()` merges an error's `details` **verbatim** into a ledger
@@ -235,3 +245,151 @@ classifier against two real servers — SeaweedFS and RustFS — which is the on
 way to know that the error codes they answer with are the codes in the table.
 The unit suite proves the classifier against a stub shaped like the driver;
 that is a strong proof of the *mechanism*, and not a proof of the *table*.
+
+---
+
+## Amendment — the bucket-absence clause, earned rather than assumed
+
+*Amended 2026-10-22, by W1-IMPR-01 (T-001), after the wave-1 review. Everything
+above still stands: one vocabulary, the translation at the boundary and it is
+idempotent, a domain error is not the substrate's to relabel, the driver is
+recognised structurally and is never imported, boto3's upload wrapper is
+unwrapped, the message names the concept and the driver's wording is the
+cause, and the contract declares its error behaviour. This amendment changes
+**decision 5** — how the discrimination is made — and corrects two claims the
+review found to be untrue. It adds nothing to the rest of the vocabulary.*
+
+### What was wrong
+
+Decision 5 said a missing **bucket** raises `NotFound` "from every method", and
+that it raises it from `_head()` — "the one place every method goes through" —
+so that the two write paths "cannot disagree".
+
+**It could not happen.** A HEAD response has **no body**, so the driver has no
+code to report and reports the *status* as the code. A HEAD on a missing key
+and a HEAD on a missing bucket are therefore the same `"404"`, and the
+bucket-level code (`NoSuchBucket`) lives in an error *body* that a HEAD never
+has. The store classified every HEAD 404 as an *object*-level absence, and
+one condition — a missing bucket — got four different answers from one store:
+
+| method | what it answered | what it answers now |
+|---|---|---|
+| `exists` | `False` | `NotFound("bucket not found")` |
+| `stat` | `None` | `NotFound("bucket not found")` |
+| `delete` | `False` | `NotFound("bucket not found")` |
+| `get` / `get_stream` | `NotFound("blob not found")` | `NotFound("bucket not found")` |
+| `put` / `put_stream` | `NotFound("bucket not found")` | `NotFound("bucket not found")` |
+
+The read paths told the caller "the blob is not there" when the truth was "the
+store is not there" — the exact lie this ADR was written to remove. The
+decision's *reasoning* was right and its *implementation* was absent, and the
+consequence was worse than the silence decision 5 removed: a contract, an ADR
+and a test suite all asserted a behaviour the code could not produce. A
+contract that lies is worse than a contract that is silent, because a silent
+one cannot be violated.
+
+### What changed
+
+**The discrimination is now earned.** When the store has concluded that
+something is missing, it asks the server about the *bucket* — a
+`head_bucket` — before it reports an absence:
+
+* the bucket is there → the blob is not there → `NotFound("blob not found")`,
+  and `exists()` / `stat()` / `delete()` answer `False` / `None` / `False` as
+  they always did;
+* the bucket is not there → `NotFound("bucket not found")`, carrying a
+  `namespace="bucket"` detail, from **every** method.
+
+A `head_bucket` 404 means the bucket does not exist; a 403 means it does and
+this principal may not list it, which is the one answer the store cannot act
+on, and it falls back to the object-level absence — the behaviour before this
+amendment. Any other failure of the probe is a failure of the *store* and is
+raised, because "the store is broken" and "the blob is not there" must not be
+confused, and a caller that cannot tell them apart will act on the wrong one.
+
+**The write path does not ask.** A write's own response carries a body, and
+the body says which of the two is missing (`NoSuchBucket` against
+`NoSuchKey`), so the write path already knew. Asking again would have cost a
+request on every first write of every blob — the hot path — to learn what the
+write was about to say anyway. The probe is paid only where the answer is
+load-bearing: on the path that has already decided that something is missing.
+
+**The answer is not cached.** A cached "the bucket was there" is exactly the
+answer that is wrong when the bucket is deleted under a running daemon, which
+is the case this exists to catch; and a cached "the bucket was not there"
+would be wrong the moment somebody creates it.
+
+**`namespace="bucket"` is the machine-readable half of the answer.** Decision 1
+said the details "(`sha256=` against `bucket=`) say which". They did not:
+which identifiers a raise site happens to carry is a function of the *call
+site*, not of the condition — the write path's bucket-level error carried a
+`sha256=`, and the read path's object-level error carried none. The rule now
+is one detail with one meaning: `namespace="bucket"` is present **if and only
+if** the substrate's namespace is what is missing. A detail that is present ⇔
+a condition holds is a rule a caller can test; "the details that happen to be
+there" is not one.
+
+### The rest of the review's corrections
+
+* **The filesystem substrate leaked raw exceptions.** `Path.exists()` re-raises
+  every errno except the four that mean "not there", so an unreadable archive
+  leaked a raw `PermissionError` out of `exists`, `stat`, `delete`, `get` and
+  `put` alike, and the `put` dedup path leaked a raw `FileNotFoundError` from
+  a blob that vanished between the lookup and the stat. The **lookup** is now
+  the boundary: one translation, and every method that reaches it inherits the
+  classification. That is what makes the two substrates fail the same way for
+  the same reason — a store that refuses raises `AccessDenied` on both — and a
+  raw `OSError` is not a `PaaError`, so every `except PaaError` at the edge
+  (`api/app.py`, `agents/orchestrator.py`, `cli/main.py`, `agents/base.py`) and
+  `ArtifactArchive.verify`'s `except StorageError` used to miss it.
+* **`CAS.stat()` leaked a raw `zstandard.ZstdError`** on a corrupt frame that
+  `get()` reported as `Corrupt`. It is now the same class, the same message and
+  the same details — the same file, the same damage, one answer.
+* **`S3BlobStore.stat()` leaked a raw `ValueError`** when the driver answered
+  with a `ContentLength` that is not a number. It is now the substrate's
+  malformed answer, carrying the *type* of the value and never the value.
+* **The `__cause__` was sometimes the exception itself.** `raise translated
+  from exc` sets `__cause__` to the exception when the translator returned the
+  same object — which it does for an error that is already ours. The boundary
+  sites now go through one helper that spells the two cases apart: a new
+  translation is raised with the original as its cause, and an error that is
+  already ours is re-raised unchanged.
+* **The translators had two equivalent branches.** `StorageError` and
+  `PaaError` are both caught by the second, and both returned the exception
+  unchanged, so the first was dead. It is gone, and the comment now says what
+  the one branch means.
+* **The `errors.py` docstring promised more than the code did.** It said a
+  `TypeError` from the calling code "must not be reported as an infrastructure
+  fault"; the code reported it as the unclassified `BlobFailure`. The
+  *behaviour* is right for a boundary this narrow — the exception that
+  arrives is the substrate's, and the only question is which of the named
+  judgements it is — and the docstring now says what the code does and why.
+
+### What it costs
+
+* **One extra request on the miss path** of the read and metadata methods.
+  `exists()` / `stat()` / `delete()` have no production caller, and a read of
+  a blob that is not there is an error case, so the cost is a request in a
+  path that is already exceptional. A *hit* costs nothing, and the write path
+  is unchanged.
+* **One request whose answer may be refused.** `head_bucket` wants
+  `s3:ListBucket`; a deployment that grants only object-level permissions gets
+  a 403, and the store then reports an object-level absence — the behaviour
+  before this amendment. The write path still reports the missing bucket in
+  as many words, so the condition is not lost, only deferred to the write.
+* **A vocabulary detail with a rule attached.** `namespace="bucket"` has to
+  mean one thing, and it does.
+
+### What was deliberately *not* changed
+
+* **The vocabulary did not grow.** A missing bucket and a missing object are
+  the same judgement, and `NotFound` says so; the *detail* says which, not a
+  second class.
+* **The contract's shape did not change.** No signature moved, and the
+  methods that answer "is it there?" still answer `False` / `None` / `False`
+  for a blob that is not there.
+* **The write path was not restructured.** It reads the code in the response
+  body it already receives, and it does not probe.
+* **The live S3 suite is still the next wave's job.** It is the only way to
+  know that the codes the servers answer with are the codes in the table, and
+  it is where the bucket case must be asserted against both servers.

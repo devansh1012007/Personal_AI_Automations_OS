@@ -71,13 +71,13 @@ from paa.storage.coldlake.cas import (
 )
 from paa.storage.coldlake.errors import (
     AccessDenied,
-    BlobError,
     BlobFailure,
     Corrupt,
     MalformedRequest,
     NotFound,
     NotSupported,
     Unreachable,
+    raise_blob_error,
     translate_blob_error,
 )
 
@@ -122,13 +122,24 @@ _SPOOL_MAX_BYTES: Final = DEFAULT_CHUNK_SIZE
 # dicts are shaped like the driver's, and the live suite (wave 2) exercises
 # the same classifier against a real server.
 
+#: The code the driver reports when the server's answer carried no body of
+#: its own and the *status* is all there is.
+#:
+#: A HEAD response has no body, so a HEAD on a missing key arrives with this
+#: code — and a HEAD on a missing **bucket** arrives with exactly the same
+#: one. The two are therefore indistinguishable from the HEAD alone, and
+#: the store resolves the ambiguity by asking the server about the bucket
+#: (see :meth:`S3BlobStore._namespace_is_absent`). A response that *does*
+#: carry a body says which of the two it is, in the code.
+_S3_STATUS_AS_CODE: Final[str] = "404"
+
 #: S3 error codes that mean the addressed **object** is not there.
 #:
 #: ``"404"`` is in the list because a HEAD on a missing key answers 404 with
-#: an empty body, and botocore then reports the *status* as the code.
+#: an empty body, and botocore then reports the status as the code.
 _S3_OBJECT_MISSING_CODES: Final[frozenset[str]] = frozenset(
     {
-        "404",
+        _S3_STATUS_AS_CODE,
         "NoSuchKey",
         "NoSuchVersion",
         "NotFound",
@@ -331,11 +342,29 @@ def _is_missing_object(exc: BaseException) -> bool:
 
     The bucket-level codes are excluded on purpose: a missing bucket is not a
     missing object, and the store cannot answer the question at all.
+
+    The ambiguous code — the status reported as the code, which is all a
+    HEAD carries — counts as an object-level absence here, and the *caller*
+    resolves the ambiguity: it asks the server about the bucket before it
+    reports an absence (see :meth:`S3BlobStore._require_namespace`).
     """
     code = _s3_error_code(exc)
     if code is not None:
         return code in _S3_OBJECT_MISSING_CODES
     return _s3_status(exc) == 404
+
+
+def _is_ambiguous_absence(translated: Exception) -> bool:
+    """Whether a translated error is an absence the driver did not qualify.
+
+    The driver's code says which of the two absences it is — ``NoSuchKey``
+    for an object, ``NoSuchBucket`` for the namespace — except when the
+    code is the status reported as the code, which is all a bodyless
+    response carries. That one is ambiguous, and the store resolves it.
+    """
+    if not isinstance(translated, NotFound):
+        return False
+    return translated.details.get("s3_code") == _S3_STATUS_AS_CODE
 
 
 def _translate_s3_error(
@@ -358,11 +387,9 @@ def _translate_s3_error(
     The driver's own wording is not among them: it is the ``__cause__``,
     where it stays available to whoever reads the traceback.
     """
-    if isinstance(exc, BlobError):
-        return exc
     if isinstance(exc, PaaError):
-        # A domain error raised by the code above the substrate. It is not the
-        # driver's to relabel, and it is not unwrapped either: its own
+        # Already neutral — ours, or another domain's. Either way it is not
+        # the driver's to relabel, and it is not unwrapped either: its own
         # ``__context__`` may be anything.
         return exc
 
@@ -384,7 +411,12 @@ def _translate_s3_error(
         common["http_status"] = status
 
     if code is not None and code in _S3_BUCKET_MISSING_CODES:
-        return NotFound("bucket not found", substrate=substrate, **common)
+        # The namespace is the thing that is missing, and the detail says
+        # so: ``namespace="bucket"`` is present if and only if the bucket
+        # is what is not there.
+        return NotFound(
+            "bucket not found", substrate=substrate, **{**common, "namespace": "bucket"}
+        )
     if code is not None and code in _S3_OBJECT_MISSING_CODES:
         return NotFound("blob not found", substrate=substrate, **common)
     if code is not None and code in _S3_REFUSED_CODES:
@@ -417,6 +449,37 @@ def _translate_s3_error(
     # knows the codec's and the filesystem's failures, and it reports the
     # rest as the unclassified failure.
     return translate_blob_error(current, substrate=substrate, **common)
+
+
+def _content_length(
+    head: dict[str, Any], *, key: str, sha256: str, default: int = 0
+) -> int:
+    """The object's length on the wire, as the driver reported it.
+
+    A broken server can answer with something that is not a number, and the
+    conversion used to let the raw ``ValueError`` escape the store — a raw
+    exception leaving the substrate, which is the invariant the vocabulary
+    exists to keep, and one the filesystem substrate does not have (its
+    equivalent race is translated).
+
+    It is reported as the substrate's malformed answer. The *type* of the
+    value is kept, because the operator needs to know the server sent a
+    string where a number belongs; the value itself is not, because it
+    came from the server and the details are merged verbatim into a ledger
+    payload.
+    """
+    value = head.get("ContentLength", default)
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise BlobFailure(
+            "the substrate answered with a length that is not a number",
+            substrate=_SUBSTRATE,
+            driver_error=type(exc).__name__,
+            content_length_type=type(value).__name__,
+            key=key,
+            sha256=sha256,
+        ) from exc
 
 
 class S3BlobStore:
@@ -466,9 +529,13 @@ class S3BlobStore:
                 # endpoint, a profile that does not exist, a region the driver
                 # rejects. It used to raise the driver's own exception out of
                 # the constructor.
-                raise _translate_s3_error(
-                    exc, substrate=_SUBSTRATE, bucket=bucket, op="client"
-                ) from exc
+                raise_blob_error(
+                    exc,
+                    substrate=_SUBSTRATE,
+                    bucket=bucket,
+                    op="client",
+                    translate=self._translate_failure,
+                )
 
         if ensure_bucket:
             self._ensure_bucket()
@@ -499,9 +566,13 @@ class S3BlobStore:
         A missing **object** is an ordinary answer — the blob is not stored —
         and a missing **bucket** is not: the store cannot answer the question
         at all, and answering "no" would be a lie that a daemon would act on.
-        So the bucket-level absence raises, and it raises the *same* error
-        from every method, because every method reaches the store through
-        this one.
+
+        The head alone cannot tell the two apart: a HEAD response has no
+        body, so both arrive as the same 404 (see
+        :data:`_S3_STATUS_AS_CODE`). So this method reports the *absence* and
+        leaves the question of which absence it is to the caller, which
+        asks the server about the bucket before it tells a caller that
+        something is not there (see :meth:`_require_namespace`).
         """
         try:
             # The client is untyped on purpose: ``boto3`` is an optional extra
@@ -511,10 +582,128 @@ class S3BlobStore:
         except Exception as exc:
             if _is_missing_object(exc):
                 return None
-            raise _translate_s3_error(
-                exc, substrate=_SUBSTRATE, bucket=self._bucket, key=key, op="head"
-            ) from exc
+            raise_blob_error(
+                exc,
+                substrate=_SUBSTRATE,
+                bucket=self._bucket,
+                key=key,
+                op="head",
+                translate=self._translate_failure,
+            )
         return head
+
+    # -- the namespace -----------------------------------------------------
+    #
+    # The bucket is the substrate's namespace: the thing the objects live in,
+    # and the thing that can be gone. A HEAD cannot say whether the bucket
+    # or the key is missing, so the store asks the server about the bucket
+    # itself before it reports an absence to a caller. That is the whole of
+    # the "a missing bucket raises" clause: the discrimination is *earned*
+    # by a second request, not assumed from a code a HEAD cannot carry.
+
+    def _namespace_is_absent(self) -> bool:
+        """Whether the server says the bucket is not there.
+
+        The question is asked of ``head_bucket`` and of nothing else,
+        because that is the request whose answer is about the bucket: a
+        HeadBucket's 404 means the bucket does not exist, and a 403 means it
+        does and this principal may not list it.
+
+        The order of the answers is the dialect's own: the **code** decides
+        when it is one this dialect knows — ``NoSuchBucket`` for a bucket
+        that is not there, a refusal code for a bucket that is there and may
+        not be listed — and the **status** decides otherwise, because a
+        status is the coarse fallback. The status reported as the code
+        (``"404"``) is the answer a HEAD gives, and it is a 404.
+
+        A refusal is therefore read as "the bucket is there" — which is
+        what S3's own rule says, since it answers 404 (not 403) for a
+        bucket that does not exist. It is the one case the store cannot
+        be sure about, and it is the *old* behaviour: the store reports an
+        object-level absence, and the next write reports the missing bucket
+        in as many words.
+
+        Any other failure is a failure of the store and is raised: "the
+        store is broken" and "the blob is not there" must not be confused,
+        and a caller that cannot tell them apart will act on the wrong one.
+
+        The answer is **not** cached. A cached "the bucket was there" is
+        exactly the answer that is wrong when the bucket is deleted under a
+        running daemon, which is the case this exists to catch; and a
+        cached "the bucket was not there" would be wrong the moment
+        somebody creates it.
+        """
+        try:
+            self._client.head_bucket(Bucket=self._bucket)
+        except Exception as exc:
+            code = _s3_error_code(exc)
+            status = _s3_status(exc)
+            if code in _S3_BUCKET_MISSING_CODES:
+                return True
+            if code is not None and code in _S3_REFUSED_CODES:
+                return False
+            if code == _S3_STATUS_AS_CODE or status == 404:
+                return True
+            if status in _S3_REFUSED_STATUSES:
+                return False
+            raise_blob_error(
+                exc,
+                substrate=_SUBSTRATE,
+                bucket=self._bucket,
+                op="head_bucket",
+                translate=self._translate_failure,
+            )
+        return False
+
+    def _bucket_missing(self, details: dict[str, Any], *, substrate: str = _SUBSTRATE) -> NotFound:
+        """The error for a bucket that is not there.
+
+        The ``namespace="bucket"`` detail is the machine-readable half of
+        the answer: it is present if and only if the substrate's namespace
+        is the thing that is missing, so a caller can tell "the store is
+        gone" from "the blob is gone" without parsing a message.
+        """
+        return NotFound(
+            "bucket not found",
+            substrate=substrate,
+            **{**details, "bucket": self._bucket, "namespace": "bucket"},
+        )
+
+    def _require_namespace(self, digest: str, *, op: str) -> None:
+        """Make sure an absence is an absence and not a broken store.
+
+        Called by every method that is about to tell a caller that
+        something is not there. If the bucket is gone, the store cannot
+        answer the question at all, and it says so — it does not answer
+        "no" about a store that is not there.
+
+        The cost is one request, and it is paid only on the path that has
+        already decided that something is missing. A hit costs nothing.
+        The write path does not ask: a write's own response carries the
+        code that says which of the two is missing, so it already knows.
+        """
+        if self._namespace_is_absent():
+            raise self._bucket_missing({"sha256": digest, "op": op})
+
+    def _translate_failure(
+        self, exc: BaseException, *, substrate: str = _SUBSTRATE, **details: Any
+    ) -> Exception:
+        """The S3 dialect's translation, with an ambiguous absence resolved.
+
+        A response that carries a body names its condition: ``NoSuchKey``
+        for an object, ``NoSuchBucket`` for the namespace. A response with
+        no body does not — it says the addressed thing is not there and
+        stops there. That answer is resolved by asking the server about
+        the bucket, so the store reports "the bucket is not there" as such
+        rather than as "the blob is not there".
+
+        The resolution happens on the failure path only, so it costs
+        nothing when the store is working.
+        """
+        translated = _translate_s3_error(exc, substrate=substrate, **details)
+        if _is_ambiguous_absence(translated) and self._namespace_is_absent():
+            return self._bucket_missing(details, substrate=substrate)
+        return translated
 
     def _ensure_bucket(self) -> None:  # pragma: no cover - needs a live server
         try:
@@ -524,16 +713,26 @@ class S3BlobStore:
                 exc, substrate=_SUBSTRATE, bucket=self._bucket, op="head_bucket"
             )
             if not isinstance(translated, NotFound):
-                raise translated from exc
+                raise_blob_error(
+                    exc,
+                    substrate=_SUBSTRATE,
+                    bucket=self._bucket,
+                    op="head_bucket",
+                    translate=self._translate_failure,
+                )
             # The bucket is not there: create it. A cold lake whose bucket is
             # missing fails on its first write with an opaque NoSuchBucket,
             # long after the deployment was declared healthy.
             try:
                 self._client.create_bucket(Bucket=self._bucket)
             except Exception as create_exc:
-                raise _translate_s3_error(
-                    create_exc, substrate=_SUBSTRATE, bucket=self._bucket, op="create_bucket"
-                ) from create_exc
+                raise_blob_error(
+                    create_exc,
+                    substrate=_SUBSTRATE,
+                    bucket=self._bucket,
+                    op="create_bucket",
+                    translate=self._translate_failure,
+                )
             log.info("s3.bucket_created", bucket=self._bucket)
 
     # -- writes ------------------------------------------------------------
@@ -552,7 +751,7 @@ class S3BlobStore:
             return BlobRef(
                 sha256=digest,
                 size_bytes=len(data),
-                compressed_bytes=int(head.get("ContentLength", 0)),
+                compressed_bytes=_content_length(head, key=_key, sha256=digest),
             )
 
         payload = (
@@ -631,7 +830,9 @@ class S3BlobStore:
                     return BlobRef(
                         sha256=digest,
                         size_bytes=raw_bytes,
-                        compressed_bytes=int(head.get("ContentLength", compressed_bytes)),
+                        compressed_bytes=_content_length(
+                            head, key=_key, sha256=digest, default=compressed_bytes
+                        ),
                     )
 
                 spool.seek(0)
@@ -643,9 +844,7 @@ class S3BlobStore:
             # *host* resource rather than the substrate, but it is still an
             # exception that would leave the store, and a temporary directory
             # that cannot hold the payload is a failure of this machine.
-            raise translate_blob_error(
-                exc, substrate=_SUBSTRATE, op="write"
-            ) from exc
+            raise_blob_error(exc, substrate=_SUBSTRATE, op="write")
 
         log.debug("s3.put_stream", sha256=digest, size=raw_bytes, stored=compressed_bytes)
         return BlobRef(sha256=digest, size_bytes=raw_bytes, compressed_bytes=compressed_bytes)
@@ -659,14 +858,15 @@ class S3BlobStore:
                 Metadata={_META_RAW_SIZE: str(raw_size), "sha256": sha256},
             )
         except Exception as exc:
-            raise _translate_s3_error(
+            raise_blob_error(
                 exc,
                 substrate=_SUBSTRATE,
                 bucket=self._bucket,
                 key=key,
                 sha256=sha256,
                 op="put",
-            ) from exc
+                translate=self._translate_failure,
+            )
 
     def _upload_fileobj(self, key: str, fileobj: IO[bytes], *, raw_size: int, sha256: str) -> None:
         try:
@@ -682,20 +882,21 @@ class S3BlobStore:
             # The translation unwraps it, so a failed upload reports the same
             # concept as the same failure on the ``put_object`` path — which
             # is the whole of the put/put_stream divergence.
-            raise _translate_s3_error(
+            raise_blob_error(
                 exc,
                 substrate=_SUBSTRATE,
                 bucket=self._bucket,
                 key=key,
                 sha256=sha256,
                 op="upload",
-            ) from exc
+                translate=self._translate_failure,
+            )
 
     # -- reads -------------------------------------------------------------
 
     def get(self, digest: str) -> bytes:
         """Return the raw payload, verifying its hash first."""
-        key = self._require(digest)
+        key = self._require(digest, op="get")
         raw = self._read_all(key, digest)
         actual = hashlib.sha256(raw).hexdigest()
         if actual != digest:
@@ -716,7 +917,7 @@ class S3BlobStore:
         disk must treat its output as unverified until the iterator is
         exhausted, exactly as with the filesystem store.
         """
-        key = self._require(digest)
+        key = self._require(digest, op="get_stream")
         hasher = hashlib.sha256()
         body = self._body(key, digest)
         try:
@@ -727,9 +928,8 @@ class S3BlobStore:
                 source = body
             chunks = _translated_chunks(
                 _iter_chunks(source, self._chunk_size),
-                translate=lambda exc: _translate_s3_error(
+                translate=lambda exc: self._translate_failure(
                     exc,
-                    substrate=_SUBSTRATE,
                     bucket=self._bucket,
                     key=key,
                     sha256=digest,
@@ -764,14 +964,15 @@ class S3BlobStore:
         try:
             response: dict[str, Any] = self._client.get_object(Bucket=self._bucket, Key=key)
         except Exception as exc:
-            raise _translate_s3_error(
+            raise_blob_error(
                 exc,
                 substrate=_SUBSTRATE,
                 bucket=self._bucket,
                 key=key,
                 sha256=digest,
                 op="get",
-            ) from exc
+                translate=self._translate_failure,
+            )
         # The response body is a streaming reader, not a ``bytes``; it is
         # handed back as the ``IO[bytes]`` the contract promises and consumed
         # through :func:`_iter_chunks` and zstd's own reader, both of which
@@ -787,14 +988,15 @@ class S3BlobStore:
             # A body that dies half-way through is a connection that failed
             # mid-flight, not a corrupt archive: the two have different
             # remedies, and the driver used to answer with its own exception.
-            raise _translate_s3_error(
+            raise_blob_error(
                 exc,
                 substrate=_SUBSTRATE,
                 bucket=self._bucket,
                 key=key,
                 sha256=digest,
                 op="read",
-            ) from exc
+                translate=self._translate_failure,
+            )
         finally:
             close = getattr(body, "close", None)
             if close is not None:
@@ -817,7 +1019,12 @@ class S3BlobStore:
     # -- metadata ----------------------------------------------------------
 
     def exists(self, digest: str) -> bool:
-        return self._locate(digest) is not None
+        if self._locate(digest) is not None:
+            return True
+        # The blob is not there. That is an answer — unless the *bucket* is
+        # not there, in which case the store cannot answer at all.
+        self._require_namespace(digest, op="exists")
+        return False
 
     def stat(self, digest: str) -> BlobRef | None:
         """Describe a blob without downloading it, or ``None`` if absent.
@@ -829,9 +1036,10 @@ class S3BlobStore:
         """
         located = self._locate(digest)
         if located is None:
+            self._require_namespace(digest, op="stat")
             return None
         key, head = located
-        compressed_bytes = int(head.get("ContentLength", 0))
+        compressed_bytes = _content_length(head, key=key, sha256=digest)
         if not key.endswith(_COMPRESSED_SUFFIX):
             return BlobRef(
                 sha256=digest, size_bytes=compressed_bytes, compressed_bytes=compressed_bytes
@@ -860,25 +1068,34 @@ class S3BlobStore:
         """Remove a blob. Returns whether anything was there."""
         located = self._locate(digest)
         if located is None:
+            self._require_namespace(digest, op="delete")
             return False
         key, _head = located
         try:
             self._client.delete_object(Bucket=self._bucket, Key=key)
         except Exception as exc:
-            raise _translate_s3_error(
+            raise_blob_error(
                 exc,
                 substrate=_SUBSTRATE,
                 bucket=self._bucket,
                 key=key,
                 sha256=digest,
                 op="delete",
-            ) from exc
+                translate=self._translate_failure,
+            )
         log.info("s3.deleted", sha256=digest)
         return True
 
-    def _require(self, digest: str) -> str:
+    def _require(self, digest: str, *, op: str) -> str:
+        """The key of the blob, or the error that says why there is none.
+
+        The store has concluded that the object is not there, and before it
+        says so it checks that the *bucket* is there — because a store that
+        cannot answer must not answer "no".
+        """
         located = self._locate(digest)
         if located is None:
+            self._require_namespace(digest, op=op)
             raise NotFound("blob not found", substrate=_SUBSTRATE, sha256=digest)
         return located[0]
 

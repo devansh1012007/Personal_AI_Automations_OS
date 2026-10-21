@@ -15,6 +15,7 @@ is only true if the contract is one they can actually be handed.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import inspect
 import io
@@ -23,10 +24,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import zstandard
 
+from paa.core.errors import StorageError
 from paa.storage.coldlake import ArtifactArchive, ContentAddressedStore
 from paa.storage.coldlake.base import BlobStore
 from paa.storage.coldlake.errors import (
+    AccessDenied,
     BlobError,
     Corrupt,
     MalformedRequest,
@@ -34,7 +38,7 @@ from paa.storage.coldlake.errors import (
 )
 from paa.storage.coldlake.minio_backend import S3BlobStore
 from paa.storage.relational.database import Database
-from tests.storage.test_minio_backend import StubS3Client
+from tests.storage.test_minio_backend import ClientError, StubS3Client
 
 #: The two classes the contract is written for. The *methods* they are
 #: checked against are discovered from the protocol itself, so a method added
@@ -213,6 +217,24 @@ def _corrupt_the_only_blob(store: Any, s3_client: StubS3Client) -> None:
     s3_client.objects[key] = (b"not a zstd frame at all", meta)
 
 
+def _replace_the_stored_bytes(store: Any, s3_client: StubS3Client, payload: bytes) -> None:
+    """Replace the stored blob with a **valid** frame of different content.
+
+    This is the other corruption, and the one the contract names: the
+    bytes decode, and they are not the bytes the address says. Every
+    "corrupt" test in the suite corrupted the *frame* instead, so zstd
+    raised — and the hash check, which is the one the contract promises
+    can only fire *after* the final chunk, was never reached.
+    """
+    frame = zstandard.ZstdCompressor().compress(payload)
+    if isinstance(store, ContentAddressedStore):
+        path = next(store.root.rglob("*.zst"))
+        path.write_bytes(frame)
+        return
+    key, (_body, meta) = next(iter(s3_client.objects.items()))
+    s3_client.objects[key] = (frame, meta)
+
+
 class TestTheErrorClause:
     def test_every_contract_method_states_what_it_raises(self) -> None:
         """The clause has to be *in the contract*, not only in the code.
@@ -268,14 +290,6 @@ class TestTheErrorClause:
             with pytest.raises(MalformedRequest):
                 store.exists("../../etc/passwd")
 
-    def test_a_lying_size_hint_is_a_malformed_request_on_both(
-        self, cas: ContentAddressedStore, s3_store: S3BlobStore
-    ) -> None:
-        """The hint is checked the same way whichever way the bytes arrived."""
-        for store in (cas, s3_store):
-            with pytest.raises(MalformedRequest):
-                store.put_stream(io.BytesIO(b"twelve bytes"), size=999)
-
     def test_a_corrupt_frame_is_corrupt_on_both(
         self,
         cas: ContentAddressedStore,
@@ -300,6 +314,164 @@ class TestTheErrorClause:
             assert store.exists(digest) is False
             assert store.stat(digest) is None
             assert store.delete(digest) is False
+
+    def test_a_missing_namespace_raises_where_there_is_one(
+        self, s3_store: S3BlobStore, s3_client: StubS3Client
+    ) -> None:
+        """The clause the protocol states, in the shape a server gives it.
+
+        The protocol says a substrate whose namespace is absent raises
+        ``NotFound`` from ``exists``, ``stat`` and ``delete`` rather than
+        answering ``False`` — because "the store cannot answer" and "the
+        blob is not there" are different facts, and a daemon will act on the
+        difference.
+
+        The stub answers the way a server answers: a HEAD carries no body,
+        so the 404 for a missing bucket is the *same* 404 a missing key
+        gets, and the store has to ask about the bucket to tell them
+        apart. The previous version of this assertion drove a
+        ``NoSuchBucket`` *code* into the HEAD, which is a shape a HEAD
+        cannot produce, and the behaviour it claimed never happened.
+        """
+        s3_client.bucket_missing = True
+        digest = "e" * 64
+
+        for call in (
+            lambda: s3_store.exists(digest),
+            lambda: s3_store.stat(digest),
+            lambda: s3_store.delete(digest),
+        ):
+            with pytest.raises(NotFound) as excinfo:
+                call()
+            assert excinfo.value.details["namespace"] == "bucket"
+
+    def test_the_namespace_detail_is_present_only_for_a_missing_namespace(
+        self, cas: ContentAddressedStore, s3_store: S3BlobStore, s3_client: StubS3Client
+    ) -> None:
+        """One detail, one meaning.
+
+        ``namespace="bucket"`` is present if and only if the substrate's
+        namespace is what is missing. The filesystem store has no separate
+        namespace to lose — its root *is* the archive — so it never carries
+        the detail, and a caller can read the detail without having to
+        know which substrate it is talking to.
+        """
+        digest = "f" * 64
+        with pytest.raises(NotFound) as cas_error:
+            cas.get(digest)
+        assert "namespace" not in cas_error.value.details
+
+        s3_client.bucket_missing = True
+        with pytest.raises(NotFound) as s3_error:
+            s3_store.get(digest)
+        assert s3_error.value.details["namespace"] == "bucket"
+
+    def test_a_substrate_that_refuses_is_access_denied_on_both(
+        self,
+        cas: ContentAddressedStore,
+        s3_store: S3BlobStore,
+        s3_client: StubS3Client,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The same condition, the same class, on either substrate.
+
+        A store that refuses the request is a refusal on both: the
+        filesystem's permission error and the server's ``AccessDenied`` are
+        the same judgement, and the two used to differ — the filesystem
+        leaked a raw ``PermissionError``, which is not a ``PaaError`` and
+        so misses every ``except PaaError`` at the edge of the runtime.
+
+        The permission is simulated rather than arranged: a directory's
+        mode does not stop a process that is running as root, and this
+        suite has to mean the same thing on every host.
+        """
+        s3_client.failure = ClientError("AccessDenied", status=403)
+
+        def refuse(self: Path) -> bool:
+            raise PermissionError(errno.EACCES, "permission denied")
+
+        monkeypatch.setattr(Path, "exists", refuse)
+
+        for store in (cas, s3_store):
+            with pytest.raises(AccessDenied) as excinfo:
+                store.exists("a" * 64)
+            assert isinstance(excinfo.value, StorageError)
+
+    def test_a_corrupt_frame_is_corrupt_in_the_metadata_path(
+        self, cas: ContentAddressedStore
+    ) -> None:
+        """The filesystem store reads the frame to answer, so it finds the damage.
+
+        The same file, the same damage: the read path said ``Corrupt`` and
+        the metadata path said "a codec error", because the frame header is
+        read by a different call. ``stat`` is a *protocol* method, so a
+        caller writing against the contract could hit it.
+        """
+        ref = cas.put(b"a payload that will be mangled")
+        path = next(cas.root.rglob("*.zst"))
+        path.write_bytes(b"not a zstd frame at all")
+
+        with pytest.raises(Corrupt):
+            cas.stat(ref.sha256)
+
+    def test_a_corrupt_frame_is_corrupt_when_the_recorded_size_is_missing(
+        self, s3_store: S3BlobStore, s3_client: StubS3Client
+    ) -> None:
+        """The S3 store answers from the recorded size, and re-reads when it cannot.
+
+        A modern object carries its raw size in its metadata, so ``stat``
+        answers without reading the blob — and cannot see a damaged one. A
+        legacy object carries no such record, so the store re-reads the
+        blob to count it, and a frame that is not a frame is corruption it
+        finds.
+        """
+        ref = s3_store.put(b"a payload that will be mangled")
+        key, (_body, _meta) = next(iter(s3_client.objects.items()))
+        s3_client.objects[key] = (b"not a zstd frame at all", {})
+
+        with pytest.raises(Corrupt):
+            s3_store.stat(ref.sha256)
+
+    def test_a_hash_mismatch_is_corrupt_in_the_streaming_path_on_both(
+        self,
+        cas: ContentAddressedStore,
+        s3_store: S3BlobStore,
+        s3_client: StubS3Client,
+    ) -> None:
+        """The streaming path verifies the hash, and says so when it fails.
+
+        The contract makes a point of it — ``Corrupt`` can only be raised
+        *after* the final chunk, because a hash over partial data means
+        nothing — and that is precisely the case nothing tested: every
+        "corrupt" test in the suite corrupted the *frame*, so the codec
+        raised before the hash was ever checked.
+        """
+        for store in (cas, s3_store):
+            ref = store.put(b"a payload that will be swapped")
+            _replace_the_stored_bytes(store, s3_client, b"a payload that is not it")
+            with pytest.raises(Corrupt):
+                list(store.get_stream(ref.sha256))
+
+    @pytest.mark.parametrize("compress", [True, False])
+    @pytest.mark.parametrize("declared", [999, 3])
+    def test_a_lying_size_hint_is_a_malformed_request_on_both(
+        self,
+        cas: ContentAddressedStore,
+        s3_store: S3BlobStore,
+        compress: bool,
+        declared: int,
+    ) -> None:
+        """The hint is checked the same way whichever way the bytes arrived.
+
+        On the compressed path zstd's own frame check raises first, so the
+        explicit check is load-bearing exactly on the uncompressed path —
+        which is the path the old test never took.
+        """
+        for store in (cas, s3_store):
+            with pytest.raises(MalformedRequest):
+                store.put_stream(
+                    io.BytesIO(b"twelve bytes"), compress=compress, size=declared
+                )
 
 
 # ---------------------------------------------------------------------------

@@ -38,7 +38,10 @@ wants to know *which* failure it was can now say so. The members are:
 
 ``NotFound``
     The addressed thing is not there: a missing blob, or — on the S3
-    substrate — a missing bucket.
+    substrate — a missing bucket. They are one class and one judgement,
+    and a caller that has to tell them apart reads the error's
+    ``namespace`` detail: it is ``"bucket"`` if and only if the
+    substrate's namespace is what is missing.
 ``AccessDenied``
     The substrate refused: wrong credentials, or not permitted.
 ``Unreachable``
@@ -47,8 +50,8 @@ wants to know *which* failure it was can now say so. The members are:
 ``Corrupt``
     The bytes are not what the address says.
 ``MalformedRequest``
-    The request was refused as malformed: a digest that is not a digest, a
-    size hint that disagrees with the bytes.
+    The request was refused as malformed: a digest that is not a digest,
+    a size hint that disagrees with the bytes.
 ``NotSupported``
     The substrate cannot serve the request at all.
 ``BlobFailure``
@@ -57,6 +60,15 @@ wants to know *which* failure it was can now say so. The members are:
 A driver's exception never reaches a caller: the translation happens at the
 substrate boundary, once, and it is idempotent — an error that is already one
 of ours comes back unchanged.
+
+**The namespace clause is the S3 substrate's, and it is earned.** A HEAD on a
+missing key and a HEAD on a missing bucket are the *same* 404, because a
+HEAD response carries no body and the driver therefore reports the status as
+the code. So the store cannot tell the two apart from the HEAD alone, and it
+does not pretend to: it asks the server about the bucket before it reports an
+absence, and reports a missing namespace as a missing namespace. The
+filesystem store has no separate namespace to lose — its root *is* the
+archive, and it creates it — so an absence there is an absence of the blob.
 """
 
 from __future__ import annotations
@@ -159,17 +171,29 @@ class BlobStore(Protocol):
         reached (:class:`~paa.storage.coldlake.errors.Unreachable`), and a
         substrate whose namespace is absent
         (:class:`~paa.storage.coldlake.errors.NotFound`), which is raised
-        rather than answered ``False`` because "the store cannot answer" and
-        "the blob is not there" are different facts.
+        rather than answered ``False`` because "the store cannot answer"
+        and "the blob is not there" are different facts, and a daemon will
+        act on the difference.
+
+        The namespace clause is the S3 substrate's — only S3 has a
+        namespace distinct from the objects in it — and it is earned rather
+        than assumed: see the module docstring.
         """
         ...
 
     def stat(self, digest: str) -> BlobRef | None:
         """The reference for ``digest``, or ``None`` if it is not stored.
 
-        Raises exactly what :meth:`exists` raises, for the same reasons: a
+        Raises what :meth:`exists` raises, for the same reasons: a
         :class:`~paa.storage.coldlake.errors.NotFound` for an absent
         substrate namespace, and the substrate's own refusals.
+
+        And :class:`~paa.storage.coldlake.errors.Corrupt` when the
+        substrate has to read the blob's bytes to answer and the bytes are
+        damaged: the filesystem store learns the raw size from the frame,
+        so a frame that is not a frame is corruption it finds. The S3 store
+        answers from the size recorded when the object was written and does
+        not read the blob, so it does not see the damage.
         """
         ...
 

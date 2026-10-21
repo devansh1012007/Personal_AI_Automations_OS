@@ -56,6 +56,7 @@ from paa.storage.coldlake.errors import (
     Corrupt,
     MalformedRequest,
     NotFound,
+    raise_blob_error,
     translate_blob_error,
 )
 
@@ -171,9 +172,9 @@ class ContentAddressedStore:
             # Constructing the store is a boundary too: a root that cannot be
             # created is a substrate failure, and it used to escape as a raw
             # ``OSError`` out of the constructor.
-            raise translate_blob_error(
+            raise_blob_error(
                 exc, substrate=_SUBSTRATE, path=str(self._root), op="create"
-            ) from exc
+            )
 
     # -- paths -------------------------------------------------------------
 
@@ -186,13 +187,42 @@ class ContentAddressedStore:
         return self._blobs / digest[:2] / digest[2:4] / f"{digest}{suffix}"
 
     def _locate(self, digest: str) -> Path | None:
-        """Find a stored blob whichever way it was written."""
+        """Find a stored blob whichever way it was written.
+
+        The lookup is the **boundary**, not the five call sites that reach
+        it: ``Path.exists()`` swallows the errnos that mean "not there" and
+        re-raises every other one, so an unreadable archive used to leak a
+        raw ``PermissionError`` out of ``exists``, ``stat``, ``delete``,
+        ``get`` and ``put`` alike. Translating here means every method that
+        reaches the lookup inherits the classification, and the two
+        substrates fail the same way for the same reason.
+        """
         _validate_digest(digest)
         for compressed in (True, False):
             candidate = self._leaf(digest, compressed=compressed)
-            if candidate.exists():
+            try:
+                present = candidate.exists()
+            except OSError as exc:
+                raise_blob_error(
+                    exc, substrate=_SUBSTRATE, path=str(candidate), op="lookup"
+                )
+            if present:
                 return candidate
         return None
+
+    def _stored_size(self, path: Path, digest: str) -> int:
+        """The size on disk of a blob that is there.
+
+        Guarded because the blob can vanish between the lookup and the
+        stat — the archive is being swept under us — and a raw
+        ``FileNotFoundError`` from that race used to escape ``put``.
+        """
+        try:
+            return path.stat().st_size
+        except OSError as exc:
+            raise_blob_error(
+                exc, substrate=_SUBSTRATE, path=str(path), sha256=digest, op="stat"
+            )
 
     # -- writes ------------------------------------------------------------
 
@@ -214,7 +244,7 @@ class ContentAddressedStore:
             return BlobRef(
                 sha256=digest,
                 size_bytes=len(data),
-                compressed_bytes=existing.stat().st_size,
+                compressed_bytes=self._stored_size(existing, digest),
             )
 
         payload = (
@@ -310,7 +340,7 @@ class ContentAddressedStore:
                 return BlobRef(
                     sha256=digest,
                     size_bytes=raw_bytes,
-                    compressed_bytes=existing.stat().st_size,
+                    compressed_bytes=self._stored_size(existing, digest),
                 )
 
             target = self._leaf(digest, compressed=compress)
@@ -324,9 +354,7 @@ class ContentAddressedStore:
             # The staging write, the rename, or the read from the caller's
             # stream: all three are the substrate failing to take the payload,
             # and all three used to escape as a raw ``OSError``.
-            raise translate_blob_error(
-                exc, substrate=_SUBSTRATE, path=str(scratch), op="write"
-            ) from exc
+            raise_blob_error(exc, substrate=_SUBSTRATE, path=str(scratch), op="write")
         finally:
             # The cleanup must not replace the failure that brought us here:
             # a staging file left behind is recoverable, and the failure that
@@ -347,9 +375,7 @@ class ContentAddressedStore:
             scratch.write_bytes(payload)
             os.replace(scratch, target)
         except OSError as exc:
-            raise translate_blob_error(
-                exc, substrate=_SUBSTRATE, path=str(target), op="write"
-            ) from exc
+            raise_blob_error(exc, substrate=_SUBSTRATE, path=str(target), op="write")
         finally:
             # The cleanup must not replace the failure that brought us here.
             with contextlib.suppress(OSError):
@@ -394,9 +420,9 @@ class ContentAddressedStore:
             # The open is outside the ``with`` on purpose: a file that cannot
             # be opened is a substrate failure, and it used to escape this
             # generator as a raw ``OSError``.
-            raise translate_blob_error(
+            raise_blob_error(
                 exc, substrate=_SUBSTRATE, path=str(path), sha256=digest, op="open"
-            ) from exc
+            )
         with handle:
             source: IO[bytes]
             if path.suffix == _COMPRESSED_SUFFIX:
@@ -436,9 +462,9 @@ class ContentAddressedStore:
                 # content size, and the one-shot API refuses those outright.
                 return zstandard.ZstdDecompressor().stream_reader(handle).read()
         except OSError as exc:
-            raise translate_blob_error(
+            raise_blob_error(
                 exc, substrate=_SUBSTRATE, path=str(path), sha256=digest, op="read"
-            ) from exc
+            )
         except zstandard.ZstdError as exc:
             # A truncated or scrambled frame is corruption too; report it the
             # same way rather than leaking a codec-specific exception.
@@ -461,29 +487,35 @@ class ContentAddressedStore:
         (everything :meth:`put` writes, and any :meth:`put_stream` given a size
         hint). Otherwise it has to be counted by streaming the blob through the
         decompressor — correct, but O(size), which is why the hint exists.
+
+        A frame that is not a frame is reported as :class:`Corrupt` here
+        exactly as :meth:`get` reports it: the same file, the same damage,
+        two different answers would be the divergence this vocabulary exists
+        to remove.
         """
         path = self._locate(digest)
         if path is None:
             return None
-        try:
-            compressed_bytes = path.stat().st_size
-        except OSError as exc:
-            # The blob was there a moment ago and is not now: a race, and the
-            # answer is the same as the one for a blob that was never there.
-            raise translate_blob_error(
-                exc, substrate=_SUBSTRATE, path=str(path), sha256=digest, op="stat"
-            ) from exc
+        compressed_bytes = self._stored_size(path, digest)
         if path.suffix != _COMPRESSED_SUFFIX:
             return BlobRef(
                 sha256=digest, size_bytes=compressed_bytes, compressed_bytes=compressed_bytes
             )
         return BlobRef(
             sha256=digest,
-            size_bytes=self._raw_size(path),
+            size_bytes=self._raw_size(path, digest),
             compressed_bytes=compressed_bytes,
         )
 
-    def _raw_size(self, path: Path) -> int:
+    def _raw_size(self, path: Path, digest: str) -> int:
+        """The raw (uncompressed) size of a stored blob, from its frame.
+
+        A frame that is not a frame is corruption, and it is reported as
+        :class:`Corrupt` — the same class and the same message the read
+        path raises for the same file. The codec's own exception used to
+        escape here, which made the metadata path and the read path answer
+        differently about the same damaged blob.
+        """
         try:
             with path.open("rb") as handle:
                 header = handle.read(18)  # a zstd frame header is at most 18 bytes
@@ -494,8 +526,15 @@ class ContentAddressedStore:
                 reader = zstandard.ZstdDecompressor().stream_reader(handle)
                 return sum(len(chunk) for chunk in _iter_chunks(reader, self._chunk_size))
         except OSError as exc:
-            raise translate_blob_error(
-                exc, substrate=_SUBSTRATE, path=str(path), op="stat"
+            raise_blob_error(
+                exc, substrate=_SUBSTRATE, path=str(path), sha256=digest, op="stat"
+            )
+        except zstandard.ZstdError as exc:
+            raise Corrupt(
+                "blob is not a readable zstd frame",
+                substrate=_SUBSTRATE,
+                path=str(path),
+                sha256=digest,
             ) from exc
 
     def iter_blobs(self) -> Iterator[BlobRef]:
@@ -529,9 +568,7 @@ class ContentAddressedStore:
                 # A file that vanished between the listing and the stat: the
                 # archive is being swept under us, and the number we report
                 # is then approximate rather than exact.
-                raise translate_blob_error(
-                    exc, substrate=_SUBSTRATE, path=str(path), op="stat"
-                ) from exc
+                raise_blob_error(exc, substrate=_SUBSTRATE, path=str(path), op="stat")
         return total
 
     # -- deletion ----------------------------------------------------------
@@ -549,9 +586,9 @@ class ContentAddressedStore:
         try:
             path.unlink()
         except OSError as exc:
-            raise translate_blob_error(
+            raise_blob_error(
                 exc, substrate=_SUBSTRATE, path=str(path), sha256=digest, op="delete"
-            ) from exc
+            )
         log.info("cas.deleted", sha256=digest)
         return True
 
@@ -562,9 +599,9 @@ class ContentAddressedStore:
             try:
                 leftover.unlink(missing_ok=True)
             except OSError as exc:
-                raise translate_blob_error(
+                raise_blob_error(
                     exc, substrate=_SUBSTRATE, path=str(leftover), op="delete"
-                ) from exc
+                )
             removed += 1
         return removed
 
@@ -675,9 +712,7 @@ def copy_file_into(store: BlobStore, path: Path, *, compress: bool = True) -> Bl
         # message says which of the two things is not there.
         raise NotFound("host file not found", substrate=_SUBSTRATE, path=str(path)) from exc
     except OSError as exc:
-        raise translate_blob_error(
-            exc, substrate=_SUBSTRATE, path=str(path), op="read"
-        ) from exc
+        raise_blob_error(exc, substrate=_SUBSTRATE, path=str(path), op="read")
 
 
 def export_to_file(store: BlobStore, digest: str, destination: Path) -> Path:
@@ -698,9 +733,9 @@ def export_to_file(store: BlobStore, digest: str, destination: Path) -> Path:
     except OSError as exc:
         # Writing the blob back out to the host is a filesystem operation,
         # and a raw ``OSError`` from it would reach the caller unchanged.
-        raise translate_blob_error(
+        raise_blob_error(
             exc, substrate=_SUBSTRATE, path=str(destination), op="write"
-        ) from exc
+        )
     finally:
         with contextlib.suppress(OSError):
             scratch.unlink(missing_ok=True)
