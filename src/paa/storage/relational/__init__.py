@@ -18,19 +18,39 @@ column-for-column in lockstep by ``tests/storage/test_schema_parity.py``.
 The SQLite :class:`Database` is imported directly across the codebase as
 ``from paa.storage.relational.database import Database``. That import path is
 unchanged; this package only *adds* the :func:`get_database` factory alongside
-it. ``PostgresDatabase`` is imported lazily inside the factory so a laptop
-install without the ``postgres`` extra (psycopg) stays importable; the
-factory's *return type* names it under ``TYPE_CHECKING``, which costs nothing
-at runtime because the annotation is a string.
+it.
+
+**Both backend names are bound at module scope, and the reason is the
+annotation itself.** Under ``from __future__ import annotations`` every
+annotation is a *string*, so a name that is bound only for the type checker is
+**absent** from the module's namespace — and every runtime consumer of that
+annotation then fails: ``typing.get_type_hints`` raises ``NameError``,
+FastAPI's dependency resolution raises it at route-registration time, and a
+pydantic model annotating the name raises ``PydanticUndefinedAnnotation`` at
+class-creation time. The factory's return type names the two backends it can
+hand back, so both names are real names here.
+
+This is **not** a cost paid for the ``postgres`` extra.
+:mod:`paa.storage.relational.postgres` imports ``psycopg`` and ``psycopg_pool``
+lazily — inside ``_require_psycopg()`` — so this package, and that module
+itself, import cleanly on a machine with no ``postgres`` extra installed. An
+earlier version of this docstring gave the extra as the reason the name was
+left unbound, and the reason was false: the extra was never the constraint.
+The constraint was the annotation, and unbinding the name is what made it
+unreadable.
+
+What *is* lazy is the **client**. The factory builds a
+:class:`~paa.storage.relational.postgres.PostgresDatabase` only when
+``backend_relational`` asks for one, so a laptop install never touches the
+server backend, and the factory stays side-effect-free: it returns an
+*unconnected* backend either way.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import structlog
 
-from paa.config import StorageSettings
+from paa.config import Settings, StorageSettings
 from paa.storage.relational.database import (
     SCHEMA_VERSION,
     Database,
@@ -38,21 +58,12 @@ from paa.storage.relational.database import (
     to_iso,
     utc_now,
 )
-
-if TYPE_CHECKING:
-    from paa.config import Settings
-
-    # TYPE_CHECKING only, and deliberately so: the module's *runtime* import
-    # of the server backend stays inside the factory, where it is reached
-    # only on the server topology. Naming the class here is for the type
-    # checker's benefit — the return type says which two things the factory
-    # can hand back — and costs nothing at runtime, because the annotation
-    # is a string under ``from __future__ import annotations``.
-    from paa.storage.relational.postgres import PostgresDatabase
+from paa.storage.relational.postgres import PostgresDatabase
 
 __all__ = [
     "SCHEMA_VERSION",
     "Database",
+    "PostgresDatabase",
     "from_iso",
     "get_database",
     "to_iso",
@@ -105,10 +116,10 @@ def get_database(settings: Settings | StorageSettings) -> Database | PostgresDat
                 "(e.g. PAA_STORAGE__POSTGRES_DSN=postgresql://...)",
                 substrate="postgres",
             )
-        # Lazy: importing postgres.py is cheap, but keeping it here documents
-        # that the psycopg dependency is only reached on the server topology.
-        from paa.storage.relational.postgres import PostgresDatabase
-
+        # The client is built only here, and only when it was asked for: the
+        # factory is lazy about the *backend*, not about the import. Nothing
+        # about constructing it needs psycopg — the pool is created at
+        # ``connect()`` — so the import above is not a cost either.
         log.info("relational.backend_selected", backend="postgres")
         return PostgresDatabase(storage.postgres_dsn)
 
