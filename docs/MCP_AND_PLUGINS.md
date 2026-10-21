@@ -1217,72 +1217,110 @@ have since been driven to **zero** — see W8.
 
 #### W3 — Entity resolution is the same answer on both substrates
 
-**Status: not started. The design decision is taken; the implementation is not.**
+**Status: done.** The decision is implemented, and the implementation changed
+one of the decision's premises: the gate's gram model had to become FTS5's
+model, because the padded model could accept a pair that shared *no* FTS5
+token, so no candidate query over the index could be a superset of it. The
+database now returns a candidate set that is a **proven superset of the
+gate's acceptance set on both substrates for ASCII corpora**, the cut is
+made on a portable total order, and the two substrates answer the same
+`(entity, match kind, score)`. **Outside ASCII the parity is bounded, not
+exact** — the engine folds the *column* while the term is folded in Python,
+the alias column is JSON text (so `json.dumps` escapes a non-ASCII alias
+and the count proxy cannot see it), and the exact and alias rungs still
+compare with the engine's `lower()`. All three are named, with their
+mechanisms, in **ADR-0029**, and the parity suite *records* the divergence
+rather than asserting it away. The cross-engine suite is
+`tests/storage/test_entity_parity.py` — 129 cases against a live
+PostgreSQL, and the SQLite half runs everywhere. **ADR-0029**;
+the plan and the measurements are `docs/plans/w3-w5.md` §1.
 
-Entity resolution is the one place where the two relational substrates are *not*
-interchangeable, and it is the place the tool layer will lean on hardest. SQLite
-resolves a name through FTS5's trigram matcher; PostgreSQL through `pg_trgm`'s
-similarity. The candidate sets the two produce are not the same set, so the same term
-resolves to a different entity — or to no entity — depending on which substrate is
-underneath. A 29-term sweep found three terms that disagreed and two more that raised
-on one substrate and not the other, and none of it was visible to the suite, because the
-suite only ever ran the SQLite half.
+**What it was.** Entity resolution was the one place where the two relational
+substrates were *not* interchangeable, and it is the place the tool layer
+leans on hardest. SQLite resolved a name through FTS5's trigram matcher;
+PostgreSQL through `pg_trgm`'s similarity. The candidate sets the two
+produced were not the same set, so the same term resolved to a different
+entity — or to no entity — depending on which substrate was underneath. A
+29-term sweep found three terms that disagreed and two more that raised on
+one substrate and not the other, and none of it was visible to the suite,
+because the suite only ever ran the SQLite half.
 
 **The decision (Option B).** The database must return a candidate set that is a
 **proven superset** of the set the Python acceptance gate would accept, and the gate
 then decides in Python, identically on both engines. The alternative — two different
-approximations of the same question — is what is being replaced.
+approximations of the same question — is what is being replaced. The decision holds
+for **ASCII** corpora; outside them the divergence is **bounded and recorded**
+rather than removed — ADR-0029's limitations (a), (c) and (d), each with its
+mechanism.
 
-* The FTS5 *phrase* and the bare search term become two separate, deliberate
-  queries. Today the same parameter is an FTS5 expression on one engine and a literal
-  term on the other, which is how a single-word term ends up with no broader second
-  pass on SQLite and a much broader one on PostgreSQL.
+* The FTS5 *phrase* and the bare search term became two separate, deliberate
+  queries. The same parameter used to be an FTS5 expression on one engine and a
+  literal term on the other, which is how a single-word term ended up with no
+  broader second pass on SQLite and a much broader one on PostgreSQL.
 * The candidate predicate per engine is written so that every entity the Python gate
   would accept is *in* the candidate set. The superset property is proved by a test
-  and not asserted in a comment.
+  and not asserted in a comment. The predicate is the gate's **own precondition** —
+  "shares at least one of the term's grams" — expressed the same way on both
+  engines, so it does not depend on either engine's relevance score.
 * The `LIMIT` cut is made safe by a **deterministic total order**. Neither engine's
-  current ordering is one — `bm25` ties, `similarity` ties, and the gate's `>=`
-  tie-break means the *last* maximum wins, so the winner is decided by whichever order
-  the engine happened to produce. A unique secondary key is added, per AGENTS.md's rule
-  that a `LIMIT` cut needs a total order.
-* The `OR`-token leak and the alias scoring are fixed. The alias comparison scores the
-  whole JSON blob on one engine and the raw JSON text on the other, while the gate
-  scores each alias individually — so neither engine's candidate set matches what the
-  gate actually looks at.
+  old ordering was one — `bm25` ties, `similarity` ties, and the gate's `>=`
+  tie-break means the *last* maximum wins, so the winner was decided by whichever
+  order the engine happened to produce. A unique secondary key was added, per
+  AGENTS.md's rule that a `LIMIT` cut needs a total order.
+* The `OR`-token leak and the alias scoring **were repaired**. The alias comparison
+  used to score the whole JSON blob on one engine and the raw JSON text on the
+  other, while the gate scores each alias individually — so neither engine's
+  candidate set matched what the gate actually looked at.
 
 **Done when:** a cross-engine test drives the same terms through both substrates and
-gets the same answers, and the candidate set is a superset of the gate's on both.
+gets the same answers, and the candidate set is a superset of the gate's on both —
+for **ASCII** corpora, which is where the corpus, the floor's calibration and the
+parity suite live. Outside ASCII the parity is bounded rather than exact, and
+**ADR-0029** names the three mechanisms that bound it.
 
 #### W4 — The deployment fetches what it claims to fetch
 
-**Status: not started.**
+**Status: done.** The compose file is now the single source of truth: the
+script reads the `image:` and `build:` values out of it, the hand-copied table
+is gone (and with it the two images the script was fetching at *older*
+versions than the deployment runs), every pulled image is digest-pinned with
+the pin read from compose, and the digest is verified **inside the retry
+unit** — one attempt is one pull plus its check. The presence check uses the
+full reference, so the script no longer fails on every image when every pull
+succeeded. `--load` works and stops, `--list` needs neither the CLI nor a
+daemon, `paa-init` has a `build:` section, and the model credential and the
+`PAA_MODELS__*` settings reach the container by either route — the file or
+the shell. **ADR-0030**; the plan is `docs/plans/w3-w5.md` §2.
 
-`deploy/fetch-images.sh` does not do what its own header says it does. The images are
-not digest-pinned; two of the four it fetches are *older versions* than the ones
-`docker-compose.yml` actually runs; the `--load` branch is unreachable (it consumes
-two arguments and shifts one, so the whole branch is dead code — reproduced, exit 2);
-the images are checked under local names (`postgres`, `redis`, …) that resolve to
-`:latest` and that the daemon does not have, so the script **fails on every image even
-when every pull succeeds**; and there is no digest verification at all, so `--verify`
-passes an image with a completely wrong digest.
+**What it was.** The script did not do what its own header said it does. The
+images were not digest-pinned; two of the four it fetched were *older
+versions* than the ones `docker-compose.yml` actually runs; the `--load`
+branch was unreachable (it consumed two arguments and shifted one, so the
+whole branch was dead code — reproduced, exit 2); the images were checked
+under local names (`postgres`, `redis`, …) that resolve to `:latest` and that
+the daemon does not have, so the script **failed on every image even when
+every pull succeeded**; and there was no digest verification at all, so
+`--verify` passed an image with a completely wrong digest.
 
-* The compose file becomes the **single source of truth**: the script reads the
-  `image:` values from it rather than carrying a hand-copied table that drifts.
-* Every image is **digest-pinned**, and the digest is verified **inside the retry
-  unit** — a download and its check are one attempt, the same rule the Dockerfiles
-  already follow. A verification outside the retry loop turns a failed transfer into
-  a reported success.
-* `--load` is made to work for the runtime that is actually present (`docker`), and
-  the script stops requiring a running daemon for `--list`.
-* The `timeout` dependency is GNU-only and the script does not say so; the timeout
-  mechanism is made portable or the Linux requirement is stated.
-* `paa-init` gets a `build:` section. It has an `image:` with no `build:`, and it
-  works today only because the `paa` service's build happens to produce the same tag
-  in the same invocation. Starting `paa-init` alone fails with a pull error.
-* The compose file **forwards the model provider's credential and the `PAA_MODELS__*`
-  settings**. `env_file: .env` does deliver them today, but only from the file — the
-  documented `export OPENROUTER_API_KEY=…` workflow is silently ignored, because
-  `env_file` reads the file and not the shell.
+* The compose file became the **single source of truth**: the script reads
+  the `image:` values from it rather than carrying a hand-copied table that
+  drifts.
+* Every image is **digest-pinned**, and the digest is verified **inside the
+  retry unit** — a download and its check are one attempt, the same rule the
+  Dockerfiles already follow. A verification outside the retry loop turns a
+  failed transfer into a reported success.
+* `--load` works for the runtime that is actually present (`docker`), and the
+  script no longer requires a running daemon for `--list`.
+* The `timeout` dependency is GNU-only, and the script now says so and
+  detects it.
+* `paa-init` has a `build:` section. It had an `image:` with no `build:`, and
+  it worked only because the `paa` service's build happened to produce the
+  same tag in the same invocation. Starting `paa-init` alone failed with a
+  pull error.
+* The compose file **forwards the model provider's credential and the
+  `PAA_MODELS__*` settings**. `env_file: .env` did deliver them, but only
+  from the file — the documented `export OPENROUTER_API_KEY=…` workflow was
+  silently ignored, because `env_file` reads the file and not the shell.
 
 **Done when:** the script and the compose file cannot disagree, and a containerised
 runtime can reach a provider by either route.
@@ -1301,12 +1339,25 @@ all.
 
 #### W5 — The container's start is not charged to the work
 
-**Status: not started.** A measured 0.25-second step took about four seconds and
+**Status: done.** A measured 0.25-second step took about four seconds and
 reported `timed_out=False`: the container's *start* was being counted against the
 work's `timeout_seconds`, so the budget the caller set was not the budget the caller
-got. The start cost is real and has to be paid — it is just not the work. A separate
-`container_start_grace_seconds` gives the start its own budget, and `timeout_seconds`
-means what it says: the work.
+got. The start cost is real and has to be paid — it is just not the work.
+
+`docker run` is one opaque call, so the backend could not see where the start
+ended and the work began; the protocol is now `create → start → inspect → wait →
+logs → inspect → rm -f`, which makes the boundary observable and the start
+*separable*. The two budgets are enforced independently: `container_start_grace_seconds`
+bounds the start calls, and `timeout_seconds` bounds the container's lifetime,
+anchored on the **daemon's own** `State.StartedAt`. A start that overruns its
+grace is a *start* failure (`killed_reason="start_timeout"`), not a work timeout.
+
+Measured on this host, the same 3-second workload with a 0.25-second budget:
+**3.6 s and `timed_out=False` before; 0.85 s and `timed_out=True` after**, with
+no container left behind. The SIMPLE modality profile's budget was raised from
+0.25 s to 1.0 s, because the container's fixed cost — measured at ~200 ms — does
+not fit in a quarter of a second; **ADR-0031**; the plan is
+`docs/plans/w3-w5.md` §3.
 
 #### W6 — The suites that would have caught the above
 

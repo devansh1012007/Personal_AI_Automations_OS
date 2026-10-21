@@ -320,8 +320,9 @@ a broken image.
 
 ## Known-stale references (don't chase these)
 
-- `docs/adr/README.md` indexes ADRs 0001–0015 and 0019–0026 (0016–0018 are unindexed), but only
-  `0008`, `0010`, `0015`, `0019`–`0026` exist on disk. Source comments cite
+- `docs/adr/README.md` indexes ADRs 0001–0015 and 0019–0026, 0028–0031 (0016–0018 are
+  unindexed, and 0027 is reserved for the tool-containment/MCP layer), but only `0008`,
+  `0010`, `0015`, `0019`–`0026` and `0028`–`0031` exist on disk. Source comments cite
   `docs/adr/0001`–`0014`, `0016` and `0018` as rationale; the intent is documented
   even though the file is absent.
 - `README.md`'s Testing section still shows Windows paths, and its per-subsystem test counts in the
