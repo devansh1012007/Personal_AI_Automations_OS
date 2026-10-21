@@ -43,7 +43,7 @@ retrieval — it is a reason to keep the retrieval literal, which is what
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import Any, Protocol
 
 import structlog
 
@@ -52,10 +52,8 @@ from paa.context.gatherer import BoundedContextGatherer, ContextElement
 from paa.core.types import AgentRole, as_text
 from paa.memory.decay import effective_confidence
 from paa.memory.domains import narrative_domains
+from paa.storage.relational.base import RelationalBackend
 from paa.storage.relational.like import like_pattern, like_predicate
-
-if TYPE_CHECKING:
-    from paa.storage.relational.base import RelationalBackend
 
 __all__ = ["PlannerContextBuilder", "QueryExpander", "WorkerContextBuilder"]
 

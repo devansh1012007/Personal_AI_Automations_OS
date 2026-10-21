@@ -15,16 +15,14 @@ from __future__ import annotations
 import re
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import structlog
 
 from paa.agents.base import Agent, AgentContext, AgentMessage, AgentResult
 from paa.config import PolicySettings, get_settings
 from paa.core.types import AgentRole, Permission, PermissionMode
-
-if TYPE_CHECKING:
-    from paa.storage.relational.base import RelationalBackend
+from paa.storage.relational.base import RelationalBackend
 
 __all__ = ["PolicyRiskAgent", "PolicyVerdict"]
 

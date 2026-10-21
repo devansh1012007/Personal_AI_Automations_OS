@@ -11,12 +11,11 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import structlog
 
-if TYPE_CHECKING:
-    from paa.storage.relational.base import RelationalBackend
+from paa.storage.relational.base import RelationalBackend
 
 __all__ = [
     "ConflictAssessment",

@@ -27,15 +27,13 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import structlog
 
+from paa.config import MemorySettings
 from paa.memory.decay import DecaySweeper
-
-if TYPE_CHECKING:
-    from paa.config import MemorySettings
-    from paa.storage.relational.base import RelationalBackend
+from paa.storage.relational.base import RelationalBackend
 
 __all__ = ["CurationPhase", "CurationReport", "MemoryCurator"]
 

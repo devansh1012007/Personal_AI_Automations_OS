@@ -28,16 +28,14 @@ from __future__ import annotations
 import enum
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import structlog
 
 from paa.core.types import Permission, PermissionMode
 from paa.marketplace.package import SkillPackage
 from paa.marketplace.signing import SignatureState, signing_is_secure, verify
-
-if TYPE_CHECKING:
-    from paa.storage.relational.base import RelationalBackend
+from paa.storage.relational.base import RelationalBackend
 
 __all__ = ["InstallGate", "InstallOutcome", "InstallReport", "PackageInstaller"]
 

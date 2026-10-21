@@ -18,14 +18,11 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING
 
 import structlog
 
 from paa.memory.domains import MemoryDomain, domain_policy
-
-if TYPE_CHECKING:
-    from paa.storage.relational.base import RelationalBackend
+from paa.storage.relational.base import RelationalBackend
 
 __all__ = [
     "DecayReport",

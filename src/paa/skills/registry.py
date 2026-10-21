@@ -28,18 +28,16 @@ with the same bounded Jaccard similarity the entity resolver uses
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import structlog
 
 from paa.core.errors import SkillContractError
 from paa.memory.facts import trigram_similarity
 from paa.skills.contracts import SkillContract
+from paa.storage.relational.base import RelationalBackend
 from paa.storage.relational.database import dumps, loads, to_iso, utc_now
 from paa.storage.relational.like import like_pattern, like_predicate
-
-if TYPE_CHECKING:
-    from paa.storage.relational.base import RelationalBackend
 
 __all__ = ["SkillRegistry", "SkillVectorStore"]
 
