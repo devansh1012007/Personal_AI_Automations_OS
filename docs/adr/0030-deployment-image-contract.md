@@ -367,6 +367,15 @@ merged `paa` is the base file's built image with the override's runtime on top. 
 merge that dropped the earlier `build:` would plan `paa` as a **pull** of an image
 that is not on any registry.
 
+This subset was checked against the real thing — `docker compose config`, v5.6.0 —
+on every shape the repository's files use: the base file's `build:` survives an
+override that says nothing about it, a later file's `image:` replaces an earlier
+file's, a service only one file declares is in the stack, and a profile-gated
+service is not in the model Compose runs (it is, with the profile enabled). That
+cross-check is a verification of the subset, not a test: the deployment suite is
+dependency-free and does not require the Docker CLI, and the parity test still
+compares two hand-rolled readers rather than Compose.
+
 ### What is refused, and why a refusal is the right answer
 
 Five shapes are outside the subset, and each is an **error** with its own message,
