@@ -57,16 +57,31 @@
 # `.env` hold), and an `image:` key with no value at all. The refusals happen
 # before a byte is fetched.
 #
-# Five more shapes are refused, each with its own message, and they are the
+# More shapes are refused, each with its own message, and they are the
 # shapes the MERGE does not implement: Compose's `extends:`, a YAML anchor
-# or an alias, a multi-line `image:`, a custom YAML tag, and the top-level
-# `include:`. A wrong plan fetches an image the deployment does not run and
-# misses one it does, so the reader says "I do not understand this file"
-# rather than guessing.
+# or an alias, the YAML MERGE KEY (`<<:`), a multi-line `image:`, a custom
+# YAML tag, the top-level `include:`, a `profiles:` that is not a list, a
+# mapping written as a FLOW MAPPING, and a service whose keys are not at
+# the indent this reader reads. The refusal is on the CONSTRUCT and not on
+# the spelling of a line: `include: [other.yml]` is refused exactly as
+# `include:` on a line of its own is, an alias is refused wherever it
+# appears under `services:`, and a key spelled `image :` is read as the key
+# `image` — the way Compose reads it. A wrong plan fetches an image the
+# deployment does not run and misses one it does, so the reader says "I do
+# not understand this file" rather than guessing.
 #
-# A service behind a `profiles:` key is EXCLUDED rather than refused: a
-# profile that is not enabled is not a service `docker compose up` runs, and
-# the script says so on stderr instead of dropping it silently.
+# The line the refusal set is drawn along: a shape COMPOSE refuses itself
+# is not a hazard — no deployment can run such a file — and a shape Compose
+# ACCEPTS and this reader does not implement is a hazard, and is refused.
+#
+# A service behind a `profiles:` key is KEPT in the plan, and the FETCH
+# decides what to do with it: the rules above — the digest pin above all —
+# apply to every image the compose files name, gated or not, because an
+# image that is not checked is an image that can be unpinned. A service
+# whose profile is not enabled is reported as not fetched, in the report and
+# in the final message, rather than erased from the plan. `COMPOSE_PROFILES`
+# — Compose's own variable — is honoured, so a profile the operator enabled
+# is a profile whose images are fetched.
 #
 # An empty plan is refused too. A compose file the reader finds no images in
 # is a broken source of truth, and a script that reports "every image is
@@ -120,6 +135,12 @@
 # deployment tests point the script at a compose file they control. A
 # `--compose` flag on the command line takes precedence over it.
 #
+# `COMPOSE_PROFILES` is COMPOSE's own variable, and the script reads it:
+# it is the list of profiles the operator has enabled, so the images of a
+# profile-gated service are fetched when that profile is enabled and are
+# reported as not fetched when it is not. The script reads the same
+# variable `docker compose up` reads, so the plan and the stack agree.
+#
 # The script touches the LOCAL IMAGE STORE only: `docker image inspect`,
 # `docker pull`, `docker tag` and `docker load`. It never stops, removes or
 # prunes anything, and it never touches a running container. The `docker tag`
@@ -132,7 +153,10 @@
 # Exit status is non-zero if any image could not be fetched, so it can be
 # used in CI as a gate. `--list` is a gate as well: it exits non-zero when the
 # plan it prints names an image this deployment cannot pin, and it refuses an
-# empty plan rather than reporting success on nothing.
+# empty plan rather than reporting success on nothing. The exit status says
+# WHICH kind of failure it is: 1 is a refusal (a shape the reader does not
+# understand, an image that cannot be pinned) and 2 is a usage error (an
+# argument the script was given wrong).
 
 set -euo pipefail
 
@@ -143,6 +167,29 @@ MAX_ATTEMPTS="${PAA_FETCH_MAX_ATTEMPTS:-6}"
 BASE_DELAY="${PAA_FETCH_BASE_DELAY:-5}"
 PULL_TIMEOUT="${PAA_FETCH_TIMEOUT:-900}"
 MIRROR="${PAA_IMAGE_MIRROR:-}"
+
+# The compose profiles the operator has enabled.
+#
+# This is COMPOSE's own variable, not one of ours: `docker compose up` reads
+# the same one, and a service behind a profile the operator enabled IS a
+# service the deployment runs. The script honours it for the same reason it
+# reads the digest from the compose file rather than carrying one of its
+# own — a second source of truth about the stack is a second thing to keep
+# in step, and this one is already in step by construction.
+#
+# Compose's own rule: a service is started when its profile list is EMPTY
+# (it is gated behind nothing) or when the list intersects the enabled
+# profiles. The list is comma-separated, and so is this variable.
+ENABLED_PROFILES=""
+if [ -n "${COMPOSE_PROFILES:-}" ]; then
+  IFS=',' read -r -a _enabled <<< "${COMPOSE_PROFILES}"
+  for _name in "${_enabled[@]}"; do
+    _name="${_name//[[:space:]]/}"
+    [ -n "$_name" ] || continue
+    ENABLED_PROFILES="${ENABLED_PROFILES}${ENABLED_PROFILES:+,}${_name}"
+  done
+  unset _enabled _name
+fi
 
 # The compose files the plan is read from, in the order they are merged. It
 # is filled in after the arguments are parsed, because `--compose` and
@@ -188,20 +235,47 @@ err()  { printf '\033[1;31m fail\033[0m %s\n' "$*" >&2; }
 #   * the plan lists the services in the order they first appear.
 #
 # What is NOT in the subset is REFUSED, not guessed: Compose's `extends:`, a
-# YAML anchor or alias, a multi-line `image:`, a custom YAML tag, and the
-# top-level `include:`. A script that silently mis-merges is worse than one
-# that says "I do not understand this file" — a wrong plan fetches an image
-# the deployment does not run, and misses one it does.
+# YAML anchor or alias, the YAML merge key (`<<:`), a multi-line `image:`, a
+# custom YAML tag, the top-level `include:`, a `profiles:` that is not a
+# list, a mapping written as a flow mapping, and a service whose keys are
+# not at the four-space indent the reader reads. A script that silently
+# mis-merges is worse than one that says "I do not understand this file" —
+# a wrong plan fetches an image the deployment does not run, and misses one
+# it does.
 #
-# A service gated behind a `profiles:` key is EXCLUDED, because a profile
-# that is not enabled is not a service `docker compose up` runs. The script
-# says so, on stderr, rather than dropping it silently.
+# The refusal is on the CONSTRUCT and not on the spelling of a line: the
+# reader reads a KEY, so `include: [other.yml]` is refused exactly as
+# `include:` on a line of its own is, an alias is refused wherever it
+# appears under `services:`, and a key spelled `image :` is read as the key
+# `image` — the way Compose reads it. A refusal bound to one spelling is a
+# refusal with a hole in it.
 #
-# The output is one tab-separated row per service: "action<TAB>image<TAB>service",
-# where the action is "pull" or "build". Two other rows exist: a service
-# excluded by a profile comes out as "skip<TAB>profile<TAB>service", and a
-# file the reader does not understand comes out as "refuse<TAB>message<TAB>-".
-# The caller turns both into a warning and an error.
+# The line the refusal set is drawn along: a shape COMPOSE refuses itself
+# (a service written as a plain scalar, a `profiles:` that is not a list)
+# cannot be deployed, so the reader's answer about it does not matter; a
+# shape COMPOSE ACCEPTS and the reader does not implement is a hazard, and
+# is refused.
+#
+# A service gated behind a `profiles:` key is KEPT in the plan, because it
+# is still an image the compose file names and the plan's rules apply to it.
+# The FETCH decides: a profile that is not enabled is a service
+# `docker compose up` does not run, so it is not fetched — and it is
+# reported, on stderr and in the report, rather than dropped silently.
+# `COMPOSE_PROFILES` says which profiles the operator has enabled.
+#
+# The output is one tab-separated row per service:
+# "action<TAB>image<TAB>service<TAB>profiles", where the action is "pull" or
+# "build" and the profiles column carries the names of the compose profiles
+# the service is gated behind ("-" when it is gated behind none). A file the
+# reader does not understand comes out as "refuse<TAB>message<TAB>-", and the
+# caller turns it into an error.
+#
+# The profile names travel on the ROW rather than deciding the row's
+# membership, because a service behind a profile is still an image the
+# compose file names: the plan's invariants — the digest pin above all —
+# apply to it, and the decision to fetch it or not is the FETCH's decision,
+# made after the rules have run. A reader that dropped the service first
+# would let an unpinned image through the pin rule with a zero exit status.
 #
 # Two details of the reader are load-bearing, and both are about not reading
 # a value that is not there:
@@ -235,113 +309,270 @@ parse_compose() {
       in_services = 0
       current_file = FILENAME
     }
+    # A blank line and a comment inside a `profiles:` block are not the end
+    # of the block: Compose reads the list under the key, and a comment
+    # between the key and the first item is an ordinary comment.
+    in_profiles && ($0 ~ /^[[:space:]]*$/ || $0 ~ /^[[:space:]]*#/) { next }
+    # The items of a `profiles:` list in its block form. They are the only
+    # lines the reader reads that carry a value at this indent, so they are
+    # collected before anything else looks at them.
+    in_profiles && $0 ~ /^[[:space:]]*-[[:space:]]/ {
+      item = $0
+      sub(/^[[:space:]]*-[[:space:]]*/, "", item)
+      sub(/[[:space:]]+#.*$/, "", item)
+      sub(/[[:space:]]+$/, "", item)
+      profiles = add_profile(profiles, unquote(item))
+      profile_items++
+      next
+    }
+    in_profiles {
+      # The block ended. A `profiles:` key with no items at all is not a
+      # list — Compose refuses such a file — so the reader refuses it too,
+      # rather than reading it as "no profiles".
+      if (block_form && profile_items == 0) {
+        refuse(display(FILENAME) ": the service " service " declares a profiles: with no list.\n" \
+               "Compose requires a list of profile names, and an empty one is not\n" \
+               "a list.")
+      }
+      in_profiles = 0
+      block_form = 0
+    }
     /^[^[:space:]#]/ {
       # A top-level key. Only "services:" opens the map the rest of the reader
       # cares about; "networks:" and "volumes:" sit at the same indent and are
       # not services.
-      if ($0 ~ /^include:[[:space:]]*($|#)/) {
+      #
+      # What the reader acts on is the KEY, not the spelling of the line:
+      # Compose reads `include: [other.yml]` and `include:` on its own line
+      # as the same key, and it reads `include :` as the key `include` too.
+      # A refusal bound to one spelling of a line is a refusal with a hole
+      # in it, and the hole is a stack the script plans and Compose does not
+      # run.
+      line = $0
+      top_key = line
+      top_value = ""
+      pos = index(line, ":")
+      if (pos > 0) {
+        top_key = substr(line, 1, pos - 1)
+        top_value = substr(line, pos + 1)
+      }
+      top_key = normalise_key(top_key)
+      sub(/^[[:space:]]+/, "", top_value)
+      sub(/[[:space:]]+$/, "", top_value)
+      if (top_key == "include") {
         refuse(display(FILENAME) ": the top-level include: is not supported.\n" \
                "This script does not follow Compose'"'"'s include:, and the services\n" \
                "it names would be missing from the plan.")
       }
-      in_services = ($0 ~ /^services:[[:space:]]*$/)
+      if (top_key == "<<") {
+        refuse(display(FILENAME) ": the compose file uses a YAML merge key (<<:) at the top level.\n" \
+               "This script does not resolve merge keys, and the keys a merged map\n" \
+               "carries would be missing from the plan.")
+      }
+      if (top_key == "services" && top_value ~ /^\{/) {
+        refuse(display(FILENAME) ": the services map is written as a flow mapping.\n" \
+               "This script reads the services on their own lines, and it refuses\n" \
+               "the rest rather than guessing which services the stack runs.")
+      }
+      if (top_value ~ /^\*/) {
+        refuse(display(FILENAME) ": the top-level " top_key ": is a YAML alias.\n" \
+               "This script does not resolve aliases, so it cannot tell what the\n" \
+               "alias names.")
+      }
+      in_services = (top_key == "services")
       next
     }
     in_services && $0 ~ /^  [^[:space:]#][^:]*:/ {
       # A key at two-space indent: a service name, or a service with an
       # inline value — which Compose would refuse, because a service is a
       # mapping and not a string.
-      key = $0
-      sub(/^  /, "", key)
-      inline = key
-      sub(/^[^:]*:/, "", inline)
+      line = $0
+      sub(/^  /, "", line)
+      key = line
+      inline = ""
+      pos = index(line, ":")
+      if (pos > 0) {
+        key = substr(line, 1, pos - 1)
+        inline = substr(line, pos + 1)
+      }
+      key = normalise_key(key)
       sub(/[[:space:]]+#.*$/, "", inline)
       sub(/^[[:space:]]+/, "", inline)
       sub(/[[:space:]]+$/, "", inline)
+      if (key == "<<") {
+        refuse(display(FILENAME) ": the services map uses a YAML merge key (<<:).\n" \
+               "This script does not resolve merge keys, and the services a merged\n" \
+               "map carries would be missing from the plan.")
+      }
       if (inline == "") {
         flush_service()
         service = key
-        sub(/:.*$/, "", service)
         image = ""
         have_image = 0
         have_build = 0
-        have_profile = 0
+        profiles = ""
         next
+      }
+      if (inline ~ /^\{/) {
+        refuse(display(FILENAME) ": the service " key " is written as a flow mapping.\n" \
+               "This script reads a service'"'"'s keys on their own lines, and it refuses\n" \
+               "the rest rather than guessing which image the service names.")
       }
       # An anchor or an alias on the service key is refused: the reader would
       # then attribute the keys below it to the wrong service, and a wrong
       # plan fetches an image the deployment does not run.
       if (inline ~ /^[&*]/) {
-        name = key
-        sub(/:.*$/, "", name)
-        refuse(display(FILENAME) ": the service " name " uses a YAML anchor or an alias.\n" \
+        refuse(display(FILENAME) ": the service " key " uses a YAML anchor or an alias.\n" \
                "This script does not resolve anchors, and an unresolved image\n" \
                "reference would be pulled as the literal text of the alias.")
       }
       next
     }
-    in_services && service != "" && $0 ~ /^    image:/ {
+    # The indent of a line, COUNTED rather than matched.
+    #
+    # An interval expression ("five or more spaces") is not portable between
+    # the awks a host may have — mawk does not backtrack into one — and the
+    # reader must not depend on which awk it found. The count is exact and
+    # the same count the Python reader in the tests makes.
+    #
+    # Content indented deeper than the four-space level the reader reads at
+    # is not a problem on its own — a nested map (an `environment:`, a
+    # `build:`) is deeper than that — but a service whose keys the reader
+    # has NOT seen at the four-space level has keys the reader cannot see
+    # at all, and one of them may be the `image:`. The service is refused
+    # at the end of it, when the reader knows it saw nothing.
+    in_services && service != "" {
+      probe = $0
+      indent = 0
+      while (substr(probe, indent + 1, 1) == " ") indent++
+      if (indent > 4 && substr(probe, indent + 1, 1) != "#") deep = 1
+    }
+    in_services && service != "" && $0 ~ /^    [^[:space:]#]/ {
+      # A key at four-space indent: one of the keys this reader reads, or
+      # one it ignores. The KEY decides, not the spelling of the line:
+      # Compose reads `image : x` and `"image": x` as the key `image`, and
+      # so does this reader — a missed `image:` is a service that is
+      # dropped from the plan, silently, which is the one failure this
+      # reader cannot have.
+      saw_key = 1
       line = $0
-      sub(/^    image:[[:space:]]*/, "", line)
-      sub(/[[:space:]]+#.*$/, "", line)
-      sub(/[[:space:]]+$/, "", line)
-      if (line ~ /^[|>][-+0-9]*$/) {
-        refuse(display(FILENAME) ": the service " service " declares a multi-line image:.\n" \
-               "This script reads one line per image, and a folded or a literal\n" \
-               "block would be read as the text of its indicator.")
+      sub(/^    /, "", line)
+      key = line
+      value = ""
+      pos = index(line, ":")
+      if (pos > 0) {
+        key = substr(line, 1, pos - 1)
+        value = substr(line, pos + 1)
       }
-      if (line ~ /^!/) {
-        refuse(display(FILENAME) ": the service " service " puts a custom YAML tag on its image:.\n" \
-               "This script does not interpret YAML tags, so it cannot tell what\n" \
-               "the tagged value is.")
+      key = normalise_key(key)
+      sub(/[[:space:]]+#.*$/, "", value)
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      if (key == "<<") {
+        refuse(display(FILENAME) ": the service " service " uses a YAML merge key (<<:).\n" \
+               "This script does not resolve merge keys, and the keys a merged map\n" \
+               "carries would be missing from the plan.")
       }
-      if (line ~ /^\*/) {
-        refuse(display(FILENAME) ": the service " service " declares an image: that is an alias.\n" \
-               "This script does not resolve aliases, so it cannot tell which\n" \
-               "image the alias names.")
+      if (key == "image") {
+        if (value ~ /^[|>][-+0-9]*$/) {
+          refuse(display(FILENAME) ": the service " service " declares a multi-line image:.\n" \
+                 "This script reads one line per image, and a folded or a literal\n" \
+                 "block would be read as the text of its indicator.")
+        }
+        if (value ~ /^!/) {
+          refuse(display(FILENAME) ": the service " service " puts a custom YAML tag on its image:.\n" \
+                 "This script does not interpret YAML tags, so it cannot tell what\n" \
+                 "the tagged value is.")
+        }
+        if (value ~ /^\*/) {
+          refuse(display(FILENAME) ": the service " service " declares an image: that is an alias.\n" \
+                 "This script does not resolve aliases, so it cannot tell which\n" \
+                 "image the alias names.")
+        }
+        if (value ~ /&/) {
+          refuse(display(FILENAME) ": the service " service " declares an anchored image:.\n" \
+                 "This script does not resolve anchors, so it cannot tell which\n" \
+                 "image the anchor names.")
+        }
+        if (substr(value, 1, 1) == "\"" || substr(value, 1, 1) == "\047")
+          value = substr(value, 2)
+        if (length(value) > 0) {
+          last = substr(value, length(value), 1)
+          if (last == "\"" || last == "\047") value = substr(value, 1, length(value) - 1)
+        }
+        image = value
+        have_image = 1
+        next
       }
-      if (line ~ /&/) {
-        refuse(display(FILENAME) ": the service " service " declares an anchored image:.\n" \
-               "This script does not resolve anchors, so it cannot tell which\n" \
-               "image the anchor names.")
+      if (key == "extends") {
+        refuse(display(FILENAME) ": the service " service " uses extends:.\n" \
+               "This script does not resolve Compose'"'"'s inheritance, and an image\n" \
+               "inherited from another service would be fetched by guesswork.")
+        next
       }
-      if (substr(line, 1, 1) == "\"" || substr(line, 1, 1) == "\047")
-        line = substr(line, 2)
-      if (length(line) > 0) {
-        last = substr(line, length(line), 1)
-        if (last == "\"" || last == "\047") line = substr(line, 1, length(line) - 1)
+      if (key == "build") {
+        have_build = 1
+        next
       }
-      image = line
-      have_image = 1
-      next
-    }
-    in_services && service != "" && $0 ~ /^    extends:/ {
-      refuse(display(FILENAME) ": the service " service " uses extends:.\n" \
-             "This script does not resolve Compose'"'"'s inheritance, and an image\n" \
-             "inherited from another service would be fetched by guesswork.")
-      next
-    }
-    in_services && service != "" && $0 ~ /^    build:/ {
-      have_build = 1
-      next
-    }
-    in_services && service != "" && $0 ~ /^    profiles:/ {
-      have_profile = 1
+      if (key == "profiles") {
+        # A `profiles:` key is a LIST of profile names, and the list has two
+        # spellings: a block (the items on the following lines) and a flow
+        # (the items inside the brackets). Both are read, because the list
+        # decides which services the deployment runs.
+        if (value == "") {
+          in_profiles = 1
+          block_form = 1
+          profile_items = 0
+        } else if (value ~ /^\[/) {
+          if (value !~ /\]$/) {
+            refuse(display(FILENAME) ": the service " service " declares a profiles: list this reader does not understand.\n" \
+                   "This script reads a list of profile names on one line or as a\n" \
+                   "block under the key, and it refuses the rest rather than\n" \
+                   "guessing which services it gates.")
+          }
+          inner = substr(value, 2, length(value) - 2)
+          count = split(inner, parts, /,/)
+          for (i = 1; i <= count; i++) {
+            item = parts[i]
+            sub(/^[[:space:]]+/, "", item)
+            sub(/[[:space:]]+$/, "", item)
+            if (item == "") continue
+            profiles = add_profile(profiles, unquote(item))
+          }
+        } else {
+          # A scalar. Compose requires a list of profile names and refuses
+          # the file, so the reader refuses it too.
+          refuse(display(FILENAME) ": the service " service " declares a profiles: that is not a list.\n" \
+                 "Compose requires a list of profile names, and this script does not\n" \
+                 "guess what a single name gates.")
+        }
+        next
+      }
+      # Any other key: the reader ignores its value. An ALIAS is the one
+      # value it cannot ignore — it is a reference the reader cannot
+      # resolve, and a shared or merged key is exactly how a compose file
+      # hides an image from a reader that only looks at spellings.
+      if (value ~ /^\*/) {
+        refuse(display(FILENAME) ": the service " service " declares " key ": as a YAML alias.\n" \
+               "This script does not resolve aliases, so it cannot tell what the\n" \
+               "alias names.")
+      }
       next
     }
     END {
       if (aborted) exit 1
+      if (in_profiles && block_form && profile_items == 0) {
+        refuse(display(FILENAME) ": the service " service " declares a profiles: with no list.\n" \
+               "Compose requires a list of profile names, and an empty one is not\n" \
+               "a list.")
+      }
       flush_service()
       for (i = 1; i <= g_count; i++) {
         name = g_order[i]
         if (!g_has_image[name] && !g_has_build[name]) continue
-        if (g_gated[name]) {
-          printf "skip\tprofile\t%s\n", name
-          continue
-        }
         action = (g_has_build[name] ? "build" : "pull")
         image = (g_has_image[name] && g_image[name] != "" ? g_image[name] : "-")
-        printf "%s\t%s\t%s\n", action, image, name
+        printf "%s\t%s\t%s\t%s\n", action, image, name, (g_profiles[name] == "" ? "-" : g_profiles[name])
       }
     }
     function display(name) {
@@ -359,32 +590,85 @@ parse_compose() {
       for (i = 1; i <= count; i++) printf "refuse\t%s\t-\n", lines[i]
       exit 1
     }
+    function normalise_key(key) {
+      # The key as YAML reads it: the spaces around it and the quotes around
+      # it are not part of the name. Compose reads `image :` and
+      # `"image":` as the key `image`, and so does this reader.
+      sub(/^[[:space:]]+/, "", key)
+      sub(/[[:space:]]+$/, "", key)
+      if (length(key) >= 2) {
+        first = substr(key, 1, 1)
+        last = substr(key, length(key), 1)
+        if (first == last && (first == "\"" || first == "\047"))
+          key = substr(key, 2, length(key) - 2)
+      }
+      return key
+    }
+    function unquote(value) {
+      # A quoted scalar, without the quotes. Only a MATCHING pair is
+      # stripped: a value that starts with a quote and does not end with one
+      # is not a quoted scalar, and half-stripping it would invent a value
+      # the file does not have.
+      if (length(value) >= 2) {
+        first = substr(value, 1, 1)
+        last = substr(value, length(value), 1)
+        if (first == last && (first == "\"" || first == "\047"))
+          value = substr(value, 2, length(value) - 2)
+      }
+      return value
+    }
+    function add_profile(list, item) {
+      # The profile names a service is gated behind, as a comma-separated
+      # list, without duplicates. Compose CONCATENATES the lists of several
+      # files, so the merged list is the union of them.
+      if (item == "") return list
+      if (index("," list ",", "," item ",") > 0) return list
+      return (list == "" ? item : list "," item)
+    }
     function reset_service() {
       service = ""
       image = ""
       have_image = 0
       have_build = 0
-      have_profile = 0
+      profiles = ""
+      in_profiles = 0
+      block_form = 0
+      profile_items = 0
+      saw_key = 0
+      deep = 0
     }
     function flush_service() {
       # The service that is open is finished: its values land in the merged
       # map, and only the keys this file actually declared — a later file
       # that says nothing about `build:` leaves the earlier file'"'"'s alone.
       if (service == "") return
+      if (!saw_key && deep) {
+        # The reader saw no key of this service at its own level, and there
+        # was content under it. The service'"'"'s keys are written some other
+        # way, and one of them may be the image — so the service is refused
+        # rather than dropped from the plan.
+        refuse(display(FILENAME) ": the service " service " has keys this reader does not understand.\n" \
+               "This script reads a service'"'"'s keys at four-space indent, and a\n" \
+               "service written any other way could hide an image: from the plan.")
+      }
       if (!(service in g_seen)) {
         g_seen[service] = 1
         g_order[++g_count] = service
         g_image[service] = ""
         g_has_image[service] = 0
         g_has_build[service] = 0
-        g_gated[service] = 0
+        g_profiles[service] = ""
       }
       if (have_image) {
         g_image[service] = image
         g_has_image[service] = 1
       }
       if (have_build) g_has_build[service] = 1
-      if (have_profile) g_gated[service] = 1
+      count = split(profiles, parts, /,/)
+      for (i = 1; i <= count; i++) {
+        if (parts[i] == "") continue
+        g_profiles[service] = add_profile(g_profiles[service], parts[i])
+      }
       reset_service()
     }
   ' "${COMPOSE_FILES[@]}"
@@ -405,18 +689,48 @@ PLAN=""
 unpinned=""
 interpolated=""
 unnamed=""
+# The services the plan did not fetch, because a compose profile that is not
+# enabled gates them. They are named in the report and in the final
+# message: an image that was not fetched is an image the daemon has to pull
+# on a day when nothing retries it.
+SKIPPED=""
+
+# Is the service behind a profile the operator has enabled?
+#
+# Compose's own rule: a service is started when its profile list is empty —
+# it is gated behind nothing — or when the list intersects the enabled
+# profiles. The list is the row's fourth column, comma-separated.
+profile_is_enabled() {
+  local profiles="$1" name
+  # "-" is the row's "no profiles" — an empty field is not a field in a
+  # tab-separated row, so the reader writes a dash there.
+  [ -n "$profiles" ] || return 0
+  [ "$profiles" = "-" ] && return 0
+  local IFS=','
+  for name in $profiles; do
+    case ",${ENABLED_PROFILES}," in
+      *",${name},"*) return 0 ;;
+    esac
+  done
+  return 1
+}
 
 build_plan() {
-  local raw action image service rows="" refused=0
-  # The reader's rows come back in three kinds: the plan itself, a service it
-  # left out because a profile gates it, and a file it does not understand.
-  # The last one is an error and stops the script here, before a mode's own
-  # work, so a plan that was never built is never acted on.
+  local raw action image service profiles rows="" plan="" refused=0
+  # The reader's rows come back in two kinds: the plan itself, and a file
+  # it does not understand. The last one is an error and stops the script
+  # here, before a mode's own work, so a plan that was never built is
+  # never acted on.
   raw=""
   if ! raw="$(parse_compose)"; then
     refused=1
   fi
-  while IFS=$'\t' read -r action image service; do
+  # EVERY service the files name is in these rows — including the ones a
+  # profile gates. The rules below run over these rows, and they must: an
+  # image that is not checked is an image that can be unpinned. The
+  # exclusion of a profile-gated service is the FETCH's decision, and it is
+  # made after the rules have run, not before.
+  while IFS=$'\t' read -r action image service profiles; do
     [ -n "$service" ] || continue
     case "$action" in
       refuse)
@@ -424,27 +738,16 @@ build_plan() {
         err "${image}"
         continue
         ;;
-      skip)
-        # A service behind a compose profile. `docker compose up` does not
-        # start it unless the profile is enabled, so it is not in the plan —
-        # but the operator is told, because an image that is not fetched is
-        # an image the daemon has to pull on a day when nothing retries it.
-        warn "${service} is gated behind a compose profile, so it is not"
-        warn "fetched: \`docker compose up\` does not start a profile-gated"
-        warn "service either. Fetch it by hand if you run with that profile."
-        continue
-        ;;
     esac
-    rows="${rows}${action}"$'\t'"${image}"$'\t'"${service}"$'\n'
+    rows="${rows}${action}"$'\t'"${image}"$'\t'"${service}"$'\t'"${profiles}"$'\n'
   done <<< "$raw"
   if [ "$refused" -ne 0 ]; then
     return 1
   fi
-  PLAN="$rows"
   unpinned=""
   interpolated=""
   unnamed=""
-  while IFS=$'\t' read -r action image service; do
+  while IFS=$'\t' read -r action image service profiles; do
     [ -n "$service" ] || continue
     [ "$action" = "pull" ] || continue
     case "$image" in
@@ -465,7 +768,26 @@ build_plan() {
         unpinned="${unpinned}${service}"$'\t'"${image}"$'\n'
         ;;
     esac
-  done <<< "$PLAN"
+  done <<< "$rows"
+  # Now the FETCH decides. A service behind a profile the operator has not
+  # enabled is one the deployment does not run, so it is not fetched — but
+  # it stays in the plan, marked, and the report says so. Dropping it here
+  # instead would put the exclusion BEFORE the rules above, which is how an
+  # unpinned image behind a profile used to pass the gate.
+  SKIPPED=""
+  while IFS=$'\t' read -r action image service profiles; do
+    [ -n "$service" ] || continue
+    if ! profile_is_enabled "$profiles"; then
+      action="skip"
+      SKIPPED="${SKIPPED}${service}"$'\n'
+      warn "${service} is gated behind a compose profile that is not enabled, so"
+      warn "it is not fetched: \`docker compose up\` does not start a profile-gated"
+      warn "service either. Enable the profile with COMPOSE_PROFILES and the"
+      warn "script fetches it."
+    fi
+    plan="${plan}${action}"$'\t'"${image}"$'\t'"${service}"$'\t'"${profiles}"$'\n'
+  done <<< "$rows"
+  PLAN="$plan"
 }
 
 refuse_unpinned() {
@@ -655,17 +977,30 @@ report_built() {
 }
 
 list_images() {
-  local action image service
-  while IFS=$'\t' read -r action image service; do
+  local action image service profiles
+  while IFS=$'\t' read -r action image service profiles; do
     [ -n "$service" ] || continue
+    if [ "$action" = "skip" ]; then
+      # A service the deployment does not run, because a compose profile
+      # that is not enabled gates it. It is in the report — the report is
+      # what the operator reads — and it is marked, so the report and the
+      # warning on stderr say the same thing.
+      printf '%-6s%s  (%s)  [behind a compose profile that is not enabled: %s]\n' \
+        "$action" "$image" "$service" "$profiles"
+      continue
+    fi
     printf '%-6s%s  (%s)\n' "$action" "$image" "$service"
   done <<< "$PLAN"
 }
 
 verify_images() {
-  local failed=0 action image service digest
-  while IFS=$'\t' read -r action image service; do
+  local failed=0 action image service profiles digest
+  while IFS=$'\t' read -r action image service profiles; do
     [ -n "$service" ] || continue
+    if [ "$action" = "skip" ]; then
+      # Not part of the stack this run, so there is nothing to verify.
+      continue
+    fi
     if [ "$action" = "build" ]; then
       report_built "$image" "$service"
       continue
@@ -718,9 +1053,14 @@ load_images() {
 }
 
 fetch_images() {
-  local failed=0 action image service digest name target
-  while IFS=$'\t' read -r action image service; do
+  local failed=0 action image service profiles digest name target
+  while IFS=$'\t' read -r action image service profiles; do
     [ -n "$service" ] || continue
+    if [ "$action" = "skip" ]; then
+      # Not part of the stack this run: a compose profile that is not
+      # enabled gates it, and the plan already said so.
+      continue
+    fi
     if [ "$action" = "build" ]; then
       report_built "$image" "$service"
       continue
@@ -847,9 +1187,8 @@ build_plan || exit 1
 # is refused, in every mode, before the mode's own work.
 if [ -z "$PLAN" ]; then
   err "no images found in ${COMPOSE_FILES[*]} — the compose file(s) name no"
-  err "service with an image: or a build: section, or every service they name"
-  err "is behind a profile. There is nothing to fetch, and reporting success"
-  err "would be reporting that nothing was checked."
+  err "service with an image: or a build: section. There is nothing to fetch,"
+  err "and reporting success would be reporting that nothing was checked."
   exit 1
 fi
 
@@ -891,8 +1230,27 @@ esac
 
 refuse_bad_images || exit 1
 
+# The final message says what it means. "Every image the compose file(s)
+# name is present" is only true when the plan was the whole file: a
+# service behind a compose profile that is not enabled is named by the file
+# and is NOT in the local store, so the claim has to name the stack that
+# runs rather than the file, and the report has to say what was left out.
 if fetch_images; then
-  log "every image the compose file(s) name is present"
+  skipped_count=0
+  while IFS= read -r skipped_service; do
+    [ -n "$skipped_service" ] || continue
+    skipped_count=$(( skipped_count + 1 ))
+  done <<< "$SKIPPED"
+  if [ "$skipped_count" -gt 0 ]; then
+    log "every image this stack runs is present"
+    warn "${skipped_count} service(s) behind a compose profile that is not enabled were not fetched:"
+    while IFS= read -r skipped_service; do
+      [ -n "$skipped_service" ] || continue
+      warn "  ${skipped_service}"
+    done <<< "$SKIPPED"
+  else
+    log "every image the compose file(s) name is present"
+  fi
 else
   err "one or more images could not be fetched — re-run this script to continue"
   exit 1

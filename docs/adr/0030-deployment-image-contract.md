@@ -4,6 +4,14 @@
 
 Accepted
 
+*Amended 2026-10-22 by W1-IMPL-02 (T-003), and amended again the same day by
+W1-IMPR-02 (the wave-1 improvement). The second amendment closes three holes the
+wave-1 review found in the first: the reader refused some shapes by their
+*spelling* rather than by their *construct*, a profile-gated service was dropped
+from the plan **before** the pin rule ran, and this ADR's own account of how
+Compose merges a `profiles:` list was wrong. The two amendments are read
+together; the second one restates the first where the first was wrong.*
+
 ## Context
 
 `deploy/fetch-images.sh` existed to fetch the server topology's images with retries and a
@@ -354,12 +362,44 @@ re-implement it. It implements the subset the repository's compose files use:
   earlier file's `build:` in place;
 * a service only one of the files declares is taken from that file;
 * the plan lists the services in the order they first appear;
-* a service behind a `profiles:` key is **excluded**, because a profile that is not
-  enabled is not a service `docker compose up` runs. The script says so on stderr
-  rather than dropping it silently — an image that was not fetched is an image the
-  daemon has to pull on a day when nothing retries it. The key's *presence* is what
-  counts, not the contents of its list, so the exclusion is announced rather than
-  silent in the degenerate cases too.
+* a service behind a `profiles:` key is **kept in the plan**, because it is still
+  an image the compose file names and the rules of this ADR — the digest pin above
+  all — apply to it. The **fetch** decides: a profile that is not enabled is not a
+  service `docker compose up` runs, so its image is not fetched, and the script says
+  so on stderr *and* in the report rather than dropping it silently — an image that
+  was not fetched is an image the daemon has to pull on a day when nothing retries
+  it. `COMPOSE_PROFILES` — Compose's own variable — says which profiles the operator
+  has enabled, and a service behind one of them IS fetched.
+
+  Compose's rule, which this implementation now follows exactly, is that a
+  **non-empty** profile list gates a service: `profiles: []` gates nothing, and
+  `docker compose config --services` lists such a service. The reader therefore
+  reads the *list* — in its block form and in its flow form — rather than the
+  *presence* of the key. A `profiles:` that is not a list at all (a scalar, or a
+  key with no value) is **refused**: Compose refuses such a file itself
+  (`services.gpu.profiles must be a array`), so a reader that guessed would be
+  planning a stack that cannot run.
+
+  **How Compose merges a `profiles:` list across files: it CONCATENATES them.**
+  Measured against `docker compose config`, v5.6.0: a service with `profiles: [p]`
+  in the base file and `profiles: [q]` in the override is started by
+  `--profile p` **and** by `--profile q`. The merged list is `[p, q]`. This ADR
+  previously said that Compose *replaces* the key when a later file declares it,
+  which is wrong; the script's rule (the merged list is the union of the files'
+  lists) was right for the wrong reason, and is now right for the right one. The
+  "Unknown" of the first amendment is closed: it was answerable with two commands.
+
+  (The first amendment recorded the merge rule as *Unknown* and the replacement
+  as the stated reason. Both are corrected here, with the measurement.)
+
+  **A file whose every service is profile-gated is no longer refused as an empty
+  plan.** It used to be, because the reader dropped those services and the plan
+  came out empty. The plan no longer drops them, so the plan is not empty, and
+  the reason for the refusal — *reporting success would be reporting that
+  nothing was checked* — no longer holds: the images of those services **were**
+  checked (the pin rule ran over them). The script reports them as not fetched
+  and exits zero, which is what the stack does: with no profile enabled, it runs
+  nothing.
 
 The `build:` rule is what makes the gVisor override work at all. The override's `paa`
 service declares a runtime and an environment block and no image and no build, so the
@@ -378,26 +418,68 @@ compares two hand-rolled readers rather than Compose.
 
 ### What is refused, and why a refusal is the right answer
 
-Five shapes are outside the subset, and each is an **error** with its own message,
+Ten shapes are outside the subset, and each is an **error** with its own message,
 before a byte is fetched:
 
 * Compose's `extends:` — the image would be inherited from another service, and the
   script does not resolve inheritance;
-* a YAML anchor or an alias, on a service key or on an `image:` value — an unresolved
-  reference would be pulled as the literal text of the alias, and an anchored service
-  key would make the reader attribute the keys below it to the *wrong service*;
+* a YAML anchor or an alias — an unresolved reference would be pulled as the literal
+  text of the alias, and an anchored service key would make the reader attribute the
+  keys below it to the *wrong service*;
+* the YAML **merge key** (`<<:`) — it imports a whole map into another one, and the
+  reader does not resolve it: a service whose `image:` comes from a merged map has
+  no image here, and it would be **dropped from the plan, silently**;
 * a multi-line `image:` — the reader reads one line per image, and a folded or a
   literal block would be read as the text of its indicator;
 * a custom YAML tag — the script does not interpret YAML tags, so it cannot tell what
   the tagged value is;
 * the top-level `include:` — the script does not follow it, and the services it names
-  would be missing from the plan.
+  would be missing from the plan;
+* a `profiles:` that is not a list — Compose refuses such a file itself, so the
+  reader refuses it rather than guessing which services it gates;
+* **a mapping written as a flow mapping** — a service whose map is on one line
+  (`postgres: {image: …}`) and a `services:` map on one line (`services: {…}`). Compose
+  accepts both, and the reader cannot see a single key of either, so a reader that
+  ignored them would plan a stack that is **missing a service, silently**;
+* **a service whose keys are not at the reader's indent** — the reader reads a
+  service's keys at four spaces, and a service written any other way could hide an
+  `image:` from the plan. Compose accepts such a file, so the reader refuses it
+  rather than dropping the service from the plan.
+
+**The refusal is on the construct, not on the spelling of a line.** This is the
+distinction the wave-1 review turned up, and it is now the rule the reader
+follows:
+
+* the `include:` refusal is bound to the **key**, so the block form
+  (`include:` on a line of its own), the flow form (`include: [other.yml]`) and the
+  scalar form (`include: other.yml`) are all refused — the flow form is the one the
+  compose specification wants, and it is the one an operator is most likely to
+  write;
+* an **alias** is refused wherever it appears under `services:` — the merge key is
+  an alias in a third place, and an alias on a key the reader does not read is still
+  a reference it cannot resolve;
+* a **key** is read as a key: `image : x` and `"image": x` are the key `image`, the
+  way Compose reads them. A reader bound to the spelling `^    image:` misses both,
+  and a missed `image:` is a service dropped from the plan, silently — the same
+  failure as the merge key, with the same fix.
+
+**The line between a refusal and an ignorance.** A shape that **Compose refuses
+itself** — a service written as a plain scalar (`postgres: echo hi`), a `profiles:`
+that is not a list, an `image:` that is not a string — is not a hazard: no
+deployment can run such a file, so the reader's answer about it does not matter.
+A shape that **Compose accepts** and the reader does not implement is a hazard, and
+it is refused. That line is what the refusal set is drawn along.
 
 A refusal is the right answer because the alternative is **silent**. A plan that is
 wrong fetches an image the deployment does not run and misses one it does, and nothing
 in the output says so: the list looks right, the build is green, and the deployment
 discovers the difference when it pulls an image that was never fetched — on a day when
 nothing retries it.
+
+The exit status says which kind of failure it is: **1** is a refusal and **2** is a
+usage error (an argument the script was given wrong). The tests assert the code, not
+merely "non-zero", because a test that cannot tell the two apart cannot tell a
+refusal from a typo.
 
 ### One small alignment, in the same direction
 
@@ -408,18 +490,43 @@ because the list is parsed. The parity test's own reader already stripped it, so
 two readers disagreed on a shape neither of them had a test for. They agree now, and
 the shape is in the corpus.
 
+### A key is read as a key
+
+The reader used to match the **spelling** of a key — `^    image:` — and a key
+Compose reads as `image` but that is spelled `image :` or `"image":` was missed
+entirely. A missed `image:` is a service with no image, and a service with no image
+is **dropped from the plan**: the deployment pulls it, the script never fetched it,
+and every line of the script's output said the deployment was covered. Compose
+accepts all three spellings and reads them as the same key (measured against
+`docker compose config`, v5.6.0), so the reader now reads a **key**: the text up to
+the first colon, with the spaces around it and the quotes around it removed.
+
+The same rule is what closed the two holes the wave-1 review found: the `include:`
+refusal is now bound to the key rather than to a line, and the merge key is refused
+wherever it can inject keys into a map the reader reads — the document root, the
+`services:` map, and a service's own map. A merge key deeper than that (inside an
+`environment:` block, say) cannot change the image set, so it is not refused; the
+refusal set is a list of shapes that change the *plan*, not of every YAML
+construct.
+
 ### What it costs
 
 * **A second thing to keep in step with Compose.** The subset above is a *summary*
   of Compose's merge, and Compose's merge is not frozen. If Compose changes how it
   merges a service map, this subset does not follow automatically — it follows when
   somebody notices, and the parity test is what makes the noticing cheap.
-* **A refusal set to maintain.** Five shapes are refused today; a sixth compose
+* **A refusal set to maintain.** Ten shapes are refused today; an eleventh compose
   feature that changes the image set has to be added to that list, deliberately, or it
   becomes a silent wrong answer again. The list is written down here and in the
-  reader's own comments for exactly that reason.
+  reader's own comments for exactly that reason. The list is a list of **shapes**,
+  and a shape has more than one spelling: the corpus in the deployment tests carries
+  every spelling of every refused shape, because a refusal bound to one spelling is
+  a refusal with a hole in it, and the hole was found twice in one wave.
 * **A flag, and the precedence between it and the environment variable.** Two ways to
   name the same thing is one more rule, and the rule is that the command line wins.
+* **A profile list to read, in two spellings.** The block form and the flow form.
+  The cost is one more shape in the reader, and the price of not paying it was a
+  service Compose starts and the script does not fetch.
 
 ### What was deliberately NOT done
 

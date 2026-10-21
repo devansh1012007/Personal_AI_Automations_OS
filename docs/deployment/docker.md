@@ -360,12 +360,39 @@ file's `build:` section and `image:` alone, and the merged `paa` is the built im
 with the override's runtime on top.
 
 The merge is a **subset** of Compose's own, and the shapes it does not implement are
-**refused** rather than guessed: Compose's `extends:`, a YAML anchor or an alias, a
-multi-line `image:`, a custom YAML tag, and the top-level `include:`. A wrong plan
-fetches an image the deployment does not run and misses one it does, and nothing in the
-output would say so. A service behind a `profiles:` key is **excluded** instead: a
-profile that is not enabled is not a service `docker compose up` runs, and the script
-says so on stderr.
+**refused** rather than guessed: Compose's `extends:`, a YAML anchor or an alias, the
+YAML merge key (`<<:`), a multi-line `image:`, a custom YAML tag, the top-level
+`include:`, a `profiles:` that is not a list, a mapping written as a flow mapping
+(`postgres: {image: …}`), and a service whose keys are not written at the four-space
+indent the reader reads. A wrong plan fetches an image the deployment does not run and
+misses one it does, and nothing in the output would say so.
+
+The refusal is on the **construct**, not on the spelling of a line: `include:
+[other.yml]` is refused exactly as `include:` on a line of its own is, and a key
+spelled `image :` is read as the key `image` — the way Compose reads it.
+
+The line the refusals are drawn along: a shape **Compose refuses itself** (a service
+written as a plain scalar, a `profiles:` that is not a list) cannot be deployed, so the
+script's answer about it does not matter; a shape **Compose accepts** and the script
+does not implement is a hazard, and it is refused with a message naming the file and
+the shape.
+
+**A profile-gated service is in the plan, and the fetch decides.** A service behind a
+`profiles:` key is still an image the compose file names, so the rules above — the
+digest pin above all — apply to it. A profile that is *not* enabled is not a service
+`docker compose up` runs, so that service's image is not fetched, and the script says
+so: on stderr and in the report, which names it as `skip`. An image that was not
+fetched is an image the daemon has to pull on a day when nothing retries it.
+
+`COMPOSE_PROFILES` — Compose's own variable, read by `docker compose up` too — says
+which profiles you have enabled, and the script honours it:
+
+```bash
+COMPOSE_PROFILES=gpu deploy/fetch-images.sh    # the gpu profile's images are fetched
+```
+
+Compose's rule is that a **non-empty** profile list gates a service, so
+`profiles: []` gates nothing and the service is fetched like any other.
 
 Relative paths are resolved against the **repository root**, and a `--compose` flag
 takes precedence over `PAA_COMPOSE_FILE`.
@@ -429,6 +456,7 @@ script does not read `.env`, and neither does `docker compose` for them:
 | `PAA_FETCH_BASE_DELAY` | `5` | The base of the backoff, in seconds. The delay before attempt *n* is `PAA_FETCH_BASE_DELAY × n`, so the wait grows with the attempt. |
 | `PAA_FETCH_TIMEOUT` | `900` | How long one pull may take, in seconds, before it is killed and retried. |
 | `PAA_IMAGE_MIRROR` | *(none)* | A registry prefix to pull through. It changes the repository path, never the digest. |
+| `COMPOSE_PROFILES` | *(none)* | The compose profiles you have enabled — Compose's own variable, comma-separated. The images of a service behind one of them are fetched; the others are reported as not fetched. |
 
 ```bash
 PAA_FETCH_MAX_ATTEMPTS=10 PAA_FETCH_BASE_DELAY=2 deploy/fetch-images.sh

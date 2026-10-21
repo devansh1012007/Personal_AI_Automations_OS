@@ -51,10 +51,39 @@ a maintainer "fixing" the script to match the test would have pulled
 
 **The shapes the reader refuses are pinned too.** A merge that is wrong is
 worse than a merge that is refused, so the script says "I do not understand
-this file" for Compose's ``extends:``, for YAML anchors and aliases, for a
-multi-line ``image:``, for a custom YAML tag, and for the top-level
-``include:``. An error is an acceptable answer; a silent wrong answer is
-not.
+this file" for Compose's ``extends:``, for YAML anchors and aliases, for
+the YAML merge key (``<<:``), for a multi-line ``image:``, for a custom
+YAML tag, for the top-level ``include:``, for a ``profiles:`` that is not a
+list, for a mapping written as a flow mapping, and for a service whose keys
+are not at the four-space indent the reader reads. An error is an acceptable
+answer; a silent wrong answer is not.
+
+**The refusals are drawn along one line: what Compose refuses itself is not
+a hazard, and what Compose accepts and the reader does not implement is.**
+A service written as a plain scalar cannot be deployed, so the reader's
+answer about it does not matter; a service written as a flow mapping
+(``postgres: {image: …}``) *can* be, and the reader cannot see a single key
+of it — so a reader that ignored it would plan a stack that is missing a
+service, silently, with a zero exit status.
+
+**The refusal is on the construct, not on the spelling of a line.** That is
+the distinction the two holes this corpus now carries were made of: the
+merge key ``<<: *base`` is an alias in a third place, and the flow form
+``include: [other.yml]`` is the same key with a value on its line. Both
+were walked straight through by a reader that looked for one *spelling* of
+a shape, and both produced a plan the script reported as fine while
+Compose ran something else. So the corpus carries **every spelling** of
+every refused shape, and the second reader is taught the refusals too: two
+readers that agree about the plan of a file they both accept can still
+disagree about what is a refusal, and that disagreement is the hole.
+
+**A profile-gated service is in the plan, and the fetch decides.** The
+plan's rules — the digest pin above all — apply to every image the
+compose file names, gated or not: a service that is dropped *before* the
+rules run is a service whose image is never checked, and an unchecked
+image can be unpinned. So the plan marks such a service ``skip``, the
+report names it, and ``COMPOSE_PROFILES`` — Compose's own variable — says
+which profiles the operator has enabled.
 
 Static, dependency-free and daemon-free: PyYAML is not a dependency of this
 project, and the stub is a shell script, so the whole module runs wherever
@@ -278,22 +307,28 @@ _FORBIDDEN_WORDS = frozenset(
 )
 
 #: A row of ``--list`` output: the action, the image, and the service.
-_LIST_ROW = re.compile(r"^(pull|build)\s+(\S+)\s+\(([^)]+)\)$")
+#:
+#: The action is ``skip`` for a service that a compose profile gates and
+#: the operator has not enabled: it is in the plan, it is in the report,
+#: and the reason is in a trailing bracket. The bracket is not part of the
+#: row — the row is the action, the image and the service.
+_LIST_ROW = re.compile(r"^(pull|build|skip)\s+(\S+)\s+\(([^)]+)\)(?:\s+\[.*\])?$")
 
 #: A service in the compose file: a key at two-space indent under
 #: ``services:``, with no value of its own.
 _SERVICE = re.compile(r"^  [^ #\t][^:]*:[ \t]*(#.*)?$")
 
-#: The image a service declares.
-_IMAGE = re.compile(r"^    image:[ \t]*(.*?)[ \t]*$")
+#: A key at two-space indent under ``services:``. The reader decides what a
+#: line means by its KEY, and a service with an inline value is a line it
+#: has to look at: ``postgres: &pg`` is a shape the script refuses.
+_SERVICE_LINE = re.compile(r"^  [^ #\t]")
 
-#: A build section, at the same indent as ``image:``.
-_BUILD = re.compile(r"^    build:")
+#: A key at four-space indent under a service — the level the reader reads
+#: ``image:``, ``build:`` and ``profiles:`` at.
+_SERVICE_KEY = re.compile(r"^    [^ \t#]")
 
-#: A ``profiles:`` key, at the same indent as ``image:``. A service behind
-#: one is not started by ``docker compose up`` unless the operator enables
-#: the profile, so it is not in the plan.
-_PROFILE = re.compile(r"^    profiles:")
+#: An item of a ``profiles:`` list in its block form.
+_PROFILE_ITEM = re.compile(r"^\s*-\s+(.*)$")
 
 #: A literal digest. The script must not carry one: the pin is read from the
 #: compose file, and a digest written into the script is a second place for
@@ -376,6 +411,64 @@ _PARITY_SHAPES: dict[str, tuple[str, int | None]] = {
         "    image: nvidia/cuda@sha256:" + _DIGEST + "\n",
         0,
     ),
+    "a profile in the flow form": (
+        "services:\n"
+        "  postgres:\n"
+        "    image: postgres:16@sha256:" + _DIGEST + "\n"
+        "  gpu:\n"
+        "    profiles: [gpu]\n"
+        "    image: nvidia/cuda@sha256:" + _DIGEST + "\n",
+        0,
+    ),
+    "a profile list that is empty": (
+        # Compose's own rule: a service with an EMPTY profile list is not
+        # gated at all, and `docker compose config --services` lists it.
+        "services:\n"
+        "  postgres:\n"
+        "    image: postgres:16@sha256:" + _DIGEST + "\n"
+        "  gpu:\n"
+        "    profiles: []\n"
+        "    image: nvidia/cuda@sha256:" + _DIGEST + "\n",
+        0,
+    ),
+    "a comment inside a profile list": (
+        # A comment between the key and the first item is an ordinary
+        # comment, and the list is still a list.
+        "services:\n"
+        "  postgres:\n"
+        "    image: postgres:16@sha256:" + _DIGEST + "\n"
+        "  gpu:\n"
+        "    profiles:\n"
+        "      # the GPU profile\n"
+        "      - gpu\n"
+        "    image: nvidia/cuda@sha256:" + _DIGEST + "\n",
+        0,
+    ),
+    "a profile list at the parent indent": (
+        # A block sequence may sit at the indent of its key.
+        "services:\n"
+        "  postgres:\n"
+        "    image: postgres:16@sha256:" + _DIGEST + "\n"
+        "  gpu:\n"
+        "    profiles:\n"
+        "    - gpu\n"
+        "    image: nvidia/cuda@sha256:" + _DIGEST + "\n",
+        0,
+    ),
+    "an image key with a space before the colon": (
+        # Compose reads `image : x` as the key `image`, and so must the
+        # reader: a missed `image:` is a service dropped from the plan.
+        "services:\n  postgres:\n    image : postgres:16@sha256:" + _DIGEST + "\n",
+        0,
+    ),
+    "a quoted image key": (
+        'services:\n  postgres:\n    "image": postgres:16@sha256:' + _DIGEST + '"\n',
+        0,
+    ),
+    "a service key with a space before the colon": (
+        "services:\n  postgres :\n    image: postgres:16@sha256:" + _DIGEST + "\n",
+        0,
+    ),
 }
 
 #: The shapes the reader REFUSES, and the word the refusal has to carry.
@@ -385,39 +478,137 @@ _PARITY_SHAPES: dict[str, tuple[str, int | None]] = {
 #: each shape the reader does not implement is an error with its own
 #: message, and the error is pinned here.
 #:
-#: The value is ``(text, the word the message must contain)``.
-_REFUSED_SHAPES: dict[str, tuple[str, str]] = {
-    "a service that extends another": (
-        "services:\n  paa:\n    extends:\n      service: base\n",
-        "extends:",
-    ),
-    "a service key that carries an anchor": (
-        "services:\n  postgres: &pg\n    image: postgres:16@sha256:" + _DIGEST + "\n",
-        "anchor",
-    ),
-    "an image that is an alias": (
-        "services:\n  postgres:\n    image: *pg\n",
-        "alias",
-    ),
-    "an image that carries an anchor": (
-        "services:\n  postgres:\n    image: &img postgres:16@sha256:" + _DIGEST + "\n",
-        "anchor",
-    ),
-    "a multi-line image": (
-        "services:\n  postgres:\n    image: >-\n      postgres:16@sha256:" + _DIGEST + "\n",
-        "multi-line",
-    ),
-    "an image with a custom YAML tag": (
-        "services:\n  postgres:\n    image: !override postgres:16@sha256:" + _DIGEST + "\n",
-        "tag",
-    ),
-    "a top-level include": (
-        "include:\n  - other.yml\nservices:\n  postgres:\n    image: postgres:16@sha256:"
-        + _DIGEST
-        + "\n",
-        "include:",
-    ),
+#: Each shape carries EVERY spelling it has, and that is the point of the
+#: structure: a corpus with one sample per shape is a weak lock, and the two
+#: shapes that walked straight through the first time — the YAML merge key
+#: and the flow form of ``include:`` — were the *other* spellings of shapes
+#: that were already in this list. A refusal bound to one spelling of a
+#: line is a refusal with a hole in it.
+#:
+#: The value is a list of ``(text, the word the message must contain)``.
+_REFUSED_SHAPES: dict[str, list[tuple[str, str]]] = {
+    "a service that extends another": [
+        ("services:\n  paa:\n    extends:\n      service: base\n", "extends:"),
+    ],
+    "a service key that carries an anchor": [
+        ("services:\n  postgres: &pg\n    image: postgres:16@sha256:" + _DIGEST + "\n", "anchor"),
+    ],
+    "an image that is an alias": [
+        ("services:\n  postgres:\n    image: *pg\n", "alias"),
+    ],
+    "an image that carries an anchor": [
+        ("services:\n  postgres:\n    image: &img postgres:16@sha256:" + _DIGEST + "\n", "anchor"),
+    ],
+    "a multi-line image": [
+        (
+            "services:\n  postgres:\n    image: >-\n      postgres:16@sha256:" + _DIGEST + "\n",
+            "multi-line",
+        ),
+    ],
+    "an image with a custom YAML tag": [
+        (
+            "services:\n  postgres:\n    image: !override postgres:16@sha256:" + _DIGEST + "\n",
+            "tag",
+        ),
+    ],
+    "a top-level include": [
+        (
+            "include:\n  - other.yml\nservices:\n  postgres:\n    image: postgres:16@sha256:"
+            + _DIGEST
+            + "\n",
+            "include:",
+        ),
+        # The flow form is the one the compose specification wants, and the
+        # one an operator is most likely to write.
+        (
+            "include: [other.yml]\nservices:\n  postgres:\n    image: postgres:16@sha256:"
+            + _DIGEST
+            + "\n",
+            "include:",
+        ),
+        # The scalar form is refused by Compose itself, so it is not a
+        # hazard — but the reader refuses it anyway, on the key.
+        (
+            "include: other.yml\nservices:\n  postgres:\n    image: postgres:16@sha256:"
+            + _DIGEST
+            + "\n",
+            "include:",
+        ),
+    ],
+    "a YAML merge key": [
+        # The spelling that hides an image: the service's `image:` comes
+        # from the merged map, so the reader would see a service with no
+        # image and drop it — silently.
+        ("services:\n  pg2:\n    <<: *base\n", "merge key"),
+        # A merge of several maps.
+        ("services:\n  pg2:\n    <<: [*a, *b]\n", "merge key"),
+        # A merge into the services map: it can inject whole services.
+        ("services:\n  <<: *base\n", "merge key"),
+        # A merge into the document root: it can inject the services map.
+        ("<<: *base\nservices:\n  pg2:\n    image: x@sha256:" + _DIGEST + "\n", "merge key"),
+    ],
+    "an alias under a service": [
+        ("services:\n  api:\n    command: *cmd\n", "alias"),
+        ("services:\n  api:\n    environment: *env\n", "alias"),
+    ],
+    "a profiles key that is not a list": [
+        # A scalar. Compose refuses the file ("profiles must be a array"),
+        # so the reader refuses it too rather than guessing.
+        ("services:\n  gpu:\n    profiles: gpu\n    image: x@sha256:" + _DIGEST + "\n", "list"),
+        # A key with no value at all. Compose refuses that file as well.
+        ("services:\n  gpu:\n    profiles:\n    image: x@sha256:" + _DIGEST + "\n", "list"),
+    ],
+    "a mapping written as a flow mapping": [
+        # Compose ACCEPTS both of these — a service whose map is written on
+        # one line, and a `services:` map written on one line — and the
+        # reader cannot see a single key of either. A reader that ignored
+        # them would plan a stack that is missing a service, silently, with
+        # a zero exit status: the deployment pulls the image and the script
+        # never fetched it.
+        (
+            "services:\n  postgres: {image: postgres:16@sha256:" + _DIGEST + "}\n",
+            "flow mapping",
+        ),
+        (
+            "services: {postgres: {image: postgres:16@sha256:" + _DIGEST + "}}\n",
+            "flow mapping",
+        ),
+    ],
+    "a service whose keys are not at the reader's indent": [
+        # Compose accepts this file: the service's keys are at six spaces,
+        # which is valid YAML. The reader reads a service's keys at four
+        # spaces, so it cannot see the `image:` — and a service it cannot
+        # see is a service that is missing from the plan, silently.
+        (
+            "services:\n"
+            "  postgres:\n"
+            "      image: postgres:16@sha256:" + _DIGEST + "\n"
+            "  redis:\n"
+            "    image: redis:7@sha256:" + _DIGEST + "\n",
+            "does not understand",
+        ),
+    ],
 }
+
+#: The refusal corpus, flattened: ``(shape, spelling, text, the word)``.
+#:
+#: The spelling is the index of the shape's spelling, and it is in the test
+#: id — a corpus entry per shape with a list of spellings makes "every
+#: spelling of this shape" the unit, which is the unit the hole was in.
+_REFUSAL_CASES: list[tuple[str, int, str, str]] = [
+    (shape, index, text, word)
+    for shape, spellings in sorted(_REFUSED_SHAPES.items())
+    for index, (text, word) in enumerate(spellings)
+]
+
+
+class _Refused(Exception):
+    """A construct the reader does not implement.
+
+    The script's reader refuses these shapes; this reader refuses them too,
+    so that the lock can assert that the two readers agree about *what is
+    a refusal* and not only about the plan of a file they both accept.
+    """
 
 
 class _Stub:
@@ -500,11 +691,17 @@ def _run(
     The environment starts from the developer's own and drops the knobs this
     script reads, so a developer's ``PAA_IMAGE_MIRROR`` or a stale
     ``PAA_COMPOSE_FILE`` cannot change what the test exercises.
+
+    ``COMPOSE_PROFILES`` is dropped too: it is the one variable the script
+    reads that is not a ``PAA_`` one, and a developer who has a profile
+    enabled in their shell would otherwise change which services the plan
+    marks as skipped.
     """
     environment = {
         key: value
         for key, value in os.environ.items()
         if not key.startswith(("PAA_FETCH_", "PAA_COMPOSE_FILE", "PAA_IMAGE_MIRROR", "STUB_"))
+        and key != "COMPOSE_PROFILES"
     }
     environment["PATH"] = path
     if env:
@@ -518,15 +715,6 @@ def _run(
         cwd=str(REPO_ROOT),
         check=False,
     )
-
-
-def _service_name(line: str) -> str:
-    """The name of a service, as the script's reader reads it.
-
-    Everything between the two-space indent and the first colon — which is
-    where a trailing comment can sit, and is therefore not part of the name.
-    """
-    return line[2:].split(":", 1)[0]
 
 
 def _image_value(raw: str) -> str:
@@ -546,6 +734,38 @@ def _image_value(raw: str) -> str:
     return value
 
 
+def _normalise_key(key: str) -> str:
+    """The key as YAML reads it: no spaces around it, no quotes around it.
+
+    Compose reads ``image :`` and ``"image":`` as the key ``image``, and so
+    does the script's reader. A reader that looked at the *spelling* of a
+    line would miss both — and a missed ``image:`` is a service that is
+    dropped from the plan, silently, which is the one failure this lock
+    exists to prevent.
+    """
+    key = key.strip()
+    if len(key) >= 2 and key[0] == key[-1] and key[0] in {'"', "'"}:
+        key = key[1:-1]
+    return key
+
+
+def _unquote(value: str) -> str:
+    """A quoted scalar, without the quotes.
+
+    Only a MATCHING pair is stripped: a value that starts with a quote and
+    does not end with one is not a quoted scalar, and half-stripping it
+    would invent a value the file does not have.
+    """
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+        return value[1:-1]
+    return value
+
+
+def _value_of(raw: str) -> str:
+    """A value, without its trailing comment and without its spaces."""
+    return re.sub(r"[ \t]+#.*$", "", raw).strip()
+
+
 class _Service(NamedTuple):
     """What one compose file says about one service.
 
@@ -554,20 +774,26 @@ class _Service(NamedTuple):
     are different mistakes, and the merge treats them differently: a file
     that says nothing about ``image:`` leaves the earlier file's alone,
     while a file that declares an empty one replaces it.
+
+    ``profiles`` names the compose profiles the service is gated behind. It
+    is empty for a service that is gated behind none — which includes a
+    service whose ``profiles:`` list is empty, because Compose's own rule
+    is that an empty list gates nothing.
     """
 
     name: str
     image: str | None
     has_build: bool
-    has_profile: bool
+    profiles: tuple[str, ...]
 
 
 def _services_of(path: Path) -> list[_Service]:
     """The services a compose file declares, in the order it declares them.
 
     An **independent** implementation of the same rules the script's awk
-    reader follows: a service is a key at two-space indent under ``services:``,
-    and its ``image:`` and ``build:`` are keys at four-space indent.
+    reader follows: a service is a key at two-space indent under
+    ``services:``, and its ``image:``, ``build:`` and ``profiles:`` are
+    keys at four-space indent.
 
     The point of writing it a second time, in a different language, is that
     the two can be compared. A single reader compared against itself proves
@@ -578,53 +804,147 @@ def _services_of(path: Path) -> list[_Service]:
 
     * a trailing comment is stripped from a service key and from an
       ``image:`` value;
+    * a key is read by its KEY, not by the spelling of its line: Compose
+      reads ``image : x`` and ``"image": x`` as the key ``image``;
     * a service with neither an ``image:`` nor a ``build:`` is **not** a row;
     * an ``image:`` with no value is reported as ``"-"``, the same as a
       service with no ``image:`` key at all — an empty field in a
       tab-separated row is not a field;
-    * a service behind a ``profiles:`` key is left out of the plan, because
-      ``docker compose up`` does not start it unless the profile is
-      enabled.
+    * a service behind a ``profiles:`` key is **kept** in the plan: it is
+      still an image the file names, and the plan's rules apply to it. The
+      FETCH decides whether it is fetched, not the reader.
     """
     services: list[_Service] = []
     service = ""
     image: str | None = None
     has_build = False
-    has_profile = False
+    profiles: tuple[str, ...] = ()
     in_services = False
+    in_profiles = False
+    profile_items = 0
+    saw_key = False
+    deep = False
     for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
+        if in_profiles:
+            item = _PROFILE_ITEM.match(line)
+            if item is not None:
+                profiles = (*profiles, _unquote(_value_of(item.group(1))))
+                profile_items += 1
+                continue
+            # The block ended. A `profiles:` key with no items at all is not
+            # a list — Compose refuses such a file — so the reader refuses
+            # it too, rather than reading it as "no profiles".
+            if profile_items == 0:
+                raise _Refused("a profiles: with no list")
+            in_profiles = False
         if not line[0].isspace():
             # A top-level key. Only `services:` opens the map that matters.
-            in_services = stripped == "services:"
+            key, _, value = line.partition(":")
+            key = _normalise_key(key)
+            if key == "include":
+                raise _Refused("a top-level include:")
+            if key == "<<":
+                raise _Refused("a YAML merge key at the top level")
+            if key == "services" and value.strip().startswith("{"):
+                raise _Refused("the services map is written as a flow mapping")
+            if value.strip().startswith("*"):
+                raise _Refused("a top-level alias")
+            in_services = key == "services"
             continue
-        if in_services and _SERVICE.match(line):
-            if service:
-                services.append(_Service(service, image, has_build, has_profile))
-            service = _service_name(line)
-            image = None
-            has_build = False
-            has_profile = False
+        if in_services and _SERVICE_LINE.match(line) and ":" in line:
+            key, _, inline = line[2:].partition(":")
+            key = _normalise_key(key)
+            inline = _value_of(inline)
+            if key == "<<":
+                raise _Refused("a YAML merge key in the services map")
+            if inline.startswith("{"):
+                raise _Refused("a service written as a flow mapping")
+            if inline == "":
+                # A service.
+                if service:
+                    if not saw_key and deep:
+                        raise _Refused("a service with keys the reader does not understand")
+                    services.append(_Service(service, image, has_build, profiles))
+                service = key
+                image = None
+                has_build = False
+                profiles = ()
+                saw_key = False
+                deep = False
+                continue
+            if inline[:1] in {"&", "*"}:
+                raise _Refused("an anchor or an alias on a service key")
             continue
         if not in_services or not service:
             continue
-        declared = _IMAGE.match(line)
-        if declared is not None:
-            image = _image_value(declared.group(1))
+        indent = len(line) - len(line.lstrip(" "))
+        if indent > 4:
+            # Content indented deeper than the reader's four-space level.
+            # A nested map is deeper than that, and it is not a problem on
+            # its own — but a service whose keys the reader has NOT seen at
+            # the four-space level has keys the reader cannot see at all,
+            # and one of them may be the `image:`.
+            if line[indent] != "#":
+                deep = True
             continue
-        if _BUILD.match(line):
+        if not _SERVICE_KEY.match(line):
+            continue
+        saw_key = True
+        key, _, value = line[4:].partition(":")
+        key = _normalise_key(key)
+        value = _value_of(value)
+        if key == "<<":
+            raise _Refused("a YAML merge key in a service")
+        if key == "image":
+            if re.fullmatch(r"[|>][-+0-9]*", value):
+                raise _Refused("a multi-line image:")
+            if value.startswith("!"):
+                raise _Refused("a custom YAML tag")
+            if value.startswith("*"):
+                raise _Refused("an aliased image:")
+            if "&" in value:
+                raise _Refused("an anchored image:")
+            image = _image_value(value)
+            continue
+        if key == "extends":
+            raise _Refused("an extends:")
+        if key == "build":
             has_build = True
             continue
-        if _PROFILE.match(line):
-            has_profile = True
+        if key == "profiles":
+            if value == "":
+                in_profiles = True
+                profile_items = 0
+            elif value.startswith("["):
+                if not value.endswith("]"):
+                    raise _Refused("a profiles: list the reader does not understand")
+                for item in value[1:-1].split(","):
+                    item = item.strip()
+                    if item == "":
+                        continue
+                    profiles = (*profiles, _unquote(item))
+            else:
+                raise _Refused("a profiles: that is not a list")
+            continue
+        if value.startswith("*"):
+            raise _Refused("an alias under a service")
+    if in_profiles and profile_items == 0:
+        # The file ended in the middle of a `profiles:` block that had no
+        # items in it.
+        raise _Refused("a profiles: with no list")
     if service:
-        services.append(_Service(service, image, has_build, has_profile))
+        if not saw_key and deep:
+            raise _Refused("a service with keys the reader does not understand")
+        services.append(_Service(service, image, has_build, profiles))
     return services
 
 
-def _merged_rows(paths: list[Path]) -> list[tuple[str, str, str]]:
+def _merged_rows(
+    paths: list[Path], enabled: tuple[str, ...] = ()
+) -> list[tuple[str, str, str]]:
     """The rows a MERGED reading of several compose files gives.
 
     The merge is the one the script implements, and it is the subset of
@@ -638,6 +958,14 @@ def _merged_rows(paths: list[Path]) -> list[tuple[str, str, str]]:
     * a service only one of the files declares is taken from that file;
     * the rows come out in the order the services first appear.
 
+    The profile lists are **unioned**, which is what Compose's
+    concatenation of them amounts to: a service gated by any of the files is
+    gated by the merged list.
+
+    A service whose profile list is not empty and does not meet the enabled
+    profiles is reported as ``skip`` — it is in the plan, and the fetch
+    decides. The plan's rules still apply to it.
+
     Written a second time, in a different language, so that it can be
     compared with the script's own reader. A single reader compared against
     itself proves nothing.
@@ -646,7 +974,7 @@ def _merged_rows(paths: list[Path]) -> list[tuple[str, str, str]]:
     images: dict[str, str | None] = {}
     has_image: dict[str, bool] = {}
     has_build: dict[str, bool] = {}
-    gated: dict[str, bool] = {}
+    gated: dict[str, tuple[str, ...]] = {}
     for path in paths:
         for service in _services_of(path):
             if service.name not in images:
@@ -654,21 +982,22 @@ def _merged_rows(paths: list[Path]) -> list[tuple[str, str, str]]:
                 images[service.name] = None
                 has_image[service.name] = False
                 has_build[service.name] = False
-                gated[service.name] = False
+                gated[service.name] = ()
             if service.image is not None:
                 images[service.name] = service.image
                 has_image[service.name] = True
             if service.has_build:
                 has_build[service.name] = True
-            if service.has_profile:
-                gated[service.name] = True
+            for name in service.profiles:
+                if name not in gated[service.name]:
+                    gated[service.name] = gated[service.name] + (name,)
     rows: list[tuple[str, str, str]] = []
     for name in order:
-        if gated[name]:
-            continue
         if not has_image[name] and not has_build[name]:
             continue
         action = "build" if has_build[name] else "pull"
+        if gated[name] and not set(gated[name]) & set(enabled):
+            action = "skip"
         rows.append((action, _row_image(images[name], has_image[name]), name))
     return rows
 
@@ -761,22 +1090,34 @@ def test_the_two_readers_agree_on_every_shape(tmp_path: Path, shape: str) -> Non
         assert result.returncode == expected, result.stderr
 
 
-@pytest.mark.parametrize("shape", sorted(_REFUSED_SHAPES))
-def test_the_reader_refuses_the_shapes_it_does_not_understand(tmp_path: Path, shape: str) -> None:
+@pytest.mark.parametrize(
+    "case",
+    _REFUSAL_CASES,
+    ids=lambda case: f"{case[0]}[{case[1]}]",
+)
+def test_the_reader_refuses_the_shapes_it_does_not_understand(tmp_path: Path, case: tuple) -> None:
     """A shape the reader does not implement is an error, not a wrong answer.
 
     The merge the script implements is a SUBSET of Compose's own, and the
-    subset has edges: Compose's ``extends:``, YAML anchors and aliases, a
-    multi-line ``image:``, a custom YAML tag, the top-level ``include:``. A
-    script that guessed at any of them would plan a stack nobody runs, and
-    the guess would be **silent** — which is the one failure mode a
-    deployment script cannot have: the plan looks right, the green build
-    says nothing is wrong, and the deployment fetches the wrong image.
+    subset has edges: Compose's ``extends:``, YAML anchors and aliases, the
+    YAML merge key, a multi-line ``image:``, a custom YAML tag, the
+    top-level ``include:``, a ``profiles:`` that is not a list. A script
+    that guessed at any of them would plan a stack nobody runs, and the
+    guess would be **silent** — which is the one failure mode a deployment
+    script cannot have: the plan looks right, the green build says nothing
+    is wrong, and the deployment fetches the wrong image.
 
     So each of them is an error with its own message, before a byte is
-    fetched.
+    fetched — and the exit status is **1**, the refusal's own code, not
+    merely "non-zero": a usage error is 2, and a test that says "non-zero"
+    cannot tell the two apart.
+
+    The corpus carries every *spelling* of every shape, and the second
+    reader is taught the refusals too: two readers that agree about the
+    plan of a file they both accept can still disagree about what is a
+    refusal, and the disagreement is the hole.
     """
-    text, expected = _REFUSED_SHAPES[shape]
+    _shape, _spelling, text, expected = case
     compose = _write_compose(tmp_path, text)
     stub = _Stub(tmp_path)
     path = f"{_tool_path(tmp_path)}:{stub.bin}"
@@ -785,9 +1126,11 @@ def test_the_reader_refuses_the_shapes_it_does_not_understand(tmp_path: Path, sh
         path=path,
         env={**stub.env(), "PAA_COMPOSE_FILE": str(compose)},
     )
-    assert result.returncode != 0, result.stdout
+    assert result.returncode == 1, (result.returncode, result.stdout, result.stderr)
     assert expected in result.stderr, result.stderr
     assert stub.pulls() == [], "the script fetched something out of a file it refused"
+    with pytest.raises(_Refused):
+        _compose_rows(compose)
 
 
 def test_the_merged_stack_is_the_stack_the_script_reads() -> None:
@@ -891,7 +1234,7 @@ def test_the_merged_plan_is_what_the_fetch_pulls(tmp_path: Path) -> None:
             "PAA_FETCH_BASE_DELAY": "0",
         },
     )
-    assert result.returncode != 0, "the stub holds no image, so the fetch cannot succeed"
+    assert result.returncode == 1, "the stub holds no image, so the fetch cannot succeed"
     pulled = {call.removeprefix("pull ") for call in stub.pulls()}
     assert "postgres:17@sha256:" + _DIGEST in pulled, stub.calls()
     base_postgres = next(
@@ -907,10 +1250,11 @@ def test_a_profile_gated_service_is_not_fetched(tmp_path: Path) -> None:
     """A profile that is not enabled is not a service the deployment runs.
 
     ``docker compose up`` starts a profile-gated service only when the
-    operator enables the profile, so the plan leaves it out — and says so,
-    because an image that was not fetched is an image the daemon has to
-    pull on a day when nothing retries it. The operator who runs with the
-    profile enabled has to know that.
+    operator enables the profile, so the plan marks it as skipped — it is
+    in the report, and the reason is on stderr too, because an image that
+    was not fetched is an image the daemon has to pull on a day when
+    nothing retries it. The operator who runs with the profile enabled has
+    to know that.
     """
     compose = _write_compose(
         tmp_path,
@@ -928,10 +1272,165 @@ def test_a_profile_gated_service_is_not_fetched(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     rows = _list_rows(result.stdout)
     assert ("pull", "postgres:16@sha256:" + _DIGEST, "postgres") in rows
-    assert not any(service == "gpu" for _, _, service in rows), (
-        "a profile-gated service is in the plan, and `docker compose up` does not start it"
+    assert ("skip", "nvidia/cuda@sha256:" + _DIGEST, "gpu") in rows, (
+        "a profile-gated service is not in the report at all, so the report "
+        "claims an image set the deployment does not run"
     )
     assert "profile" in result.stderr, result.stderr
+
+
+def test_a_profile_gated_service_is_still_pin_checked(tmp_path: Path) -> None:
+    """The pin rule sees every service the compose file names.
+
+    This is the test that would have caught the hole. The service used to
+    be dropped from the plan **before** the pin rule ran, so its image was
+    never checked at all: a stack whose profile-gated service named
+    ``nvidia/cuda:latest`` passed the gate with a zero exit status, and
+    ADR-0030's rule — *a pulled image must be digest-pinned* — had a hole
+    in it exactly where nobody was looking.
+
+    The exclusion of a profile-gated service is the FETCH's decision, and
+    it is made after the rules have run. So the rule runs over the gated
+    service too, and the gate says no.
+    """
+    compose = _write_compose(
+        tmp_path,
+        "services:\n"
+        "  postgres:\n    image: postgres:16@sha256:" + _DIGEST + "\n"
+        "  gpu:\n    profiles:\n      - gpu\n    image: nvidia/cuda:latest\n",
+    )
+    stub = _Stub(tmp_path)
+    path = f"{_tool_path(tmp_path)}:{stub.bin}"
+    result = _run(
+        ["--list"],
+        path=path,
+        env={**stub.env(), "PAA_COMPOSE_FILE": str(compose)},
+    )
+    assert result.returncode == 1, (result.returncode, result.stdout, result.stderr)
+    assert "not digest-pinned" in result.stderr, result.stderr
+    assert "gpu" in result.stderr, result.stderr
+    assert stub.pulls() == [], "the script fetched something it had already refused"
+
+
+def test_a_profile_the_operator_enabled_is_fetched(tmp_path: Path) -> None:
+    """``COMPOSE_PROFILES`` is honoured, because Compose honours it.
+
+    A service behind a profile the operator enabled IS a service the
+    deployment runs, and its image is one the daemon has to pull on a day
+    when nothing retries it. The script reads the same variable
+    ``docker compose up`` reads, so the plan and the stack agree.
+    """
+    compose = _write_compose(
+        tmp_path,
+        "services:\n"
+        "  postgres:\n    image: postgres:16@sha256:" + _DIGEST + "\n"
+        "  gpu:\n    profiles:\n      - gpu\n    image: nvidia/cuda@sha256:" + _DIGEST + "\n",
+    )
+    stub = _Stub(tmp_path)
+    path = f"{_tool_path(tmp_path)}:{stub.bin}"
+    result = _run(
+        [],
+        path=path,
+        env={
+            **stub.env("absent"),
+            "PAA_COMPOSE_FILE": str(compose),
+            "COMPOSE_PROFILES": "gpu",
+            "PAA_FETCH_MAX_ATTEMPTS": "1",
+            "PAA_FETCH_BASE_DELAY": "0",
+        },
+    )
+    assert result.returncode == 1, "the stub holds no image, so the fetch cannot succeed"
+    pulled = {call.removeprefix("pull ") for call in stub.pulls()}
+    assert "nvidia/cuda@sha256:" + _DIGEST in pulled, stub.calls()
+
+
+def test_the_profiles_of_several_files_are_merged(tmp_path: Path) -> None:
+    """Compose CONCATENATES the profile lists, and so does the script.
+
+    Measured against ``docker compose config``, v5.6.0: a service with
+    ``profiles: [p]`` in the base file and ``profiles: [q]`` in the override
+    is started by ``--profile p`` **and** by ``--profile q``. The merged
+    list is the union of the files' lists, so a profile named in either
+    file enables the service.
+    """
+    base = tmp_path / "base.yml"
+    base.write_text(
+        "services:\n"
+        "  x:\n"
+        "    profiles:\n"
+        "      - p\n"
+        "    image: alpine:3@sha256:" + _DIGEST + "\n",
+        encoding="utf-8",
+    )
+    override = tmp_path / "override.yml"
+    override.write_text(
+        "services:\n  x:\n    profiles:\n      - q\n",
+        encoding="utf-8",
+    )
+    for profile in ("p", "q"):
+        result = _run(
+            ["--list", "--compose", str(base), "--compose", str(override)],
+            path=_tool_path(tmp_path),
+            env={"COMPOSE_PROFILES": profile},
+        )
+        assert result.returncode == 0, result.stderr
+        assert ("pull", "alpine:3@sha256:" + _DIGEST, "x") in _list_rows(result.stdout), (
+            f"the profile {profile} is named in one of the files, and Compose "
+            "starts the service with it"
+        )
+
+
+def test_an_empty_profile_list_does_not_gate_a_service(tmp_path: Path) -> None:
+    """``profiles: []`` gates nothing, because that is Compose's own rule.
+
+    ``docker compose config --services`` lists a service with an empty
+    profile list — it is not behind any profile, so it is started. A reader
+    that gated on the *presence* of the key would leave out a service the
+    deployment runs, which is the same divergence as every other hole this
+    reader had: a plan that is not the plan.
+    """
+    compose = _write_compose(
+        tmp_path,
+        "services:\n"
+        "  postgres:\n    image: postgres:16@sha256:" + _DIGEST + "\n"
+        "  gpu:\n    profiles: []\n    image: nvidia/cuda@sha256:" + _DIGEST + "\n",
+    )
+    stub = _Stub(tmp_path)
+    path = f"{_tool_path(tmp_path)}:{stub.bin}"
+    result = _run(
+        ["--list"],
+        path=path,
+        env={**stub.env(), "PAA_COMPOSE_FILE": str(compose)},
+    )
+    assert result.returncode == 0, result.stderr
+    rows = _list_rows(result.stdout)
+    assert ("pull", "nvidia/cuda@sha256:" + _DIGEST, "gpu") in rows, (
+        "a service with an empty profile list is not gated, and Compose "
+        "starts it"
+    )
+
+
+def test_the_usage_errors_exit_two(tmp_path: Path) -> None:
+    """A usage error is exit 2, and a refusal is exit 1.
+
+    The two are different mistakes: the operator mistyped an argument, or
+    the operator handed the script a file the reader does not understand. A
+    test that asserted only "non-zero" could not tell them apart, and a
+    script that returned the wrong code for a usage error would look like
+    a refusal to everything that reads the exit status.
+    """
+    path = _tool_path(tmp_path)
+    missing_compose = _run(["--compose"], path=path)
+    assert missing_compose.returncode == 2, missing_compose.stderr
+    assert "--compose needs a path" in missing_compose.stderr
+
+    missing_load = _run(["--load"], path=path)
+    assert missing_load.returncode == 2, missing_load.stderr
+    assert "--load needs a directory" in missing_load.stderr
+
+    unknown = _run(["--nonsense"], path=path)
+    assert unknown.returncode == 2, unknown.stderr
+    assert "unknown argument" in unknown.stderr
 
 
 def test_the_compose_flag_wins_over_the_environment(tmp_path: Path) -> None:
@@ -966,7 +1465,7 @@ def test_a_compose_file_that_does_not_exist_is_refused(tmp_path: Path) -> None:
         ["--list", "--compose", str(tmp_path / "nowhere.yml")],
         path=_tool_path(tmp_path),
     )
-    assert result.returncode != 0, result.stdout
+    assert result.returncode == 1, result.stdout
     assert "no such compose file" in result.stderr
 
 
@@ -1167,7 +1666,7 @@ def test_a_wrong_digest_is_retried_and_then_the_script_fails(tmp_path: Path) -> 
             "PAA_FETCH_BASE_DELAY": "0",
         },
     )
-    assert result.returncode != 0, result.stdout
+    assert result.returncode == 1, result.stdout
     attempts = [call for call in stub.pulls() if call.startswith("pull postgres:16")]
     assert len(attempts) == 3, f"expected three attempts, got {attempts}"
 
@@ -1192,7 +1691,7 @@ def test_a_tag_only_pin_is_refused(tmp_path: Path) -> None:
             "PAA_COMPOSE_FILE": str(compose),
         },
     )
-    assert result.returncode != 0, result.stdout
+    assert result.returncode == 1, result.stdout
     assert "not digest-pinned" in result.stderr
     assert stub.pulls() == [], "the script fetched something it had already refused"
 
@@ -1297,14 +1796,14 @@ def test_a_directory_that_does_not_exist_is_not_an_empty_one(tmp_path: Path) -> 
     path = f"{_tool_path(tmp_path)}:{stub.bin}"
     missing = tmp_path / "nowhere"
     result = _run(["--load", str(missing)], path=path, env=stub.env())
-    assert result.returncode != 0, result.stdout
+    assert result.returncode == 1, result.stdout
     assert "no such directory" in result.stderr
     assert "no .tar files" not in result.stderr
 
     empty = tmp_path / "empty"
     empty.mkdir()
     result = _run(["--load", str(empty)], path=path, env=stub.env())
-    assert result.returncode != 0, result.stdout
+    assert result.returncode == 1, result.stdout
     assert "no .tar files" in result.stderr
     assert "no such directory" not in result.stderr
 
@@ -1338,7 +1837,7 @@ def test_the_list_is_a_gate_and_says_so(tmp_path: Path) -> None:
         path=_tool_path(tmp_path),
         env={"PAA_COMPOSE_FILE": str(compose)},
     )
-    assert result.returncode != 0, result.stdout
+    assert result.returncode == 1, result.stdout
     assert "not digest-pinned" in result.stderr
     assert "postgres:16" in result.stdout, "the list still has to say what is wrong"
 
@@ -1365,7 +1864,7 @@ def test_a_reference_that_is_a_variable_is_refused_with_an_accurate_message(tmp_
         path=path,
         env={**stub.env(), "PAA_COMPOSE_FILE": str(compose)},
     )
-    assert result.returncode != 0, result.stdout
+    assert result.returncode == 1, result.stdout
     assert "VARIABLE" in result.stderr
     assert "does not" in result.stderr and "interpolate" in result.stderr
     assert "Pin it as" not in result.stderr, (
@@ -1425,7 +1924,7 @@ def test_an_empty_plan_is_refused(tmp_path: Path) -> None:
         path=path,
         env={**stub.env(), "PAA_COMPOSE_FILE": str(compose)},
     )
-    assert result.returncode != 0, result.stdout
+    assert result.returncode == 1, result.stdout
     assert "no images found" in result.stderr
     assert stub.pulls() == [], "the script fetched something out of an empty plan"
 
@@ -1439,7 +1938,7 @@ def test_the_script_fails_clearly_when_timeout_is_absent(tmp_path: Path) -> None
     """
     path = _tool_path(tmp_path, without="timeout")
     result = _run([], path=path)
-    assert result.returncode != 0, result.stdout
+    assert result.returncode == 1, result.stdout
     assert "timeout" in result.stderr
     assert "GNU coreutils" in result.stderr
 
@@ -1452,7 +1951,7 @@ def test_the_script_fails_clearly_when_the_docker_cli_is_absent(tmp_path: Path) 
     requirement is a requirement, so it is checked and stated.
     """
     result = _run([], path=_tool_path(tmp_path))
-    assert result.returncode != 0, result.stdout
+    assert result.returncode == 1, result.stdout
     assert "docker is not on PATH" in result.stderr
 
 
@@ -1467,7 +1966,7 @@ def test_the_script_refuses_to_work_without_a_daemon(tmp_path: Path) -> None:
     stub = _Stub(tmp_path)
     path = f"{_tool_path(tmp_path)}:{stub.bin}"
     result = _run([], path=path, env=stub.env("no-daemon"))
-    assert result.returncode != 0, result.stdout
+    assert result.returncode == 1, result.stdout
     assert "daemon is not reachable" in result.stderr
     assert stub.pulls() == [], "the script pulled with no daemon to pull into"
 
@@ -1494,7 +1993,7 @@ def test_a_tarball_that_will_not_load_is_retried(tmp_path: Path) -> None:
             "PAA_FETCH_BASE_DELAY": "0",
         },
     )
-    assert result.returncode != 0, result.stdout
+    assert result.returncode == 1, result.stdout
     assert len(stub.loads()) == 2, stub.calls()
 
 
@@ -1517,7 +2016,7 @@ def test_verify_reports_the_digest_of_what_is_present(tmp_path: Path) -> None:
         path=path,
         env=stub.env("wrong"),
     )
-    assert bad.returncode != 0, bad.stdout
+    assert bad.returncode == 1, bad.stdout
     assert "is not present with the digest" in bad.stderr
 
 
