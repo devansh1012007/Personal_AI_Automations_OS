@@ -244,7 +244,7 @@ Provider `api_key_env` tuples are defined per row in `registry.py:_SPECS`
 - `MemorySettings.prune_confidence_floor` appears unused in `src/` (decay uses
   domain `prune_floor`; curator's usage unverified). It may be reserved for
   callers or dead config.
-- `tests/validation/` is empty. `tests/observability/` now exists and
+- `tests/validation/` has a suite now. `tests/observability/` exists and
   covers the run repository's identifier coercions (`AGENTS.md:97`).
 
 ## Related documents

@@ -114,7 +114,7 @@ These are behaviors observed in the source, reported for completeness — they a
 
 1. Sandbox subprocess backend runs `python`; the build machine had only `python3` in a user-local directory — worker steps exhausted their retry budget (6 pre-existing test failures, now fixed on the host).
 2. `MemorySettings.decay_lambda` duplicates `domains.py` but is not read by them (potential config drift, unverified).
-3. `tests/validation/` empty; `tests/observability/` covers only the run repository's identifier coercions (`AGENTS.md:97`).
+3. `tests/validation/` now has a suite (it was empty); `tests/observability/` covers only the run repository's identifier coercions (`AGENTS.md:97`).
 4. Docker live-server run still needs a pass (README build-status table).
 
 ## Recommended next documentation improvements

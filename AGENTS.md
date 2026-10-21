@@ -11,6 +11,14 @@ uv pip install -e ".[dev]"
 .venv/bin/python -m pytest tests/ -q          # Linux; README shows the Windows .venv/Scripts path
 ```
 
+The `dev` extra carries `paa[api]`, so the documented setup installs FastAPI and the API
+suite **runs**. It did not used to: `tests/api/conftest.py` skips the whole directory when
+the extra is absent, so a developer following the documented setup was never exercising a
+single route, and it said so by *skipping* — the quietest way to not test something. The
+`dev` extra now resolves `paa[api]` itself (the same self-referential form `all` already
+used), so there is no environment in which the gate below can pass while the API is
+untested.
+
 Verify in this order before calling work done:
 
 ```bash
@@ -28,11 +36,26 @@ Verify in this order before calling work done:
   triggered line by widening the ignore. A single line that legitimately interpolates SQL takes a
   **per-line** `# noqa: S608` (the convention in `memory/facts.py` and `skills/registry.py`) — that is
   narrower than a per-file allow-list and keeps the rest of the file under the rule.
-- **The baseline is red.** `ruff` reports **69** findings and `mypy` **108** at HEAD, all
-  pre-existing. "Do not expand the count" is the gate, not "make it zero" — fixing the 185
-  pre-existing findings is a project of its own and would bury any change you are making. Do
-  not silence one either. The **suite is green**; it was not, and the reason is worth
-  knowing.
+- **The baseline is zero, and that is a different kind of gate.** `ruff` reports **0** findings
+  and `mypy` **0** errors across `src/` and `tests/`. It used to report 69 and 108, and every
+  one of those was fixed by changing the code rather than by silencing the checker: no
+  `# noqa` was added, no `# type: ignore` was added, no ruff per-file ignore was added, and no
+  `pyproject.toml` rule was relaxed. "Do not expand the count" was the old gate; **"do not
+  make it non-zero" is the one now**. The ways to break it are the same ways it was broken
+  before: an `# noqa` over a real finding, a `cast` where a check could have been written, a
+  `type: ignore` for a narrowing mypy could not see, a type widened to `Any` so the check
+  stops mattering. A finding that is genuinely *not* a finding — an unused directive, a
+  stale `type: ignore` — is deleted, not silenced.
+- **The fixes were not all cosmetic, and that is the point of the exercise.** Clearing the
+  type errors surfaced real defects that no test had caught: a `false` JSON schema accepted
+  every payload it was written to refuse; an `await` inside a generator expression made every
+  memory write that reached the embedding hand-off die; a property shadowed `str.title` and
+  broke the `str` contract; a `BlobStore` protocol declared a signature **neither**
+  implementation had, so `isinstance` passed on a contract that could not be called; a
+  Windows-only branch of the sandbox was invisible to the type checker because mypy folds a
+  `sys.platform` comparison against the platform it is checking, so the containment code was
+  unchecked. A type error is a symptom, and the symptom is sometimes a lie about the code.
+  Fix the code, not the symptom.
 - **Six of the suite's failures were the host, not the code, and the host is now fixed.** The
   sandbox builds its child environment from scratch with `PATH=/usr/local/bin:/usr/bin:/bin` —
   deliberately not the host's `PATH`, because the host's `PATH` leaks the developer's
@@ -45,9 +68,9 @@ Verify in this order before calling work done:
   python-is-python3` — and widening the sandbox's `PATH` would have undone the security
   property it exists for. **A host without `python` in a system directory will fail those
   six tests again**, and the fix is the host's, not the code's.
-- The **mypy** count went from 116 to 108 because the schema-migration change closed eight
-  pre-existing errors; `ruff` is unchanged at 69. The `requires_postgres` marker and the
-  `PAA_TEST_POSTGRES_DSN` convention are described under *Testing conventions* below.
+- The `requires_postgres` marker and the `PAA_TEST_POSTGRES_DSN` convention are described
+  under *Testing conventions* below. The mypy count went 116 → 108 (the schema-migration
+  change closed eight) → 0 (the section-by-section pass closed the rest).
 - There is no CI config, Makefile, or pre-commit hook in this repo. Nothing enforces the order above
   but you.
 
@@ -168,7 +191,8 @@ implementation detail, and PostgreSQL promises nothing about ties at all.
   sometimes misses it.
 - Crash/chaos tests simulate power loss by closing the DB mid-lineage and reopening — committed
   transactions survive, uncommitted vanish.
-- `tests/validation/` is an empty package — that subsystem is genuinely uncovered.
+- `tests/validation/` now has its own suite (`test_schema_validator.py`, 19 tests); it was an
+  empty package until the JSON Schema boolean fix gave it something to pin.
 
 ## Model layer
 
@@ -191,7 +215,7 @@ rt = await Runtime.build(model_adapter=ScriptedModel(), ...)
 `EchoProvider` cannot drive a plan (its minimal-schema-instance output isn't a plan). The
 `ScriptedModel` in `tests/integration/conftest.py` is the reference implementation — it answers by
 schema shape and records every call. That is how the "no model in the security loop" guarantee is
-asserted, and it is asserted *structurally*: `test_policy_agent_holds_no_model` proves the policy
+asserted, and it is asserted *structurally*: `test_policy_agent_has_no_model_dependency` proves the policy
 agent holds no model dependency at all, so a blocked task reaches its verdict with the model never
 consulted. (A different, unrelated `ScriptedModel` lives in `tests/coder/test_agent.py` — it emits
 scripted `ModelTurn`s, not schema-shaped dicts.)
@@ -303,7 +327,8 @@ a broken image.
 - `README.md`'s Testing section still shows Windows paths, and its per-subsystem test counts in the
   build-status table are approximate — the total line is stale too, so reconcile neither against it.
 - `src/paa/agents/specialists/` is an empty package.
-- `tests/validation/` is an empty package — that subsystem is genuinely uncovered.
+- `tests/validation/` now has its own suite (`test_schema_validator.py`, 19 tests); it was an
+  empty package until the JSON Schema boolean fix gave it something to pin.
 
 ## The coder agent (`paa agent`)
 

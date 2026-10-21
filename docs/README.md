@@ -144,7 +144,7 @@ downstream consumers, then update the corresponding flow trace and this index.
 ## E. Verification and known gaps
 
 - Subsystems with **zero test coverage**: `src/paa/observability/` (exercised nowhere),
-  `tests/validation/` (empty package). See AGENTS.md and
+  `tests/validation/`. See AGENTS.md and
   [development/testing-and-quality.md](development/testing-and-quality.md).
 - `docs/adr/README.md` indexes ADRs 0001–0020 but only 0008, 0010, 0015, 0019, 0020
   exist on disk (AGENTS.md "Known-stale references").

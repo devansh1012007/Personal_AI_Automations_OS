@@ -145,7 +145,7 @@ responsibility and the files it contains. All paths are repository-relative.
 | `tests/marketplace/` | Marketplace (18 tests) |
 | `tests/improvement/` | Self-improvement (22 tests) |
 | `tests/api/` | FastAPI ingestion (27 tests) |
-| `tests/validation/` | Empty package (no coverage) |
+| `tests/validation/` | Schema validator suite |
 | `tests/tui/`, `tests/cli/`, `tests/context/` | CLI/TUI/context |
 
 ## Important pre-existing documents (retained)

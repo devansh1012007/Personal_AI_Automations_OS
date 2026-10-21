@@ -97,7 +97,8 @@ and was not widened.
 
 ## Coverage gaps (demonstrable from test structure)
 
-- `tests/validation/` is an empty package — no dedicated validation suite.
+- `tests/validation/` has its own suite (`test_schema_validator.py`) — it was an empty package
+  until the JSON Schema boolean fix gave it something to pin.
 - `tests/observability/` covers the run repository's identifier coercions;
   the rest of `src/paa/observability/` is exercised only indirectly
   (`AGENTS.md:97`).

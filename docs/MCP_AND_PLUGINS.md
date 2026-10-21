@@ -1211,8 +1211,9 @@ versioned migration list and the identifier-coercion sweep landed in
 `feat(storage): a substrate contract, a neutral error vocabulary, and a migration list`,
 after two rounds of independent review. The container work landed beside it in
 `feat(deploy): the daemon holds the Docker socket; tool containers run under gVisor`.
-The gate is unchanged across both: ruff 69, mypy 108 (eight below the 116 at the
-previous HEAD), and a pytest failure set byte-identical to the baseline.
+The gate was unchanged across both: ruff 69, mypy 108 (eight below the 116 at the
+previous HEAD), and a pytest failure set byte-identical to the baseline. Both counts
+have since been driven to **zero** — see W8.
 
 #### W3 — Entity resolution is the same answer on both substrates
 
@@ -1339,7 +1340,14 @@ configuration reference.
 
 **Status: not started.** The full gate (`ruff` at 69 findings, `mypy` at 108 — eight
 *below* HEAD's 116 — and a pytest failure set byte-identical to the baseline), one
-final independent review of the whole diff, and then the commits. The split is by
+final independent review of the whole diff, and then the commits. **The gate itself is
+now zero** — a section-by-section pass cleared all 69 ruff findings and all 108 mypy
+errors by changing the code rather than by silencing the checker, and the fixes
+surfaced real defects on the way (a `false` JSON schema that accepted every payload, an
+`await` inside a generator expression, a property shadowing `str.title`, a `BlobStore`
+protocol neither implementation satisfied, a Windows-only branch the type checker could
+not see). What W8 still owes is the *final independent review of the whole diff* and the
+split commits — and the remaining W3–W7 work itself. The split is by
 concern, not by file, because several files carry hunks from more than one change set:
 the substrate contract and its vocabulary; the translation at the boundary; the
 migration machinery and the schema lexer; the live-server suites; the S3 rename; and
