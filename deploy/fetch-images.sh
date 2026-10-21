@@ -14,12 +14,29 @@
 #
 # The compose file is the source of truth
 # ---------------------------------------
-# The set of images this script fetches is *read out of* `docker-compose.yml`.
+# The set of images this script fetches is *read out of* the compose file(s).
 # It is not written down here. It used to be a hand-copied table, and the copy
 # drifted: two of its four entries were older versions than the ones compose
 # actually ran, so the script fetched an image the deployment never used and
 # left the one it did use for `docker compose up` to fetch — and fail on.
 # One list, one file, and a test that holds the two together.
+#
+# SEVERAL FILES, MERGED
+# ---------------------
+# The gVisor stack the documentation tells operators to run is a MERGED
+# stack:
+#
+#     docker compose -f docker-compose.yml -f docker-compose.gvisor.yml up -d
+#
+# A script that read only the first file would answer a question about half
+# the deployment, and the two halves happened to agree only because the
+# override's `paa` service declares no image of its own. So the script takes
+# SEVERAL compose files — `--compose <path>`, repeatable, merged in the order
+# they are given — and reads the merged stack, which is what `docker compose
+# up` will actually run. The merge is a documented SUBSET of Compose's own
+# merge, and the shapes it does not implement are REFUSED rather than
+# guessed: a wrong plan fetches an image the deployment does not run, and
+# misses one it does. See the reader's own comments, and ADR-0030.
 #
 # A service with a `build:` section is BUILT here: its `image:` is the tag the
 # build produces, and the script reports it as built rather than pulling it.
@@ -39,6 +56,17 @@
 # interpolate compose variables — it cannot know what your shell and your
 # `.env` hold), and an `image:` key with no value at all. The refusals happen
 # before a byte is fetched.
+#
+# Five more shapes are refused, each with its own message, and they are the
+# shapes the MERGE does not implement: Compose's `extends:`, a YAML anchor
+# or an alias, a multi-line `image:`, a custom YAML tag, and the top-level
+# `include:`. A wrong plan fetches an image the deployment does not run and
+# misses one it does, so the reader says "I do not understand this file"
+# rather than guessing.
+#
+# A service behind a `profiles:` key is EXCLUDED rather than refused: a
+# profile that is not enabled is not a service `docker compose up` runs, and
+# the script says so on stderr instead of dropping it silently.
 #
 # An empty plan is refused too. A compose file the reader finds no images in
 # is a broken source of truth, and a script that reports "every image is
@@ -69,7 +97,16 @@
 #   deploy/fetch-images.sh --list          # print what would be fetched
 #   deploy/fetch-images.sh --verify        # check the digests of what is present
 #   deploy/fetch-images.sh --load <dir>    # import images from a directory of tarballs
+#   deploy/fetch-images.sh --compose docker-compose.yml \
+#       --compose docker-compose.gvisor.yml    # the MERGED gVisor stack
 #   PAA_IMAGE_MIRROR=registry.example.com deploy/fetch-images.sh
+#
+# `--compose` is repeatable and the files are merged in the order they are
+# given, later wins — the same order and the same precedence `docker compose
+# -f a -f b` uses, for the subset of the merge this script implements. The
+# gVisor stack is the case that needs it: the override changes the `paa`
+# service, and a script that read only the base file would be answering
+# about a stack nobody runs.
 #
 # The mirror variable is a *prefix*, not a registry: `docker pull` is given
 # `<mirror>/<repository>` so that a mirror which only caches Docker Hub can
@@ -77,10 +114,11 @@
 # their own path. The mirror changes the path; it does not change the digest,
 # so the verification is unaffected by it.
 #
-# `PAA_COMPOSE_FILE` names the compose file to read (default
-# `docker-compose.yml`, resolved against the repository root). It exists so
-# the parity test can point the script at a compose file it controls, and it
-# is the only way to change which file is the source of truth.
+# `PAA_COMPOSE_FILE` names ONE compose file to read (default
+# `docker-compose.yml`, resolved against the repository root). It is the
+# single-file spelling of `--compose`, kept because it is the way the
+# deployment tests point the script at a compose file they control. A
+# `--compose` flag on the command line takes precedence over it.
 #
 # The script touches the LOCAL IMAGE STORE only: `docker image inspect`,
 # `docker pull`, `docker tag` and `docker load`. It never stops, removes or
@@ -106,11 +144,10 @@ BASE_DELAY="${PAA_FETCH_BASE_DELAY:-5}"
 PULL_TIMEOUT="${PAA_FETCH_TIMEOUT:-900}"
 MIRROR="${PAA_IMAGE_MIRROR:-}"
 
-COMPOSE_FILE="${PAA_COMPOSE_FILE:-docker-compose.yml}"
-case "$COMPOSE_FILE" in
-  /*) ;;
-  *) COMPOSE_FILE="$REPO_ROOT/$COMPOSE_FILE" ;;
-esac
+# The compose files the plan is read from, in the order they are merged. It
+# is filled in after the arguments are parsed, because `--compose` and
+# `PAA_COMPOSE_FILE` both feed it and the flag wins.
+COMPOSE_FILES=()
 
 usage() {
   sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//; $d'
@@ -120,7 +157,7 @@ log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m warn\033[0m %s\n' "$*" >&2; }
 err()  { printf '\033[1;31m fail\033[0m %s\n' "$*" >&2; }
 
-# --- the compose file, read as text -----------------------------------------
+# --- the compose files, read as text ---------------------------------------
 # PyYAML is not a dependency of this project, and adding one for a shell
 # script would be a worse trade than reading the two blocks directly — the
 # same reasoning the deployment tests use. The rules this reader follows are
@@ -128,11 +165,43 @@ err()  { printf '\033[1;31m fail\033[0m %s\n' "$*" >&2; }
 # `services:`, and its `image:` and `build:` are keys at four-space indent.
 #
 # `tests/deployment/test_fetch_images.py` locks this reader to the compose
-# file with an independent Python parse, so a drift in either one fails the
+# files with an independent Python parse, so a drift in either one fails the
 # build instead of shipping.
 #
+# THE MERGE
+# ---------
+# The files are read in the order they are given and merged, because the
+# stack the deployment runs is the MERGED stack:
+#
+#     docker compose -f docker-compose.yml -f docker-compose.gvisor.yml up -d
+#
+# The merge implemented here is a SUBSET of Compose's own, and it is the
+# subset this repository's files use:
+#
+#   * a service is a MAP, and the maps are merged key by key: a later file's
+#     `image:` replaces an earlier file's, and a later file that declares no
+#     `build:` leaves the earlier file's `build:` in place. That last rule is
+#     what makes the gVisor override work at all — its `paa` service declares
+#     neither an image nor a build, and the merged `paa` is the base file's
+#     built image with the override's runtime on top;
+#   * a service only one of the files declares is taken from that file;
+#   * the plan lists the services in the order they first appear.
+#
+# What is NOT in the subset is REFUSED, not guessed: Compose's `extends:`, a
+# YAML anchor or alias, a multi-line `image:`, a custom YAML tag, and the
+# top-level `include:`. A script that silently mis-merges is worse than one
+# that says "I do not understand this file" — a wrong plan fetches an image
+# the deployment does not run, and misses one it does.
+#
+# A service gated behind a `profiles:` key is EXCLUDED, because a profile
+# that is not enabled is not a service `docker compose up` runs. The script
+# says so, on stderr, rather than dropping it silently.
+#
 # The output is one tab-separated row per service: "action<TAB>image<TAB>service",
-# where the action is "pull" or "build".
+# where the action is "pull" or "build". Two other rows exist: a service
+# excluded by a profile comes out as "skip<TAB>profile<TAB>service", and a
+# file the reader does not understand comes out as "refuse<TAB>message<TAB>-".
+# The caller turns both into a warning and an error.
 #
 # Two details of the reader are load-bearing, and both are about not reading
 # a value that is not there:
@@ -147,37 +216,95 @@ err()  { printf '\033[1;31m fail\033[0m %s\n' "$*" >&2; }
 #   consecutive tabs, so an empty image would shift the service name into
 #   the image column and the row would be read as a service with no image.
 parse_compose() {
-  [ -f "$COMPOSE_FILE" ] || { err "no such compose file: ${COMPOSE_FILE}"; return 1; }
-  awk '
-    { sub(/\r$/, "") }
-    function flush(  action) {
-      if (service == "") return
-      if (!have_image && !have_build) return
-      action = (have_build ? "build" : "pull")
-      printf "%s\t%s\t%s\n", action, (have_image && image != "" ? image : "-"), service
+  local file
+  for file in "${COMPOSE_FILES[@]}"; do
+    if [ ! -f "$file" ]; then
+      err "no such compose file: ${file}"
+      return 1
+    fi
+  done
+  awk -v root="$REPO_ROOT" '
+    {
+      sub(/\r$/, "")
+    }
+    FILENAME != current_file {
+      # A new file. The service still open belongs to the previous one, and
+      # its values have to land in the merged map before the new file starts.
+      if (current_file != "") flush_service()
+      reset_service()
+      in_services = 0
+      current_file = FILENAME
     }
     /^[^[:space:]#]/ {
       # A top-level key. Only "services:" opens the map the rest of the reader
       # cares about; "networks:" and "volumes:" sit at the same indent and are
       # not services.
+      if ($0 ~ /^include:[[:space:]]*($|#)/) {
+        refuse(display(FILENAME) ": the top-level include: is not supported.\n" \
+               "This script does not follow Compose'"'"'s include:, and the services\n" \
+               "it names would be missing from the plan.")
+      }
       in_services = ($0 ~ /^services:[[:space:]]*$/)
       next
     }
-    in_services && $0 ~ /^  [^[:space:]#][^:]*:[[:space:]]*(#.*)?$/ {
-      # A service name: a key at two-space indent with no value of its own.
-      flush()
-      service = $0
-      sub(/^  /, "", service)
-      sub(/:.*$/, "", service)
-      image = ""
-      have_image = 0
-      have_build = 0
+    in_services && $0 ~ /^  [^[:space:]#][^:]*:/ {
+      # A key at two-space indent: a service name, or a service with an
+      # inline value — which Compose would refuse, because a service is a
+      # mapping and not a string.
+      key = $0
+      sub(/^  /, "", key)
+      inline = key
+      sub(/^[^:]*:/, "", inline)
+      sub(/[[:space:]]+#.*$/, "", inline)
+      sub(/^[[:space:]]+/, "", inline)
+      sub(/[[:space:]]+$/, "", inline)
+      if (inline == "") {
+        flush_service()
+        service = key
+        sub(/:.*$/, "", service)
+        image = ""
+        have_image = 0
+        have_build = 0
+        have_profile = 0
+        next
+      }
+      # An anchor or an alias on the service key is refused: the reader would
+      # then attribute the keys below it to the wrong service, and a wrong
+      # plan fetches an image the deployment does not run.
+      if (inline ~ /^[&*]/) {
+        name = key
+        sub(/:.*$/, "", name)
+        refuse(display(FILENAME) ": the service " name " uses a YAML anchor or an alias.\n" \
+               "This script does not resolve anchors, and an unresolved image\n" \
+               "reference would be pulled as the literal text of the alias.")
+      }
       next
     }
     in_services && service != "" && $0 ~ /^    image:/ {
       line = $0
       sub(/^    image:[[:space:]]*/, "", line)
       sub(/[[:space:]]+#.*$/, "", line)
+      sub(/[[:space:]]+$/, "", line)
+      if (line ~ /^[|>][-+0-9]*$/) {
+        refuse(display(FILENAME) ": the service " service " declares a multi-line image:.\n" \
+               "This script reads one line per image, and a folded or a literal\n" \
+               "block would be read as the text of its indicator.")
+      }
+      if (line ~ /^!/) {
+        refuse(display(FILENAME) ": the service " service " puts a custom YAML tag on its image:.\n" \
+               "This script does not interpret YAML tags, so it cannot tell what\n" \
+               "the tagged value is.")
+      }
+      if (line ~ /^\*/) {
+        refuse(display(FILENAME) ": the service " service " declares an image: that is an alias.\n" \
+               "This script does not resolve aliases, so it cannot tell which\n" \
+               "image the alias names.")
+      }
+      if (line ~ /&/) {
+        refuse(display(FILENAME) ": the service " service " declares an anchored image:.\n" \
+               "This script does not resolve anchors, so it cannot tell which\n" \
+               "image the anchor names.")
+      }
       if (substr(line, 1, 1) == "\"" || substr(line, 1, 1) == "\047")
         line = substr(line, 2)
       if (length(line) > 0) {
@@ -188,12 +315,79 @@ parse_compose() {
       have_image = 1
       next
     }
+    in_services && service != "" && $0 ~ /^    extends:/ {
+      refuse(display(FILENAME) ": the service " service " uses extends:.\n" \
+             "This script does not resolve Compose'"'"'s inheritance, and an image\n" \
+             "inherited from another service would be fetched by guesswork.")
+      next
+    }
     in_services && service != "" && $0 ~ /^    build:/ {
       have_build = 1
       next
     }
-    END { flush() }
-  ' "$COMPOSE_FILE"
+    in_services && service != "" && $0 ~ /^    profiles:/ {
+      have_profile = 1
+      next
+    }
+    END {
+      if (aborted) exit 1
+      flush_service()
+      for (i = 1; i <= g_count; i++) {
+        name = g_order[i]
+        if (!g_has_image[name] && !g_has_build[name]) continue
+        if (g_gated[name]) {
+          printf "skip\tprofile\t%s\n", name
+          continue
+        }
+        action = (g_has_build[name] ? "build" : "pull")
+        image = (g_has_image[name] && g_image[name] != "" ? g_image[name] : "-")
+        printf "%s\t%s\t%s\n", action, image, name
+      }
+    }
+    function display(name) {
+      # The file as the operator wrote it, not as this script resolved it.
+      if (root != "" && substr(name, 1, length(root) + 1) == root "/")
+        return substr(name, length(root) + 2)
+      return name
+    }
+    function refuse(message) {
+      # A shape this reader does not implement. The message travels back as
+      # rows, because the shell owns the wording of an error and the awk
+      # program must not write to the terminal behind its back.
+      aborted = 1
+      count = split(message, lines, "\n")
+      for (i = 1; i <= count; i++) printf "refuse\t%s\t-\n", lines[i]
+      exit 1
+    }
+    function reset_service() {
+      service = ""
+      image = ""
+      have_image = 0
+      have_build = 0
+      have_profile = 0
+    }
+    function flush_service() {
+      # The service that is open is finished: its values land in the merged
+      # map, and only the keys this file actually declared — a later file
+      # that says nothing about `build:` leaves the earlier file'"'"'s alone.
+      if (service == "") return
+      if (!(service in g_seen)) {
+        g_seen[service] = 1
+        g_order[++g_count] = service
+        g_image[service] = ""
+        g_has_image[service] = 0
+        g_has_build[service] = 0
+        g_gated[service] = 0
+      }
+      if (have_image) {
+        g_image[service] = image
+        g_has_image[service] = 1
+      }
+      if (have_build) g_has_build[service] = 1
+      if (have_profile) g_gated[service] = 1
+      reset_service()
+    }
+  ' "${COMPOSE_FILES[@]}"
 }
 
 # --- the plan ---------------------------------------------------------------
@@ -213,7 +407,40 @@ interpolated=""
 unnamed=""
 
 build_plan() {
-  PLAN="$(parse_compose)"
+  local raw action image service rows="" refused=0
+  # The reader's rows come back in three kinds: the plan itself, a service it
+  # left out because a profile gates it, and a file it does not understand.
+  # The last one is an error and stops the script here, before a mode's own
+  # work, so a plan that was never built is never acted on.
+  raw=""
+  if ! raw="$(parse_compose)"; then
+    refused=1
+  fi
+  while IFS=$'\t' read -r action image service; do
+    [ -n "$service" ] || continue
+    case "$action" in
+      refuse)
+        refused=1
+        err "${image}"
+        continue
+        ;;
+      skip)
+        # A service behind a compose profile. `docker compose up` does not
+        # start it unless the profile is enabled, so it is not in the plan —
+        # but the operator is told, because an image that is not fetched is
+        # an image the daemon has to pull on a day when nothing retries it.
+        warn "${service} is gated behind a compose profile, so it is not"
+        warn "fetched: \`docker compose up\` does not start a profile-gated"
+        warn "service either. Fetch it by hand if you run with that profile."
+        continue
+        ;;
+    esac
+    rows="${rows}${action}"$'\t'"${image}"$'\t'"${service}"$'\n'
+  done <<< "$raw"
+  if [ "$refused" -ne 0 ]; then
+    return 1
+  fi
+  PLAN="$rows"
   unpinned=""
   interpolated=""
   unnamed=""
@@ -564,6 +791,8 @@ require_gnu_timeout() {
 # --- the entry point --------------------------------------------------------
 mode="fetch"
 load_dir=""
+# The compose files named on the command line, in the order they were given.
+compose_flags=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --list)   mode="list" ;;
@@ -574,13 +803,42 @@ while [ $# -gt 0 ]; do
       load_dir="$2"
       shift
       ;;
+    --compose)
+      [ $# -ge 2 ] || { err "--compose needs a path"; exit 2; }
+      compose_flags+=("$2")
+      shift
+      ;;
     -h|--help) usage; exit 0 ;;
     *) err "unknown argument: $1"; usage; exit 2 ;;
   esac
   shift
 done
 
-build_plan
+# The files the plan is read from. The flag wins over the environment
+# variable, because a flag on the command line is the more specific of the
+# two — and because `PAA_COMPOSE_FILE` names ONE file, while the flag can
+# name the several a merged stack is made of.
+#
+# The paths are resolved against the repository root, because the script
+# changes directory there and an operator's relative path is relative to the
+# repository they are standing in.
+compose_paths=()
+if [ ${#compose_flags[@]} -gt 0 ]; then
+  compose_paths=("${compose_flags[@]}")
+elif [ -n "${PAA_COMPOSE_FILE:-}" ]; then
+  compose_paths=("$PAA_COMPOSE_FILE")
+else
+  compose_paths=("docker-compose.yml")
+fi
+for compose_path in "${compose_paths[@]}"; do
+  case "$compose_path" in
+    /*) ;;
+    *) compose_path="$REPO_ROOT/$compose_path" ;;
+  esac
+  COMPOSE_FILES+=("$compose_path")
+done
+
+build_plan || exit 1
 
 # An empty plan is a broken source of truth, not an empty deployment. The
 # reader found no service with an `image:` or a `build:` section, so the
@@ -588,10 +846,10 @@ build_plan
 # compose file names is present" would then be a report about nothing. It
 # is refused, in every mode, before the mode's own work.
 if [ -z "$PLAN" ]; then
-  err "no images found in ${COMPOSE_FILE} — the compose file names no"
-  err "service with an image: or a build: section. There is nothing to"
-  err "fetch, and reporting success would be reporting that nothing was"
-  err "checked."
+  err "no images found in ${COMPOSE_FILES[*]} — the compose file(s) name no"
+  err "service with an image: or a build: section, or every service they name"
+  err "is behind a profile. There is nothing to fetch, and reporting success"
+  err "would be reporting that nothing was checked."
   exit 1
 fi
 
@@ -634,7 +892,7 @@ esac
 refuse_bad_images || exit 1
 
 if fetch_images; then
-  log "every image the compose file names is present"
+  log "every image the compose file(s) name is present"
 else
   err "one or more images could not be fetched — re-run this script to continue"
   exit 1

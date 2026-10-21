@@ -304,3 +304,125 @@ drift that made the script useless is what that costs, and it is already paid on
 (ADR-0031), and the credential-forwarding rule here says nothing about where a
 credential may be *stored* — only that the operator's shell is a legitimate place to
 put one for the length of a deployment.
+
+---
+
+## Amendment — several compose files, and a merge that is not Compose's
+
+*Amended 2026-10-22, by W1-IMPL-02 (T-003). Everything above still stands: the
+compose file is the single source of truth, the script reads it rather than copying
+it, a pulled image must be digest-pinned, the digest check is inside the retry unit,
+and the script carries no image table of its own. This amendment changes one thing —
+the source of truth is now a SET of compose files, merged — and adds nothing to the
+rest.*
+
+### What changed
+
+The script takes **several** compose files: a repeatable `--compose <path>` flag,
+merged in the order the files are given, later wins. `PAA_COMPOSE_FILE` stays as the
+single-file spelling, because it is how the deployment tests point the script at a
+compose file they control; a `--compose` flag on the command line takes precedence
+over it, because a flag is the more specific of the two and because the variable
+names ONE file while the flag can name the several a merged stack is made of.
+
+### Why
+
+The gVisor stack the documentation tells operators to run is a **merged** stack:
+
+```
+docker compose -f docker-compose.yml -f docker-compose.gvisor.yml up -d
+```
+
+Two files, one stack. The script read exactly one file, so it planned half of it —
+and the two halves agreed only by **accident**, because the override's `paa` service
+declares no `image:` of its own. Nothing tested the accident. The next person who
+added an `image:` to the override got a deployment that fetched the base file's
+image and ran the override's, with a green test suite saying the script and the
+compose files were in step.
+
+The fix is not to read the override and hope. It is to read the **merge**, because the
+merge is what `docker compose up` will run.
+
+### The subset that is implemented
+
+Compose's merge is a deep, well-specified algorithm, and this script does not
+re-implement it. It implements the subset the repository's compose files use:
+
+* the files are read in the order they are given;
+* a service is a **map**, and the maps are merged key by key: a later file's `image:`
+  replaces an earlier file's, and a later file that declares no `build:` leaves the
+  earlier file's `build:` in place;
+* a service only one of the files declares is taken from that file;
+* the plan lists the services in the order they first appear;
+* a service behind a `profiles:` key is **excluded**, because a profile that is not
+  enabled is not a service `docker compose up` runs. The script says so on stderr
+  rather than dropping it silently — an image that was not fetched is an image the
+  daemon has to pull on a day when nothing retries it. The key's *presence* is what
+  counts, not the contents of its list, so the exclusion is announced rather than
+  silent in the degenerate cases too.
+
+The `build:` rule is what makes the gVisor override work at all. The override's `paa`
+service declares a runtime and an environment block and no image and no build, so the
+merged `paa` is the base file's built image with the override's runtime on top. A
+merge that dropped the earlier `build:` would plan `paa` as a **pull** of an image
+that is not on any registry.
+
+### What is refused, and why a refusal is the right answer
+
+Five shapes are outside the subset, and each is an **error** with its own message,
+before a byte is fetched:
+
+* Compose's `extends:` — the image would be inherited from another service, and the
+  script does not resolve inheritance;
+* a YAML anchor or an alias, on a service key or on an `image:` value — an unresolved
+  reference would be pulled as the literal text of the alias, and an anchored service
+  key would make the reader attribute the keys below it to the *wrong service*;
+* a multi-line `image:` — the reader reads one line per image, and a folded or a
+  literal block would be read as the text of its indicator;
+* a custom YAML tag — the script does not interpret YAML tags, so it cannot tell what
+  the tagged value is;
+* the top-level `include:` — the script does not follow it, and the services it names
+  would be missing from the plan.
+
+A refusal is the right answer because the alternative is **silent**. A plan that is
+wrong fetches an image the deployment does not run and misses one it does, and nothing
+in the output says so: the list looks right, the build is green, and the deployment
+discovers the difference when it pulls an image that was never fetched — on a day when
+nothing retries it.
+
+### One small alignment, in the same direction
+
+The reader now strips **trailing whitespace** from an `image:` value. It did not
+before, and the consequence was a pull reference with a space on the end of it — a
+reference no registry has ever heard of, and one the `--list` output cannot show,
+because the list is parsed. The parity test's own reader already stripped it, so the
+two readers disagreed on a shape neither of them had a test for. They agree now, and
+the shape is in the corpus.
+
+### What it costs
+
+* **A second thing to keep in step with Compose.** The subset above is a *summary*
+  of Compose's merge, and Compose's merge is not frozen. If Compose changes how it
+  merges a service map, this subset does not follow automatically — it follows when
+  somebody notices, and the parity test is what makes the noticing cheap.
+* **A refusal set to maintain.** Five shapes are refused today; a sixth compose
+  feature that changes the image set has to be added to that list, deliberately, or it
+  becomes a silent wrong answer again. The list is written down here and in the
+  reader's own comments for exactly that reason.
+* **A flag, and the precedence between it and the environment variable.** Two ways to
+  name the same thing is one more rule, and the rule is that the command line wins.
+
+### What was deliberately NOT done
+
+* **The parity test still compares two hand-rolled readers, not Compose.** It is a
+  shape lock on the current files, and it says so in its own docstring. The obvious
+  way to close that gap — `docker compose config` — would make `--list` require the
+  Docker CLI, and the report on a host with no Docker at all is one of the reasons
+  `--list` is a gate in the first place. **Recorded, not fixed.**
+* **The Dockerfile base images are still not in the plan.** They are fetched by
+  `docker build`, not by this script, and the scope above did not change: the plan is
+  the compose files' services. **Recorded, not fixed.**
+* **`PAA_COMPOSE_FILE` was not turned into a list.** It stays the single-file
+  spelling, and the several-file case is the flag. One spelling per shape, and the
+  shape an operator reaches for is the one that reads like the command they are
+  running.

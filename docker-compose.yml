@@ -26,6 +26,8 @@
 #
 # gVisor: run the sandbox worker under runsc by layering the override —
 #   docker compose -f docker-compose.yml -f docker-compose.gvisor.yml up
+# and fetch the MERGED stack's images the same way:
+#   deploy/fetch-images.sh --compose docker-compose.yml --compose docker-compose.gvisor.yml
 # =====================================================================
 
 name: paa

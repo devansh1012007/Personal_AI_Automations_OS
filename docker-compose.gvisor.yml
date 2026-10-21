@@ -4,6 +4,9 @@
 # Usage:
 #   docker compose -f docker-compose.yml -f docker-compose.gvisor.yml up -d
 #
+# and the images of that MERGED stack are fetched the same way:
+#   deploy/fetch-images.sh --compose docker-compose.yml --compose docker-compose.gvisor.yml
+#
 # REQUIREMENTS (host, not container):
 #   * Linux. gVisor is a Linux user-space kernel; it does not exist on Windows
 #     or macOS. On a non-Linux host this override does nothing useful and the

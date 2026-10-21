@@ -1,8 +1,8 @@
 """The fetch script fetches what the compose file actually runs.
 
 ``deploy/fetch-images.sh`` used to carry its own hand-copied table of images.
-It was a second list of what the deployment needs, and the two drifted: two of
-the script's four entries were *older versions* than the ones
+It was a second list of what the deployment needs, and the two drifted: two
+of the script's four entries were *older versions* than the ones
 ``docker-compose.yml`` ran, so the script fetched an image the deployment
 never used and left the one it did use for ``docker compose up`` to fetch —
 and fail on. Three of the script's other claims were false as well:
@@ -23,6 +23,16 @@ file independently, in Python, and asserts that the two agree — and it drives
 the script against a **stub ``docker``** to prove the behaviours the compose
 file cannot show on its own.
 
+**The stack is MERGED, and the reader has to merge too.** The gVisor stack
+the documentation tells operators to run is
+``docker compose -f docker-compose.yml -f docker-compose.gvisor.yml up -d``:
+two files, one stack. A script that read only the first file would be
+answering about half the deployment, and the two halves agreed only by
+accident — the override's ``paa`` service declares no image of its own, so
+the accident has held until somebody adds one. The script therefore takes
+several compose files and merges them, and the agreement asserted here is
+over the **merged** stack, not over one file.
+
 **What the parity test is, and what it is not.** It is a *shape lock on the
 current file*: it says that the script's reader and this module's reader
 agree about ``docker-compose.yml`` as it stands. It is **not** an
@@ -39,6 +49,13 @@ party being the test: the script strips the comment and the test did not, so
 a maintainer "fixing" the script to match the test would have pulled
 ``postgres:16@sha256:X  # comment``.
 
+**The shapes the reader refuses are pinned too.** A merge that is wrong is
+worse than a merge that is refused, so the script says "I do not understand
+this file" for Compose's ``extends:``, for YAML anchors and aliases, for a
+multi-line ``image:``, for a custom YAML tag, and for the top-level
+``include:``. An error is an acceptable answer; a silent wrong answer is
+not.
+
 Static, dependency-free and daemon-free: PyYAML is not a dependency of this
 project, and the stub is a shell script, so the whole module runs wherever
 the suite runs. It is skipped on a platform with no bash. It is **not** the
@@ -46,6 +63,7 @@ first module in the suite that spawns a process — the sandbox and the skill
 suites both do — but it is the first to drive a *shell program* against a
 stub on the PATH.
 """
+
 
 from __future__ import annotations
 
@@ -55,12 +73,18 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "deploy" / "fetch-images.sh"
 COMPOSE = REPO_ROOT / "docker-compose.yml"
+
+#: The gVisor override. It is a *layer* on the base file, not a file of its
+#: own: the stack the documentation tells operators to run is the two of them
+#: merged, and the script reads the merge.
+COMPOSE_GVISOR = REPO_ROOT / "docker-compose.gvisor.yml"
 
 #: The script is a bash program. There is no bash on Windows, and a Windows
 #: host has no ``/usr/bin/env`` either, so the module is skipped there rather
@@ -266,6 +290,11 @@ _IMAGE = re.compile(r"^    image:[ \t]*(.*?)[ \t]*$")
 #: A build section, at the same indent as ``image:``.
 _BUILD = re.compile(r"^    build:")
 
+#: A ``profiles:`` key, at the same indent as ``image:``. A service behind
+#: one is not started by ``docker compose up`` unless the operator enables
+#: the profile, so it is not in the plan.
+_PROFILE = re.compile(r"^    profiles:")
+
 #: A literal digest. The script must not carry one: the pin is read from the
 #: compose file, and a digest written into the script is a second place for
 #: the pin to be wrong.
@@ -332,6 +361,61 @@ _PARITY_SHAPES: dict[str, tuple[str, int | None]] = {
         "services:\n  postgres:\n    image: postgres:16@sha256:" + _DIGEST + "\n"
         "x-extra:\n  whatever: 1\n",
         0,
+    ),
+    "trailing whitespace after the image": (
+        "services:\n  postgres:\n    image: postgres:16@sha256:" + _DIGEST + "   \n",
+        0,
+    ),
+    "a service behind a profile": (
+        "services:\n"
+        "  postgres:\n"
+        "    image: postgres:16@sha256:" + _DIGEST + "\n"
+        "  gpu:\n"
+        "    profiles:\n"
+        "      - gpu\n"
+        "    image: nvidia/cuda@sha256:" + _DIGEST + "\n",
+        0,
+    ),
+}
+
+#: The shapes the reader REFUSES, and the word the refusal has to carry.
+#:
+#: A merge that is wrong is worse than a merge that is refused: a wrong plan
+#: fetches an image the deployment does not run, and misses one it does. So
+#: each shape the reader does not implement is an error with its own
+#: message, and the error is pinned here.
+#:
+#: The value is ``(text, the word the message must contain)``.
+_REFUSED_SHAPES: dict[str, tuple[str, str]] = {
+    "a service that extends another": (
+        "services:\n  paa:\n    extends:\n      service: base\n",
+        "extends:",
+    ),
+    "a service key that carries an anchor": (
+        "services:\n  postgres: &pg\n    image: postgres:16@sha256:" + _DIGEST + "\n",
+        "anchor",
+    ),
+    "an image that is an alias": (
+        "services:\n  postgres:\n    image: *pg\n",
+        "alias",
+    ),
+    "an image that carries an anchor": (
+        "services:\n  postgres:\n    image: &img postgres:16@sha256:" + _DIGEST + "\n",
+        "anchor",
+    ),
+    "a multi-line image": (
+        "services:\n  postgres:\n    image: >-\n      postgres:16@sha256:" + _DIGEST + "\n",
+        "multi-line",
+    ),
+    "an image with a custom YAML tag": (
+        "services:\n  postgres:\n    image: !override postgres:16@sha256:" + _DIGEST + "\n",
+        "tag",
+    ),
+    "a top-level include": (
+        "include:\n  - other.yml\nservices:\n  postgres:\n    image: postgres:16@sha256:"
+        + _DIGEST
+        + "\n",
+        "include:",
     ),
 }
 
@@ -462,14 +546,28 @@ def _image_value(raw: str) -> str:
     return value
 
 
-def _compose_rows(path: Path) -> list[tuple[str, str, str]]:
-    """The ``(action, image, service)`` rows a reader of the compose file finds.
+class _Service(NamedTuple):
+    """What one compose file says about one service.
+
+    ``image`` is ``None`` when the service declares no ``image:`` key at
+    all, and the empty string when it declares one with no value. The two
+    are different mistakes, and the merge treats them differently: a file
+    that says nothing about ``image:`` leaves the earlier file's alone,
+    while a file that declares an empty one replaces it.
+    """
+
+    name: str
+    image: str | None
+    has_build: bool
+    has_profile: bool
+
+
+def _services_of(path: Path) -> list[_Service]:
+    """The services a compose file declares, in the order it declares them.
 
     An **independent** implementation of the same rules the script's awk
     reader follows: a service is a key at two-space indent under ``services:``,
-    and its ``image:`` and ``build:`` are keys at four-space indent. A service
-    with a ``build:`` section is built here; a service with only an ``image:``
-    is pulled.
+    and its ``image:`` and ``build:`` are keys at four-space indent.
 
     The point of writing it a second time, in a different language, is that
     the two can be compared. A single reader compared against itself proves
@@ -483,13 +581,16 @@ def _compose_rows(path: Path) -> list[tuple[str, str, str]]:
     * a service with neither an ``image:`` nor a ``build:`` is **not** a row;
     * an ``image:`` with no value is reported as ``"-"``, the same as a
       service with no ``image:`` key at all — an empty field in a
-      tab-separated row is not a field.
+      tab-separated row is not a field;
+    * a service behind a ``profiles:`` key is left out of the plan, because
+      ``docker compose up`` does not start it unless the profile is
+      enabled.
     """
-    rows: list[tuple[str, str, str]] = []
+    services: list[_Service] = []
     service = ""
-    image = ""
-    has_image = False
+    image: str | None = None
     has_build = False
+    has_profile = False
     in_services = False
     for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
@@ -500,29 +601,84 @@ def _compose_rows(path: Path) -> list[tuple[str, str, str]]:
             in_services = stripped == "services:"
             continue
         if in_services and _SERVICE.match(line):
-            if service and (has_image or has_build):
-                action = "build" if has_build else "pull"
-                rows.append((action, _row_image(image, has_image), service))
+            if service:
+                services.append(_Service(service, image, has_build, has_profile))
             service = _service_name(line)
-            image = ""
-            has_image = False
+            image = None
             has_build = False
+            has_profile = False
             continue
         if not in_services or not service:
             continue
         declared = _IMAGE.match(line)
         if declared is not None:
             image = _image_value(declared.group(1))
-            has_image = True
             continue
         if _BUILD.match(line):
             has_build = True
-    if service and (has_image or has_build):
-        rows.append(("build" if has_build else "pull", _row_image(image, has_image), service))
+            continue
+        if _PROFILE.match(line):
+            has_profile = True
+    if service:
+        services.append(_Service(service, image, has_build, has_profile))
+    return services
+
+
+def _merged_rows(paths: list[Path]) -> list[tuple[str, str, str]]:
+    """The rows a MERGED reading of several compose files gives.
+
+    The merge is the one the script implements, and it is the subset of
+    Compose's own merge that the repository's files use:
+
+    * the files are read in the order they are given;
+    * a later file's ``image:`` replaces an earlier file's, and a later file
+      that says nothing about ``image:`` or ``build:`` leaves the earlier
+      file's alone — which is what makes the gVisor override work, since its
+      ``paa`` service declares neither;
+    * a service only one of the files declares is taken from that file;
+    * the rows come out in the order the services first appear.
+
+    Written a second time, in a different language, so that it can be
+    compared with the script's own reader. A single reader compared against
+    itself proves nothing.
+    """
+    order: list[str] = []
+    images: dict[str, str | None] = {}
+    has_image: dict[str, bool] = {}
+    has_build: dict[str, bool] = {}
+    gated: dict[str, bool] = {}
+    for path in paths:
+        for service in _services_of(path):
+            if service.name not in images:
+                order.append(service.name)
+                images[service.name] = None
+                has_image[service.name] = False
+                has_build[service.name] = False
+                gated[service.name] = False
+            if service.image is not None:
+                images[service.name] = service.image
+                has_image[service.name] = True
+            if service.has_build:
+                has_build[service.name] = True
+            if service.has_profile:
+                gated[service.name] = True
+    rows: list[tuple[str, str, str]] = []
+    for name in order:
+        if gated[name]:
+            continue
+        if not has_image[name] and not has_build[name]:
+            continue
+        action = "build" if has_build[name] else "pull"
+        rows.append((action, _row_image(images[name], has_image[name]), name))
     return rows
 
 
-def _row_image(image: str, has_image: bool) -> str:
+def _compose_rows(path: Path) -> list[tuple[str, str, str]]:
+    """The rows a reader of ONE compose file finds."""
+    return _merged_rows([path])
+
+
+def _row_image(image: str | None, has_image: bool) -> str:
     """The image column of a row: the image, or ``"-"`` when there is none."""
     if has_image and image:
         return image
@@ -605,21 +761,357 @@ def test_the_two_readers_agree_on_every_shape(tmp_path: Path, shape: str) -> Non
         assert result.returncode == expected, result.stderr
 
 
+@pytest.mark.parametrize("shape", sorted(_REFUSED_SHAPES))
+def test_the_reader_refuses_the_shapes_it_does_not_understand(tmp_path: Path, shape: str) -> None:
+    """A shape the reader does not implement is an error, not a wrong answer.
+
+    The merge the script implements is a SUBSET of Compose's own, and the
+    subset has edges: Compose's ``extends:``, YAML anchors and aliases, a
+    multi-line ``image:``, a custom YAML tag, the top-level ``include:``. A
+    script that guessed at any of them would plan a stack nobody runs, and
+    the guess would be **silent** — which is the one failure mode a
+    deployment script cannot have: the plan looks right, the green build
+    says nothing is wrong, and the deployment fetches the wrong image.
+
+    So each of them is an error with its own message, before a byte is
+    fetched.
+    """
+    text, expected = _REFUSED_SHAPES[shape]
+    compose = _write_compose(tmp_path, text)
+    stub = _Stub(tmp_path)
+    path = f"{_tool_path(tmp_path)}:{stub.bin}"
+    result = _run(
+        [],
+        path=path,
+        env={**stub.env(), "PAA_COMPOSE_FILE": str(compose)},
+    )
+    assert result.returncode != 0, result.stdout
+    assert expected in result.stderr, result.stderr
+    assert stub.pulls() == [], "the script fetched something out of a file it refused"
+
+
+def test_the_merged_stack_is_the_stack_the_script_reads() -> None:
+    """The stack is a MERGED stack, and the plan is the merged plan.
+
+    The gVisor override is a layer on the base file, not a file of its own:
+    the stack the documentation tells operators to run is the two of them
+    together, and a script that read only the first file would be answering
+    about half the deployment.
+
+    So the plan is read from both files, and it is checked against an
+    independent reader over the same two files. This test alone cannot tell
+    a merge from an accident — the two files happen to agree today — so the
+    test below it breaks the accident on purpose.
+    """
+    result = _run(
+        ["--list", "--compose", str(COMPOSE), "--compose", str(COMPOSE_GVISOR)],
+        path=os.environ.get("PATH", ""),
+    )
+    assert result.returncode == 0, result.stderr
+    assert _list_rows(result.stdout) == _merged_rows([COMPOSE, COMPOSE_GVISOR])
+
+
+def test_an_image_added_to_the_gvisor_override_changes_the_plan(tmp_path: Path) -> None:
+    """The override is read, not ignored — and the accident is over.
+
+    The plan and the deployment agree today because the gVisor override
+    declares no ``image:`` of its own. That is an accident, and nothing
+    tested it: the next person who adds one gets a deployment that fetches
+    the base file's image and runs the override's, with a green test suite
+    saying the script is in step with the compose files.
+
+    So the override is given an image here, and the plan has to follow it.
+    The action stays ``build``, because the base file's ``build:`` section
+    is still there: Compose merges a service map key by key, and a file
+    that says nothing about ``build:`` leaves it alone.
+    """
+    text = COMPOSE_GVISOR.read_text(encoding="utf-8")
+    assert "  paa:\n" in text, "the gVisor override no longer declares a paa service"
+    override = tmp_path / "docker-compose.gvisor.yml"
+    override.write_text(
+        text.replace("  paa:\n", "  paa:\n    image: paa/runtime:4.2\n", 1),
+        encoding="utf-8",
+    )
+    result = _run(
+        ["--list", "--compose", str(COMPOSE), "--compose", str(override)],
+        path=_tool_path(tmp_path),
+    )
+    assert result.returncode == 0, result.stderr
+    paa = [
+        (action, image) for action, image, service in _list_rows(result.stdout) if service == "paa"
+    ]
+    assert paa == [("build", "paa/runtime:4.2")], (
+        "the override's image did not reach the plan — the script read the "
+        "base file alone, and the deployment runs the merge"
+    )
+
+
+def test_a_service_only_the_override_declares_is_in_the_plan(tmp_path: Path) -> None:
+    """A service one of the files declares is taken from that file.
+
+    The merge is not only about replacing: a service the override *adds* is
+    part of the stack, and the plan has to have it — otherwise the
+    deployment pulls an image the script never fetched, on a day when
+    nothing retries it.
+    """
+    override = tmp_path / "override.yml"
+    override.write_text(
+        "services:\n  extra:\n    image: extra:1@sha256:" + _DIGEST + "\n",
+        encoding="utf-8",
+    )
+    result = _run(
+        ["--list", "--compose", str(COMPOSE), "--compose", str(override)],
+        path=_tool_path(tmp_path),
+    )
+    assert result.returncode == 0, result.stderr
+    assert ("pull", "extra:1@sha256:" + _DIGEST, "extra") in _list_rows(result.stdout)
+
+
+def test_the_merged_plan_is_what_the_fetch_pulls(tmp_path: Path) -> None:
+    """The merge reaches the fetch, not only the report.
+
+    The plan is what the script acts on, so a merge that stopped at the
+    report would leave the deployment fetching the base file's image while
+    running the override's — which is the failure this whole change is
+    about, one layer down.
+    """
+    override = tmp_path / "override.yml"
+    override.write_text(
+        "services:\n  postgres:\n    image: postgres:17@sha256:" + _DIGEST + "\n",
+        encoding="utf-8",
+    )
+    stub = _Stub(tmp_path)
+    path = f"{_tool_path(tmp_path)}:{stub.bin}"
+    result = _run(
+        ["--compose", str(COMPOSE), "--compose", str(override)],
+        path=path,
+        env={
+            **stub.env("absent"),
+            "PAA_FETCH_MAX_ATTEMPTS": "1",
+            "PAA_FETCH_BASE_DELAY": "0",
+        },
+    )
+    assert result.returncode != 0, "the stub holds no image, so the fetch cannot succeed"
+    pulled = {call.removeprefix("pull ") for call in stub.pulls()}
+    assert "postgres:17@sha256:" + _DIGEST in pulled, stub.calls()
+    base_postgres = next(
+        image for action, image, service in _merged_rows([COMPOSE]) if service == "postgres"
+    )
+    assert base_postgres not in pulled, (
+        "the base file's image was pulled as well — the override's did not "
+        "replace it"
+    )
+
+
+def test_a_profile_gated_service_is_not_fetched(tmp_path: Path) -> None:
+    """A profile that is not enabled is not a service the deployment runs.
+
+    ``docker compose up`` starts a profile-gated service only when the
+    operator enables the profile, so the plan leaves it out — and says so,
+    because an image that was not fetched is an image the daemon has to
+    pull on a day when nothing retries it. The operator who runs with the
+    profile enabled has to know that.
+    """
+    compose = _write_compose(
+        tmp_path,
+        "services:\n"
+        "  postgres:\n    image: postgres:16@sha256:" + _DIGEST + "\n"
+        "  gpu:\n    profiles:\n      - gpu\n    image: nvidia/cuda@sha256:" + _DIGEST + "\n",
+    )
+    stub = _Stub(tmp_path)
+    path = f"{_tool_path(tmp_path)}:{stub.bin}"
+    result = _run(
+        ["--list"],
+        path=path,
+        env={**stub.env(), "PAA_COMPOSE_FILE": str(compose)},
+    )
+    assert result.returncode == 0, result.stderr
+    rows = _list_rows(result.stdout)
+    assert ("pull", "postgres:16@sha256:" + _DIGEST, "postgres") in rows
+    assert not any(service == "gpu" for _, _, service in rows), (
+        "a profile-gated service is in the plan, and `docker compose up` does not start it"
+    )
+    assert "profile" in result.stderr, result.stderr
+
+
+def test_the_compose_flag_wins_over_the_environment(tmp_path: Path) -> None:
+    """A flag on the command line beats the variable in the environment.
+
+    ``PAA_COMPOSE_FILE`` names ONE file, and the flag can name the several
+    a merged stack is made of. A variable that quietly won would make the
+    flag a no-op for an operator whose shell still carries the variable —
+    and the script would plan a stack nobody runs.
+    """
+    compose = _write_compose(
+        tmp_path,
+        "services:\n  postgres:\n    image: postgres:16@sha256:" + _DIGEST + "\n",
+    )
+    result = _run(
+        ["--list", "--compose", str(compose)],
+        path=_tool_path(tmp_path),
+        env={"PAA_COMPOSE_FILE": str(COMPOSE)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert _list_rows(result.stdout) == _compose_rows(compose)
+
+
+def test_a_compose_file_that_does_not_exist_is_refused(tmp_path: Path) -> None:
+    """A file that is not there is a mistake, and the operator is told.
+
+    The plan is read from a file. A file that is not there is not an empty
+    deployment, and it is certainly not a reason to fetch nothing and
+    report success.
+    """
+    result = _run(
+        ["--list", "--compose", str(tmp_path / "nowhere.yml")],
+        path=_tool_path(tmp_path),
+    )
+    assert result.returncode != 0, result.stdout
+    assert "no such compose file" in result.stderr
+
+
+def test_trailing_whitespace_does_not_stay_on_the_reference(tmp_path: Path) -> None:
+    """Whitespace after an image value is not part of the reference.
+
+    The ``--list`` output hides it — the row is parsed, and the parser
+    cannot see the difference — so the pull is where it shows: a reference
+    with a space on the end of it names no image any registry has ever
+    heard of, and the pull fails against a reference that looks right in
+    the plan.
+    """
+    compose = _write_compose(
+        tmp_path,
+        "services:\n  postgres:\n    image: postgres:16@sha256:" + _DIGEST + "   \n",
+    )
+    stub = _Stub(tmp_path)
+    path = f"{_tool_path(tmp_path)}:{stub.bin}"
+    result = _run(
+        [],
+        path=path,
+        env={
+            **stub.env("pulled"),
+            "PAA_COMPOSE_FILE": str(compose),
+            "PAA_FETCH_MAX_ATTEMPTS": "1",
+            "PAA_FETCH_BASE_DELAY": "0",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    assert stub.pulls() == ["pull postgres:16@sha256:" + _DIGEST], stub.calls()
+
+
 def test_the_list_names_every_service_the_compose_file_declares() -> None:
-    """The list is not empty, and it says the right thing about each service.
+    """The list says the right thing about each service the compose file declares.
 
     The parity test above would pass on two readers that agree on nothing, so
-    the content is asserted as well: the four third-party services are pulled
-    and digest-pinned, and the two services this repository builds are built.
+    the content is asserted as well — and it is **derived** from the compose
+    file rather than written down here. A hard-coded list of service names
+    was a second place to forget: the day a service was added to the compose
+    file, the test failed with the test as the wrong party, and the fix was
+    to edit the test. The expectation follows the file now.
+
+    What is asserted is the *rules*, not the names: every service the file
+    declares with an image or a build is in the plan exactly once, the
+    action follows the file, and every pulled image is digest-pinned.
     """
     rows = _list_rows(_run(["--list"], path=os.environ.get("PATH", "")).stdout)
-    pulled = {service for action, _, service in rows if action == "pull"}
-    built = {service for action, _, service in rows if action == "build"}
-    assert pulled == {"postgres", "redis", "qdrant", "seaweedfs"}
-    assert built == {"paa", "paa-init"}
-    for action, image, _ in rows:
-        if action == "pull":
-            assert "@sha256:" in image, f"{image} is pulled but is not digest-pinned"
+    declared = {service.name: service for service in _services_of(COMPOSE)}
+    expected = {
+        service for service, entry in declared.items() if entry.image is not None or entry.has_build
+    }
+    assert expected, "the compose file declares no service with an image or a build"
+    assert {service for _, _, service in rows} == expected
+    assert len(rows) == len(expected), "a service appears in the plan more than once"
+    for action, _image, service in rows:
+        entry = declared[service]
+        assert action == ("build" if entry.has_build else "pull"), (
+            f"{service} is reported as {action}, and the compose file says "
+            f"{'build' if entry.has_build else 'pull'}"
+        )
+
+
+def test_a_service_added_to_the_compose_file_lands_in_the_plan(tmp_path: Path) -> None:
+    """The expectation follows the compose file, so adding a service is not an edit.
+
+    This is the test that says the set above is derived. The service names
+    used to be written down in this module, which made the module a second
+    place to forget — and the failure mode was the worst kind: the build
+    went red over a service nobody had broken, and the fix was to edit the
+    test.
+
+    So: a compose file the test controls, with a service nobody has heard
+    of, and the plan has it. Nothing here had to be edited for that to be
+    true.
+    """
+    compose = _write_compose(
+        tmp_path,
+        "services:\n"
+        "  postgres:\n    image: postgres:16@sha256:" + _DIGEST + "\n"
+        "  zebra:\n    image: zebra:1@sha256:" + _DIGEST + "\n",
+    )
+    result = _run(
+        ["--list"],
+        path=_tool_path(tmp_path),
+        env={"PAA_COMPOSE_FILE": str(compose)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert {service for _, _, service in _list_rows(result.stdout)} == {"postgres", "zebra"}
+
+
+def test_every_pulled_image_is_digest_pinned() -> None:
+    """Every image the plan pulls is pinned by digest.
+
+    Not *which* digest — a digest bump is a legitimate change, and pinning
+    the digest itself would turn every upgrade into a test edit — but that
+    there **is** one. A tag is a promise about a moving target, and this
+    repository has already been bitten by one.
+
+    The assertion is over the MERGED stack, because that is the stack the
+    deployment runs.
+    """
+    result = _run(
+        ["--list", "--compose", str(COMPOSE), "--compose", str(COMPOSE_GVISOR)],
+        path=os.environ.get("PATH", ""),
+    )
+    assert result.returncode == 0, result.stderr
+    pulled = [
+        (image, service) for action, image, service in _list_rows(result.stdout) if action == "pull"
+    ]
+    assert pulled, "the plan pulls nothing, so the pin rule was checked against nothing"
+    for image, service in pulled:
+        assert "@sha256:" in image, f"{service} is pulled as {image}, which is not digest-pinned"
+
+
+def test_the_image_and_build_exemption_is_deliberate() -> None:
+    """A service with BOTH an ``image:`` and a ``build:`` is built here.
+
+    The exemption is what makes this repository's own services work: they
+    are built from its Dockerfile, and their ``image:`` is the tag the
+    build produces — a tag by construction, because the digest of a locally
+    built image is not known before the image is built. So the pin rule
+    applies to PULLED images, and this test says so in both directions: the
+    service is reported as built, and the script does not refuse its tag.
+    """
+    rows = _list_rows(
+        _run(
+            ["--list", "--compose", str(COMPOSE), "--compose", str(COMPOSE_GVISOR)],
+            path=os.environ.get("PATH", ""),
+        ).stdout
+    )
+    both = {
+        service.name: service
+        for service in _services_of(COMPOSE)
+        if service.image is not None and service.has_build
+    }
+    assert both, "the compose file declares no service with both an image: and a build:"
+    by_service = {service: (action, image) for action, image, service in rows}
+    for name, entry in both.items():
+        action, image = by_service[name]
+        assert action == "build", f"{name} declares a build: section, so it is built here"
+        assert image == entry.image, f"{name} is reported with the wrong image"
+        assert "@sha256:" not in image, (
+            f"{name} is built here, so its image is a tag — and the script "
+            "must not start asking for a digest it cannot have"
+        )
 
 
 def test_the_script_carries_no_hand_copied_image_table() -> None:

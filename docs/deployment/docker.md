@@ -339,6 +339,37 @@ the tag the build produces) and a service with only an `image:` is *pulled*. The
 second list of images to keep in step — a copy of one is exactly how the script and
 Compose came to disagree about which Qdrant and which SeaweedFS the deployment runs.
 
+**Several compose files, merged — the gVisor stack is a merged stack.** The gVisor
+override is a *layer* on the base file, not a file of its own:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gvisor.yml up -d
+```
+
+Two files, one stack — so the script has to read the merge, not one of the files:
+
+```bash
+deploy/fetch-images.sh --compose docker-compose.yml --compose docker-compose.gvisor.yml
+```
+
+`--compose` is repeatable, and the files are merged in the order they are given, later
+wins — the same order and the same precedence `docker compose -f a -f b` uses. A
+service's map is merged key by key, so the gVisor override's `paa` service — which
+declares a runtime and an environment block and no image of its own — leaves the base
+file's `build:` section and `image:` alone, and the merged `paa` is the built image
+with the override's runtime on top.
+
+The merge is a **subset** of Compose's own, and the shapes it does not implement are
+**refused** rather than guessed: Compose's `extends:`, a YAML anchor or an alias, a
+multi-line `image:`, a custom YAML tag, and the top-level `include:`. A wrong plan
+fetches an image the deployment does not run and misses one it does, and nothing in the
+output would say so. A service behind a `profiles:` key is **excluded** instead: a
+profile that is not enabled is not a service `docker compose up` runs, and the script
+says so on stderr.
+
+Relative paths are resolved against the **repository root**, and a `--compose` flag
+takes precedence over `PAA_COMPOSE_FILE`.
+
 The scope is therefore the compose file's services. The two images this repository builds
 that Compose does *not* name — `paa/base_worker:v4.1` and `paa/toolbox:v1` — are not in
 the list; the runtime launches the first and the tool layer the second. Both are built
@@ -387,6 +418,21 @@ so the verification is unaffected by it. The pulled image is then **tagged** und
 name Compose expects — and only then: without a mirror the pulled reference already *is*
 the reference Compose uses, and tagging it would add a mutable alias (a tag carrying no
 digest) that a later unpinned pull could move to different bytes.
+
+**The knobs, and where they come from.** All five are read from your **shell** — the
+script does not read `.env`, and neither does `docker compose` for them:
+
+| Variable | Default | What it does |
+|---|---|---|
+| `PAA_COMPOSE_FILE` | `docker-compose.yml` | The compose file to read, when no `--compose` flag is given. One file: the several-file case is the flag. |
+| `PAA_FETCH_MAX_ATTEMPTS` | `6` | How many times one image is pulled before the script gives up on it. One attempt is one pull **plus** its verification. |
+| `PAA_FETCH_BASE_DELAY` | `5` | The base of the backoff, in seconds. The delay before attempt *n* is `PAA_FETCH_BASE_DELAY × n`, so the wait grows with the attempt. |
+| `PAA_FETCH_TIMEOUT` | `900` | How long one pull may take, in seconds, before it is killed and retried. |
+| `PAA_IMAGE_MIRROR` | *(none)* | A registry prefix to pull through. It changes the repository path, never the digest. |
+
+```bash
+PAA_FETCH_MAX_ATTEMPTS=10 PAA_FETCH_BASE_DELAY=2 deploy/fetch-images.sh
+```
 
 **The script touches the local image store and nothing else.** It inspects, pulls, tags
 and loads. It never stops, removes, restarts or prunes anything, and it never touches a
