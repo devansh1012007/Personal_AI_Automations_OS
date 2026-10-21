@@ -90,6 +90,29 @@ _CREDENTIAL_ROLES = {
     "AWS_SECRET_ACCESS_KEY": "secret",
 }
 
+#: The model provider's variables, which the compose file forwards to the
+#: container so that a credential or a provider choice made in the operator's
+#: *shell* reaches it — not only the value in the project ``.env``.
+#:
+#: The two credential names are the registry rows' ``api_key_env`` values
+#: (``src/paa/models/registry.py``): the model layer reads a key by NAME, the
+#: same indirection ``StorageSettings`` uses for the S3 store.
+#:
+#: They are deliberately **not** in :data:`_GUARDED_KEYS`. A stack with no
+#: model provider is a legitimate configuration — the runtime runs on its
+#: embedded defaults — and a required key would stop the deployment from
+#: starting for a reason the operator did not cause. That is the opposite of
+#: the object store's credential, without which the stack cannot work at all.
+_MODEL_KEYS = frozenset(
+    {
+        "OPENROUTER_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "PAA_MODELS__LOCAL_PROVIDER",
+        "PAA_MODELS__LOCAL_MODEL",
+        "PAA_MODELS__ESCALATION_PROVIDER",
+    }
+)
+
 #: A compose service is a key at two-space indent under ``services:``.
 _SERVICE = re.compile(r"^  ([A-Za-z0-9_.-]+):\s*$")
 #: An ``environment:`` block is a key at four-space indent under a service.
@@ -376,4 +399,80 @@ def test_compose_reads_no_legacy_variable() -> None:
         )
         assert not re.search(r"^\s*MINIO_[A-Za-z0-9_]*\s*=", text, re.MULTILINE), (
             f"{path.name} assigns a pre-2026 variable"
+        )
+
+
+def test_the_model_variables_are_forwarded_to_the_container() -> None:
+    """The model block reaches the container, and this check is not vacuous.
+
+    The compose file used to deliver the model configuration through
+    ``env_file: .env`` alone, which delivers the FILE's value and nothing
+    else: the documented ``export OPENROUTER_API_KEY=…`` was silently
+    ignored, so a containerised runtime could not reach a provider whose
+    credential lived only in the operator's shell.
+    """
+    forwarded = {
+        key
+        for path in COMPOSE_FILES
+        for _, key, _ in _environment_entries(path)
+        if key in _MODEL_KEYS
+    }
+    assert forwarded == set(_MODEL_KEYS), (
+        f"the compose files forward {sorted(forwarded)} — the model variables "
+        f"are {sorted(_MODEL_KEYS)}, and the ones that are missing are the ones "
+        "the shell cannot reach the container through"
+    )
+
+
+def test_the_model_variables_are_optional_substitutions() -> None:
+    """A model provider is OPTIONAL, so its variables are not ``:?``-guarded.
+
+    A stack with no model provider is a legitimate configuration — the
+    runtime runs on its embedded defaults — and a required key would stop the
+    deployment from starting for a reason the operator did not cause. The
+    object store's credential is the opposite case and is guarded; the two
+    are different failures and are treated differently on purpose.
+    """
+    for path in COMPOSE_FILES:
+        for service, key, value in _environment_entries(path):
+            if key not in _MODEL_KEYS:
+                continue
+            substitutions = _INTERPOLATION.findall(value)
+            assert substitutions, (
+                f"{service}.{key} is a literal, not a substitution — the value "
+                "would be baked into the compose file"
+            )
+            for name, suffix in substitutions:
+                assert not suffix.startswith(":?"), (
+                    f"{service}.{key} substitutes ${{{name}}}{suffix}. A "
+                    "required model variable stops the deployment from "
+                    "starting, and a deployment with no model provider is a "
+                    "legitimate one. Use ${{{name}:-<default>}}."
+                )
+                assert suffix.startswith(":-"), (
+                    f"{service}.{key} substitutes ${{{name}}}{suffix} — a bare "
+                    f"${{{name}}} becomes an EMPTY STRING, and an empty "
+                    "provider name is not an absent one: the router fails to "
+                    "resolve a provider at all."
+                )
+
+
+def test_every_forwarded_model_variable_is_documented_in_the_env_example() -> None:
+    """A variable the compose file reads is a variable the operator is told about.
+
+    The file an operator is told to copy is ``.env.example``, and the model
+    block is the one they will look in first.
+    """
+    env_text = ENV_EXAMPLE.read_text(encoding="utf-8")
+    names: set[str] = set()
+    for path in COMPOSE_FILES:
+        for _, key, value in _environment_entries(path):
+            if key not in _MODEL_KEYS:
+                continue
+            names.update(name for name, _ in _INTERPOLATION.findall(value))
+    assert names, "no model variable is substituted — this check would pass vacuously"
+    for name in sorted(names):
+        assert re.search(rf"^{re.escape(name)}\s*=", env_text, re.MULTILINE), (
+            f"the compose file forwards {name}, but .env.example never tells "
+            "the operator that they can set it"
         )

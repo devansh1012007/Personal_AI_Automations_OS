@@ -46,6 +46,22 @@ services:
   # required to have succeeded — so a failure is loud rather than a
   # crash-looping runtime.
   paa-init:
+    # The SAME build section as the `paa` service below, and the reason is
+    # that this service has to be startable on its own.
+    #
+    # Without it, `image:` alone means "pull it" — and `paa/runtime:4.1` is
+    # not on any registry. It worked only by accident: the `paa` service's
+    # build produced the same tag in the same invocation, so the image was
+    # already in the local store by the time `paa-init` started. Start
+    # `paa-init` alone — which is exactly what an operator does to fix the
+    # data directory's ownership — and it fails with a pull error against a
+    # registry that has never heard of this image.
+    #
+    # Two services with the same build section build the same tag, and the
+    # layer cache makes the second one nearly free.
+    build:
+      context: .
+      dockerfile: Dockerfile
     image: paa/runtime:4.1
     user: "0:0"
     entrypoint: ["sh", "-c"]
@@ -143,6 +159,39 @@ services:
       # exist on the host — and Docker would silently create an empty,
       # root-owned directory there instead of failing.
       PAA_SANDBOX__HOST_PATH_MAP: "/data=${PAA_DATA_DIR:-/srv/paa/data}"
+      # --- model provider: the shell reaches the container, not just the file ---
+      # `env_file: .env` delivers the FILE's value, and it delivers it as the
+      # only source: the documented `export OPENROUTER_API_KEY=…` was
+      # silently ignored, and a deployment whose credential lived only in the
+      # operator's shell could not reach a provider at all.
+      #
+      # These five are interpolated, which is what fixes it. Compose's
+      # interpolation source is the SHELL ENVIRONMENT first and the project
+      # `.env` second, so `${VAR:-default}` gives the shell export precedence
+      # and keeps the file working when the shell has nothing. A variable in
+      # this block also takes precedence over `env_file`, so the value that
+      # arrives is the interpolated one.
+      #
+      # They are OPTIONAL, not `:?`-guarded: a stack with no model provider is
+      # a legitimate configuration — the runtime runs on its embedded defaults
+      # — and a required key would stop the deployment from starting for a
+      # reason the operator did not cause. The credentials are optional for
+      # the same reason: an empty value is an absent value to the model layer,
+      # which reads a provider key by NAME and treats "" as unset.
+      #
+      # The three settings carry the code's own defaults as their fallback,
+      # because an EMPTY setting is not an absent setting: pydantic-settings
+      # reads `PAA_MODELS__LOCAL_PROVIDER=""` as the provider named "", and
+      # the router then fails to resolve a provider at all — the container
+      # dies at boot on a variable the operator never set. The fallback is
+      # `ModelSettings`' own default, and
+      # `tests/deployment/test_compose_config.py` asserts that the two agree,
+      # so the copy here cannot drift away from the code.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      PAA_MODELS__LOCAL_PROVIDER: ${PAA_MODELS__LOCAL_PROVIDER:-ollama}
+      PAA_MODELS__LOCAL_MODEL: ${PAA_MODELS__LOCAL_MODEL:-qwen2.5:3b-instruct}
+      PAA_MODELS__ESCALATION_PROVIDER: ${PAA_MODELS__ESCALATION_PROVIDER:-anthropic}
     ports:
       # Loopback only. The runtime is single-user and local-first.
       - "127.0.0.1:8787:8787"

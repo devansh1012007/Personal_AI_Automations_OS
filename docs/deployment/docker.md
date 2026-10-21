@@ -317,6 +317,113 @@ actually get" is the question the row exists to answer, and answering
 On a non-Linux host the override is inert: the runtime reports `NAMESPACE` (or
 degrades to a weaker backend) and says so in the logs.
 
+## Fetching the images: `deploy/fetch-images.sh`
+
+`docker compose up --build` fetches the third-party images itself, and it does not
+retry: a dropped connection mid-layer and a registry that times out both look the same
+to it, and both stop the deploy. `deploy/fetch-images.sh` exists for that case — it
+fetches the images one at a time, with a growing backoff, and it is **resumable**: an
+image already present is skipped, so re-running it after a failure continues where it
+stopped.
+
+```bash
+deploy/fetch-images.sh                 # fetch what is missing
+deploy/fetch-images.sh --list          # print what would be fetched
+deploy/fetch-images.sh --verify        # check the digests of what is present
+deploy/fetch-images.sh --load <dir>    # import images from a directory of tarballs
+```
+
+**The compose file is the source of truth.** The script reads `docker-compose.yml` and
+acts on what it finds: a service with a `build:` section is *built here* (its `image:` is
+the tag the build produces) and a service with only an `image:` is *pulled*. There is no
+second list of images to keep in step — a copy of one is exactly how the script and
+Compose came to disagree about which Qdrant and which SeaweedFS the deployment runs.
+
+The scope is therefore the compose file's services. The two images this repository builds
+that Compose does *not* name — `paa/base_worker:v4.1` and `paa/toolbox:v1` — are not in
+the list; the runtime launches the first and the tool layer the second. Both are built
+by hand, and the commands are in [The container images](#the-container-images) below.
+
+**Every pulled image is digest-pinned, and the pin is checked.** A pulled image with no
+`@sha256:` digest is an **error**, not a warning: a tag is a promise about a moving
+target, and a deployment that names one cannot be reproduced. The pin comes from the
+compose file — the script carries no digest of its own. Three references are refused,
+each with its own message: an image that is not pinned, an `image:` key with no value,
+and an `image:` whose reference is a **variable** (`${IMAGE:-postgres:16}`) — the script
+reads the compose file as text and does not interpolate Compose's variables, so it
+refuses one rather than guessing what your shell and `.env` hold. A compose file the
+reader finds no images in is refused too: a plan with nothing in it is a broken source
+of truth, not an empty deployment, and reporting success about one would be reporting
+that nothing was checked.
+
+The check is *inside* the retry: one attempt is one pull **plus** its verification, the
+way the Dockerfiles treat a download and its SHA-256 check. A transfer that produced
+something other than the pinned image is a failed *attempt*, so the next attempt tries
+again, and a persistent failure stops the script with a non-zero exit status — which
+makes it usable as a CI gate.
+
+**`--list` needs no Docker, and it is a gate.** The list is read from the compose file,
+so the report is available on a host with no daemon, and it is what the deployment tests
+check the script against. It also *enforces*: it exits non-zero when the plan names an
+image this deployment cannot pin. The list still prints — you need to see *what* is
+wrong — and the exit status is the verdict.
+
+**`--load` imports and stops.** It loads every `*.tar` in the directory and exits; it
+does not then pull the rest of the deployment. A **loaded** image is not digest-verified:
+a `docker save` / `docker load` round trip restores an image by its configuration, and
+the manifest digest the registry served is not what the load path can be asked about. The
+pin is enforced on the pull path.
+
+**Requirements: GNU coreutils.** The script bounds every pull with `timeout`, which is a
+GNU coreutils program — it is not in a stock macOS or BSD system, and a busybox
+`timeout` is a different program with different flags. The script says so plainly rather
+than failing with "command not found" in the middle of a pull. On macOS:
+`brew install coreutils`.
+
+**Behind a mirror:** `PAA_IMAGE_MIRROR=registry.example.com deploy/fetch-images.sh`. The
+variable is a *prefix*, not a registry: the pull is given `<mirror>/<repository>`, with
+the official images served from `library/`. The mirror changes the path, not the digest,
+so the verification is unaffected by it. The pulled image is then **tagged** under the
+name Compose expects — and only then: without a mirror the pulled reference already *is*
+the reference Compose uses, and tagging it would add a mutable alias (a tag carrying no
+digest) that a later unpinned pull could move to different bytes.
+
+**The script touches the local image store and nothing else.** It inspects, pulls, tags
+and loads. It never stops, removes, restarts or prunes anything, and it never touches a
+running container.
+
+The reasoning, and the three defects this replaced, are in
+[ADR-0030](../adr/0030-deployment-image-contract.md).
+
+## The model provider in the container stack
+
+The `paa` service forwards the model provider's variables from your shell as well as
+from the project `.env`:
+
+```bash
+export OPENROUTER_API_KEY=sk-or-v1-...
+export PAA_MODELS__LOCAL_PROVIDER=openrouter
+export PAA_MODELS__LOCAL_MODEL=nvidia/nemotron-3-ultra-550b-a55b:free
+docker compose up -d --build
+```
+
+Compose interpolates from the **shell first and the project `.env` second**, so a shell
+export wins over the value in `.env`, and the value in `.env` is used when your shell
+has nothing. (Before this, the file won and the shell export was silently ignored — a
+containerised runtime could not reach a provider whose credential lived only in your
+shell.)
+
+All five variables are **optional**. A stack with no model provider is a legitimate
+configuration: the runtime runs on its embedded defaults. The three `PAA_MODELS__*`
+settings fall back to the code's own defaults (`ollama`, `qwen2.5:3b-instruct`,
+`anthropic`) rather than to an empty string — an empty provider name is not an absent
+one, and the container would die at boot resolving it.
+
+The credential *names* are the registry rows' `api_key_env` values
+(`src/paa/models/registry.py`), so the same key works for `paa agent` on a laptop and
+for the container. The values are never written into config, the ledger, or an image
+layer — `.env` is git-ignored and `.dockerignore`-d.
+
 ## What needs root, and what it is done
 
 Four things in this deployment need `sudo`. They are collected here because each
@@ -723,6 +830,7 @@ Backend selection is driven entirely by `PAA_*` environment variables, set in
 | `PAA_S3_ACCESS_KEY` / `PAA_S3_SECRET_KEY` | from `.env` | credential values |
 | `PAA_SANDBOX__CONTAINER_RUNTIME` | `runc` / `runsc` | OCI runtime |
 | `PAA_SANDBOX__BACKEND` | `docker` | the containment backend; `auto` would silently degrade to the subprocess backend if the Docker probe failed |
+| `PAA_SANDBOX__CONTAINER_START_GRACE_SECONDS` | `5.0` | the budget on the container's **start**; the step's own `timeout_seconds` is the budget on the **work**, and the two are enforced separately (ADR-0031) |
 | `PAA_SANDBOX__HOST_PATH_MAP` | `/data=/srv/paa/data` | how the runtime's path becomes the host's |
 | `DOCKER_GID` | from `.env` | the host's docker-socket GID, added to the container user as a supplementary group |
 | `PAA_DATA_DIR` | from `.env` | the host side of the `PAA_HOME` bind mount |

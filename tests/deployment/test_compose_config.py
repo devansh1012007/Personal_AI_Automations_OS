@@ -23,11 +23,11 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import pytest
 
-from paa.config import SandboxSettings, Settings, reset_settings_cache
+from paa.config import ModelSettings, SandboxSettings, Settings, reset_settings_cache
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE = REPO_ROOT / "docker-compose.yml"
@@ -70,12 +70,91 @@ _EXPECTED_FIELDS = {
     "PAA_SANDBOX__CONTAINER_RUNTIME": "sandbox.container_runtime",
     "PAA_SANDBOX__BACKEND": "sandbox.backend",
     "PAA_SANDBOX__HOST_PATH_MAP": "sandbox.host_path_map",
+    # The model settings the compose file forwards. They are forwarded so a
+    # credential or a provider choice made in the operator's shell reaches the
+    # container (ADR-0030), and a forwarded variable is a variable the
+    # runtime reads — so it has to land in a real field.
+    "PAA_MODELS__LOCAL_PROVIDER": "models.local_provider",
+    "PAA_MODELS__LOCAL_MODEL": "models.local_model",
+    "PAA_MODELS__ESCALATION_PROVIDER": "models.escalation_provider",
 }
 
 _ENVIRONMENT_BLOCK = re.compile(r"^(\s+)environment:\s*$")
 _ENV_ENTRY = re.compile(r"^\s+([A-Za-z_][A-Za-z0-9_]*):\s*(.*?)\s*$")
 _ENV_LIST_ENTRY = re.compile(r"^\s+-\s+([A-Za-z_][A-Za-z0-9_]*)=(.*?)\s*$")
 _INTERPOLATION = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::?-([^}]*))?\}")
+
+#: A service key, at two-space indent.
+_SERVICE_KEY = re.compile(r"^  ([A-Za-z0-9_.-]+):\s*(#.*)?$")
+#: A ``build:`` block, at four-space indent.
+_BUILD_KEY = re.compile(r"^    build:\s*(#.*)?$")
+#: An entry of a ``build:`` block, at six-space indent.
+_BUILD_ENTRY = re.compile(r"^      ([A-Za-z0-9_.-]+):\s*(.*?)\s*$")
+#: An ``image:`` key, at four-space indent.
+_IMAGE_KEY = re.compile(r"^    image:\s*(.*?)\s*$")
+
+
+class _Service(NamedTuple):
+    """What a compose service declares about itself."""
+
+    image: str
+    build: dict[str, str]
+
+
+def _services(path: Path) -> dict[str, _Service]:
+    """Every service in a compose file, with its ``image:`` and ``build:``.
+
+    Read as text, like every other reader in this directory: PyYAML is not a
+    dependency of this project, and the compose file's shape is regular
+    enough to read directly — a service is a key at two-space indent under
+    ``services:``, and its own keys are at four.
+
+    Only the ``services:`` map is read. ``networks:`` and ``volumes:`` sit
+    at the same indent as a service name and are not services.
+    """
+    services: dict[str, _Service] = {}
+    service = ""
+    image = ""
+    build: dict[str, str] = {}
+    in_build = False
+    in_services = False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not line[0].isspace():
+            in_services = stripped == "services:"
+            continue
+        if not in_services:
+            continue
+        named = _SERVICE_KEY.match(line)
+        if named is not None:
+            if service:
+                services[service] = _Service(image=image, build=build)
+            service = named.group(1)
+            image = ""
+            build = {}
+            in_build = False
+            continue
+        if not service:
+            continue
+        if _BUILD_KEY.match(line):
+            in_build = True
+            continue
+        declared = _IMAGE_KEY.match(line)
+        if declared is not None:
+            image = declared.group(1).strip().strip("\"'")
+            in_build = False
+            continue
+        if in_build:
+            entry = _BUILD_ENTRY.match(line)
+            if entry is None:
+                in_build = False
+                continue
+            build[entry.group(1)] = entry.group(2).strip().strip("\"'")
+    if service:
+        services[service] = _Service(image=image, build=build)
+    return services
 
 
 def _paa_environment(path: Path) -> dict[str, str]:
@@ -262,6 +341,78 @@ def test_the_pinned_sandbox_variables_can_be_overridden_from_the_environment() -
             f"{name} is hard-coded in the compose file, so .env cannot "
             "override it — the safe default has to be interpolated"
         )
+
+
+def test_the_forwarded_model_settings_fall_back_to_the_code_default() -> None:
+    """The compose file's fallback for a forwarded setting is the code's own.
+
+    A variable in the compose ``environment:`` block always reaches the
+    container, so an unset one has to carry a *usable* value. An empty
+    provider name is not a usable one: pydantic-settings reads
+    ``PAA_MODELS__LOCAL_PROVIDER=""`` as the provider named "", and the
+    router then fails to resolve a provider at all — the container dies at
+    boot on a variable the operator never set.
+
+    The fallback is therefore ``ModelSettings``' own default, and this test
+    is what keeps the copy in the compose file from drifting away from the
+    code it is a copy of.
+
+    The default is read from the *field*, not from a live ``Settings()``: a
+    live one reads the developer's own ``.env``, and a test whose answer
+    depends on the developer's ``.env`` is a test that passes on one host
+    and fails on another.
+    """
+    environment = _paa_environment(COMPOSE)
+    for name, field in (
+        ("PAA_MODELS__LOCAL_PROVIDER", "local_provider"),
+        ("PAA_MODELS__LOCAL_MODEL", "local_model"),
+        ("PAA_MODELS__ESCALATION_PROVIDER", "escalation_provider"),
+    ):
+        raw = environment.get(name)
+        assert raw is not None, f"{name} is not forwarded to the container"
+        rendered = _rendered(raw)
+        expected = ModelSettings.model_fields[field].default
+        assert rendered == expected, (
+            f"the compose file falls back to {rendered!r} for {name}, but the "
+            f"code's own default is {expected!r} — a deployment that sets "
+            "neither would run on a different configuration than the one the "
+            "runtime would use on a laptop"
+        )
+
+
+def test_paa_init_builds_exactly_what_paa_builds() -> None:
+    """``paa-init`` builds the same image as ``paa``, from the same section.
+
+    ``paa-init`` used to declare an ``image:`` and no ``build:`` section, so
+    Compose's contract for it was "pull this" — from a registry that has
+    never heard of the image. It worked only by accident: the ``paa``
+    service's build produced the same tag in the same invocation, so the
+    image was in the local store by the time ``paa-init`` started. Starting
+    ``paa-init`` alone — which is exactly what an operator does to fix the
+    data directory's ownership — failed with a pull error.
+
+    The two services therefore have to declare the **same** build section
+    and the **same** image name: a different Dockerfile would build a
+    different image under the same tag, and a different tag would build two
+    images where there is one.
+    """
+    services = _services(COMPOSE)
+    assert "paa-init" in services, "the compose file has no paa-init service"
+    assert "paa" in services, "the compose file has no paa service"
+    init = services["paa-init"]
+    runtime = services["paa"]
+    assert init.build, (
+        "paa-init has no build: section — Compose reads that as 'pull this "
+        "image', from a registry that has never heard of it"
+    )
+    assert init.build == runtime.build, (
+        f"paa-init builds {init.build} and paa builds {runtime.build} — they "
+        "have to be the same build, or the same tag names two images"
+    )
+    assert init.image == runtime.image, (
+        f"paa-init builds {init.image!r} and paa builds {runtime.image!r} — "
+        "the same build has to produce the same tag"
+    )
 
 
 def test_the_boot_probe_bound_is_longer_than_the_backends_own_timeout() -> None:
