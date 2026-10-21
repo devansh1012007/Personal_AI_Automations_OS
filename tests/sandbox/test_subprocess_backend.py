@@ -13,11 +13,13 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from paa.config import SandboxSettings
 from paa.core.errors import SandboxError
+from paa.sandbox import subprocess_backend
 from paa.sandbox.base import IsolationLevel, SandboxSpec, assert_inside_workspace
 from paa.sandbox.subprocess_backend import SubprocessSandbox
 
@@ -349,3 +351,74 @@ class TestSpecValidation:
     def test_negative_timeout_is_refused(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="positive or None"):
             SandboxSpec(command=("echo",), workspace_path=tmp_path, timeout_seconds=-1.0)
+
+
+class TestStartBudget:
+    """This backend has no container to start, so the grace is not its money.
+
+    ``container_start_grace_seconds`` is the *container* backend's start
+    budget (ADR-0031). A ``fork``/``exec`` is milliseconds, there is no
+    daemon to ask, and there is nothing between the caller's budget and the
+    work. So the setting is **ignored** — neither spent nor folded into the
+    work's timeout, which is the additive contract this change replaces.
+    """
+
+    async def test_the_wait_is_bounded_by_the_work_budget_alone(
+        self, tmp_path: Path, record_wait_for: Any
+    ) -> None:
+        """The wait gets ``timeout_seconds`` and not the sum of both.
+
+        This is a **forward-looking guard**, not a pin on a defect that was
+        ever here: the additive budget — ``timeout_seconds +
+        container_start_grace_seconds`` — only ever existed on the *container*
+        backend, because only that backend has a container to start. This
+        backend never applied the grace, so there was no bug to reproduce
+        here.
+
+        It is worth keeping anyway, because the two budgets were separated
+        by an ADR and a *rule* that only one backend honours is a rule that
+        quietly comes back: a future change that folds the grace into the
+        work budget on this backend would be a work timeout that reports
+        itself as a success, and this is the test that would say so.
+        """
+        recorder = record_wait_for(subprocess_backend)
+        sandbox = SubprocessSandbox(
+            SandboxSettings(container_start_grace_seconds=30.0)
+        )
+
+        result = await sandbox.run(
+            python_spec(tmp_path, "import time; time.sleep(30)", timeout_seconds=0.5)
+        )
+
+        # The work's wait is bounded by the work's budget alone.
+        assert recorder.timeouts[0] == 0.5
+        # And the sum appears nowhere at all.
+        assert 30.5 not in recorder.timeouts
+        # Sanity: the budget really is the work's, and it really did bite.
+        assert result.timed_out is True
+        assert result.killed_reason == "timeout"
+
+    async def test_the_preflight_says_the_grace_is_not_applied(
+        self, tmp_path: Path
+    ) -> None:
+        """A setting only one backend honours must not be applied silently.
+
+        The report says the budget is zero *and* says why, so an operator
+        reading the doctor is not left to wonder why the number they set had
+        no effect.
+        """
+        sandbox = SubprocessSandbox(
+            SandboxSettings(container_start_grace_seconds=30.0)
+        )
+        spec = python_spec(tmp_path, "print(1)")
+        preflight = sandbox.preflight(spec)
+        assert preflight["container_start_grace_seconds"] == 0
+        assert "no start phase" in preflight["container_start_budget"]
+
+    async def test_the_describe_says_the_grace_is_not_applied(self) -> None:
+        sandbox = SubprocessSandbox(
+            SandboxSettings(container_start_grace_seconds=30.0)
+        )
+        described = sandbox.describe()
+        assert described["container_start_grace_seconds"] == 0
+        assert "no start phase" in described["container_start_budget"]

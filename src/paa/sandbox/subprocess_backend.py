@@ -561,11 +561,38 @@ class SubprocessSandbox(Sandbox):
             log.error("sandbox.subprocess.unreapable", pid=proc.pid)
             return None
 
+    def describe(self) -> dict[str, Any]:
+        """Backend identity for the ledger and the ``paa doctor`` command.
+
+        It also says, in as many words, that this backend **ignores**
+        ``container_start_grace_seconds``. The setting is the *container*
+        backend's start budget: a ``fork``/``exec`` is milliseconds, there is
+        no container to create and no daemon to ask, and the work budget is
+        already the whole of what this backend spends. A setting that only
+        one backend honours must not be silently applied to the others
+        (ADR-0031) — and it must not be added to the work budget either,
+        which is what "charged over and above the timeout" used to mean.
+        """
+        described = super().describe()
+        described.update(
+            {
+                "container_start_grace_seconds": 0,
+                "container_start_budget": "not applicable — this backend has no start phase",
+            }
+        )
+        return described
+
     def preflight(self, spec: SandboxSpec) -> dict[str, Any]:
         """What containment this spec would actually get. For ``paa doctor``.
 
         Exists so an operator can see the gap *before* running work, rather
         than inferring it from a docstring.
+
+        ``container_start_grace_seconds`` is reported as **zero**, and the
+        reason is given next to it: this backend has no start phase, so it
+        neither spends the setting nor folds it into the work budget
+        (ADR-0031). The work budget is ``spec.timeout_seconds`` and nothing
+        else.
         """
         return {
             "backend": self.name,
@@ -575,5 +602,7 @@ class SubprocessSandbox(Sandbox):
             "filesystem_confined": False,
             "syscall_filtered": False,
             "timeout_enforced": spec.timeout_seconds is not None,
+            "container_start_grace_seconds": 0,
+            "container_start_budget": "not applicable — this backend has no start phase",
             "workspace": str(Path(spec.workspace_path).resolve()),
         }

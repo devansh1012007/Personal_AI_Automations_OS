@@ -1,26 +1,40 @@
-"""Docker backend argv construction and gVisor (``runsc``) wiring.
+"""Docker backend argv construction, gVisor (``runsc``) wiring, and budgets.
 
 Docker is not installed on the Windows dev box, so nothing here starts a real
-container. The ``docker run`` argv is a pure function of the spec and the
+container. The ``docker create`` argv is a pure function of the spec and the
 detected runtime, so it is tested directly; runtime *detection* is tested by
 mocking ``asyncio.create_subprocess_exec`` so no daemon is needed. This is the
 guard that the RFC §13 ``--runtime=runsc`` containment is actually requested
 when configured — and, just as important, that it is *not* claimed when the
 daemon cannot provide it.
+
+The **budgets** are the other half of the file. The daemon is faked behind the
+``_exec`` seam — the single place every ``docker`` call goes through, and
+therefore the single place a test has to intercept — and the budget each call
+was given is read off the ``asyncio.wait_for`` that carries it. No fake clock
+is used anywhere in this repository and none is introduced here: the tests
+assert on the *number* the backend passed, and let it expire against a real
+(very short) sleep where the behaviour has to be shown as well.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
+import time
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
+import structlog.testing
 from pydantic import ValidationError
 
 from paa.config import SandboxSettings
 from paa.core.errors import SandboxError
+from paa.core.types import MODALITY_PROFILES, ComplexityModality
 from paa.sandbox import build_backend, docker_backend, get_sandbox
 from paa.sandbox.base import IsolationLevel, SandboxSpec
 from paa.sandbox.docker_backend import DockerSandbox
@@ -32,6 +46,17 @@ def _spec(workspace: Path) -> SandboxSpec:
         workspace_path=workspace,
         memory_mb=256,
         cpu_cores=0.5,
+    )
+
+
+def _spec_with(workspace: Path, **overrides: Any) -> SandboxSpec:
+    """A spec with the fields a budget test needs to control."""
+    return SandboxSpec(
+        command=("python", "-c", "print(1)"),
+        workspace_path=workspace,
+        memory_mb=256,
+        cpu_cores=0.5,
+        **overrides,
     )
 
 
@@ -85,11 +110,37 @@ def test_custom_runtime_is_honoured(tmp_path: Path) -> None:
 
 
 def test_core_containment_flags_always_present(tmp_path: Path) -> None:
+    """Every containment flag is on the ``create`` argv, and ``--rm`` is not.
+
+    ``--rm`` used to be one of them, and it is gone on purpose: the
+    container's logs have to still be there after it exits, and ``--rm``
+    destroys them with the container. The removal is an explicit
+    ``docker rm -f`` in a ``finally`` instead — which is also the only
+    version of it that cannot leave an orphan behind.
+    """
     sb = DockerSandbox(SandboxSettings(container_runtime="runsc"))
     sb._runtime_available = True
     args = sb._build_args(_spec(tmp_path), tmp_path, "paa-test")
-    for flag in ("--rm", "--read-only", "--network", "--cap-drop", "--pids-limit"):
+    for flag in (
+        "--read-only",
+        "--network",
+        "--cap-drop",
+        "--pids-limit",
+        "--memory",
+        "--memory-swap",
+        "--cpus",
+        "--user",
+        "--tmpfs",
+        "--security-opt",
+        "--volume",
+        "--env",
+    ):
         assert flag in args
+    assert "--rm" not in args
+    # And it is a ``create``, not a ``run``: the start boundary has to be
+    # observable, and one opaque ``docker run`` is what hid it.
+    assert args[0] == "docker"
+    assert args[1] == "create"
 
 
 # ---------------------------------------------------------------------------
@@ -313,9 +364,6 @@ async def test_a_timed_out_probe_kills_its_child(monkeypatch: pytest.MonkeyPatch
         return _SlowProc()
 
     monkeypatch.setattr(sb, "_exec", fake_exec)
-    monkeypatch.setattr(
-        sb, "_HEALTHCHECK_TIMEOUT_SECONDS", 0.01, raising=False
-    )
     monkeypatch.setattr(docker_backend, "_HEALTHCHECK_TIMEOUT_SECONDS", 0.01)
     result = await sb._capture("docker", "version")
     assert result is None
@@ -1010,3 +1058,811 @@ def test_memory_enforcement_follows_the_effective_runtime(tmp_path: Path) -> Non
     args = sb._build_args(_spec(tmp_path), tmp_path, "paa-test")
     assert "--runtime" not in args  # sanity: this is the runc path
     assert sb._memory_enforcement() == "cgroup"
+
+
+# ---------------------------------------------------------------------------
+# the two budgets: the container's start, and the work
+# ---------------------------------------------------------------------------
+
+
+class _FakeProc:
+    """A stand-in for ``asyncio.subprocess.Process``."""
+
+    def __init__(
+        self,
+        stdout: bytes = b"",
+        stderr: bytes = b"",
+        returncode: int = 0,
+        delay: float = 0.0,
+        hang: bool = False,
+    ) -> None:
+        self._stdout = stdout
+        self._stderr = stderr
+        self.returncode: int | None = returncode
+        self._delay = delay
+        self._hang = hang
+        self.killed = False
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        if self._delay:
+            await asyncio.sleep(self._delay)
+        if self._hang:
+            # A child that never answers. The client's own wait is what
+            # gives up on it, and the kill below is what ends it.
+            await asyncio.sleep(3600)
+        return self._stdout, self._stderr
+
+    async def wait(self) -> int:
+        if self._hang and not self.killed:
+            await asyncio.sleep(3600)
+        return self.returncode if self.returncode is not None else 0
+
+    def kill(self) -> None:
+        self.killed = True
+
+
+def _iso(epoch: float) -> str:
+    """A Docker-shaped RFC 3339 timestamp (nanosecond precision, ``Z``)."""
+    return datetime.fromtimestamp(epoch, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+class _FakeDaemon:
+    """A fake Docker daemon, behind the backend's ``_exec`` seam.
+
+    The seam exists for exactly this: "the single seam for every ``docker``
+    call … exactly one place a test has to intercept". Every command the
+    backend issues is recorded, so a test can say *which* call it is talking
+    about, and the budget each call was given is read off the
+    ``asyncio.wait_for`` that carried it.
+
+    The daemon answers the way the real one does: ``create`` prints the
+    container id, ``start`` returns once the process is running, ``inspect``
+    reports the container's state in the **daemon's** clock, ``wait`` prints
+    the exit code, and ``logs`` demultiplexes the container's two streams.
+    """
+
+    def __init__(
+        self,
+        *,
+        create_delay: float = 0.0,
+        start_delay: float = 0.0,
+        work_delay: float = 0.0,
+        inspect_delay: float = 0.0,
+        exit_code: int = 0,
+        started_at_offset: float = 0.0,
+        report_started_at: bool = True,
+        rm_hang: bool = False,
+        wait_hang: bool = False,
+    ) -> None:
+        #: How long ``docker create`` takes. A create that overruns its
+        #: grace is a *host* problem, and this is how one is simulated.
+        self.create_delay = create_delay
+        #: How long ``docker start`` takes. A start that overruns its grace
+        #: is a *host* problem, and this is how one is simulated.
+        self.start_delay = start_delay
+        #: How long the **first** ``docker wait`` takes. The later waits are
+        #: the backend asking the daemon for an exit code it already knows
+        #: the answer to, and they answer at once.
+        self.work_delay = work_delay
+        #: How long ``docker inspect`` takes. An inspect that overruns its
+        #: budget is a *report* that cannot be made, and it must not
+        #: destroy the work it was reporting on.
+        self.inspect_delay = inspect_delay
+        #: The container's exit code, as the daemon reports it.
+        self.exit_code = exit_code
+        #: How long before *now* the daemon says the container started. It
+        #: is what makes the deadline's anchor observable: the work budget
+        #: is what is left of ``timeout_seconds`` after that moment.
+        self.started_at_offset = started_at_offset
+        #: Whether the daemon reports a start time at all. ``False`` is the
+        #: daemon that does not say, which is what the fallback exists for.
+        self.report_started_at = report_started_at
+        #: Whether the ``docker rm`` **client** never exits. The removal's
+        #: client is the backend's own process, and it has to be reaped.
+        self.rm_hang = rm_hang
+        #: Whether the wait *after* a kill never answers — the double fault
+        #: where the kill did not land and the container is still running.
+        self.wait_hang = wait_hang
+        self.commands: list[list[str]] = []
+        #: Every client the daemon handed out, paired with the command it
+        #: answered. A test that needs to look at a *client* — rather than
+        #: at the daemon's answer — finds it here.
+        self.procs: list[tuple[list[str], _FakeProc]] = []
+        #: The command currently being answered. It is what pairs a recorded
+        #: budget with the call it was given to.
+        self.current: list[str] = []
+        self._started_at: float | None = None
+        self._inspects = 0
+        self._waits = 0
+
+    async def __call__(self, *args: str, **_kwargs: Any) -> _FakeProc:
+        command = [str(a) for a in args]
+        self.commands.append(command)
+        self.current = command
+        proc = self._respond(command)
+        self.procs.append((command, proc))
+        return proc
+
+    def proc_for(self, subcommand: str) -> _FakeProc:
+        """The client the daemon handed out for ``docker <subcommand>``."""
+        for command, proc in self.procs:
+            if len(command) > 1 and command[1] == subcommand:
+                return proc
+        raise AssertionError(
+            f"no `docker {subcommand}` client was issued; commands={self.commands}"
+        )
+
+    def command_for(self, subcommand: str) -> list[str]:
+        """The argv of the first ``docker <subcommand>`` that was issued."""
+        for command in self.commands:
+            if len(command) > 1 and command[1] == subcommand:
+                return command
+        raise AssertionError(
+            f"no `docker {subcommand}` was issued; commands={self.commands}"
+        )
+
+    def _respond(self, command: list[str]) -> _FakeProc:
+        subcommand = command[1] if len(command) > 1 else ""
+        if subcommand == "create":
+            return _FakeProc(b"a-container-id\n", delay=self.create_delay)
+        if subcommand == "start":
+            return _FakeProc(f"{command[-1]}\n".encode(), delay=self.start_delay)
+        if subcommand == "wait":
+            delay = self.work_delay if self._waits == 0 else 0.0
+            self._waits += 1
+            hang = self.wait_hang and self._waits == 2
+            return _FakeProc(f"{self.exit_code}\n".encode(), delay=delay, hang=hang)
+        if subcommand == "inspect":
+            return _FakeProc(self._state().encode(), delay=self.inspect_delay)
+        if subcommand == "logs":
+            return _FakeProc(b"MARKER_OUT\n", b"MARKER_ERR\n")
+        if subcommand == "rm":
+            return _FakeProc(b"", hang=self.rm_hang)
+        return _FakeProc(b"")
+
+    def _state(self) -> str:
+        if self._started_at is None:
+            self._started_at = time.time() - self.started_at_offset
+        started_at = (
+            _iso(self._started_at)
+            if self.report_started_at
+            # The zero time is what the daemon reports for "this never
+            # happened", and it is not a moment in history.
+            else "0001-01-01T00:00:00Z"
+        )
+        if self._inspects == 0:
+            self._inspects += 1
+            return json.dumps(
+                {
+                    "Running": True,
+                    "ExitCode": 0,
+                    "StartedAt": started_at,
+                    "FinishedAt": "0001-01-01T00:00:00Z",
+                }
+            )
+        return json.dumps(
+            {
+                "Running": False,
+                "ExitCode": self.exit_code,
+                "StartedAt": started_at,
+                "FinishedAt": _iso(time.time()),
+                "OOMKilled": False,
+            }
+        )
+
+
+def _sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+    daemon: _FakeDaemon,
+    settings: SandboxSettings | None = None,
+) -> DockerSandbox:
+    """A backend whose daemon is the fake and whose health check passes."""
+    sb = DockerSandbox(settings or SandboxSettings())
+    monkeypatch.setattr(sb, "_exec", daemon)
+    monkeypatch.setattr(sb, "healthcheck", _always_healthy)
+    return sb
+
+
+def _budget_for(recorder: Any, subcommand: str) -> float | None:
+    """The budget the backend gave the call to ``docker <subcommand>``.
+
+    The first call of that kind, because the backend makes a *second*
+    ``docker wait`` after a kill — to ask the daemon for the exit code it
+    already knows the answer to — and that one is not the work's budget.
+    """
+    for label, budget in recorder.calls:
+        parts = label.split()
+        if len(parts) > 1 and parts[1] == subcommand:
+            return budget
+    raise AssertionError(f"no `docker {subcommand}` call was recorded: {recorder.calls}")
+
+
+async def test_the_work_budget_is_the_work_budget_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_wait_for: Any
+) -> None:
+    """The wait is bounded by ``timeout_seconds``, not by the sum of both.
+
+    The defect this pins: the backend built **one** budget —
+    ``timeout_seconds + container_start_grace_seconds`` — and gave it to a
+    single timer around ``docker run``, so the *workload* could run for the
+    sum and be reported as a success. Measured on this host: a step with a
+    0.25-second budget and a three-second workload ran for 3.6 seconds and
+    was told ``timed_out=False``. A quarter-second budget became five and a
+    quarter seconds of work.
+    """
+    daemon = _FakeDaemon()
+    recorder = record_wait_for(docker_backend, lambda: " ".join(daemon.current))
+    sb = _sandbox(
+        monkeypatch, daemon, SandboxSettings(container_start_grace_seconds=5.0)
+    )
+
+    result = await sb.run(_spec_with(tmp_path, timeout_seconds=0.25))
+
+    work_budget = _budget_for(recorder, "wait")
+    assert work_budget is not None
+    assert work_budget <= 0.25
+    # The sum is the defect, and it must not appear anywhere at all.
+    assert 5.25 not in recorder.timeouts
+    assert result.timed_out is False
+
+
+async def test_the_work_deadline_is_anchored_at_the_daemons_own_clock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_wait_for: Any
+) -> None:
+    """The budget is what is left of ``timeout_seconds`` after ``StartedAt``.
+
+    The deadline is ``StartedAt + timeout_seconds`` in the **daemon's**
+    clock, so the time the container has already been alive is spent out of
+    the caller's budget — not added to it, and not ignored either. A
+    deadline computed from the client's own clock would drift by however
+    late the client was, and a deadline that drifts is a deadline the
+    caller cannot rely on.
+    """
+    daemon = _FakeDaemon(started_at_offset=0.2)
+    recorder = record_wait_for(docker_backend, lambda: " ".join(daemon.current))
+    sb = _sandbox(
+        monkeypatch, daemon, SandboxSettings(container_start_grace_seconds=5.0)
+    )
+
+    await sb.run(_spec_with(tmp_path, timeout_seconds=1.0))
+
+    work_budget = _budget_for(recorder, "wait")
+    assert work_budget is not None
+    # 1.0 s of budget, of which 0.2 s is already spent.
+    assert work_budget == pytest.approx(0.8, abs=0.05)
+
+
+async def test_the_start_calls_are_bounded_by_the_start_grace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_wait_for: Any
+) -> None:
+    """``create`` and ``start`` each get the start grace, and nothing else.
+
+    The grace is the operator's statement about how slow the daemon may be
+    before the *start* is a failure. It is not the work's budget and it is
+    not the work's to pay.
+    """
+    daemon = _FakeDaemon()
+    recorder = record_wait_for(docker_backend, lambda: " ".join(daemon.current))
+    sb = _sandbox(
+        monkeypatch, daemon, SandboxSettings(container_start_grace_seconds=2.5)
+    )
+
+    await sb.run(_spec_with(tmp_path, timeout_seconds=30.0))
+
+    assert _budget_for(recorder, "create") == 2.5
+    assert _budget_for(recorder, "start") == 2.5
+
+
+@pytest.mark.parametrize("phase", ["create", "start"])
+async def test_a_start_breach_is_not_a_work_timeout(
+    phase: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_wait_for: Any
+) -> None:
+    """A start that overruns the grace is a *start* failure.
+
+    The two failures demand opposite responses: a work timeout is a
+    workload problem, and a start timeout is a **host** problem — a daemon
+    that is too slow, a missing image, a runtime that is not registered. A
+    caller that cannot tell them apart retries the workload on a host that
+    cannot start it, and fails identically.
+
+    **Both** phases are pinned here, because they are two branches with two
+    budgets: the ``docker create`` and the ``docker start`` each get the
+    whole grace, and each has its own breach. Only the ``start`` branch was
+    covered before, which left the ``create`` branch free to report a
+    work timeout — a *workload* failure for a container that never ran.
+    """
+    daemon = _FakeDaemon(
+        create_delay=2.0 if phase == "create" else 0.0,
+        start_delay=2.0 if phase == "start" else 0.0,
+    )
+    record_wait_for(docker_backend, lambda: " ".join(daemon.current))
+    sb = _sandbox(
+        monkeypatch, daemon, SandboxSettings(container_start_grace_seconds=0.05)
+    )
+
+    result = await sb.run(_spec_with(tmp_path, timeout_seconds=30.0))
+
+    assert result.killed_reason == "start_timeout"
+    assert result.timed_out is False
+    assert not result.ok
+    # The start's cost is reported even when the start is what failed —
+    # otherwise a breached start looks like a run that never began.
+    assert result.start_duration_ms > 0.0
+
+
+@pytest.mark.parametrize("phase", ["create", "start"])
+async def test_a_container_killed_by_the_start_grace_is_not_reported_as_memory(
+    phase: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_wait_for: Any
+) -> None:
+    """Exit 137 from a *start* kill is not an out-of-memory kill.
+
+    137 is 128 + SIGKILL, and it is what the cgroup OOM killer produces — and
+    it is also what ``docker kill`` produces. The start timeout is therefore
+    checked **first**: reporting this as "memory" would send the
+    orchestrator to retry at a higher modality when the real problem is a
+    host that cannot start a container in time.
+    """
+    daemon = _FakeDaemon(
+        create_delay=2.0 if phase == "create" else 0.0,
+        start_delay=2.0 if phase == "start" else 0.0,
+        exit_code=137,
+    )
+    record_wait_for(docker_backend, lambda: " ".join(daemon.current))
+    sb = _sandbox(
+        monkeypatch, daemon, SandboxSettings(container_start_grace_seconds=0.05)
+    )
+
+    result = await sb.run(_spec_with(tmp_path, timeout_seconds=30.0))
+
+    assert result.exit_code == 137
+    assert result.killed_reason == "start_timeout"
+    assert result.killed_reason != "memory"
+    assert result.timed_out is False
+
+
+async def test_the_containment_flags_survive_the_rewrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_wait_for: Any
+) -> None:
+    """The ``create`` argv still carries every containment flag.
+
+    The rewrite replaced ``docker run`` with ``docker create`` and dropped
+    ``--rm``; nothing else about the container's containment may have moved.
+    The uid is never 0 and ``--user`` is always passed, and the isolation
+    level follows the **effective** runtime — so the runtime flag is here
+    too, and only when the daemon really has it.
+    """
+    daemon = _FakeDaemon()
+    record_wait_for(docker_backend, lambda: " ".join(daemon.current))
+    sb = _sandbox(
+        monkeypatch, daemon, SandboxSettings(container_runtime="runsc")
+    )
+    sb._runtime_available = True
+
+    await sb.run(_spec(tmp_path))
+
+    create = daemon.command_for("create")
+    for flag in (
+        "--user",
+        "--cap-drop",
+        "--read-only",
+        "--security-opt",
+        "--pids-limit",
+        "--memory",
+        "--memory-swap",
+        "--network",
+        "--tmpfs",
+        "--runtime",
+    ):
+        assert flag in create
+    assert create[create.index("--cap-drop") + 1] == "ALL"
+    assert create[create.index("--security-opt") + 1] == "no-new-privileges"
+    assert create[create.index("--runtime") + 1] == "runsc"
+    # The uid is never 0, whatever the workspace looks like.
+    uid = create[create.index("--user") + 1].split(":")[0]
+    assert uid not in {"0", "root"}
+
+
+async def test_the_container_is_removed_on_the_success_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_wait_for: Any
+) -> None:
+    """The container is removed, forcibly, on the way out.
+
+    ``--rm`` is gone — the logs have to outlive the container — so the
+    removal is explicit. A container that is left behind holds the
+    workspace bind mount, which is precisely the orphan the timeout exists
+    to prevent.
+    """
+    daemon = _FakeDaemon()
+    record_wait_for(docker_backend, lambda: " ".join(daemon.current))
+    sb = _sandbox(monkeypatch, daemon)
+
+    await sb.run(_spec(tmp_path))
+
+    removal = daemon.command_for("rm")
+    assert removal[1:3] == ["rm", "-f"]
+
+
+async def test_the_container_is_removed_on_the_timeout_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_wait_for: Any
+) -> None:
+    """The removal happens on the timeout path too, not only on the happy one.
+
+    The timeout path is the one where the container is most likely to still
+    be running, and that is exactly the case the removal has to cover.
+    """
+    daemon = _FakeDaemon(work_delay=2.0)
+    record_wait_for(docker_backend, lambda: " ".join(daemon.current))
+    sb = _sandbox(monkeypatch, daemon)
+
+    result = await sb.run(_spec_with(tmp_path, timeout_seconds=0.2))
+
+    assert result.timed_out is True
+    removal = daemon.command_for("rm")
+    assert removal[1:3] == ["rm", "-f"]
+
+
+async def test_a_work_overrun_with_a_generous_grace_still_times_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_wait_for: Any
+) -> None:
+    """The two budgets are enforced **independently**.
+
+    A generous start grace must not buy the work any extra time: the grace
+    is the daemon's budget, and the work's budget is the work's.
+    """
+    daemon = _FakeDaemon(work_delay=2.0)
+    record_wait_for(docker_backend, lambda: " ".join(daemon.current))
+    sb = _sandbox(
+        monkeypatch, daemon, SandboxSettings(container_start_grace_seconds=30.0)
+    )
+
+    result = await sb.run(_spec_with(tmp_path, timeout_seconds=0.2))
+
+    assert result.timed_out is True
+    assert result.killed_reason == "timeout"
+
+
+async def test_a_start_overrun_with_a_generous_work_budget_still_fails_as_a_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_wait_for: Any
+) -> None:
+    """And the other way round: a generous work budget buys no extra start.
+
+    A slow start is a host failure whatever the workload's budget is, and
+    reporting it as a work timeout would send the operator looking at the
+    wrong thing entirely.
+    """
+    daemon = _FakeDaemon(start_delay=2.0)
+    record_wait_for(docker_backend, lambda: " ".join(daemon.current))
+    sb = _sandbox(
+        monkeypatch, daemon, SandboxSettings(container_start_grace_seconds=0.05)
+    )
+
+    result = await sb.run(_spec_with(tmp_path, timeout_seconds=300.0))
+
+    assert result.killed_reason == "start_timeout"
+    assert result.timed_out is False
+
+
+async def test_a_state_query_that_does_not_answer_does_not_destroy_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_wait_for: Any
+) -> None:
+    """A report that cannot be made must not destroy the work it reports on.
+
+    ``_docker_call`` raises :class:`TimeoutError` whenever the daemon does
+    not answer inside the call's budget, and the pre-work inspect's budget
+    **is the start grace** — so an operator who tightens the grace to fail
+    fast on a slow host *raises* the probability of hitting this.
+
+    When it did escape, the container was created, started, killed and
+    removed because the *state query* did not answer, and no result was
+    produced at all: a bare :class:`TimeoutError`, which is not a
+    :class:`~paa.core.errors.SandboxError` and so is not on the failure
+    surface the callers are documented to handle. A run that was killed
+    still produces a result, because the ledger needs to record *how* it
+    died.
+    """
+    daemon = _FakeDaemon(inspect_delay=0.5)
+    record_wait_for(docker_backend, lambda: " ".join(daemon.current))
+    sb = _sandbox(
+        monkeypatch, daemon, SandboxSettings(container_start_grace_seconds=0.05)
+    )
+
+    result = await sb.run(_spec_with(tmp_path, timeout_seconds=5.0))
+
+    # A result, not an exception.
+    assert result.exit_code == 0
+    assert result.timed_out is False
+    assert result.ok
+    # The daemon did not say when the container started, so the client's own
+    # start-of-work clock is the anchor — and the run still finished.
+    assert result.start_duration_ms > 0.0
+    # And the container was removed anyway: a query that fails is not a
+    # reason to leave an orphan holding the workspace mount.
+    assert daemon.command_for("rm")[1:3] == ["rm", "-f"]
+
+
+async def test_the_start_duration_is_reported_and_is_inside_the_total(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_wait_for: Any
+) -> None:
+    """The start's cost is a number the caller can see.
+
+    ``start_duration_ms`` is the field that says "the start was not charged
+    to the work", and it is the field the ADR's budget table is written
+    against. A field nobody asserts is a field nobody has to keep right.
+    """
+    daemon = _FakeDaemon()
+    record_wait_for(docker_backend, lambda: " ".join(daemon.current))
+    sb = _sandbox(monkeypatch, daemon)
+
+    result = await sb.run(_spec_with(tmp_path, timeout_seconds=5.0))
+
+    assert 0.0 < result.start_duration_ms <= result.duration_ms
+    # And it survives into the ledger-safe summary.
+    assert result.to_payload()["start_duration_ms"] == round(result.start_duration_ms, 3)
+
+
+async def test_the_duration_is_the_total_wall_clock_of_both_phases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_wait_for: Any
+) -> None:
+    """``duration_ms`` is the **total**, and it covers the start as well.
+
+    It keeps that meaning on purpose: this field is the sandbox's **own**
+    measurement of the two phases together, and a total that silently stops
+    counting the start is not a total. The skill-ranking signal is a
+    **different** field of the same name — the improvement loop reads
+    ``duration_ms`` from the run record (``hot_serving_execution_runs``),
+    which ``observability/runs.py`` computes from the run's own
+    ``started_at``/``ended_at`` and never from this field — so redefining
+    *this* one would not change a ranking signal. The start is reported
+    separately, in ``start_duration_ms`` — separately, not *instead*.
+    """
+    daemon = _FakeDaemon(start_delay=0.25, work_delay=0.25)
+    record_wait_for(docker_backend, lambda: " ".join(daemon.current))
+    sb = _sandbox(monkeypatch, daemon)
+
+    result = await sb.run(_spec_with(tmp_path, timeout_seconds=5.0))
+
+    # The start phase, on its own.
+    assert result.start_duration_ms >= 250.0
+    # The total covers the start **and** the work — a duration that excluded
+    # the start would be under 250 ms here.
+    assert result.duration_ms >= 500.0
+    assert result.duration_ms >= result.start_duration_ms
+
+
+async def test_the_fallback_budget_is_anchored_on_the_clients_own_clock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_wait_for: Any
+) -> None:
+    """When the daemon does not say, the client's own clock is the anchor.
+
+    The fallback fires when ``docker inspect`` fails or the daemon reports
+    the zero time. It used to grant the caller's **full** ``timeout_seconds``
+    measured from the moment of the *inspect* — so the container's total
+    lifetime was ``timeout + (create + start + inspect)``, more than the
+    budget the ADR says the wait bounds.
+
+    The anchor is now the client's own start-of-work clock: the moment
+    ``docker start`` returned. The inspect has already eaten its round trip
+    out of the caller's budget, which is the honest accounting — the
+    container really had been alive for that long.
+    """
+    daemon = _FakeDaemon(inspect_delay=0.5, report_started_at=False)
+    recorder = record_wait_for(docker_backend, lambda: " ".join(daemon.current))
+    sb = _sandbox(
+        monkeypatch, daemon, SandboxSettings(container_start_grace_seconds=5.0)
+    )
+
+    await sb.run(_spec_with(tmp_path, timeout_seconds=10.0))
+
+    budget = _budget_for(recorder, "wait")
+    assert budget is not None
+    # 10 s of budget, of which the 0.5 s inspect has already been spent.
+    assert budget == pytest.approx(9.5, abs=0.25)
+    # And the fallback does not hand back the caller's *full* ask.
+    assert budget < 10.0
+
+
+async def test_a_budget_spent_by_a_clock_is_named_as_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_wait_for: Any
+) -> None:
+    """A clock that disagrees with the host must not read as a workload fault.
+
+    The deadline is ``StartedAt + timeout`` in the **daemon's** clock, and
+    the budget is measured against the **client's** ``now``. A daemon whose
+    clock runs behind the host's by more than the budget makes the budget
+    zero, and the container is killed the instant the wait starts. That errs
+    the safe way — but reported as an ordinary work timeout, it sends the
+    operator to look at a workload that did nothing wrong.
+    """
+    daemon = _FakeDaemon(started_at_offset=10.0)
+    record_wait_for(docker_backend, lambda: " ".join(daemon.current))
+    sb = _sandbox(monkeypatch, daemon)
+
+    with structlog.testing.capture_logs() as captured:
+        result = await sb.run(_spec_with(tmp_path, timeout_seconds=1.0))
+
+    exhausted = [
+        entry
+        for entry in captured
+        if entry.get("event") == "sandbox.docker.work_budget_exhausted"
+    ]
+    assert exhausted, captured
+    entry = exhausted[0]
+    assert entry["timeout_seconds"] == 1.0
+    # The container was running, and the daemon's clock was behind.
+    assert entry["container_running"] is True
+    assert entry["daemon_clock_lag_seconds"] is not None
+    assert entry["daemon_clock_lag_seconds"] >= 9.0
+    # And the clock is *named*, so the log says which clock is at fault.
+    assert "daemon's clock" in entry["detail"]
+    # The run still errs the safe way.
+    assert result.timed_out is True
+    assert result.killed_reason == "timeout"
+
+
+async def test_a_removal_that_overruns_leaves_no_client_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_wait_for: Any
+) -> None:
+    """The removal's *client* is reaped when the removal overruns.
+
+    The container is the daemon's business; the ``docker rm`` **process** is
+    the backend's own, and a client left running holds the event loop's
+    transport table open — the same leak the health check's own reap exists
+    to prevent.
+    """
+    daemon = _FakeDaemon(rm_hang=True)
+    record_wait_for(docker_backend, lambda: " ".join(daemon.current))
+    sb = _sandbox(monkeypatch, daemon)
+    monkeypatch.setattr(docker_backend, "_STOP_TIMEOUT_SECONDS", 0.05)
+
+    result = await sb.run(_spec(tmp_path))
+
+    # The run itself is unaffected: the removal's failure is swallowed on
+    # purpose, so a finished run does not become an exception.
+    assert result.exit_code == 0
+    assert result.ok
+    # And the client was killed rather than left running.
+    assert daemon.proc_for("rm").killed is True
+
+
+async def test_a_kill_that_did_not_land_does_not_stall_the_timeout_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_wait_for: Any
+) -> None:
+    """The double fault is bounded by the *short* budget, not the long one.
+
+    If the ``docker kill`` itself failed, the container is still running and
+    ``docker wait`` blocks — and the client's patience with a process that
+    will not die (15 s) is the wrong number for a path that has already
+    failed. The ``docker rm -f`` in the ``finally`` is what cleans the
+    container up; the wait only has to give up quickly.
+    """
+    daemon = _FakeDaemon(work_delay=2.0, wait_hang=True)
+    record_wait_for(docker_backend, lambda: " ".join(daemon.current))
+    sb = _sandbox(monkeypatch, daemon)
+    monkeypatch.setattr(docker_backend, "_KILL_SETTLE_TIMEOUT_SECONDS", 0.05)
+
+    started = time.perf_counter()
+    result = await sb.run(_spec_with(tmp_path, timeout_seconds=0.2))
+    elapsed = time.perf_counter() - started
+
+    assert result.timed_out is True
+    assert result.killed_reason == "timeout"
+    # The stall is bounded by the settle budget, not by the client's
+    # patience with a process that will not die.
+    assert elapsed < 2.0
+    assert docker_backend._KILL_SETTLE_TIMEOUT_SECONDS < docker_backend._STOP_TIMEOUT_SECONDS
+    # And the waiting client was reaped rather than left running.
+    assert daemon.proc_for("wait").killed is True
+
+
+async def test_two_runs_never_share_a_container_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_wait_for: Any
+) -> None:
+    """The container's name is a handle, and a taken name is a failed run.
+
+    The name used to be ``paa-{task}-{milliseconds}``: a millisecond clock,
+    so two runs that began in the same millisecond collided and the second
+    one failed to start for a reason that had nothing to do with the
+    workload. Dropping ``--rm`` made the window wider, because the name is
+    held until the ``docker rm -f`` in the ``finally``.
+
+    The clock is frozen here, so the collision is deterministic rather than
+    a matter of how fast the machine is.
+    """
+    daemon = _FakeDaemon()
+    record_wait_for(docker_backend, lambda: " ".join(daemon.current))
+    sb = _sandbox(monkeypatch, daemon)
+    frozen = 1_700_000_000.0
+    monkeypatch.setattr(docker_backend.time, "time", lambda: frozen)
+
+    await sb.run(_spec(tmp_path))
+    await sb.run(_spec(tmp_path))
+
+    names = [
+        command[command.index("--name") + 1]
+        for command in daemon.commands
+        if command[1:2] == ["create"]
+    ]
+    assert len(names) == 2
+    assert names[0] != names[1]
+    # And the name is still short enough for the daemon to accept.
+    assert all(len(name) <= 63 for name in names)
+
+
+async def test_the_output_arrives_with_the_two_streams_kept_apart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_wait_for: Any
+) -> None:
+    """``docker logs`` demultiplexes, so stdout and stderr stay apart.
+
+    Measured on this host: a container that writes to both streams comes
+    back with ``MARKER_OUT`` on stdout and ``MARKER_ERR`` on stderr, exactly
+    as ``docker run`` did. The rewrite does not lose the separation.
+    """
+    daemon = _FakeDaemon()
+    record_wait_for(docker_backend, lambda: " ".join(daemon.current))
+    sb = _sandbox(monkeypatch, daemon)
+
+    result = await sb.run(_spec(tmp_path))
+
+    assert "MARKER_OUT" in result.stdout
+    assert "MARKER_ERR" in result.stderr
+    assert result.exit_code == 0
+    assert result.ok
+
+
+async def test_a_spec_with_no_timeout_waits_for_the_container(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record_wait_for: Any
+) -> None:
+    """``timeout_seconds=None`` means "wait forever", not "wait for nothing".
+
+    It is the MAX modality's budget — a human decides, not a clock — and
+    the wait must not be bounded by the start grace either.
+    """
+    daemon = _FakeDaemon()
+    recorder = record_wait_for(docker_backend, lambda: " ".join(daemon.current))
+    sb = _sandbox(
+        monkeypatch, daemon, SandboxSettings(container_start_grace_seconds=2.5)
+    )
+
+    result = await sb.run(_spec_with(tmp_path, timeout_seconds=None))
+
+    assert _budget_for(recorder, "wait") is None
+    assert result.exit_code == 0
+
+
+def test_the_docker_backend_reports_the_start_budget_it_spends() -> None:
+    """The backend that *has* a start phase says what it does with the grace.
+
+    The other backends report zero and say why. A setting only one backend
+    honours must not be silently applied to the others, and it must not be
+    invisible either.
+    """
+    sb = DockerSandbox(SandboxSettings(container_start_grace_seconds=3.0))
+    described = sb.describe()
+    assert described["container_start_grace_seconds"] == 3.0
+    assert "separate" in described["container_start_budget"]
+
+
+def test_the_simple_profile_accommodates_the_container_fixed_cost() -> None:
+    """SIMPLE's budget has to cover what the container backend cannot avoid.
+
+    The container's fixed cost — the runtime's setup and teardown, inside
+    the lifetime the work budget bounds — is **~200 ms** (measured: a
+    ``sh -c true`` container's lifetime is 186-225 ms; 114-130 ms on the
+    host this was re-measured on). A budget below that cannot accommodate
+    even a trivial container step, so every SIMPLE step would fail on the
+    container backend — a deployment that looks healthy and fails every
+    trivial task.
+
+    The trade-off is deliberate and it is recorded in ADR-0031: a SIMPLE
+    step's blast radius grows from 0.25 s of container time to 1.0 s, while
+    the *wall clock* barely changes, because the container's start dominates
+    it and the start is no longer charged to the work.
+    """
+    measured_fixed_cost_seconds = 0.2
+    simple = MODALITY_PROFILES[ComplexityModality.SIMPLE]
+    assert simple.timeout_seconds is not None
+    assert simple.timeout_seconds >= measured_fixed_cost_seconds * 5
+    # And the other profiles are untouched.
+    assert MODALITY_PROFILES[ComplexityModality.STANDARD].timeout_seconds == 10.0
+    assert MODALITY_PROFILES[ComplexityModality.COMPLEX].timeout_seconds == 30.0
+    assert MODALITY_PROFILES[ComplexityModality.MAX].timeout_seconds is None

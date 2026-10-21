@@ -298,22 +298,41 @@ class SandboxSettings(BaseModel):
     #: Wall-clock kill switch when the modality does not pin one.
     default_timeout_seconds: float = Field(default=30.0, gt=0)
 
-    #: Time charged to the *container's start*, over and above the step's own
-    #: timeout.
+    #: The wall-clock budget on the **container's start**, on the container
+    #: backend only.
     #:
     #: A modality profile's timeout is a budget on the step's **work**, and
-    #: the two backends have wildly different overheads. The subprocess
-    #: backend spawns a process in milliseconds, so the budget is effectively
-    #: all work. The docker backend has to ask the daemon to create a
-    #: container, mount the workspace, and start the process — around half a
-    #: second on a warm host and several seconds on a loaded one.
+    #: the two are enforced **separately** (ADR-0031). The start is the
+    #: daemon's work — creating the container, mounting the workspace,
+    #: starting the process — and it is not the step's, so it does not come
+    #: out of the step's budget.
     #:
-    #: Without the allowance the SIMPLE profile's quarter-of-a-second budget
-    #: is spent *entirely* on the start, and every simple step times out
-    #: before it has run a single instruction — a deployment that looks
-    #: healthy and fails every trivial task. The overhead is the backend's,
-    #: so it is charged to the backend, and it is a setting because the
-    #: right value depends on how loaded the host is.
+    #: The two used to be *added together* and handed to a single timer,
+    #: because ``docker run`` is one opaque call and the backend could not
+    #: see where the start ended and the work began. The consequence was
+    #: measured on this host: a step with a 0.25-second budget and a
+    #: three-second workload ran for 3.6 seconds and was reported as
+    #: ``timed_out=False``. The budget the caller set was not the budget
+    #: the caller got.
+    #:
+    #: The start and the work are now observable separately, so this is a
+    #: budget on its own: exceeding it is a **start** failure
+    #: (``killed_reason="start_timeout"``), which is a host problem — a slow
+    #: daemon, a missing image, a runtime that is not registered — and not a
+    #: workload problem.
+    #:
+    #: Only the container backend spends it. The subprocess and WSL backends
+    #: have no container start phase (a ``fork``/``exec`` is milliseconds, and
+    #: the WSL2 VM's start happens in the cached health check, not per run),
+    #: so they ignore it entirely and say so in their own report — the
+    #: subprocess backend in both its ``preflight`` and its ``describe()``,
+    #: the WSL backend in its ``describe()`` — rather than adding it to
+    #: something.
+    #:
+    #: A value of ``0`` leaves the start no budget at all, which no real
+    #: daemon can meet — the start needs a few hundred milliseconds even on a
+    #: warm host — so it is a legitimate value only for a test that wants the
+    #: start to fail.
     container_start_grace_seconds: float = Field(default=5.0, ge=0)
 
     #: SPEC DEVIATION (docs/adr/0009): the RFC's termination rule integrates

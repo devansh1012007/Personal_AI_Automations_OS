@@ -225,9 +225,20 @@ class SandboxSpec(BaseModel):
     cpu_cores: float = Field(default=0.5, gt=0)
 
     timeout_seconds: float | None = Field(default=30.0)
-    """``None`` means "no wall-clock kill" — only MAX modality, which blocks on
+    """The wall-clock budget on the step's **work**.
+
+    ``None`` means "no wall-clock kill" — only MAX modality, which blocks on
     human attestation instead. Backends must treat ``None`` as "wait forever"
-    rather than as zero."""
+    rather than as zero.
+
+    This is the budget on the work, and on the work **alone** (ADR-0031).
+    The cost of *starting* a container is the backend's own overhead, it has
+    its own budget
+    (:attr:`paa.config.SandboxSettings.container_start_grace_seconds`), and a
+    backend that adds the two together hands the caller a budget the caller
+    did not ask for: a 0.25-second step that may run its workload for five
+    and a quarter seconds, and be told it had not timed out.
+    """
 
     allow_network: bool = False
     """Default-deny. Read :meth:`SubprocessSandbox.run` before trusting this on
@@ -385,6 +396,34 @@ class SandboxResult(BaseModel):
     stdout: str = ""
     stderr: str = ""
     duration_ms: float = 0.0
+    """The **total** wall clock of the run — the backend's start phase included.
+
+    It keeps that meaning on purpose. This field is the sandbox's *own*
+    measurement of the two phases together, and the start phase is reported
+    separately, in :attr:`start_duration_ms`, so the two say what the caller
+    actually paid for.
+
+    The skill-ranking signal is a **different** field with the same name.
+    The improvement loop (:mod:`paa.improvement.optimizer`) reads
+    ``duration_ms`` from the *run record*
+    (``hot_serving_execution_runs``), which
+    :mod:`paa.observability.runs` computes from the run's own
+    ``started_at``/``ended_at`` and never from this one — the two only
+    share a name. So redefining *this* field would not change a ranking
+    signal; it is left alone because a total that silently stops counting
+    the start is not a total.
+    """
+
+    start_duration_ms: float = 0.0
+    """How long the backend's **start** phase took, in milliseconds.
+
+    Zero for a backend that has no start phase: the subprocess backend's
+    ``fork``/``exec`` is milliseconds and is not worth a field, and the WSL2
+    VM's start happens in the (cached) health check rather than per run. For
+    the container backend it is the ``docker create`` + ``docker start``
+    calls — the *daemon's* work, which the caller's ``timeout_seconds`` does
+    not pay for (ADR-0031).
+    """
 
     peak_rss_mb: float | None = None
     """``None`` means "not measured" — NOT "used no memory". The distinction
@@ -394,7 +433,16 @@ class SandboxResult(BaseModel):
 
     timed_out: bool = False
     killed_reason: str | None = None
-    """``"timeout"`` | ``"memory"`` | ``"heartbeat"`` | backend-specific."""
+    """``"timeout"`` | ``"start_timeout"`` | ``"memory"`` | ``"heartbeat"`` | backend-specific.
+
+    ``"timeout"`` and ``"start_timeout"`` are **different failures** and they
+    demand opposite responses: the first is the *workload* overrunning the
+    budget it was given, the second is the *host* failing to start the
+    container inside the start grace. A container that never started is a
+    host problem — a slow daemon, a missing image, a runtime that is not
+    registered — and retrying it identically will fail identically, so the
+    two are reported apart (ADR-0031).
+    """
 
     truncated_output: bool = False
     """Output exceeded the capture cap; ``stdout``/``stderr`` are prefixes."""
@@ -426,6 +474,7 @@ class SandboxResult(BaseModel):
         return {
             "exit_code": self.exit_code,
             "duration_ms": round(self.duration_ms, 3),
+            "start_duration_ms": round(self.start_duration_ms, 3),
             "peak_rss_mb": self.peak_rss_mb,
             "timed_out": self.timed_out,
             "killed_reason": self.killed_reason,

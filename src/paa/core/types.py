@@ -355,6 +355,23 @@ class ModalityProfile:
 #: SPEC NOTE: the RFC gives SIMPLE a "0 token" ceiling meaning "LLM bypassed
 #: entirely". We keep 0 as the sentinel — the planner refuses to run at SIMPLE
 #: and the orchestrator dispatches straight to a deterministic handler.
+#:
+#: SPEC DEVIATION (docs/adr/0031): SIMPLE's wall-clock budget is **1.0 s**,
+#: not the RFC's 0.25 s. The budget is on the step's **work**, and the
+#: container backend's work includes the container's own fixed cost — the
+#: runtime's setup and teardown, inside the container's lifetime, before and
+#: after the workload's own execution. That fixed cost is **~200 ms**
+#: (measured: a ``sh -c true`` container's lifetime is 186-225 ms; 114-130 ms
+#: on the host this was re-measured on), so a 0.25 s budget cannot
+#: accommodate even a trivial container step, and a 0.25 s *workload* needs a
+#: ~450 ms lifetime. 1.0 s is five times the measured fixed cost.
+#:
+#: The trade-off, stated plainly: a SIMPLE step's blast radius grows from
+#: 0.25 s of container time to 1.0 s. The *wall clock* barely changes,
+#: because the container's start (~550 ms, measured) dominates it — and that
+#: start is no longer charged to the work. The alternative — leaving the
+#: profile alone — makes every SIMPLE step fail on the container backend,
+#: because the fixed cost alone exceeds the budget.
 MODALITY_PROFILES: Final[dict[ComplexityModality, ModalityProfile]] = {
     ComplexityModality.SIMPLE: ModalityProfile(
         modality=ComplexityModality.SIMPLE,
@@ -363,7 +380,7 @@ MODALITY_PROFILES: Final[dict[ComplexityModality, ModalityProfile]] = {
         token_ceiling=0,
         memory_mb=64,
         cpu_cores=0.1,
-        timeout_seconds=0.25,
+        timeout_seconds=1.0,
         branch_factor=1,
     ),
     ComplexityModality.STANDARD: ModalityProfile(

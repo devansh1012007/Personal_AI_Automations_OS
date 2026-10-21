@@ -13,9 +13,9 @@
 ## Purpose and responsibilities
 
 Containment with honesty: `IsolationLevel` (NONE/PROCESS/NAMESPACE/VM) is
-declared per-backend, never aspirational (`base.py:54`). gVisor (`runsc`, VM)
+declared per-backend, never aspirational (`base.py:58`). gVisor (`runsc`, VM)
 is unavailable on the target Windows machine, so containment is pluggable and
-callers can branch on `isolation_level.is_real_containment` (`base.py:93`).
+callers can branch on `isolation_level.is_real_containment` (`base.py:97`).
 The sandbox is "a guard against a confused agent, not a hostile one" for the
 subprocess backend (`base.py:26`).
 
@@ -26,8 +26,8 @@ subprocess backend (`base.py:26`).
   read_only_mounts, env (explicit allowlist), memory_mb, cpu_cores,
   timeout_seconds, allow_network (default False), recursion_depth,
   parent_task_id. `from_profile()` builds limits from `MODALITY_PROFILES`
-  (`:345`). `_reject_ambient_env_smell` trips on `env=dict(os.environ)`
-  (`:326`). Two fields carry containment decisions the caller makes
+  (`:356`). `_reject_ambient_env_smell` trips on `env=dict(os.environ)`
+  (`:337`). Two fields carry containment decisions the caller makes
   explicitly:
   - `network` — the Docker network to attach to. `None` means the backend's
     default (`none` when the network is denied, the daemon's *default bridge*
@@ -37,12 +37,20 @@ subprocess backend (`base.py:26`).
     purpose; npm's cache holds executable shims, so an `npx`-started server
     fails with exit 126 on a noexec mount and gets its own path instead.
 - `SandboxResult`: total outcome — a killed run still produces a result, not an
-  exception (`:372`). `ok`, `to_payload()` (ledger-safe, stdout/stderr capped
-  at 2000 chars).
+  exception (`:383`). `ok`, `to_payload()` (ledger-safe, stdout/stderr capped
+  at 2000 chars). `duration_ms` is the **total** wall clock and keeps that
+  meaning deliberately: it is the sandbox's *own* measurement of the two
+  phases together, and the skill-ranking signal is a **different** field of
+  the same name — the run record's own wall clock, read by
+  `improvement/optimizer.py` from `hot_serving_execution_runs` and never from
+  here. `start_duration_ms` reports the backend's start phase separately
+  (ADR-0031). `killed_reason` distinguishes `"timeout"` (the *work* overran)
+  from `"start_timeout"` (the *start* overran): the first is a workload
+  problem, the second a host problem.
 - `resolve_workspace()` / `assert_inside_workspace()`: resolve paths (collapse
-  `..`, follow symlinks) then jail (`:439`, `:462`).
+  `..`, follow symlinks) then jail (`:495`, `:518`).
 - `build_child_env()`: builds from empty; never inherits `os.environ`;
-  Windows bootstrap keys inherited by value only when present (`:494`).
+  Windows bootstrap keys inherited by value only when present (`:550`).
 - `Sandbox.diagnose()`: async, returns the facts for `paa doctor`. The base
   implementation returns `describe()` — the backend's identity and its
   isolation level — because a backend that reports *nothing* renders as
@@ -56,7 +64,11 @@ subprocess backend (`base.py:26`).
   two cannot drift into disagreeing about the same host.
 - `Sandbox.describe()`: sync identity — backend, isolation level, rank,
   `real_containment`. `DockerSandbox` overrides it to add the container
-  facts (`container_runtime`, `runtime_available`, `image`).
+  facts (`container_runtime`, `runtime_available`, `image`, and the start
+  budget it spends). `SubprocessSandbox` and `WslSandbox` override it to say
+  that they have **no** start phase and therefore ignore
+  `container_start_grace_seconds` — a setting only one backend honours must
+  not be silently applied to the others (ADR-0031).
 
 ### Backends
 - `SubprocessSandbox` — PROCESS isolation. Windows Job Object memory caps +
@@ -76,6 +88,20 @@ subprocess backend (`base.py:26`).
   owner, and the workspace path is translated through
   `SandboxSettings.host_path_map` because the daemon resolves bind mounts
   against the *host*.
+- The container backend's **two budgets** (ADR-0031). `timeout_seconds` is the
+  budget on the step's **work**, and `container_start_grace_seconds` is the
+  budget on the container's **start**; they are enforced independently, because
+  `docker run` is one opaque call and a backend that cannot see where the start
+  ends and the work begins cannot separate them. The lifecycle is driven
+  explicitly — `create` → `start` → `inspect` → `wait` → `logs` → `inspect` →
+  `rm -f` — so the boundary is observable: `docker start` returns once the
+  container's process is running, and `State.StartedAt` (the **daemon's**
+  clock) is where the work's deadline is measured from. `--rm` is gone: the
+  logs have to outlive the container, so the removal is an explicit
+  `docker rm -f` in a `finally`. The container's fixed cost — the runtime's
+  setup and teardown, ~200 ms, measured — is inside the lifetime and is
+  charged to the caller, which is why the SIMPLE modality's budget was raised
+  from 0.25 s to 1.0 s.
 - `DryRunSandbox` — NONE; records what would run, executes nothing (planning
   mode + tests).
 
@@ -85,7 +111,7 @@ subprocess backend (`base.py:26`).
 and takes first healthy; unreachable fallback raises `RuntimeError`
 (subprocess always healthy) (`:98`).
 
-### `_acquire_sandbox` (`runtime.py:409`)
+### `_acquire_sandbox` (`runtime.py:420`)
 A bounded probe (`asyncio.wait_for(..., timeout=_SANDBOX_PROBE_BOUND_SECONDS)`,
 30 s) then fallback to subprocess. The bound is deliberately **longer** than the
 Docker backend's own probe timeout (20 s), so the inner probe is what gives out
@@ -105,7 +131,7 @@ under RLock (`:212`).
 ### `watchdog.py` — ResourceWatchdog + HeartbeatTracker
 RSS sampling (psutil → Windows native → /proc → unavailable) with peak-RSS
 enforcement (ADR-0009); heartbeat liveness with miss tolerance
-(`:373`).
+(`watchdog.py:374`).
 
 ## Inputs and outputs
 
@@ -122,17 +148,22 @@ enforcement (ADR-0009); heartbeat liveness with miss tolerance
 |---|---|---|---|
 | `WorkerCell` → `Sandbox` | `run(spec)` | Execute step | `reasoning.py:456` |
 | `PytestRunner` → `Sandbox` | `run(spec)` | Run tests | `validation/test_runner.py` |
-| `Runtime._acquire_sandbox` → `get_sandbox` | select backend | Compose runtime | `runtime.py:409` |
-| `ClawHubAdapter` → `Sandbox` | `run(SandboxSpec)` | Run skill entrypoint | `skills/adapters/claw_hub.py:435` |
-| `RecursionGuard` → `MODALITY_PROFILES` | read ceilings | Depth/node bounds | `recursion.py:129` |
+| `Runtime._acquire_sandbox` → `get_sandbox` | select backend | Compose runtime | `runtime.py:420` |
+| `ClawHubAdapter` → `Sandbox` | `run(SandboxSpec)` | Run skill entrypoint | `skills/adapters/claw_hub.py:458` |
+| `RecursionGuard` → `MODALITY_PROFILES` | read ceilings | Depth/node bounds | `recursion.py:137` |
 
 ## Runtime behavior
 
 - Backend selected at runtime build; worker reuses the same sandbox instance.
 - `timeout_seconds=None` means "wait forever" (MAX modality, human-attested)
-  (`base.py:141`).
+  (`base.py:227`).
 - `allow_network=False` on subprocess is not enforced (logged gap); enforced by
   policy + AST scanner.
+- The **start** and the **work** are separate budgets, and only the container
+  backend has a start phase (ADR-0031). The subprocess and WSL backends ignore
+  `container_start_grace_seconds` entirely rather than adding it to something,
+  and say so in their own report — the subprocess backend in both its
+  `preflight` and its `describe()`, the WSL backend in its `describe()`.
 
 ## Failure behavior
 
@@ -141,9 +172,25 @@ enforcement (ADR-0009); heartbeat liveness with miss tolerance
 - Process start failure → `SandboxError`.
 - Docker/WSL unavailable → `healthcheck()` returns `False` (cached), never
   raises; `run()` raises `SandboxError` if unavailable.
+- Container start overran the grace → `killed_reason="start_timeout"` and
+  `timed_out=False`: the container is killed and the run is **not** a work
+  timeout (ADR-0031).
+- The container is removed (`docker rm -f`) on every path out of the lifecycle,
+  including the timeout and the start breach — a container left running holds
+  the workspace bind mount.
+- A `docker inspect` that does not answer inside its budget degrades the same
+  way a daemon that cannot be reached does: the run continues and the deadline
+  falls back to the client's own start-of-work clock. A *report* that cannot be
+  made must not destroy the work it was reporting on — and the pre-work
+  inspect's budget is the start grace, so tightening the grace raises the
+  chance of hitting it (ADR-0031).
+- A work budget that is already spent when the wait begins is logged with the
+  **clock** named and the measured lag between the daemon's `StartedAt` and the
+  client's own clock. A daemon whose clock runs behind the host's shortens the
+  budget; that errs safe, but it must not read as a workload fault (ADR-0031).
 - `sample_rss_mb` returns `(None, ...)` when no tier works — memory ceiling
   not enforced, run proceeds (`watchdog.py`).
-- `_acquire_sandbox` probe timeout → subprocess fallback (`runtime.py:430`).
+- `_acquire_sandbox` probe timeout → subprocess fallback (`runtime.py:441`).
 
 ## Modification impact
 
@@ -151,12 +198,12 @@ enforcement (ADR-0009); heartbeat liveness with miss tolerance
   (`__init__.py`).
 - Changing `IsolationLevel` semantics affects callers branching on
   `is_real_containment`.
-- Tests: `tests/sandbox/` (134 tests).
+- Tests: `tests/sandbox/` (175 tests).
 
 ## Known gaps
 
 - Subprocess sandbox cannot enforce `allow_network` or filesystem confinement
-  beyond the cwd jail (`base.py:70`, `:130`).
+  beyond the cwd jail (`base.py:70`, `base.py:518`).
 - Windows Job Object assignment races `CreateProcess` (sub-millisecond window,
   documented).
 - Six pre-existing test failures: sandbox runs `python` where only `python3`
@@ -168,5 +215,6 @@ enforcement (ADR-0009); heartbeat liveness with miss tolerance
 - [`modules/agents.md`](agents.md) — WorkerCell.
 - [`modules/validation.md`](validation.md) — PytestRunner uses sandbox.
 - [`architecture/component-interactions.md`](../architecture/component-interactions.md) — sandbox degradation diagram.
+- [`docs/adr/0031` the container's start and the work's budget](../adr/0031-container-start-and-work-budgets.md) — the two budgets, measured.
 - [`docs/adr/0006` gVisor note](../../README.md) (file absent; rationale in AGENTS.md/README)
 - [`docs/adr/0009` peak RSS note](../../README.md)

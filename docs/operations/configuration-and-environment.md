@@ -125,6 +125,7 @@ working. `backend_coldlake` likewise takes `"s3"` or the alias `"minio"`. The
 | `backend` | `auto` | `auto`\|`subprocess`\|`wsl`\|`docker`\|`dryrun` |
 | `container_runtime` | `runc` | `runsc` selects gVisor (only if registered) |
 | `default_timeout_seconds` | `30.0` | |
+| `container_start_grace_seconds` | `5.0` (ge=0) | The budget on the **container's start**, on the container backend only. Separate from the work's `timeout_seconds` and never added to it (ADR-0031) — the two are enforced independently, and a start that overruns is a `start_timeout` (a host problem), not a work timeout. The subprocess and WSL backends have no start phase, ignore it entirely, and say so in their own report — the subprocess backend in both its `preflight` and its `describe()`, the WSL backend in its `describe()`. `0` leaves the start no budget at all, which no real daemon can meet. |
 | `enforce_peak_rss` | `True` | Peak RSS (ADR-0009), not ∫Memory·dt |
 | `watchdog_interval_seconds` | `0.25` | |
 | `heartbeat_interval_seconds` | `5.0` | |

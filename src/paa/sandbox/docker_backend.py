@@ -34,6 +34,9 @@ import posixpath
 import re
 import shutil
 import time
+import uuid
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +59,26 @@ log = structlog.get_logger(__name__)
 
 _HEALTHCHECK_TIMEOUT_SECONDS = 20.0
 _STOP_TIMEOUT_SECONDS = 15.0
+
+#: How long the backend waits for a **killed** container to be recorded as
+#: stopped. The kill has already been sent, and the daemon records the exit
+#: asynchronously — normally within a few hundred milliseconds.
+#:
+#: It is deliberately shorter than :data:`_STOP_TIMEOUT_SECONDS`, which is the
+#: *client's* patience with a process that will not die. A container that has
+#: not stopped by now is a container whose kill did not land — a double
+#: fault — and the ``docker rm -f`` in the ``finally`` is what cleans it up.
+#: Waiting the full 15 s here would stall the timeout path, which is already a
+#: failure, for a fault that has already happened.
+_KILL_SETTLE_TIMEOUT_SECONDS = 5.0
+
+#: How long the backend waits for the daemon to answer a *query* it makes
+#: after the container has stopped — the final ``inspect`` and the ``logs``
+#: read. It is deliberately not the start grace: the grace is the operator's
+#: budget for the container's start, and this is the backend's own patience
+#: with a daemon that is merely slow to answer a question about a container
+#: that has already finished.
+_DAEMON_QUERY_TIMEOUT_SECONDS = 15.0
 
 #: How long the "is our image on the daemon?" answer is reused before it is
 #: asked again. Short enough that an image built after the first probe shows
@@ -120,12 +143,82 @@ def _is_safe_user_spec(user: str) -> bool:
     return bool(_USER_SPEC_PATTERN.match(user.strip()))
 
 
+def _docker_timestamp(raw: object) -> float | None:
+    """A Docker timestamp as epoch seconds, or ``None`` if it is not one.
+
+    The daemon reports RFC 3339 with nanosecond precision
+    (``2026-10-21T07:30:00.123456789Z``) and uses the **zero time**
+    (``0001-01-01T00:00:00Z``) for "this never happened".
+
+    The zero time is not a moment in history — it is the year 1 — so it is
+    refused rather than turned into a number. A deadline computed from it
+    would land in the past and kill every container the instant it started,
+    and the failure would read like a workload problem.
+
+    ``None`` also means "the daemon did not say", and the caller degrades to
+    the client's own clock rather than failing a container that is already
+    running.
+    """
+    if not isinstance(raw, str) or not raw or raw.startswith("0001-01-01"):
+        return None
+    try:
+        moment = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return moment.timestamp()
+
+
+def _parse_exit_code(raw: bytes) -> int | None:
+    """The exit code ``docker wait`` printed, or ``None`` if it printed none.
+
+    ``docker wait`` writes the container's exit code and nothing else, so the
+    payload is one number. A payload that is not a number means the daemon
+    said something else entirely, and inventing a code from it would put a
+    lie in the ledger.
+    """
+    text = raw.decode("utf-8", errors="replace").strip()
+    if not text:
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+@dataclass(frozen=True)
+class _ContainerRun:
+    """What one container lifecycle produced.
+
+    A separate type from :class:`~paa.sandbox.base.SandboxResult` because
+    this one is the **backend's** view — the raw bytes, the daemon's exit
+    code, the start's duration — and the result is the ledger's view of it.
+    Keeping them apart is what lets the lifecycle be written as a linear
+    protocol (create, start, wait, collect, remove) without every step
+    having to know about the result's shape.
+    """
+
+    exit_code: int | None = None
+    stdout: bytes = b""
+    stderr: bytes = b""
+    timed_out: bool = False
+    killed_reason: str | None = None
+    start_duration_ms: float = 0.0
+
+
 class DockerSandbox(Sandbox):
     """Run a command in a throwaway container.
 
-    Every container is ``--rm``: the filesystem layer is destroyed on exit, so
-    a workload cannot persist state between runs except through the explicitly
-    mounted workspace. That property is what makes retries clean.
+    Every container is **removed** when its run ends — the filesystem layer
+    is destroyed, so a workload cannot persist state between runs except
+    through the explicitly mounted workspace. That property is what makes
+    retries clean.
+
+    The removal is an explicit ``docker rm -f`` rather than ``--rm``,
+    because the container's logs have to still be there after it exits
+    (ADR-0031), and because a removal in a ``finally`` cannot be skipped by
+    a path that raised.
     """
 
     def __init__(
@@ -339,6 +432,12 @@ class DockerSandbox(Sandbox):
                 "container_runtime": self._runtime,
                 "runtime_available": self._runtime_available,
                 "image": self._image,
+                # This backend is the one that *has* a start phase, so it is
+                # the one that spends the grace. The other backends report
+                # zero and say why: a setting only one backend honours must
+                # not be silently applied to the others (ADR-0031).
+                "container_start_grace_seconds": self._settings.container_start_grace_seconds,
+                "container_start_budget": "separate from the work budget",
             }
         )
         map_error = self._settings.host_path_map_error
@@ -612,12 +711,39 @@ class DockerSandbox(Sandbox):
         return self._runtime_available
 
     def _build_args(self, spec: SandboxSpec, workspace: Any, container_name: str) -> list[str]:
-        """Assemble the full ``docker run`` argv.
+        """Assemble the full ``docker create`` argv.
+
+        ``create`` and not ``run``. ``docker run`` creates, starts, attaches,
+        waits and tears down inside **one** opaque call, so the backend
+        cannot see where the start ends and the work begins — and a budget it
+        cannot see a boundary in, it cannot separate. That opacity is the
+        whole reason the start used to be charged to the work (ADR-0031).
+
+        ``--rm`` is deliberately **absent**. The container's logs have to
+        still be there after it exits, and ``--rm`` destroys them with the
+        container. The removal is an explicit ``docker rm -f`` in a
+        ``finally`` instead, which is also the only version of it that
+        cannot leave an orphan behind: a container that is still running
+        holds the workspace bind mount, which is precisely the orphan the
+        timeout exists to prevent.
+
+        The containment flags live in :meth:`_container_flags`, so they are
+        the same flags whichever way the container is created, and they
+        cannot drift apart from the ones the tests assert on.
+        """
+        args = ["docker", "create"]
+        args += self._container_flags(spec, workspace, container_name)
+        args.append(self._image)
+        args.extend(spec.command)
+        return args
+
+    def _container_flags(
+        self, spec: SandboxSpec, workspace: Any, container_name: str
+    ) -> list[str]:
+        """The flags every container is created with.
 
         Each flag maps to a specific RFC §13 requirement:
 
-        ``--rm``
-            No layer survives the run.
         ``--network=none``
             Real egress severance — no interfaces but loopback exist in the
             container's netns. This is the guarantee the subprocess backend
@@ -655,11 +781,13 @@ class DockerSandbox(Sandbox):
             configured — the daemon's default bridge, which has full host and
             internet reachability. That fallback is logged, because it is the
             difference between "no egress" and "all egress".
+        ``--runtime``
+            The OCI runtime, and only when the daemon actually has it: the
+            isolation level follows the **effective** runtime, so a host that
+            asked for gVisor and fell back to runc records NAMESPACE rather
+            than claiming a syscall boundary it does not have.
         """
         args = [
-            "docker",
-            "run",
-            "--rm",
             "--name",
             container_name,
             "--workdir",
@@ -747,8 +875,6 @@ class DockerSandbox(Sandbox):
                 continue  # Windows-only bootstrap keys are meaningless in Linux
             args += ["--env", f"{key}={value}"]
 
-        args.append(self._image)
-        args.extend(spec.command)
         return args
 
     @staticmethod
@@ -876,8 +1002,88 @@ class DockerSandbox(Sandbox):
             return "none"
         return spec.network or self._settings.default_container_network or None
 
+    @staticmethod
+    def _container_name(spec: SandboxSpec) -> str:
+        """A name for this run's container: unique, and short enough for Docker.
+
+        The name is a *handle*, and the daemon refuses to create a container
+        whose name is taken — so two runs that pick the same name collide, and
+        the second one fails to start for a reason that has nothing to do with
+        the workload.
+
+        The name used to be ``paa-{task}-{milliseconds}``: a millisecond
+        clock, so two runs that began in the same millisecond collided.
+        Dropping ``--rm`` (ADR-0031) made the window *wider*, because the
+        name is held until the ``docker rm -f`` in the ``finally`` — the
+        container outlives the process that created it, so a second run can
+        reach the daemon while the first run's name is still taken. A short
+        random suffix removes the collision without making the name long
+        enough to reach Docker's 63-character limit.
+        """
+        suffix = uuid.uuid4().hex[:8]
+        stem = f"paa-{spec.parent_task_id or 'task'}"
+        return f"{stem[: 63 - len(suffix) - 1]}-{suffix}"
+
     async def run(self, spec: SandboxSpec) -> SandboxResult:
-        """Execute ``spec`` in a container."""
+        """Execute ``spec`` in a container.
+
+        **Two budgets, enforced independently** (ADR-0031):
+
+        =========================  ===========================================
+        ``container_start_grace``  the ``docker create`` and ``docker start``
+        ``timeout_seconds``        the container's **lifetime**
+        =========================  ===========================================
+
+        The old implementation could not do that, because ``docker run`` is
+        one opaque call that creates, starts, attaches, waits and tears down
+        inside a single ``communicate()``. The backend could not see where the
+        start ended and the work began, so it added the two budgets together
+        and gave the sum to one timer. The consequence was measured on this
+        host: a step with ``timeout_seconds=0.25`` and a three-second
+        workload ran for **3.6 seconds** and was reported as a success with
+        ``timed_out=False`` — a quarter-second budget became five and a
+        quarter seconds of *work*.
+
+        Now the boundary is observable, because the daemon's own accounting
+        is used instead of one opaque call:
+
+        ``docker create`` / ``docker start``
+            the start phase, on the start grace. ``docker start`` returns
+            once the container's process is running, so the boundary is real
+            rather than assumed.
+        ``docker inspect``
+            ``State.StartedAt`` — the **daemon's** clock, which on this host
+            is the host's clock. The work deadline is ``StartedAt +
+            timeout_seconds`` in that clock, so the budget does not drift with
+            how late the client was.
+        ``docker wait``
+            the work phase, bounded by that deadline.
+        ``docker logs``
+            the output, with the two streams kept apart — ``docker logs``
+            demultiplexes, exactly as ``docker run`` did.
+        ``docker rm -f``
+            the teardown, in a ``finally``. ``--rm`` is gone: the logs have
+            to still be there after the container exits, and a container that
+            is never removed is precisely the orphan the timeout exists to
+            prevent.
+
+        **The container's fixed cost is charged to the caller, and that is
+        deliberate.** The lifetime includes the runtime's setup and teardown
+        — **~200 ms, measured** (a ``sh -c true`` container's lifetime is
+        186-225 ms; 114-130 ms on the host this was re-measured on) — which
+        is *before* and *after* the workload's own execution. The subprocess
+        backend charges its own ~5 ms fork to the caller today; the container
+        backend charging its ~200 ms setup is the same rule at a different
+        scale. The workload's own duration is not separately observable: the
+        daemon reports the lifetime, and the budget bounds that.
+
+        ``duration_ms`` keeps its meaning — the **total** wall clock. It is
+        the sandbox's own measurement of the two phases together, and a
+        total that silently stops counting the start is not a total; the
+        skill-ranking signal is a different field of the same name (the run
+        record's own wall clock). The start is reported separately, in
+        ``start_duration_ms``.
+        """
         if not await self.healthcheck():
             raise SandboxError(
                 "docker backend is not available",
@@ -885,12 +1091,11 @@ class DockerSandbox(Sandbox):
             )
 
         workspace = resolve_workspace(spec.workspace_path)
-        container_name = f"paa-{spec.parent_task_id or 'task'}-{int(time.time() * 1000)}"[:63]
-        args = self._build_args(spec, workspace, container_name)
+        container_name = self._container_name(spec)
 
         # A named network that does not exist is a configuration mistake, and
         # Docker's own error for it ("network X not found") arrives after the
-        # container has been created and read as a workload failure. Say it
+        # container has been created and read like a workload failure. Say it
         # plainly instead, and before anything runs.
         #
         # The network checked is the one the container will actually join.
@@ -910,6 +1115,252 @@ class DockerSandbox(Sandbox):
             )
 
         started = time.perf_counter()
+        outcome = await self._execute(spec, workspace, container_name)
+        duration_ms = (time.perf_counter() - started) * 1000.0
+
+        cap = self._settings.max_capture_bytes
+        truncated = len(outcome.stdout) > cap or len(outcome.stderr) > cap
+
+        return SandboxResult(
+            exit_code=outcome.exit_code,
+            stdout=outcome.stdout[:cap].decode("utf-8", errors="replace"),
+            stderr=outcome.stderr[:cap].decode("utf-8", errors="replace"),
+            duration_ms=duration_ms,
+            start_duration_ms=outcome.start_duration_ms,
+            peak_rss_mb=None,
+            timed_out=outcome.timed_out,
+            killed_reason=outcome.killed_reason,
+            truncated_output=truncated,
+            backend=self.name,
+            isolation_level=self.isolation_level,
+            # The mechanism, not the aspiration. See _memory_enforcement.
+            memory_enforcement=self._memory_enforcement(),
+        )
+
+    async def _execute(
+        self, spec: SandboxSpec, workspace: Path, container_name: str
+    ) -> _ContainerRun:
+        """The container lifecycle: create, start, wait, collect, remove.
+
+        Split out of :meth:`run` so the protocol reads as a protocol. The
+        removal is in a ``finally``, so **every** path out of here — the
+        success, the work timeout, the start breach, and an exception raised
+        in the middle — removes the container. A container that outlives its
+        run holds the workspace bind mount, and the next run cannot mount it
+        again.
+        """
+        grace = self._settings.container_start_grace_seconds
+        started = time.perf_counter()
+
+        stdout = b""
+        stderr = b""
+        exit_code: int | None = None
+        timed_out = False
+        killed_reason: str | None = None
+        start_duration_ms = 0.0
+
+        try:
+            # -- the start phase -------------------------------------------------
+            # The daemon's work, on the daemon's budget. The create and the
+            # start each get the whole grace: they are two calls to a daemon
+            # that may be slow, and the grace is the operator's statement
+            # about how slow is too slow.
+            try:
+                create_rc, _, create_err = await self._docker_call(
+                    self._build_args(spec, workspace, container_name), grace
+                )
+            except TimeoutError:
+                # The daemon did not answer the create inside the grace. That
+                # is a **host** problem, and it is reported as one:
+                # "start_timeout", not "timeout". The two demand opposite
+                # responses, and a caller that cannot tell them apart retries
+                # the workload on a host that cannot start it.
+                start_duration_ms = (time.perf_counter() - started) * 1000.0
+                killed_reason = "start_timeout"
+                log.warning(
+                    "sandbox.docker.start_timeout",
+                    phase="create",
+                    container=container_name,
+                    grace_seconds=grace,
+                )
+                await self._force_kill(container_name)
+                exit_code = await self._wait_for_exit(container_name)
+            else:
+                if create_rc != 0:
+                    # The daemon refused to create the container — a missing
+                    # image, a bad mount, a runtime that is not registered.
+                    # That is the daemon's own error and it is passed on
+                    # verbatim, because "Unable to find image" names the
+                    # problem and "the step failed" does not.
+                    return _ContainerRun(
+                        exit_code=create_rc,
+                        stderr=create_err,
+                        start_duration_ms=(time.perf_counter() - started) * 1000.0,
+                    )
+
+                try:
+                    start_rc, _, start_err = await self._docker_call(
+                        ["docker", "start", container_name], grace
+                    )
+                except TimeoutError:
+                    start_duration_ms = (time.perf_counter() - started) * 1000.0
+                    killed_reason = "start_timeout"
+                    log.warning(
+                        "sandbox.docker.start_timeout",
+                        phase="start",
+                        container=container_name,
+                        grace_seconds=grace,
+                    )
+                    # The container may be running: the *client* gave up, not
+                    # the daemon. It has to die, or it holds the workspace
+                    # mount.
+                    await self._force_kill(container_name)
+                    exit_code = await self._wait_for_exit(container_name)
+                else:
+                    start_duration_ms = (time.perf_counter() - started) * 1000.0
+                    # The client's own observation of the container's start:
+                    # ``docker start`` returns once the container's process is
+                    # running. It is the anchor the deadline falls back to
+                    # when the daemon does not say when it started — and it
+                    # is a *client* clock, so it is only ever the fallback.
+                    work_started_at = time.time()
+                    if start_rc != 0:
+                        return _ContainerRun(
+                            exit_code=start_rc,
+                            stderr=start_err,
+                            start_duration_ms=start_duration_ms,
+                        )
+
+                    # -- the work phase ------------------------------------------
+                    # The daemon's clock decides the deadline, so the budget
+                    # does not depend on how punctually the client got here.
+                    state = await self._inspect_state(container_name, grace)
+                    started_at = _docker_timestamp(state.get("StartedAt"))
+                    if started_at is None:
+                        log.warning(
+                            "sandbox.docker.no_started_at",
+                            container=container_name,
+                            detail="the daemon did not report a start time; "
+                            "the client's own start-of-work clock is used for "
+                            "the deadline instead",
+                        )
+                    budget = self._work_budget(spec, started_at, work_started_at)
+                    if budget == 0.0:
+                        # The budget is spent before the wait even begins.
+                        # The usual cause is a **clock**: the deadline is
+                        # ``StartedAt + timeout`` in the daemon's clock, and a
+                        # daemon whose clock runs behind the host's puts the
+                        # deadline in the past. It errs the safe way — the
+                        # container is killed rather than overrunning — but a
+                        # work timeout with no hint about the clock sends
+                        # the operator looking at the workload when the
+                        # workload is innocent.
+                        log.warning(
+                            "sandbox.docker.work_budget_exhausted",
+                            container=container_name,
+                            timeout_seconds=spec.timeout_seconds,
+                            container_running=bool(state.get("Running")),
+                            daemon_started_at=started_at,
+                            client_started_at=round(work_started_at, 3),
+                            # Positive when the daemon's clock is *behind* the
+                            # host's — the lag between the two.
+                            daemon_clock_lag_seconds=(
+                                round(work_started_at - started_at, 3)
+                                if started_at is not None
+                                else None
+                            ),
+                            detail=(
+                                "the work budget was already spent when the wait "
+                                "began; the deadline is StartedAt + timeout in the "
+                                "daemon's clock, and a daemon whose clock runs "
+                                "behind the host's shortens the budget"
+                            ),
+                        )
+
+                    try:
+                        wait_rc, wait_out, _ = await self._docker_call(
+                            ["docker", "wait", container_name], budget
+                        )
+                    except TimeoutError:
+                        # The work overran its budget. The container is
+                        # killed, not the client: killing the client leaves
+                        # the container running and holding the workspace
+                        # bind mount, which is precisely the orphan the
+                        # timeout exists to prevent.
+                        timed_out = True
+                        killed_reason = "timeout"
+                        await self._force_kill(container_name)
+                        exit_code = await self._wait_for_exit(container_name)
+                        log.warning(
+                            "sandbox.docker.timeout",
+                            container=container_name,
+                            timeout_seconds=spec.timeout_seconds,
+                        )
+                    else:
+                        if wait_rc == 0:
+                            exit_code = _parse_exit_code(wait_out)
+
+            # -- the collection --------------------------------------------------
+            # The logs are read after the container has stopped, because the
+            # removal that follows destroys the container's filesystem layer
+            # and the logs are the only record of what it did.
+            stdout, stderr = await self._collect_logs(container_name)
+            final_state = await self._inspect_state(
+                container_name, _DAEMON_QUERY_TIMEOUT_SECONDS
+            )
+            if exit_code is None:
+                exit_code = self._state_exit_code(final_state)
+
+            # The **start** timeout is checked first. A container killed by
+            # the start grace also exits 137 — the same code the cgroup OOM
+            # killer produces — and reporting that as "memory" would send
+            # the orchestrator to retry at a higher modality when the real
+            # problem is a host that cannot start a container in time.
+            if killed_reason != "start_timeout" and exit_code == 137 and not timed_out:
+                killed_reason = "memory"
+
+            log.info(
+                "sandbox.docker.completed",
+                container=container_name,
+                exit_code=exit_code,
+                timed_out=timed_out,
+                killed_reason=killed_reason,
+                start_duration_ms=round(start_duration_ms, 3),
+                # The container's lifetime as the *daemon* measured it — the
+                # span the work budget bounds, and not the same as the wall
+                # clock: it includes the runtime's setup and teardown.
+                lifetime_ms=round(self._lifetime_ms(final_state) or 0.0, 3),
+            )
+
+            return _ContainerRun(
+                exit_code=exit_code,
+                stdout=stdout,
+                stderr=stderr,
+                timed_out=timed_out,
+                killed_reason=killed_reason,
+                start_duration_ms=start_duration_ms,
+            )
+        finally:
+            await self._remove_container(container_name)
+
+    # -- the daemon, one call at a time ---------------------------------------
+
+    async def _docker_call(
+        self, args: list[str], budget_seconds: float | None
+    ) -> tuple[int, bytes, bytes]:
+        """Run one ``docker`` command and capture its output.
+
+        The single place the run path talks to the daemon, so the budget
+        each call gets is visible in one place — and the budget is the whole
+        point of this backend (ADR-0031): the start calls get the start
+        grace, the wait gets the work budget, and **nothing** gets the sum.
+
+        A timeout raises :class:`TimeoutError` *after* the client process has
+        been reaped, so a call that overruns leaves no ``docker`` client
+        behind holding a pipe open. The container itself is not touched
+        here: the client going away is not the container going away, and the
+        two are killed in different ways.
+        """
         try:
             proc = await self._exec(
                 *args,
@@ -919,66 +1370,229 @@ class DockerSandbox(Sandbox):
             )
         except OSError as exc:
             raise SandboxError("failed to launch docker", reason=str(exc)) from exc
-
-        timed_out = False
-        killed_reason: str | None = None
-        cap = self._settings.max_capture_bytes
-
-        # The wall-clock budget is the step's *work* budget plus the
-        # container's start, which is the backend's overhead and not the
-        # step's. See SandboxSettings.container_start_grace_seconds for why
-        # this is not optional: a SIMPLE step's quarter-of-a-second budget
-        # would otherwise be spent entirely on the start.
-        budget = (
-            None
-            if spec.timeout_seconds is None
-            else spec.timeout_seconds + self._settings.container_start_grace_seconds
-        )
-
         try:
-            if budget is None:
-                stdout_raw, stderr_raw = await proc.communicate()
-            else:
-                stdout_raw, stderr_raw = await asyncio.wait_for(
-                    proc.communicate(), timeout=budget
-                )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=budget_seconds
+            )
         except TimeoutError:
-            timed_out = True
-            killed_reason = "timeout"
-            stdout_raw, stderr_raw = b"", b""
-            # `docker kill` the container rather than killing the CLI: killing
-            # the client leaves the container running and holding the workspace
-            # bind mount, which is precisely the orphan the timeout exists to
-            # prevent.
-            await self._force_kill(container_name)
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(proc.wait(), timeout=_STOP_TIMEOUT_SECONDS)
-            log.warning("sandbox.docker.timeout", container=container_name)
+            await self._reap(proc)
+            raise
+        except asyncio.CancelledError:
+            # The wait was cancelled from the outside. The child is still
+            # running and the cancellation is the one path that arrives with
+            # no timeout of its own to reap it.
+            await self._reap(proc)
+            raise
+        return (proc.returncode if proc.returncode is not None else -1), stdout, stderr
 
-        exit_code = proc.returncode
-        # 137 == 128 + SIGKILL: the cgroup OOM killer fired. Distinguishing it
-        # from an ordinary failure is what lets the orchestrator retry at a
-        # higher modality instead of retrying identically and failing again.
-        if exit_code == 137 and not timed_out:
-            killed_reason = "memory"
+    async def _inspect_state(
+        self, container_name: str, budget_seconds: float | None
+    ) -> dict[str, Any]:
+        """The daemon's own view of the container's state.
 
-        truncated = len(stdout_raw) > cap or len(stderr_raw) > cap
-        duration_ms = (time.perf_counter() - started) * 1000.0
+        ``State.StartedAt`` is the boundary between the start and the work,
+        and it is in the **daemon's** clock. The daemon runs on the same
+        host, so that clock is the host's clock, and the work deadline can
+        be computed from it — a deadline computed from the client's clock
+        would drift by however late the client was, and a deadline that
+        drifts is a deadline the caller cannot rely on.
 
-        return SandboxResult(
-            exit_code=exit_code,
-            stdout=stdout_raw[:cap].decode("utf-8", errors="replace"),
-            stderr=stderr_raw[:cap].decode("utf-8", errors="replace"),
-            duration_ms=duration_ms,
-            peak_rss_mb=None,
-            timed_out=timed_out,
-            killed_reason=killed_reason,
-            truncated_output=truncated,
-            backend=self.name,
-            isolation_level=self.isolation_level,
-            # The mechanism, not the aspiration. See _memory_enforcement.
-            memory_enforcement=self._memory_enforcement(),
-        )
+        An empty mapping means "the daemon did not answer, or answered
+        something unreadable". The caller degrades to the client's clock
+        rather than failing the run: a container that is already running is
+        better than no container at all.
+
+        A daemon that cannot be reached at all degrades the same way. The
+        query is *reporting*, and a report that cannot be made must not
+        destroy the work it was reporting on.
+
+        A daemon that does not answer **in time** degrades the same way
+        too, and this is the case that is easy to forget: ``_docker_call``
+        raises :class:`TimeoutError` whenever the daemon does not answer
+        inside the call's budget, and the pre-work inspect's budget *is* the
+        start grace — so an operator who tightens the grace to fail fast on
+        a slow host **raises** the probability of hitting it. Letting that
+        escape would kill a container that was running perfectly well, on
+        the grounds that the backend could not report on it, and would raise
+        a bare :class:`TimeoutError` — which is not a
+        :class:`~paa.core.errors.SandboxError`, and so is not on the
+        failure surface the callers are documented to handle. A run that was
+        killed still produces a result, because the ledger needs to record
+        *how* it died.
+        """
+        try:
+            returncode, stdout, _ = await self._docker_call(
+                ["docker", "inspect", "--format", "{{json .State}}", container_name],
+                budget_seconds,
+            )
+        except (SandboxError, TimeoutError):
+            log.warning(
+                "sandbox.docker.state_unavailable",
+                container=container_name,
+                detail="the daemon could not be asked about the container's state",
+            )
+            return {}
+        if returncode != 0:
+            return {}
+        try:
+            state = json.loads(stdout.decode("utf-8", errors="replace") or "{}")
+        except json.JSONDecodeError:
+            log.warning("sandbox.docker.unreadable_state", container=container_name)
+            return {}
+        return state if isinstance(state, dict) else {}
+
+    @staticmethod
+    def _state_exit_code(state: dict[str, Any]) -> int | None:
+        """The container's exit code as the daemon recorded it, if it did."""
+        raw = state.get("ExitCode")
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            return None
+        return raw
+
+    @staticmethod
+    def _lifetime_ms(state: dict[str, Any]) -> float | None:
+        """The container's lifetime, in the daemon's clock, in milliseconds.
+
+        ``StartedAt`` to ``FinishedAt`` — the span the work budget bounds.
+        It is not the wall clock and it is not the workload's own duration:
+        it includes the runtime's setup and teardown, which is why the
+        budget has to accommodate them (ADR-0031).
+        """
+        started = _docker_timestamp(state.get("StartedAt"))
+        finished = _docker_timestamp(state.get("FinishedAt"))
+        if started is None or finished is None:
+            return None
+        return (finished - started) * 1000.0
+
+    def _work_budget(
+        self, spec: SandboxSpec, started_at: float | None, client_started_at: float
+    ) -> float | None:
+        """How long the **work** may still run, in seconds.
+
+        The deadline is ``StartedAt + timeout_seconds`` in the daemon's
+        clock: the budget is on the container's *lifetime*, which begins when
+        the daemon started the container's process and ends when it stops.
+
+        The client's own clock is a fallback, and it is a fallback because it
+        is the only clock that can be wrong in the dangerous direction. A
+        daemon whose clock runs *ahead* of the host's would push the deadline
+        away, and the caller would get more than it asked for. So the budget
+        is capped at the caller's own ``timeout_seconds``: the deadline is
+        honoured when the clocks agree, and the caller's ask is the ceiling
+        when they do not. A daemon whose clock runs *behind* the host's
+        shortens the budget instead, which errs the safe way.
+
+        **Where the fallback is anchored.** When the daemon does not say when
+        the container started, the deadline is anchored on the **client's own
+        start-of-work clock** — the moment ``docker start`` returned, which
+        is the client's closest observation of the container's start. It is
+        deliberately *not* anchored on the moment of the inspect, which is
+        later: an anchor that late would measure the caller's budget from the
+        *report* rather than from the work, and the container's lifetime
+        would be ``timeout_seconds`` plus the whole of the start and the
+        inspect — more than the caller asked for, which is exactly what the
+        fallback exists to avoid. The fallback fires only when the daemon
+        does not answer or reports the zero time, so the excess is at most
+        one round trip; the anchor makes it no more than that.
+        """
+        if spec.timeout_seconds is None:
+            return None
+        if started_at is None:
+            deadline = client_started_at + spec.timeout_seconds
+        else:
+            deadline = started_at + spec.timeout_seconds
+        return max(0.0, min(spec.timeout_seconds, deadline - time.time()))
+
+    async def _collect_logs(self, container_name: str) -> tuple[bytes, bytes]:
+        """The container's output, with the two streams kept apart.
+
+        ``docker logs`` **demultiplexes**: the container's stdout comes back
+        on the client's stdout and its stderr on the client's stderr, exactly
+        as ``docker run`` did (measured on this host — a container writing to
+        both streams comes back with ``MARKER_OUT`` on stdout and
+        ``MARKER_ERR`` on stderr).
+
+        The logs are read *after* the container has stopped, because the
+        removal that follows destroys the container's filesystem layer and
+        the logs are the only record of what it did.
+
+        A daemon that cannot be reached yields no output rather than an
+        exception: the work has already happened, and losing the *report* of
+        it is not a reason to lose the run.
+        """
+        try:
+            _, stdout, stderr = await self._docker_call(
+                ["docker", "logs", container_name], _DAEMON_QUERY_TIMEOUT_SECONDS
+            )
+        except TimeoutError:
+            return b"", b""
+        except SandboxError:
+            return b"", b""
+        return stdout, stderr
+
+    async def _wait_for_exit(self, container_name: str) -> int | None:
+        """The container's exit code, once it has stopped.
+
+        Used after a kill: the daemon records the exit asynchronously, so
+        asking for the state immediately after ``docker kill`` can find the
+        container still running. ``docker wait`` blocks until it is not, and
+        then it is the daemon's own number — 137 for a killed container.
+
+        The wait is bounded by :data:`_KILL_SETTLE_TIMEOUT_SECONDS`, and not
+        by the client's own patience with a process that will not die. The
+        kill has already been sent, so a container that is still running by
+        then is a container whose kill did not land — a double fault — and
+        the ``docker rm -f`` in the ``finally`` is what cleans it up. The
+        long patience belongs in the *client's* reaping, not in the timeout
+        path, where it is a stall on a path that has already failed.
+
+        ``None`` means the daemon never said, and the caller reports the
+        exit code it has (or none) rather than inventing one.
+        """
+        try:
+            returncode, stdout, _ = await self._docker_call(
+                ["docker", "wait", container_name], _KILL_SETTLE_TIMEOUT_SECONDS
+            )
+        except TimeoutError:
+            return None
+        except SandboxError:
+            return None
+        if returncode != 0:
+            return None
+        return _parse_exit_code(stdout)
+
+    async def _remove_container(self, container_name: str) -> None:
+        """Remove the container, forcibly.
+
+        ``--rm`` is gone (the logs have to outlive the container), so the
+        removal is explicit — and it is in a ``finally``, so it happens on
+        every path out of the lifecycle.
+
+        ``-f`` because a container that is still running has to die first: a
+        container left running holds the workspace bind mount, which is
+        precisely the orphan the timeout exists to prevent. A failure here
+        is swallowed on purpose — the container is already gone as far as the
+        caller is concerned, and a ``docker rm`` that cannot reach the
+        daemon must not turn a finished run into an exception.
+
+        The *client* is reaped if the removal overruns: a ``docker rm`` that
+        is still running is a process the backend left behind, holding the
+        event loop's transport table open. The container is the daemon's
+        business; the client is ours.
+        """
+        with contextlib.suppress(Exception):
+            remover = await self._exec(
+                "docker",
+                "rm",
+                "-f",
+                container_name,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            try:
+                await asyncio.wait_for(remover.wait(), timeout=_STOP_TIMEOUT_SECONDS)
+            except TimeoutError:
+                await self._reap(remover)
 
     async def _force_kill(self, container_name: str) -> None:
         with contextlib.suppress(Exception):
@@ -990,3 +1604,4 @@ class DockerSandbox(Sandbox):
                 stderr=asyncio.subprocess.DEVNULL,
             )
             await asyncio.wait_for(killer.wait(), timeout=_STOP_TIMEOUT_SECONDS)
+

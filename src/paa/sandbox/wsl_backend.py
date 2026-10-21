@@ -32,6 +32,7 @@ import re
 import shutil
 import time
 from pathlib import Path, PureWindowsPath
+from typing import Any
 
 import structlog
 
@@ -129,6 +130,27 @@ class WslSandbox(Sandbox):
     @property
     def distro(self) -> str:
         return self._distro
+
+    def describe(self) -> dict[str, Any]:
+        """Backend identity for the ledger and the ``paa doctor`` command.
+
+        It also says, in as many words, that this backend **ignores**
+        ``container_start_grace_seconds``. The setting is the *container*
+        backend's start budget: the WSL2 VM's own start happens in the
+        (cached) health check, not per run, and a command inside the distro
+        starts in milliseconds. There is no start phase here to budget, so
+        the setting is neither spent nor folded into the work budget
+        (ADR-0031).
+        """
+        described = super().describe()
+        described.update(
+            {
+                "distro": self._distro,
+                "container_start_grace_seconds": 0,
+                "container_start_budget": "not applicable — this backend has no start phase",
+            }
+        )
+        return described
 
     async def healthcheck(self) -> bool:
         """Whether ``wsl.exe`` exists and the distro responds. Never raises."""
