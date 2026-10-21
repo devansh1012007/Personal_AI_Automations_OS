@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+import uuid
+from typing import TYPE_CHECKING, Any
 
 import typer
 from rich.console import Console
@@ -29,6 +30,10 @@ from paa import __version__
 from paa.cli.coder import register_agent
 from paa.core.types import ComplexityModality, PermissionMode
 from paa.sandbox.base import collect_sandbox_facts, sandbox_report_rows
+
+if TYPE_CHECKING:
+    from paa.config import Settings
+    from paa.runtime import Runtime
 
 app = typer.Typer(
     name="paa",
@@ -43,7 +48,13 @@ def _run(coro: Any) -> Any:
     return asyncio.run(coro)
 
 
-async def _build_runtime(*, run_recovery: bool = False):
+async def _build_runtime(*, run_recovery: bool = False) -> Runtime:
+    # Imported here rather than at module scope: the runtime pulls in the
+    # agent hierarchy, the ledger and the storage stack, and a CLI that only
+    # prints its version should not pay for that. The annotation names the
+    # class through a ``TYPE_CHECKING`` import, so the runtime import stays
+    # lazy — the name is needed to *type* the return, not to run the
+    # function.
     from paa.runtime import Runtime
 
     return await Runtime.build(run_recovery=run_recovery)
@@ -94,7 +105,8 @@ def run(correlation_id: str = typer.Argument(..., help="A queued task's id.")) -
     async def _do() -> None:
         rt = await _build_runtime()
         try:
-            outcome = await rt.run(correlation_id)
+            resolved = await _resolve_task(rt, correlation_id)
+            outcome = await rt.run(resolved)
             console.print(f"phase: {outcome.phase.value}")
         finally:
             await rt.close()
@@ -109,11 +121,8 @@ def status(correlation_id: str = typer.Argument(...)) -> None:
     async def _do() -> None:
         rt = await _build_runtime()
         try:
-            head = await rt.ledger.head(correlation_id_uuid(correlation_id))
-            if head is None:
-                console.print("[red]no such task[/red]")
-                raise typer.Exit(1)
-            p = await rt.project(correlation_id)
+            resolved = await _resolve_task(rt, correlation_id)
+            p = await rt.project(resolved)
             table = Table(show_header=False, box=None)
             table.add_row("phase", p.phase.value)
             table.add_row("modality", p.modality.value)
@@ -138,9 +147,14 @@ def ledger(correlation_id: str = typer.Argument(...)) -> None:
     async def _do() -> None:
         rt = await _build_runtime()
         try:
-            events = await rt.ledger.read_correlation(correlation_id_uuid(correlation_id))
+            resolved = await _resolve_task(rt, correlation_id)
+            events = await rt.ledger.read_correlation(resolved)
             if not events:
-                console.print("[red]no such task[/red]")
+                # A lineage with a head but no events is an anomaly, not a
+                # missing task: the head row is written in the same
+                # transaction as the events, so this cannot happen without a
+                # damaged ledger. Say which of the two it is.
+                console.print("[red]no events recorded for this task[/red]")
                 raise typer.Exit(1)
             table = Table("v", "event", "agent", "when")
             for e in events:
@@ -151,7 +165,7 @@ def ledger(correlation_id: str = typer.Argument(...)) -> None:
                     e.recorded_at.strftime("%H:%M:%S"),
                 )
             console.print(table)
-            ok, problems = await rt.ledger.verify_chain(correlation_id_uuid(correlation_id))
+            ok, problems = await rt.ledger.verify_chain(resolved)
             colour = "green" if ok else "red"
             detail = "ok" if ok else str(problems)
             console.print(f"chain integrity: [{colour}]{detail}[/{colour}]")
@@ -174,8 +188,9 @@ def gate(
 
         rt = await _build_runtime()
         try:
+            resolved = await _resolve_task(rt, correlation_id)
             state = await rt.orchestrator.clear_human_gate(
-                correlation_id_uuid(correlation_id), approved=approve, note=note
+                resolved, approved=approve, note=note
             )
             console.print(f"phase: {state.phase.value}")
         except PaaError as exc:
@@ -281,10 +296,14 @@ def serve(
         import uvicorn
 
         from paa.api import create_app
-        from paa.config import get_settings
         from paa.daemon import Daemon
 
-        settings = get_settings()
+        settings = _settings_or_refuse()
+        # The bind address is settled *before* anything is built or started.
+        # A refused bind must not have opened the database, started the
+        # daemon, or left a half-started server behind to be cleaned up.
+        bind_host = _resolve_bind_host(host, settings)
+
         rt = await _build_runtime(run_recovery=False)
         daemon = Daemon(rt)
         api = create_app(rt)
@@ -292,7 +311,7 @@ def serve(
         await daemon.start()
         config = uvicorn.Config(
             api,
-            host=host or settings.api_host,
+            host=bind_host,
             port=port or settings.api_port,
             log_level=settings.observability.log_level.lower(),
         )
@@ -337,14 +356,106 @@ def tui() -> None:
     asyncio.run(run_tui())
 
 
-def correlation_id_uuid(value: str):
-    import uuid
+def correlation_id_uuid(value: str) -> uuid.UUID:
+    """The canonical UUID for a task id, or a clean refusal.
 
+    A UUID has two spellings — the hyphenated one and the 32-character hex
+    one — and the ledger stores the hyphenated form. Every command that
+    takes a task id therefore coerces its argument *once*, here, and uses
+    the resolved UUID for every lookup it makes afterwards. A command that
+    handed the raw argument to one lookup and the canonical one to another
+    answered the same id two different ways.
+    """
     try:
         return uuid.UUID(value)
     except ValueError:
         console.print(f"[red]invalid correlation id: {value}[/red]")
         raise typer.Exit(1) from None
+
+
+async def _resolve_task(rt: Runtime, correlation_id: str) -> uuid.UUID:
+    """The canonical id of a task that exists.
+
+    The one place a task id is turned into a lineage: the argument is
+    coerced once, and a lineage that does not exist is reported as "no such
+    task" rather than left to the replay.
+
+    The replay's own refusal — "cannot replay an empty history without an
+    initial projection" — is an *invariant*, not a message an operator can
+    act on, and it is what a lineage-less id used to produce. The head
+    projection is the cheap existence check: one primary-key lookup, and it
+    is written in the same transaction as the events, so a lineage with
+    events always has one.
+    """
+    resolved = correlation_id_uuid(correlation_id)
+    if await rt.ledger.head(resolved) is None:
+        console.print("[red]no such task[/red]")
+        raise typer.Exit(1)
+    return resolved
+
+
+def _settings_or_refuse() -> Settings:
+    """The process settings, or a clean refusal.
+
+    ``Settings`` refuses a non-loopback ``api_host`` unless the escape hatch
+    is set, and it does so by *raising*: a configuration error the operator
+    caused is not a crash, and a traceback for "you set PAA_API_HOST to a
+    public address" tells them less than the message the validator wrote.
+    The validator's own wording is kept, because it names the field and the
+    override.
+    """
+    from pydantic import ValidationError
+
+    from paa.config import get_settings
+
+    try:
+        return get_settings()
+    except ValidationError as exc:
+        detail = "; ".join(str(err.get("msg", "")) for err in exc.errors())
+        console.print(f"[red]invalid configuration:[/red] {detail}")
+        raise typer.Exit(1) from exc
+
+
+def _resolve_bind_host(host: str | None, settings: Settings) -> str:
+    """The address the ingestion API will bind, refused unless it is loopback.
+
+    ``--host`` and ``Settings.api_host`` are two spellings of one decision —
+    the address this process listens on — and the RFC's "no public edge
+    ingestion" rule is a property of the *bind*, not of the field the bind
+    was spelled in. The settings model guards the field; the flag reached the
+    same socket without ever passing that guard, which made the easier path
+    to a public listener the unguarded one.
+
+    So the flag goes through the same validator, and the same escape hatch
+    (``PAA_ALLOW_NON_LOOPBACK=1``, read as ``Settings.allow_non_loopback``):
+    a deliberate non-loopback bind is still possible, it just has to be
+    deliberate through *both* doors.
+    """
+    from pydantic import ValidationError
+
+    from paa.config import Settings
+
+    resolved = host or settings.api_host
+    if resolved == settings.api_host or settings.allow_non_loopback:
+        # Either the very address the settings were built with — which the
+        # validator has already vetted, since a non-loopback ``api_host``
+        # cannot survive construction without the escape hatch — or the
+        # escape hatch itself, which is the operator saying so on purpose.
+        return resolved
+
+    try:
+        # The rule itself rather than a copy of it: building the settings
+        # with the candidate address runs ``Settings._enforce_loopback``,
+        # the only place that knows which addresses count as loopback. The
+        # escape hatch is forced off because it was handled above.
+        Settings(api_host=resolved, allow_non_loopback=False)
+    except ValidationError:
+        console.print(
+            f"[red]refusing to bind {resolved!r}: the ingestion API is loopback-only.[/red] "
+            "Set PAA_ALLOW_NON_LOOPBACK=1 to bind a non-loopback address deliberately."
+        )
+        raise typer.Exit(1) from None
+    return resolved
 
 
 #: ``paa agent`` lives in its own module because it is the one command that

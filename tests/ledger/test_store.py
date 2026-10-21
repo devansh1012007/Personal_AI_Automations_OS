@@ -232,6 +232,39 @@ class TestChainIntegrity:
         assert str(good) not in report
 
 
+class TestAnEventThatWasNeverSealed:
+    """A chain check must report an anomaly, not abort on it.
+
+    ``LedgerEvent.state_version`` is optional on the *model* because the
+    store assigns it inside the append transaction; a row read back from the
+    ledger was sealed, and the column is NOT NULL. The guard exists for the
+    case where that does not hold, and the point of it is that one unsealed
+    event does not cost the whole lineage its verification.
+
+    The stakes are higher than the lineage: the verification is asked for by
+    the boot sweep, which is what recovers the lineages in the first place,
+    and an exception raised out of it takes the whole sweep with it.
+    """
+
+    async def test_a_missing_version_is_reported_not_raised(self, db) -> None:
+        ok, problems = await _UnsealedStore(db).verify_chain(new_correlation_id())
+
+        assert not ok
+        assert any("missing state_version" in p for p in problems)
+
+
+class _UnsealedStore(LedgerStore):
+    """A store whose read path returns an event the store never sealed."""
+
+    async def read_correlation(self, correlation_id, *, from_version=0):
+        return [
+            LedgerEvent(
+                correlation_id=correlation_id,
+                event_type=EventType.TASK_REQUESTED,
+            )
+        ]
+
+
 class TestHeadProjection:
     """The bounded alternative to the RFC's unbounded partial index (ADR-0010)."""
 

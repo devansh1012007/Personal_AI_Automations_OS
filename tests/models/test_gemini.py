@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -93,6 +94,33 @@ async def test_structured_output_sets_response_schema_and_roundtrips(
     assert schema["type"] == "OBJECT"
     assert schema["properties"]["answer"]["type"] == "STRING"
     assert "additionalProperties" not in schema
+
+
+async def test_a_schema_that_is_not_a_mapping_degrades_to_an_empty_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-mapping schema must not raise out of the provider call.
+
+    :meth:`~paa.models.base.CompletionRequest.with_schema` copies with
+    ``model_copy(update=...)``, which bypasses pydantic's validation, so a
+    schema that was never validated reaches the provider as whatever the
+    caller passed. It degrades to an empty ``responseSchema`` — the same
+    treatment the other schema consumers in the model layer give it — rather
+    than raising an ``AttributeError``, which the router's escalation
+    machinery cannot recognise as a provider failure and so would let escape
+    the escalation path entirely.
+    """
+    monkeypatch.setenv("GEMINI_API_KEY", FAKE_KEY)
+    recorder = RequestRecorder(lambda _req: gemini_response("ok"))
+    provider = GeminiProvider(client=mock_client(recorder))
+
+    request = CompletionRequest(messages=(Message.user("x"),))
+    unvalidated = request.with_schema(cast(Any, ["not", "a", "mapping"]))
+
+    response = await provider.complete(unvalidated)
+
+    assert response.text == "ok"
+    assert recorder.body["generationConfig"]["responseSchema"] == {}
 
 
 async def test_missing_credentials_raise_without_leaking(

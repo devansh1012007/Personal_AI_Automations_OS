@@ -293,7 +293,13 @@ class Histogram:
             "window": len(self.samples),
         }
         for quantile in quantiles:
-            out[f"p{int(round(quantile * 100))}"] = percentile(ordered, quantile)
+            # ``round`` and not ``int``: the key names the percentile the
+            # value *is*, and truncating a half-way quantile downward would
+            # label a 99.5th-percentile series "p99". ``round`` on a float
+            # with no ``ndigits`` already returns an ``int``, so the cast
+            # was a no-op that only obscured which of the two roundings
+            # was meant.
+            out[f"p{round(quantile * 100)}"] = percentile(ordered, quantile)
         return out
 
 

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 import structlog
 
@@ -45,9 +45,24 @@ from paa.ledger.replay import TaskPhase, TaskProjection, project
 if TYPE_CHECKING:
     from paa.ledger.store import LedgerStore
 
-__all__ = ["ChiefOrchestrator", "TaskOutcome", "TaskRequest"]
+__all__ = ["BackpressureLike", "ChiefOrchestrator", "TaskOutcome", "TaskRequest"]
 
 log = structlog.get_logger(__name__)
+
+
+class BackpressureLike(Protocol):
+    """The one thing the orchestrator asks of a backpressure controller.
+
+    A protocol rather than a direct import of
+    :class:`paa.storage.queue.backpressure.BackpressureController`, so the
+    orchestrator keeps no queue-backend import at module scope — the
+    controller is optional and the queue may not even be configured — and so
+    the contract the orchestrator depends on is stated: a modality goes in
+    and a modality comes out. Returning anything else would silently
+    corrupt the modality the rest of the lifecycle runs under.
+    """
+
+    def degrade_modality(self, modality: ComplexityModality) -> ComplexityModality: ...
 
 
 @dataclass(slots=True)
@@ -101,7 +116,7 @@ class ChiefOrchestrator:
         critic: Agent | None = None,
         router: Agent | None = None,
         queue: Any = None,
-        backpressure: Any = None,
+        backpressure: BackpressureLike | None = None,
         recovery: Any = None,
         metrics: Any = None,
         permission_mode: PermissionMode = PermissionMode.ASK,
@@ -335,7 +350,7 @@ class ChiefOrchestrator:
         )
 
     def _message(
-        self, state: TaskProjection, ctx: AgentContext, intent: MessageType, payload: dict
+        self, state: TaskProjection, ctx: AgentContext, intent: MessageType, payload: dict[str, Any]
     ) -> AgentMessage:
         return AgentMessage(
             task_id=ctx.task_id,

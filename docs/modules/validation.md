@@ -99,14 +99,13 @@ Manifest capture + drift detection (`hash_file`).
   logic.
 - `safe_relative_path` is the workspace jail — changes affect patch apply +
   drift checks.
-- Tests: validation exercised via agents; no dedicated suite (`README.md
-  build-status`, `tests/validation/` empty).
+- Tests: `tests/validation/test_schema_validator.py` (19 tests) covers the schema
+  validator directly; the rest of the subsystem is exercised via agents.
 
 ## Known gaps
 
-- `tests/validation/` is an empty package — no dedicated validation suite.
-- Deterministic validation is exercised via agents/critic but not covered by
-  its own tests.
+- Deterministic validation is exercised via agents/critic; only the schema
+  validator has its own suite.
 
 ## Related documents
 
@@ -114,4 +113,5 @@ Manifest capture + drift detection (`hash_file`).
 - [`modules/agents.md`](agents.md) — CriticReviewer.
 - [`modules/coder.md`](coder.md) — no direct use (coder uses runtime tools).
 - [`data/data-lifecycle.md`](../data/data-lifecycle.md) — workspace/patch lifecycle.
-- [`docs/adr/0010` pure-Python schema subset](../../README.md) (rationale: jsonschema optional)
+- [`docs/adr/0028` pure-Python schema subset](../adr/0028-pure-python-json-schema-subset.md)
+  (rationale: jsonschema optional)

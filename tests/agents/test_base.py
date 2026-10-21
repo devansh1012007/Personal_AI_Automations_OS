@@ -8,24 +8,46 @@ actually fire.
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 import pytest
 
-from paa.agents.base import Agent, AgentContext, AgentMessage, AgentResult, MessageType, RiskLevel
-from paa.core.errors import BudgetExceededError
+from paa.agents.base import (
+    Agent,
+    AgentContext,
+    AgentMessage,
+    AgentResult,
+    MessageType,
+    OrchestratorLike,
+    RiskLevel,
+)
+from paa.core.errors import BudgetExceededError, RecursionGuardError
 from paa.core.types import AgentRole, ComplexityModality, Permission, PermissionMode
+from paa.ledger.store import LedgerStore
 
 
 class _RecordingAgent(Agent):
     role = AgentRole.WORKER
 
-    def __init__(self, *, tokens: int = 0, raises: Exception | None = None, **kw: object) -> None:
-        super().__init__(**kw)
+    def __init__(
+        self,
+        *,
+        tokens: int = 0,
+        raises: Exception | None = None,
+        name: str | None = None,
+        ledger: LedgerStore | None = None,
+        orchestrator: OrchestratorLike | None = None,
+    ) -> None:
+        # The base constructor's keywords are named rather than splatted from
+        # a ``**kwargs`` bag: a bag typed ``object`` cannot be checked against
+        # them, and a bag typed ``Any`` silences the check without making one.
+        # Naming them keeps the helper honest about what it forwards.
+        super().__init__(name=name, ledger=ledger, orchestrator=orchestrator)
         self.ran = False
         self._tokens = tokens
         self._raises = raises
 
-    async def handle(self, message: AgentMessage, ctx: AgentContext) -> AgentResult:
+    async def handle(self, message: AgentMessage, ctx: AgentContext) -> AgentResult[Any]:
         self.ran = True
         if self._raises is not None:
             raise self._raises
@@ -150,3 +172,85 @@ class TestMessageReply:
         assert reply.session_id == original.session_id
         assert reply.sender == original.recipient
         assert reply.recipient == original.sender
+
+
+class _FakeOrchestrator:
+    """The one method :class:`paa.agents.base.OrchestratorLike` promises.
+
+    Stands in for the chief orchestrator so the delegation seam is exercised
+    without the ledger, the lifecycle, or a model anywhere near it.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def mediate_delegation(
+        self,
+        *,
+        sender: str,
+        target: str,
+        intent: MessageType,
+        payload: dict[str, Any],
+        ctx: AgentContext,
+    ) -> AgentResult[Any]:
+        self.calls.append(
+            {
+                "sender": sender,
+                "target": target,
+                "intent": intent,
+                "payload": payload,
+                "ctx": ctx,
+            }
+        )
+        return AgentResult.success({"delegated_to": target})
+
+
+class _DelegatingAgent(Agent):
+    role = AgentRole.WORKER
+    can_delegate = True
+
+    async def handle(self, message: AgentMessage, ctx: AgentContext) -> AgentResult[Any]:
+        return AgentResult.success({"ok": True})
+
+
+class TestDelegationSeam:
+    """``Agent.delegate`` never calls a peer directly.
+
+    It goes through the orchestrator, because the orchestrator is the only
+    component that can see whether an edge would close a cycle (RFC §11.1).
+    """
+
+    async def test_delegate_routes_through_the_orchestrator(self) -> None:
+        orchestrator = _FakeOrchestrator()
+        agent = _DelegatingAgent(name="worker", orchestrator=orchestrator)
+        ctx = _ctx()
+
+        result = await agent.delegate(
+            "quality-gate", MessageType.REVIEW_RESULT, {"step_index": 0}, ctx
+        )
+
+        assert result.ok
+        assert result.value == {"delegated_to": "quality-gate"}
+        assert len(orchestrator.calls) == 1
+        call = orchestrator.calls[0]
+        assert call["sender"] == "worker"
+        # The target is the one that was asked for, not one the seam happens
+        # to know: a hard-coded "critic" here would satisfy every other
+        # assertion in this test.
+        assert call["target"] == "quality-gate"
+        assert call["intent"] is MessageType.REVIEW_RESULT
+        assert call["payload"] == {"step_index": 0}
+        assert call["ctx"] is ctx
+
+    async def test_delegate_without_an_orchestrator_is_refused(self) -> None:
+        agent = _DelegatingAgent(name="worker")
+        with pytest.raises(RecursionGuardError, match="no orchestrator"):
+            await agent.delegate("critic", MessageType.REVIEW_RESULT, {}, _ctx())
+
+    async def test_an_agent_that_cannot_delegate_is_refused(self) -> None:
+        class _NoDelegate(_RecordingAgent):
+            can_delegate = False
+
+        agent = _NoDelegate(orchestrator=_FakeOrchestrator())
+        with pytest.raises(RecursionGuardError, match="not permitted to delegate"):
+            await agent.delegate("critic", MessageType.REVIEW_RESULT, {}, _ctx())

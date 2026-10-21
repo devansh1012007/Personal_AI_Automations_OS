@@ -58,6 +58,12 @@ dev = [
     "hypothesis>=6.115",
     "ruff>=0.8",
     "mypy>=1.13",
+    # The API's own extra. Without it the whole tests/api/ directory skips
+    # itself at import time ("needs the api extra"), so the suite that the
+    # documented `pip install -e ".[dev]"` produces never exercises a single
+    # route — and it says so by skipping, which is the quietest way to not
+    # test something. The self-referential form is the one `all` already uses.
+    "paa[api]",
 ]
 all = [
     "paa[vector,graph,embeddings,api,redis,postgres,s3,otel]",

@@ -48,7 +48,19 @@ class BeliefDocument(str, enum.Enum):
     OPERATING_THEMES = "operating_themes.md"
 
     @property
-    def title(self) -> str:
+    def display_title(self) -> str:
+        """The document's human-readable name, for the markdown header.
+
+        Deliberately *not* called ``title``. The enum mixes in ``str``, so
+        ``title`` is already ``str.title`` — a method — and shadowing it
+        with a property replaces a callable with a plain string. Every
+        consumer that treats a ``BeliefDocument`` as the string it is would
+        then get ``TypeError: 'str' object is not callable`` the moment it
+        called ``doc.title()``, which is exactly what the inherited method
+        promises. The two concepts are not the same thing either: a
+        document's title is "Current Focus", not the title-cased filename
+        "Current_Focus.Md" that ``str.title()`` produces.
+        """
         return self.value.removesuffix(".md").replace("_", " ").title()
 
 
@@ -134,7 +146,7 @@ class WorldModel:
 
     def _new_document(self, doc: BeliefDocument, managed: str, source: str) -> str:
         return (
-            f"# {doc.title}\n\n"
+            f"# {doc.display_title}\n\n"
             f"_This file is shared between you and the runtime._\n"
             f"_Text outside the managed block below is yours and is never "
             f"overwritten._\n\n"

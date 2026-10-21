@@ -135,6 +135,36 @@ class TestEnvironmentIsolation:
 
         assert "explicitly-passed" in result.stdout
 
+    async def test_the_child_path_is_the_system_path_not_the_hosts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The child's ``PATH`` is a fixed system path, not the host's.
+
+        The host's ``PATH`` is the *shape of the developer's toolchain*: it
+        says which package managers were used, which private checkouts are on
+        the machine, and — worse — it can put a directory the user can write
+        to ahead of the system ones. A workload that resolves ``python`` or
+        ``git`` through it is resolving it through something the operator
+        never agreed to expose.
+
+        So the child gets a fixed system path instead. This is the property
+        that makes the difference between "the sandbox ran my command" and
+        "the sandbox ran *a* command I found on a writable directory".
+        """
+        if sys.platform == "win32":  # pragma: no cover - the POSIX contract
+            pytest.skip("the fixed system PATH is the POSIX contract")
+
+        monkeypatch.setenv("PATH", "/home/developer/bin:/opt/private/tools")
+        sandbox = SubprocessSandbox()
+        result = await sandbox.run(
+            python_spec(tmp_path, "import os; print(os.environ.get('PATH', '<ABSENT>'))")
+        )
+
+        assert result.exit_code == 0
+        assert result.stdout.strip() == "/usr/local/bin:/usr/bin:/bin"
+        assert "/home/developer/bin" not in result.stdout
+        assert "/opt/private/tools" not in result.stdout
+
 
 class TestTimeout:
     @pytest.mark.slow

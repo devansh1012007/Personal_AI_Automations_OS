@@ -8,18 +8,19 @@ import pytest
 
 from paa.daemon import Daemon
 from paa.ledger.replay import TaskPhase
+from paa.runtime import Runtime
 
 pytestmark = pytest.mark.requires_api  # shares the runtime fixture in this dir
 
 
 class TestDaemon:
-    async def test_start_runs_boot_recovery_then_stops_cleanly(self, runtime) -> None:  # noqa: ANN001
+    async def test_start_runs_boot_recovery_then_stops_cleanly(self, runtime: Runtime) -> None:
         daemon = Daemon(runtime, dispatch_interval=0.05, ingestion_interval=0.05)
         await daemon.start()
         assert runtime._boot_report is not None  # recovery ran on start
         await daemon.stop()
 
-    async def test_dispatch_loop_drains_a_queued_task(self, runtime_full) -> None:  # noqa: ANN001
+    async def test_dispatch_loop_drains_a_queued_task(self, runtime_full: Runtime) -> None:
         runtime = runtime_full
         # Submit without running — it lands on the queue for the daemon.
         cid = await runtime.submit("do it")
@@ -39,7 +40,7 @@ class TestDaemon:
         finally:
             await daemon.stop()
 
-    async def test_ingestion_loop_processes_a_signal(self, runtime) -> None:  # noqa: ANN001
+    async def test_ingestion_loop_processes_a_signal(self, runtime: Runtime) -> None:
         from paa.storage.coldlake.cas import ContentAddressedStore
         from paa.storage.coldlake.signals import SignalRepository
 
@@ -66,8 +67,47 @@ class TestDaemon:
         finally:
             await daemon.stop()
 
-    async def test_stop_is_idempotent(self, runtime) -> None:  # noqa: ANN001
+    async def test_stop_is_idempotent(self, runtime: Runtime) -> None:
         daemon = Daemon(runtime)
         await daemon.start()
         await daemon.stop()
         await daemon.stop()  # must not raise
+
+    @pytest.mark.slow
+    async def test_a_crashed_loop_is_restarted(
+        self, runtime: Runtime, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A loop that raises must be started again, and the others must live on.
+
+        The daemon's promise is that one failing loop cannot silently take
+        the daemon down, so the supervisor restarts the loop that crashed
+        (after a one-second backoff) and leaves the remaining loops running.
+        The test waits for the *second* attempt rather than sleeping a fixed
+        amount, so it asserts the restart happened without depending on how
+        fast the machine is.
+        """
+        daemon = Daemon(runtime, dispatch_interval=0.05, ingestion_interval=0.05)
+        attempts = 0
+        restarted = asyncio.Event()
+
+        async def flaky_dispatch() -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("dispatch blew up")
+            restarted.set()
+            # Park, so the supervisor does not spin the loop hot while the
+            # test asserts on it.
+            await asyncio.sleep(3600)
+
+        monkeypatch.setattr(daemon, "_dispatch_loop", flaky_dispatch)
+        await daemon.start()
+        try:
+            await asyncio.wait_for(restarted.wait(), timeout=10)
+            # The other two loops are untouched by their sibling's crash.
+            # Checked before ``stop()``, which empties the task list.
+            assert all(not task.done() for task in daemon._tasks)
+        finally:
+            await daemon.stop()
+
+        assert attempts >= 2  # the crash was survived, not terminal

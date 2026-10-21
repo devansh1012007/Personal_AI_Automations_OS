@@ -17,8 +17,8 @@ import pytest
 
 from paa.core.types import EventType, new_correlation_id, new_session_id
 from paa.ledger.events import LedgerEvent
-from paa.ledger.recovery import RecoveryEngine, RecoveryOutcome
-from paa.ledger.replay import TaskPhase, project
+from paa.ledger.recovery import RecoveryEngine, RecoveryOutcome, _session_uuid
+from paa.ledger.replay import TaskPhase, TaskProjection, project
 from paa.ledger.store import LedgerStore
 from paa.storage.relational.database import Database
 from tests.conftest import FakeSnapshotter, RecordingRequeuer
@@ -154,9 +154,12 @@ class TestBootSweep:
     async def test_one_bad_lineage_does_not_abort_the_sweep(
         self, ledger: LedgerStore, db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        good_a, _ = await start_task(ledger)
+        # `_good_a`/`_good_b` exist to be *scanned*: only `bad` is referenced, and
+        # the sweep must survive it. The leading underscore marks them as
+        # deliberately unused.
+        _good_a, _ = await start_task(ledger)
         bad, _ = await start_task(ledger)
-        good_b, _ = await start_task(ledger)
+        _good_b, _ = await start_task(ledger)
 
         eng = engine(ledger, db)
         original = eng.recover_correlation
@@ -184,6 +187,180 @@ class TestBootSweep:
         )
         report = await engine(ledger, db).boot_sweep()
         assert str(cid) in report.chain_problems
+
+
+class TestTheSweepEventSession:
+    """The sweep event names the session the lineage was running under.
+
+    The projection carries the session id as *text* and the event carries it
+    as a UUID, so the conversion happens at the boundary. The case worth
+    pinning is the one where there is no session at all: an empty string is
+    not a session id, and handing it to the event's validation used to cost
+    the lineage its recovery record.
+    """
+
+    async def test_the_sweep_event_carries_the_session_id(
+        self, ledger: LedgerStore, db: Database
+    ) -> None:
+        cid, sid = await start_task(ledger)
+        await ledger.append(
+            LedgerEvent.create(cid, EventType.EXECUTION_STARTED, payload={"step_index": 0})
+        )
+
+        await engine(ledger, db).boot_sweep()
+
+        sweep = [
+            e
+            for e in await ledger.read_correlation(cid)
+            if e.event_type is EventType.RECOVERY_REPLAY_COMPLETED
+        ]
+        assert len(sweep) == 1
+        assert sweep[0].session_id == sid
+
+    async def test_a_lineage_without_a_session_is_still_swept(
+        self, ledger: LedgerStore, db: Database
+    ) -> None:
+        """No session must not mean "no sweep".
+
+        A projection whose session id is the empty string is a projection
+        with no session. The sweep event it produces must say so — by
+        carrying no session — rather than carrying a value that is not one.
+        """
+        cid, _ = await start_task(ledger)
+        await ledger.append(
+            LedgerEvent.create(cid, EventType.EXECUTION_STARTED, payload={"step_index": 0})
+        )
+        # The snapshot is how a projection reaches the sweep with a session
+        # id that was never set: it is replayed as-is, empty string and all.
+        await ledger.save_snapshot(
+            cid,
+            5,
+            {"correlation_id": str(cid), "session_id": "", "phase": "EXECUTING"},
+        )
+
+        report = await engine(ledger, db).boot_sweep()
+
+        assert report.count(RecoveryOutcome.RESUMED) == 1
+        sweep = [
+            e
+            for e in await ledger.read_correlation(cid)
+            if e.event_type is EventType.RECOVERY_REPLAY_COMPLETED
+        ]
+        assert len(sweep) == 1
+        assert sweep[0].session_id is None
+
+    async def test_a_session_less_sweep_event_survives_replay(
+        self, ledger: LedgerStore, db: Database
+    ) -> None:
+        """The event has to be one the ledger *understands*, not just accepts.
+
+        Appending it is the easy half. The other half is that replay folds it
+        without complaint: a sweep event carries no phase change and no
+        session, so the lineage it lands on is exactly the lineage the sweep
+        found.
+        """
+        cid, _ = await start_task(ledger)
+        await ledger.append(
+            LedgerEvent.create(cid, EventType.EXECUTION_STARTED, payload={"step_index": 0})
+        )
+        await ledger.save_snapshot(
+            cid,
+            5,
+            {"correlation_id": str(cid), "session_id": "", "phase": "EXECUTING"},
+        )
+
+        await engine(ledger, db).boot_sweep()
+
+        (sweep,) = [
+            e
+            for e in await ledger.read_correlation(cid)
+            if e.event_type is EventType.RECOVERY_REPLAY_COMPLETED
+        ]
+
+        projection = await project(ledger, cid)
+        # The sweep event was folded in: the projection is at its version.
+        assert projection.state_version == sweep.state_version
+        # It is a known, phase-neutral event — not one this build failed to
+        # interpret, and not one that moved the lifecycle.
+        assert projection.unknown_events == []
+        assert projection.phase is TaskPhase.EXECUTING
+        # And it invented no session: the projection still has none.
+        assert projection.session_id == ""
+
+    async def test_a_session_less_sweep_event_does_not_erase_the_sessions_session(
+        self, ledger: LedgerStore, db: Database
+    ) -> None:
+        """The head's session belongs to the lineage, not to the last event.
+
+        The head upsert coalesces a null session away, so an event that
+        carries no session cannot take the lineage's session with it.
+        """
+        cid, sid = await start_task(ledger)
+        await ledger.append(
+            LedgerEvent.create(cid, EventType.EXECUTION_STARTED, payload={"step_index": 0})
+        )
+        await ledger.save_snapshot(
+            cid,
+            5,
+            {"correlation_id": str(cid), "session_id": "", "phase": "EXECUTING"},
+        )
+
+        await engine(ledger, db).boot_sweep()
+
+        (sweep,) = [
+            e
+            for e in await ledger.read_correlation(cid)
+            if e.event_type is EventType.RECOVERY_REPLAY_COMPLETED
+        ]
+        assert sweep.session_id is None
+
+        head = await ledger.head(cid)
+        assert head is not None
+        assert head.session_id == sid
+
+
+class TestTheSessionConversion:
+    """The text-to-UUID conversion at the boundary, on its own terms.
+
+    ``TaskProjection.session_id`` is typed ``str | None`` — it is a replayed
+    field and the projection has to stay JSON-serialisable — so the value
+    that reaches the conversion is *text*, and the conversion has to decide
+    what a given text means. These are the decisions, stated once.
+    """
+
+    def test_a_session_id_becomes_a_uuid(self) -> None:
+        sid = new_session_id()
+        projection = TaskProjection(correlation_id=str(new_correlation_id()), session_id=str(sid))
+        assert _session_uuid(projection) == sid
+
+    def test_no_session_is_none(self) -> None:
+        projection = TaskProjection(correlation_id=str(new_correlation_id()))
+        assert _session_uuid(projection) is None
+
+    def test_an_empty_session_is_none(self) -> None:
+        """Not a session id — so not a session.
+
+        The empty string is a degenerate spelling of "no session", and it is
+        the one value the old ``and`` idiom got wrong: it passed the empty
+        string straight through to the event, where the validation rejected
+        it and the lineage lost its recovery record.
+        """
+        projection = TaskProjection(correlation_id=str(new_correlation_id()), session_id="")
+        assert _session_uuid(projection) is None
+
+    def test_a_malformed_session_is_refused_rather_than_dropped(self) -> None:
+        """Corruption is not an absent session.
+
+        A value that is neither empty nor a UUID cannot be named, and an
+        audit event that claims "no session" for it would be a lie. The
+        conversion raises instead, and the sweep reports the lineage as
+        unrecoverable.
+        """
+        projection = TaskProjection(
+            correlation_id=str(new_correlation_id()), session_id="not-a-uuid"
+        )
+        with pytest.raises(ValueError):
+            _session_uuid(projection)
 
 
 class TestWorkspaceReconciliation:

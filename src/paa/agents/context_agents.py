@@ -299,7 +299,7 @@ class PlannerContextBuilder(_BaseContextBuilder):
 
     role = AgentRole.CONTEXT_BUILDER_PLANNER
 
-    async def handle(self, message: AgentMessage, ctx: AgentContext) -> AgentResult[dict]:
+    async def handle(self, message: AgentMessage, ctx: AgentContext) -> AgentResult[dict[str, Any]]:
         goal = message.payload.get("goal", "")
         declared = list(message.payload.get("required_slots", []))
         terms, slots = await self._expand(goal, declared)
@@ -343,7 +343,7 @@ class WorkerContextBuilder(_BaseContextBuilder):
 
     role = AgentRole.CONTEXT_BUILDER_WORKER
 
-    async def handle(self, message: AgentMessage, ctx: AgentContext) -> AgentResult[dict]:
+    async def handle(self, message: AgentMessage, ctx: AgentContext) -> AgentResult[dict[str, Any]]:
         step = message.payload.get("step", {})
         required: list[str] = list(step.get("requires", []))
         goal = str(step.get("action", ""))
@@ -375,9 +375,16 @@ class WorkerContextBuilder(_BaseContextBuilder):
                 },
             )
 
-        assert all(e.memory_domain not in blocked for e in packet.elements), (
-            "narrative memory leaked into a worker packet"
-        )
+        leaked = sorted({e.memory_domain for e in packet.elements if e.memory_domain in blocked})
+        if leaked:
+            # An explicit raise, not an ``assert``. ``python -O`` strips
+            # asserts, and under -O this check would vanish along with the
+            # guarantee it makes — the planner/worker split is a *security*
+            # boundary (see this module's docstring), and a boundary that
+            # disappears when the interpreter is optimised away is not a
+            # boundary. The domains are named so the ledger says what leaked
+            # rather than only that something did.
+            raise ValueError(f"narrative memory leaked into a worker packet: {', '.join(leaked)}")
         return AgentResult.success(
             packet.model_dump(mode="json"),
             tokens_consumed=packet.allocated_tokens,

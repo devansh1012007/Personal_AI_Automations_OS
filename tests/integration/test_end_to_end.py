@@ -10,6 +10,7 @@ whole system runs, not just when the component is exercised in isolation.
 from __future__ import annotations
 
 import uuid
+from itertools import pairwise
 from typing import Any
 
 import pytest
@@ -35,7 +36,9 @@ class TestHappyPath:
 
     async def test_full_event_sequence_is_recorded(self, runtime: Runtime) -> None:
         outcome = await runtime.submit_and_run("summarise today's notes")
-        events = [e.event_type for e in await runtime.ledger.read_correlation(outcome.correlation_id)]
+        events = [
+            e.event_type for e in await runtime.ledger.read_correlation(outcome.correlation_id)
+        ]
 
         # The RFC §7 happy path, in order.
         for expected in (
@@ -63,7 +66,7 @@ class TestHappyPath:
 
         assert len(events) >= 8
         # Each event links to its predecessor's digest — the audit spine.
-        for prev, nxt in zip(events, events[1:], strict=False):
+        for prev, nxt in pairwise(events):
             assert nxt.prev_hash == prev.event_hash
 
 

@@ -732,14 +732,17 @@ class _SecurityVisitor(ast.NodeVisitor):
                 Severity.HIGH,
                 f"path traversal segment in literal {value[:80]!r}",
             )
-        elif self._is_absolute(value) and not self.policy.allow_absolute_paths:
-            if not self._under_workspace(value):
-                self._add(
-                    node,
-                    "absolute_path_literal",
-                    Severity.HIGH,
-                    f"absolute path {value[:80]!r} points outside the workspace",
-                )
+        elif (
+            self._is_absolute(value)
+            and not self.policy.allow_absolute_paths
+            and not self._under_workspace(value)
+        ):
+            self._add(
+                node,
+                "absolute_path_literal",
+                Severity.HIGH,
+                f"absolute path {value[:80]!r} points outside the workspace",
+            )
 
         if self._is_sensitive(value):
             self._add(

@@ -176,13 +176,17 @@ class S3BlobStore:
 
     def _head(self, key: str) -> dict[str, Any] | None:
         try:
-            return self._client.head_object(Bucket=self._bucket, Key=key)
+            # The client is untyped on purpose: ``boto3`` is an optional extra
+            # and must not be imported at module scope, so the shape of what
+            # the client returns is stated here rather than checked.
+            head: dict[str, Any] = self._client.head_object(Bucket=self._bucket, Key=key)
         except Exception as exc:
             if _is_not_found(exc):
                 return None
             raise StorageError(
                 f"could not stat object: {exc}", substrate=_SUBSTRATE, key=key
             ) from exc
+        return head
 
     def _ensure_bucket(self) -> None:  # pragma: no cover - needs a live server
         try:
@@ -374,7 +378,7 @@ class S3BlobStore:
 
     def _body(self, key: str) -> IO[bytes]:
         try:
-            response = self._client.get_object(Bucket=self._bucket, Key=key)
+            response: dict[str, Any] = self._client.get_object(Bucket=self._bucket, Key=key)
         except Exception as exc:
             if _is_not_found(exc):
                 raise StorageError(
@@ -383,7 +387,12 @@ class S3BlobStore:
             raise StorageError(
                 f"could not read object: {exc}", substrate=_SUBSTRATE, key=key
             ) from exc
-        return response["Body"]
+        # The response body is a streaming reader, not a ``bytes``; it is
+        # handed back as the ``IO[bytes]`` the contract promises and consumed
+        # through :func:`_iter_chunks` and zstd's own reader, both of which
+        # only ever call ``read``.
+        body: IO[bytes] = response["Body"]
+        return body
 
     def _read_all(self, key: str) -> bytes:
         body = self._body(key)
@@ -396,7 +405,9 @@ class S3BlobStore:
         if not key.endswith(_COMPRESSED_SUFFIX):
             return payload
         try:
-            return zstandard.ZstdDecompressor().stream_reader(_BytesReader(payload)).read()
+            # zstd's ``stream_reader`` accepts the frame bytes directly, so the
+            # whole-payload path needs no reader wrapper of its own.
+            return zstandard.ZstdDecompressor().stream_reader(payload).read()
         except zstandard.ZstdError as exc:
             raise StorageError(
                 f"blob is not a readable zstd frame: {exc}",
@@ -476,30 +487,6 @@ class S3BlobStore:
 
     def __repr__(self) -> str:
         return f"S3BlobStore(bucket={self._bucket!r}, prefix={self._prefix!r})"
-
-
-class _BytesReader:
-    """Minimal read-only file wrapper over a ``bytes`` object.
-
-    zstd's ``stream_reader`` needs a file-like ``read``; the whole-payload path
-    already holds the bytes, so this avoids importing ``io`` just to wrap them
-    and keeps the one-shot decode identical to the filesystem store's.
-    """
-
-    __slots__ = ("_data", "_pos")
-
-    def __init__(self, data: bytes) -> None:
-        self._data = data
-        self._pos = 0
-
-    def read(self, size: int = -1) -> bytes:
-        if size is None or size < 0:
-            chunk = self._data[self._pos :]
-            self._pos = len(self._data)
-            return chunk
-        chunk = self._data[self._pos : self._pos + size]
-        self._pos += len(chunk)
-        return chunk
 
 
 def _blob_store_from_settings(settings: Any) -> S3BlobStore:

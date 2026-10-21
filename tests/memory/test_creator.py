@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Sequence
 from typing import Any
 
 import pytest
 
 from paa.memory.creator import MemoryCreator, ProcessingOutcome
-from paa.memory.facts import FactRepository
+from paa.memory.facts import Fact, FactRepository
 from paa.storage.relational.database import Database, to_iso, utc_now
 
 
@@ -33,6 +34,11 @@ def _row(payload: Any, *, channel: str = "test", persisted: bool = False) -> dic
 @pytest.fixture
 def creator(db: Database) -> MemoryCreator:
     return MemoryCreator(db)
+
+
+def _signal_row(subject: str) -> dict[str, Any]:
+    """A signal asserting one triple about ``subject``."""
+    return _row({"facts": [{"subject": subject, "predicate": "status", "object": "active"}]})
 
 
 class TestExtraction:
@@ -118,7 +124,13 @@ class TestBatchIsolation:
                 "INSERT INTO cold_lake_signals "
                 "(id, received_at, channel, raw_payload, content_hash, sync_status) "
                 "VALUES (?,?,?,?,?, 'unprocessed')",
-                (str(uuid.uuid4()), to_iso(utc_now()), "test", dumps(payload), "h" + uuid.uuid4().hex[:20]),
+                (
+                    str(uuid.uuid4()),
+                    to_iso(utc_now()),
+                    "test",
+                    dumps(payload),
+                    "h" + uuid.uuid4().hex[:20],
+                ),
             )
 
         await insert({"facts": [{"subject": "A", "predicate": "p", "object": "v1"}]})
@@ -165,3 +177,66 @@ class TestClaimOrder:
             "sig-2",
             "sig-3",
         ]
+
+
+class _RecordingSink:
+    """An embedding sink that records what it was handed."""
+
+    def __init__(self) -> None:
+        self.batches: list[list[Fact]] = []
+
+    async def enqueue(self, facts: Sequence[Fact]) -> Sequence[str]:
+        self.batches.append(list(facts))
+        return [fact.id for fact in facts]
+
+
+class TestEmbeddingHandOff:
+    """Newly written facts reach the vector substrate.
+
+    The hand-off was dead: an ``await`` inside a generator expression makes
+    it an *async* generator, and the synchronous comprehension over it raised
+    ``TypeError: 'async_generator' object is not iterable`` on every signal
+    that wrote a fact. Nothing caught it, so the failure only ever appeared
+    once a sink was attached — which no caller does today.
+    """
+
+    async def test_new_facts_are_handed_to_the_sink(self, db: Database) -> None:
+        sink = _RecordingSink()
+        creator = MemoryCreator(db, embedding_sink=sink)
+
+        result = await creator.process_signal(_signal_row("Project Alpha"))
+
+        assert result.outcome is ProcessingOutcome.PROCESSED
+        assert len(sink.batches) == 1
+        assert [fact.id for fact in sink.batches[0]] == result.facts_written
+
+    async def test_indexed_facts_are_marked_embedded(self, db: Database) -> None:
+        sink = _RecordingSink()
+        creator = MemoryCreator(db, embedding_sink=sink)
+
+        result = await creator.process_signal(_signal_row("Project Beta"))
+
+        assert result.outcome is ProcessingOutcome.PROCESSED
+        statuses = await db.fetch_all(
+            "SELECT embedding_status FROM hot_serving_active_facts WHERE id = ?",
+            (result.facts_written[0],),
+        )
+        assert [row["embedding_status"] for row in statuses] == ["indexed"]
+
+    async def test_a_failing_sink_leaves_the_facts_pending(self, db: Database) -> None:
+        """``failed`` is terminal; a transient sink error must not exclude a
+        fact from semantic recall forever."""
+
+        class BrokenSink:
+            async def enqueue(self, facts: Sequence[Fact]) -> Sequence[str]:
+                raise RuntimeError("vector substrate down")
+
+        creator = MemoryCreator(db, embedding_sink=BrokenSink())
+        result = await creator.process_signal(_signal_row("Project Gamma"))
+
+        assert result.outcome is ProcessingOutcome.PROCESSED
+        statuses = await db.fetch_all(
+            "SELECT embedding_status FROM hot_serving_active_facts WHERE id = ?",
+            (result.facts_written[0],),
+        )
+        assert [row["embedding_status"] for row in statuses] == ["pending"]

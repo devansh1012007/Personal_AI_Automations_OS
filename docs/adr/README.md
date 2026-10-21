@@ -41,6 +41,7 @@ Deviations fall into three classes:
 | [0024](0024-docker-socket-and-gvisor-containment.md) | The daemon holds the Docker socket; tool containers run under gVisor | Direction |
 | [0025](0025-postgres-dialect-seam.md) | The relational substrates are interchangeable only through a dialect seam | **Correctness** |
 | [0026](0026-s3-cold-lake-substrate.md) | The cold lake's blob substrate is S3, not MinIO | **Correctness** |
+| [0028](0028-pure-python-json-schema-subset.md) | A pure-Python JSON Schema subset, with boolean schemas honoured | **Correctness** |
 
 > ADR 0027 is reserved for the tool-containment and MCP client layer
 > (`docs/MCP_AND_PLUGINS.md`). It is not indexed here because it does not

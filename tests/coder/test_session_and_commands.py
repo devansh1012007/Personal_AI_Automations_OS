@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from paa.coder.commands import CommandRegistry, SlashCommand, default_registry, parse_command_line
-from paa.coder.session import Session, Turn, TurnRole
+from paa.coder.commands import CommandRegistry, default_registry, parse_command_line
+from paa.coder.session import Session, TurnRole
 
 
 class TestSessionPersistence:

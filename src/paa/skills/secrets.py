@@ -64,7 +64,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Protocol
 
 import structlog
 
@@ -202,6 +202,23 @@ class _Cipher:
         raise NotImplementedError
 
 
+class _FernetLike(Protocol):
+    """The slice of ``cryptography.fernet.Fernet`` this module relies on.
+
+    ``cryptography`` is an optional extra that ships no type information, so
+    the import resolves to ``Any`` and every call through it would too. Left
+    undeclared, that ``Any`` reaches the return value of :meth:`_FernetCipher.seal`
+    and the cipher's own contract — bytes in, bytes out — becomes invisible to
+    the type checker. Declaring the two methods we call keeps the contract
+    where it can be checked, at the cost of two lines that must be kept in step
+    with the upstream API if it ever changes.
+    """
+
+    def encrypt(self, data: bytes) -> bytes: ...
+
+    def decrypt(self, token: bytes) -> bytes: ...
+
+
 class _FernetCipher(_Cipher):
     """Authenticated encryption via ``cryptography``'s Fernet."""
 
@@ -219,7 +236,7 @@ class _FernetCipher(_Cipher):
             salt=salt,
             iterations=_KDF_ITERATIONS,
         )
-        self._fernet = Fernet(base64.urlsafe_b64encode(kdf.derive(passphrase)))
+        self._fernet: _FernetLike = Fernet(base64.urlsafe_b64encode(kdf.derive(passphrase)))
 
     def seal(self, plaintext: str) -> str:
         return self._fernet.encrypt(plaintext.encode("utf-8")).decode("ascii")
@@ -250,7 +267,8 @@ class _XorDevCipher(_Cipher):
             detail=(
                 "the 'cryptography' package is not installed; secrets are being "
                 "obfuscated with XOR, which is NOT encryption and must not be "
-                "used for real credentials. Install paa's cryptography extra."
+                "used for real credentials. Install it with "
+                "`pip install cryptography`."
             ),
         )
 

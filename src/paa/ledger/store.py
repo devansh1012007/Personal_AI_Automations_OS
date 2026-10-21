@@ -405,14 +405,30 @@ class LedgerStore:
                     f"{where}: broken chain link (expected prev {expected_prev[:12]}…, "
                     f"got {(event.prev_hash or '')[:12]}…)"
                 )
-            if event.state_version != expected_version:
+            version = event.state_version
+            if version is None:
+                # ``state_version`` is optional on the *model* only because
+                # the store assigns it inside the append transaction, so an
+                # event that was never sealed has none. A row read back from
+                # the ledger was sealed, and the column is NOT NULL — so this
+                # is a guard, not a normal path. Report the anomaly instead of
+                # letting a ``None`` walk into the arithmetic below: the
+                # ``TypeError`` that follows would abort the verification of
+                # the lineage, and with it the boot sweep that asks for it —
+                # which would recover no lineage at all.
+                problems.append(f"{where}: missing state_version")
+                version = expected_version
+            elif version != expected_version:
                 problems.append(
-                    f"{where}: version gap — expected {expected_version}, "
-                    f"got {event.state_version}"
+                    f"{where}: version gap — expected {expected_version}, got {version}"
                 )
-                expected_version = event.state_version
             expected_prev = event.event_hash or GENESIS_HASH
-            expected_version += 1
+            # The next event is expected to carry the version *after* this
+            # one, whether or not this one was the expected one — a gap
+            # resynchronises the expectation on what was actually written,
+            # and an unsealed event is treated as occupying the version it
+            # was expected to carry.
+            expected_version = version + 1
 
         return (not problems), problems
 

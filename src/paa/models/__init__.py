@@ -53,7 +53,12 @@ from paa.models.registry import (
     provider_names,
     resolve_spec,
 )
-from paa.models.router import EscalatingModelRouter, EscalationDecision, ProviderUsage
+from paa.models.router import (
+    EscalatingModelRouter,
+    EscalationDecision,
+    ProviderUsage,
+    resolve_model_settings,
+)
 
 if TYPE_CHECKING:
     from paa.config import ModelSettings, Settings
@@ -89,6 +94,7 @@ __all__ = [
     "minimal_instance_for_schema",
     "provider_names",
     "redact",
+    "resolve_model_settings",
     "resolve_spec",
     "validate_against_schema",
 ]
@@ -218,8 +224,30 @@ def get_model_router(
 
     Constructing a provider performs no I/O and opens no connection, so this is
     safe to call during synchronous startup wiring.
+
+    :raises TypeError: if ``settings`` is neither a
+        :class:`~paa.config.Settings` nor a
+        :class:`~paa.config.ModelSettings`. The refusal is the point — see
+        :func:`~paa.models.router.resolve_model_settings` for what the silent
+        default it replaced cost a deployment.
     """
-    models: ModelSettings = getattr(settings, "models", settings)  # type: ignore[assignment]
+    # A full ``Settings`` keeps the model configuration one level down, under
+    # ``.models``; a bare ``ModelSettings`` *is* that configuration. The
+    # resolution is an ``isinstance`` test rather than a ``getattr(settings,
+    # "models", settings)`` fallback, because only the former tells a type
+    # checker which of the two it is holding. ``getattr`` looks equivalent and
+    # is not: the ``models`` attribute exists on one member of the union and
+    # not the other, so the fallback is the union itself and every attribute
+    # read off the result stops being checked.
+    #
+    # ``paa.storage.vector.embeddings.resolve_model_settings`` is the same
+    # idiom in the storage layer, and is deliberately not reused here: that
+    # module imports numpy at module scope, and :mod:`paa.models.embeddings`
+    # already defers its import of it into the function body. Reusing the
+    # helper here would put that module-scope import back on the
+    # ``import paa.models`` path, for a function that needs neither numpy nor
+    # the vector stack.
+    models = resolve_model_settings(settings)
     return EscalatingModelRouter(
         build_local_provider(models),
         build_frontier_provider(models),

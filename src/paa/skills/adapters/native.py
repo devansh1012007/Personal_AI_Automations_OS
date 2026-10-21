@@ -152,10 +152,10 @@ class NativeAdapter(SkillAdapter):
             kwargs["get_secret"] = secret_broker.get_secret
 
         if inspect.iscoroutinefunction(fn):
-            coro: Awaitable[Any] = fn(arguments, **kwargs)  # type: ignore[call-arg]
+            coro: Awaitable[Any] = fn(arguments, **kwargs)
         else:
             # to_thread keeps a blocking native skill off the event loop.
-            coro = asyncio.to_thread(lambda: fn(arguments, **kwargs))  # type: ignore[call-arg]
+            coro = asyncio.to_thread(lambda: fn(arguments, **kwargs))
         if timeout is None:
             return await coro
         return await asyncio.wait_for(coro, timeout=timeout)

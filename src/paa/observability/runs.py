@@ -194,6 +194,27 @@ class SkillStats:
         }
 
 
+def _no_sample_stats(skill_name: str) -> SkillStats:
+    """The stats of a skill with no finished runs to speak of.
+
+    Zeroes rather than an error, and a ``sample_count`` of zero is exactly
+    what :attr:`SkillStats.is_significant` reads: the optimiser must not
+    rewrite a skill on the strength of no evidence at all. An unfinished run
+    is excluded rather than counted as a failure — see
+    :attr:`ExecutionRun.status` — so "no evidence" is a state the aggregate
+    has to be able to express.
+    """
+    return SkillStats(
+        skill_name=skill_name,
+        sample_count=0,
+        success_rate=0.0,
+        mean_latency_ms=0.0,
+        correction_rate=0.0,
+        escalation_rate=0.0,
+        mean_tokens=0.0,
+    )
+
+
 class ExecutionRunRepository:
     """Reads and writes ``hot_serving_execution_runs``."""
 
@@ -421,17 +442,17 @@ class ExecutionRunRepository:
             (skill_name,),
         )
 
-        finished = int(row["finished"] or 0) if row else 0
+        # A missing row is not "no runs" — an aggregate with no ``GROUP BY``
+        # always returns exactly one row — so it means the backend answered
+        # nothing at all. The zeroed stats are the honest reading either way:
+        # the optimiser's rule is that an empty sample is not a failure, and
+        # a skill with no evidence is a skill it must not rewrite.
+        if row is None:
+            return _no_sample_stats(skill_name)
+
+        finished = int(row["finished"] or 0)
         if finished == 0:
-            return SkillStats(
-                skill_name=skill_name,
-                sample_count=0,
-                success_rate=0.0,
-                mean_latency_ms=0.0,
-                correction_rate=0.0,
-                escalation_rate=0.0,
-                mean_tokens=0.0,
-            )
+            return _no_sample_stats(skill_name)
 
         correlations = int(row["correlations"] or 0)
         corrected = int(

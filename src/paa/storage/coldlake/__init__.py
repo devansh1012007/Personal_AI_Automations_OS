@@ -17,9 +17,10 @@ Three pieces:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from paa.storage.coldlake.artifacts import ArchivedArtifact, ArtifactArchive
+from paa.storage.coldlake.base import BlobStore
 from paa.storage.coldlake.cas import (
     CAS_URI_SCHEME,
     DEFAULT_CHUNK_SIZE,
@@ -44,6 +45,7 @@ __all__ = [
     "ArchivedArtifact",
     "ArtifactArchive",
     "BlobRef",
+    "BlobStore",
     "ContentAddressedStore",
     "Signal",
     "SignalRepository",
@@ -63,7 +65,7 @@ def get_content_store(settings: StorageSettings) -> ContentAddressedStore:
     return ContentAddressedStore(settings.cold_lake_path, zstd_level=settings.zstd_level)
 
 
-def get_blob_store(settings: StorageSettings) -> Any:
+def get_blob_store(settings: StorageSettings) -> BlobStore:
     """Build the cold-lake object store named by ``backend_coldlake``.
 
     ``"filesystem"`` (default, ADR-0004) returns the local
@@ -74,6 +76,13 @@ def get_blob_store(settings: StorageSettings) -> Any:
     contract and both mint ``cas://`` :class:`BlobRef` URIs, so a ``blob_uri``
     written by one resolves against the other — the signal and artifact
     repositories are backend-agnostic.
+
+    The return type is the contract, not ``Any``, on purpose: this is the one
+    place that decides which substrate a deployment gets, and it is the place
+    where the choice would otherwise stop being checkable. The annotation
+    makes the type checker prove that both implementations satisfy the
+    contract, which ``isinstance`` — the contract being ``runtime_checkable``
+    — cannot do.
 
     The substrate is *S3*, not a particular server: the endpoint is a
     setting, so the same client works against MinIO, SeaweedFS, RustFS or

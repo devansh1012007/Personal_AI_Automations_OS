@@ -129,9 +129,16 @@ class CommandRegistry:
 
         if command.handler is not None:
             result = command.handler(args)
-            if hasattr(result, "__await__"):
-                result = await result  # type: ignore[misc]
-            return result  # type: ignore[return-value]
+            # A handler may be sync or async (``CommandHandler`` admits both),
+            # so the awaitable is detected by shape rather than by a separate
+            # flag. ``isinstance`` against the ``Awaitable`` ABC narrows the
+            # union to its awaitable arm, and the ABC's own subclass hook
+            # looks for ``__await__`` — the method that makes a value
+            # awaitable. Narrowing to ``Any`` instead (as a ``hasattr``
+            # check does) would leave the awaited result unchecked.
+            if isinstance(result, Awaitable):
+                result = await result
+            return result
 
         return CommandResult(handled=True, output=f"/{name} has no handler.")
 

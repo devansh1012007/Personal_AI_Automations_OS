@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 import structlog
 
+from paa.config import ModelSettings, Settings
 from paa.core.types import (
     ComplexityModality,
     CorrelationId,
@@ -61,10 +62,14 @@ from paa.models.base import (
 )
 
 if TYPE_CHECKING:
-    from paa.config import ModelSettings, Settings
     from paa.ledger.store import LedgerStore
 
-__all__ = ["EscalatingModelRouter", "EscalationDecision", "ProviderUsage"]
+__all__ = [
+    "EscalatingModelRouter",
+    "EscalationDecision",
+    "ProviderUsage",
+    "resolve_model_settings",
+]
 
 log = structlog.get_logger(__name__)
 
@@ -80,6 +85,41 @@ _MODALITY_RANK: Final[dict[ComplexityModality, int]] = {
     ComplexityModality.COMPLEX: 2,
     ComplexityModality.MAX: 3,
 }
+
+
+def resolve_model_settings(settings: ModelSettings | Settings) -> ModelSettings:
+    """Accept either the full :class:`~paa.config.Settings` or its model half.
+
+    The mirror of :func:`paa.storage.vector.embeddings.resolve_model_settings`,
+    and for the same reason: half the call sites hold one and half hold the
+    other, and an ``isinstance`` test beats a ``getattr`` because it actually
+    narrows for the type checker. ``getattr(settings, "models", settings)``
+    looks equivalent and is not — the ``models`` attribute exists on one
+    member of the union and not on the other, so the fallback is the union
+    itself, and every attribute read off the result stops being checked.
+
+    Anything that is neither is **refused** rather than replaced by the
+    defaults. The old ``resolved or _ModelSettings()`` fallback could not
+    tell "no configuration" from "a value that happens to be falsy", and
+    answered both with the defaults — and the defaults are not a neutral
+    answer here, because what this configuration carries is the *escalation
+    policy*: the modality floor and the permission modes that may never
+    escalate. A deployment that configured "never escalate" and handed over
+    a value the old fallback read as falsy would have run on the default
+    policy instead, and escalated. Reasoning material would have left the
+    machine under a policy that forbade it, which is the failure ADR-0015
+    exists to prevent. Refusing is also the kinder error: a caller who
+    passed the wrong object learns which object was wanted, instead of
+    discovering it as an ``AttributeError`` several frames later.
+    """
+    if isinstance(settings, Settings):
+        return settings.models
+    if isinstance(settings, ModelSettings):
+        return settings
+    raise TypeError(
+        "settings must be a Settings or a ModelSettings, got "
+        f"{type(settings).__name__}"
+    )
 
 
 def _redact_detail(value: Any) -> Any:
@@ -167,10 +207,20 @@ class EscalatingModelRouter:
         settings: ModelSettings | Settings | None = None,
         ledger_store: LedgerStore | None = None,
     ) -> None:
-        from paa.config import ModelSettings as _ModelSettings
-
-        resolved = getattr(settings, "models", settings)
-        self._settings: ModelSettings = resolved or _ModelSettings()
+        # ``settings`` may be the whole runtime configuration or just its
+        # ``models`` sub-model, and the two are told apart by their type
+        # rather than by a duck-typed attribute lookup — see
+        # :func:`resolve_model_settings` for why the ``getattr`` form could
+        # not be type-checked and what the silent fallback it permitted cost.
+        #
+        # ``None`` means "no configuration at all", which is the defaults.
+        # Anything that is neither a ``Settings`` nor a ``ModelSettings`` is
+        # refused outright, so that a misconfigured deployment stops at the
+        # boundary instead of quietly running on the default escalation
+        # policy.
+        self._settings: ModelSettings = (
+            ModelSettings() if settings is None else resolve_model_settings(settings)
+        )
 
         self._local = local
         self._frontier = frontier
@@ -585,8 +635,8 @@ class EscalatingModelRouter:
             )
             return
 
-        attributed = correlation_id is not None
-        if not attributed:
+        if correlation_id is None:
+            attributed = False
             # Recording an orphan lineage beats dropping the audit record: the
             # event that must never go missing is the one that says work left
             # the machine.
@@ -596,6 +646,8 @@ class EscalatingModelRouter:
                 correlation_id=str(correlation_id),
                 impact="escalation recorded against a synthetic correlation id",
             )
+        else:
+            attributed = True
 
         from paa.ledger.events import LedgerEvent
 

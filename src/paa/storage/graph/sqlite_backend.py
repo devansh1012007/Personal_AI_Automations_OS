@@ -265,7 +265,11 @@ class SqliteGraphStore(GraphStore):
     async def _one_hop(
         self, entity_id: str, types: tuple[str, ...] | None, *, outbound: bool
     ) -> list[Neighbor]:
-        near, far = ("from_entity_id", "to_entity_id") if outbound else ("to_entity_id", "from_entity_id")
+        near, far = (
+            ("from_entity_id", "to_entity_id")
+            if outbound
+            else ("to_entity_id", "from_entity_id")
+        )
         clause, params = _rel_type_clause(types, prefix="r.")
         rows = await self._db.fetch_all(
             f"""

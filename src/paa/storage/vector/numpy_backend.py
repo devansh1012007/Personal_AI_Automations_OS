@@ -26,7 +26,11 @@ Persistence
 One ``.npy`` for the matrix plus one ``.json`` sidecar for ids, payloads and the
 collection spec, per collection, written atomically via a temp file and
 ``os.replace``. The sidecar's row order is the matrix's row order; a mismatch
-between the two is treated as corruption rather than silently truncated.
+between the two is treated as corruption rather than silently truncated. A
+sidecar that is corrupt in any other way — hand-edited, half-written, missing
+a field — surfaces as a :class:`~paa.core.errors.StorageError` like every
+other substrate failure, because a raw parse error escaping the loader would
+sail past a caller that only catches ``StorageError``.
 
 Concurrency
 -----------
@@ -62,6 +66,7 @@ from paa.storage.vector.store import (
     is_unsatisfiable,
     normalise_filters,
     payload_matches,
+    resolve_storage_settings,
     spec_for,
     validate_collection_name,
     validate_payload,
@@ -398,26 +403,50 @@ class NumpyVectorStore(VectorStore):
                 path=str(self._path),
             ) from exc
 
-        version = int(meta.get("version", 0))
-        if version != _SIDECAR_VERSION:
+        # The files *opened*, but their contents may still be nonsense: a
+        # hand-edited sidecar, a half-written one, a matrix truncated by a
+        # crash. So the whole parse happens inside one guarded region and a
+        # corrupt collection surfaces as a StorageError like any other
+        # substrate failure. Parsing outside that region used to leak a bare
+        # KeyError ('dimensions') or ValueError ('cannot reshape array of size
+        # 4 into shape (8)'), and a caller that catches StorageError — the
+        # one exception type this backend documents — would not have caught
+        # it. The version check keeps its own shape because a StorageError
+        # raised inside the region is not one of the exceptions this handler
+        # catches, so it propagates untouched.
+        try:
+            version = int(meta.get("version", 0))
+            if version != _SIDECAR_VERSION:
+                raise StorageError(
+                    "unsupported vector sidecar version",
+                    substrate=_SUBSTRATE,
+                    collection=name,
+                    found_version=version,
+                    expected_version=_SIDECAR_VERSION,
+                )
+
+            spec = CollectionSpec(
+                name=name,
+                dimensions=int(meta["dimensions"]),
+                distance=str(meta.get("distance", "cosine")),
+                hnsw_m=int(meta.get("hnsw_m", 16)),
+                hnsw_ef_construct=int(meta.get("hnsw_ef_construct", 100)),
+                keyword_payload_fields=tuple(meta.get("keyword_payload_fields", ())),
+            )
+            entries = meta.get("points", [])
+            matrix = np.ascontiguousarray(matrix, dtype=np.float32).reshape(
+                -1, spec.dimensions
+            )
+            ids = [str(entry["id"]) for entry in entries]
+            payloads = [dict(entry.get("payload") or {}) for entry in entries]
+        except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as exc:
             raise StorageError(
-                "unsupported vector sidecar version",
+                "vector collection sidecar is corrupt; it could not be read",
                 substrate=_SUBSTRATE,
                 collection=name,
-                found_version=version,
-                expected_version=_SIDECAR_VERSION,
-            )
-
-        spec = CollectionSpec(
-            name=name,
-            dimensions=int(meta["dimensions"]),
-            distance=str(meta.get("distance", "cosine")),
-            hnsw_m=int(meta.get("hnsw_m", 16)),
-            hnsw_ef_construct=int(meta.get("hnsw_ef_construct", 100)),
-            keyword_payload_fields=tuple(meta.get("keyword_payload_fields", ())),
-        )
-        entries = meta.get("points", [])
-        matrix = np.ascontiguousarray(matrix, dtype=np.float32).reshape(-1, spec.dimensions)
+                path=str(self._path),
+                reason=str(exc),
+            ) from exc
 
         if matrix.shape[0] != len(entries):
             raise StorageError(
@@ -431,8 +460,8 @@ class NumpyVectorStore(VectorStore):
 
         collection = _Collection(
             spec=spec,
-            ids=[str(e["id"]) for e in entries],
-            payloads=[dict(e.get("payload") or {}) for e in entries],
+            ids=ids,
+            payloads=payloads,
             matrix=matrix,
         )
         collection.rebuild_index()
@@ -503,5 +532,5 @@ class NumpyVectorStore(VectorStore):
         rather than a new configuration field, so that switching backends never
         risks one engine reading the other's directory.
         """
-        storage = getattr(settings, "storage", settings)
+        storage = resolve_storage_settings(settings)
         return cls(Path(storage.qdrant_path).with_name("vectors"))

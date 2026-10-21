@@ -43,13 +43,20 @@ import shutil
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
-from typing import IO, Final
+from typing import IO, TYPE_CHECKING, Final
 
 import structlog
 import zstandard
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from paa.core.errors import StorageError
+
+if TYPE_CHECKING:
+    # Imported for the type only: ``base`` imports this module for ``BlobRef``,
+    # so a runtime import here would close the cycle. The annotations are lazy
+    # (``from __future__ import annotations``), so nothing is imported at run
+    # time.
+    from paa.storage.coldlake.base import BlobStore
 
 __all__ = ["CAS_URI_SCHEME", "BlobRef", "ContentAddressedStore"]
 
@@ -506,12 +513,18 @@ def _iter_chunks(source: IO[bytes], chunk_size: int) -> Iterator[bytes]:
         yield chunk
 
 
-def copy_file_into(store: ContentAddressedStore, path: Path, *, compress: bool = True) -> BlobRef:
+def copy_file_into(store: BlobStore, path: Path, *, compress: bool = True) -> BlobRef:
     """Archive a host file without loading it.
 
     Lives here rather than in :mod:`paa.storage.coldlake.artifacts` so that
     anything needing to intern a file — an artifact, a large signal payload, a
     workspace snapshot — shares one implementation of "stream a file in".
+
+    Takes the :class:`~paa.storage.coldlake.base.BlobStore` contract rather
+    than this class: the file is streamed in and the size hint is passed on,
+    and every implementation of the contract does both. Narrowing the
+    annotation to the filesystem store would have been a lie about what the
+    artifact layer actually holds.
     """
     try:
         with path.open("rb") as handle:
@@ -522,7 +535,7 @@ def copy_file_into(store: ContentAddressedStore, path: Path, *, compress: bool =
         ) from exc
 
 
-def export_to_file(store: ContentAddressedStore, digest: str, destination: Path) -> Path:
+def export_to_file(store: BlobStore, digest: str, destination: Path) -> Path:
     """Materialise a blob onto the filesystem in chunks.
 
     Written to a sibling temp file and renamed, so a verification failure

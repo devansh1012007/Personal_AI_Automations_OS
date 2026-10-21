@@ -80,8 +80,12 @@ class DryRunSandbox(Sandbox):
         planning happens before a workspace is provisioned, and refusing to
         plan against a not-yet-created directory would defeat the purpose.
         """
+        # The command is held in a local so the log line below can slice it
+        # without reaching back into the recorded mapping, whose values are
+        # heterogeneous by construction and therefore untyped.
+        command = list(spec.command)
         record = {
-            "command": list(spec.command),
+            "command": command,
             "workspace_path": str(spec.workspace_path),
             "read_only_mounts": [str(p) for p in spec.read_only_mounts],
             "env": build_child_env(spec),
@@ -96,7 +100,7 @@ class DryRunSandbox(Sandbox):
         self.invocations.append(record)
         log.info(
             "sandbox.dryrun.recorded",
-            command=record["command"][:3],
+            command=command[:3],
             workspace=record["workspace_path"],
             depth=spec.recursion_depth,
         )

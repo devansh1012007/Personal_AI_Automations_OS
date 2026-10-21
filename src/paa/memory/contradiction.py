@@ -127,7 +127,9 @@ class ContradictionDetector:
         self._degraded = degraded_confidence
         self._use_divergence = use_value_divergence
 
-    async def find_incumbents(self, entity_id: str, predicate: str, value: str) -> list[dict]:
+    async def find_incumbents(
+        self, entity_id: str, predicate: str, value: str
+    ) -> list[dict[str, Any]]:
         """Live facts sharing the key but disagreeing on the value.
 
         RFC §4.2's "inverted predicate filter": same ``entity_id`` and
@@ -218,7 +220,7 @@ class ContradictionDetector:
         )
         return buffer_id
 
-    async def open_conflicts(self, *, limit: int = 100) -> list[dict]:
+    async def open_conflicts(self, *, limit: int = 100) -> list[dict[str, Any]]:
         """Conflicts awaiting a human tie-break, for the dashboard."""
         rows = await self._db.fetch_all(
             "SELECT * FROM hot_serving_unresolved_buffer WHERE resolved_at IS NULL "

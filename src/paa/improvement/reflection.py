@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -233,7 +233,7 @@ class ReflectionEngine:
 # ---------------------------------------------------------------------------
 
 
-def _domain_from_request(payload: dict) -> str:
+def _domain_from_request(payload: dict[str, Any]) -> str:
     request = payload.get("request", payload)
     if isinstance(request, dict):
         if request.get("domain"):

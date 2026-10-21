@@ -19,15 +19,18 @@ The SQLite :class:`Database` is imported directly across the codebase as
 ``from paa.storage.relational.database import Database``. That import path is
 unchanged; this package only *adds* the :func:`get_database` factory alongside
 it. ``PostgresDatabase`` is imported lazily inside the factory so a laptop
-install without the ``postgres`` extra (psycopg) stays importable.
+install without the ``postgres`` extra (psycopg) stays importable; the
+factory's *return type* names it under ``TYPE_CHECKING``, which costs nothing
+at runtime because the annotation is a string.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import structlog
 
+from paa.config import StorageSettings
 from paa.storage.relational.database import (
     SCHEMA_VERSION,
     Database,
@@ -37,7 +40,15 @@ from paa.storage.relational.database import (
 )
 
 if TYPE_CHECKING:
-    from paa.config import Settings, StorageSettings
+    from paa.config import Settings
+
+    # TYPE_CHECKING only, and deliberately so: the module's *runtime* import
+    # of the server backend stays inside the factory, where it is reached
+    # only on the server topology. Naming the class here is for the type
+    # checker's benefit — the return type says which two things the factory
+    # can hand back — and costs nothing at runtime, because the annotation
+    # is a string under ``from __future__ import annotations``.
+    from paa.storage.relational.postgres import PostgresDatabase
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -51,7 +62,7 @@ __all__ = [
 log = structlog.get_logger(__name__)
 
 
-def get_database(settings: Settings | StorageSettings) -> Any:
+def get_database(settings: Settings | StorageSettings) -> Database | PostgresDatabase:
     """Build the relational backend named by ``backend_relational``.
 
     Accepts either the top-level :class:`~paa.config.Settings` or a
@@ -63,8 +74,27 @@ def get_database(settings: Settings | StorageSettings) -> Any:
     SQLite. This keeps the factory synchronous and side-effect-free, matching
     :func:`paa.storage.queue.get_queue` and
     :func:`paa.storage.coldlake.get_content_store`.
+
+    The return type is the **union of the two backends the factory can
+    build**, not ``Any`` and not the abstract contract. ``Any`` would hand
+    every caller a backend whose method names are unchecked — a typo at the
+    call site would pass the type checker and fail at runtime — and the
+    protocol in :mod:`paa.storage.relational.base` would throw away the one
+    fact the factory exists to establish: *which* substrate was selected. The
+    union says it, and it is still assignable to that protocol, so a
+    repository written against the contract is unaffected.
     """
-    storage = getattr(settings, "storage", settings)
+    # The two accepted inputs are the whole settings object and the storage
+    # sub-model alone, and the sub-model is what carries the answers. The
+    # two are told apart by *kind* rather than by the presence of an
+    # attribute: ``getattr(settings, "storage", settings)`` would do the same
+    # job at runtime, but it hides from the type checker which of the two it
+    # is holding, and a checker that cannot see the difference cannot check
+    # the field accesses below. The narrowing is a real one — the two
+    # classes are unrelated, and the sub-model is a field of the whole
+    # object — so it costs nothing and states the contract the signature
+    # already states.
+    storage = settings if isinstance(settings, StorageSettings) else settings.storage
 
     if storage.backend_relational == "postgres":
         if not storage.postgres_dsn:

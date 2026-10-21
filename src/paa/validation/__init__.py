@@ -11,7 +11,7 @@ and this package judges whether it is *safe and structurally valid*. A critic
 can be argued out of its position by the text it is reviewing; an AST walk
 cannot.
 
-SPEC DEVIATION (docs/adr/0010): the JSON Schema validator implements a
+SPEC DEVIATION (docs/adr/0028): the JSON Schema validator implements a
 documented subset in pure Python rather than depending on ``jsonschema`` — see
 :mod:`paa.validation.schema_validator` for why an optional dependency would
 make validation strictness machine-dependent.
@@ -44,7 +44,12 @@ from paa.validation.patch import (
     compute_patch_sha256,
     safe_relative_path,
 )
-from paa.validation.schema_validator import SchemaError, SchemaValidator, validate_instance
+from paa.validation.schema_validator import (
+    JsonSchema,
+    SchemaError,
+    SchemaValidator,
+    validate_instance,
+)
 from paa.validation.test_runner import PytestResult, PytestRunner
 from paa.validation.workspace import (
     DEFAULT_EXCLUDES,
@@ -62,6 +67,7 @@ __all__ = [
     "FilePatch",
     "Finding",
     "Hunk",
+    "JsonSchema",
     "ManifestDiff",
     "PatchAction",
     "PatchApplier",

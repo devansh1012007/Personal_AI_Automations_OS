@@ -366,6 +366,30 @@ async def test_int_filters_work(store: VectorStore) -> None:
     assert await store.search(COLLECTION, unit(1.0), filters={"version": "1"}) == []
 
 
+async def test_bool_inside_a_membership_list_is_refused(store: VectorStore) -> None:
+    """A bool is refused inside a list for the same reason it is refused bare.
+
+    The list form is not a loophole: ``{"scope": ["a", True]}`` has exactly
+    the same ambiguity as ``{"scope": True}``, so the two backends would
+    disagree about it in exactly the same way.
+    """
+    await seed(store)
+    with pytest.raises(StorageError) as excinfo:
+        await store.search(
+            COLLECTION, unit(1.0, 0.0), filters={"memory_scope": ["global", True]}
+        )
+    assert "bool" in str(excinfo.value)
+
+
+async def test_float_inside_a_membership_list_is_refused(store: VectorStore) -> None:
+    """Floats are refused inside a list for the same reason they are refused bare."""
+    await seed(store)
+    with pytest.raises(StorageError):
+        await store.search(
+            COLLECTION, unit(1.0, 0.0), filters={"memory_scope": ["global", 0.5]}
+        )
+
+
 # ---------------------------------------------------------------------------
 # Upsert, delete, count
 # ---------------------------------------------------------------------------
@@ -689,6 +713,60 @@ async def test_numpy_detects_a_corrupt_sidecar(tmp_path: Path) -> None:
         await NumpyVectorStore(root).count(COLLECTION)
 
 
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        pytest.param(lambda meta: meta.pop("dimensions"), id="width-key-is-gone"),
+        pytest.param(
+            lambda meta: meta.__setitem__("dimensions", "eight"), id="width-is-not-a-number"
+        ),
+        pytest.param(
+            lambda meta: meta.__setitem__("dimensions", 5), id="width-does-not-divide-the-matrix"
+        ),
+        pytest.param(
+            lambda meta: meta.__setitem__("points", [{"no_id_here": 1}]), id="point-has-no-id"
+        ),
+    ],
+)
+async def test_numpy_reports_a_corrupt_sidecar_as_a_storage_error(
+    tmp_path: Path, corrupt: Callable[[dict[str, Any]], None]
+) -> None:
+    """A corrupt sidecar is a substrate failure, so it must arrive as one.
+
+    The loader converts *read* failures into a :class:`StorageError`, and the
+    module's convention is that a substrate failure is a ``StorageError``.
+    A corrupt *content* used to escape as a bare ``KeyError`` (``'dimensions'``)
+    or ``ValueError`` (``cannot reshape array of size 4 into shape (8)``), and
+    a caller that catches ``StorageError`` — the one exception type this
+    backend documents — would not have caught it.
+    """
+    import json
+
+    root = tmp_path / "np"
+    store = NumpyVectorStore(root)
+    await store.ensure_collection(COLLECTION, DIM)
+    await store.upsert(
+        COLLECTION,
+        [
+            VectorPoint(id="a", vector=unit(1.0)),
+            VectorPoint(id="b", vector=unit(0.0, 1.0)),
+        ],
+    )
+    await store.close()
+
+    sidecar = root / f"{COLLECTION}.json"
+    meta = json.loads(sidecar.read_text(encoding="utf-8"))
+    corrupt(meta)
+    sidecar.write_text(json.dumps(meta), encoding="utf-8")
+
+    # pytest.raises would not have caught a KeyError or a ValueError at all,
+    # so reaching the assertions below *is* the proof of the error type.
+    with pytest.raises(StorageError) as excinfo:
+        await NumpyVectorStore(root).count(COLLECTION)
+    assert excinfo.value.substrate == "numpy"
+    assert not isinstance(excinfo.value, (KeyError, ValueError))
+
+
 async def test_numpy_sidecar_records_the_hnsw_parameters(tmp_path: Path) -> None:
     """Recorded but unused, so a later migration can rebuild the real index."""
     import json
@@ -877,6 +955,85 @@ def test_get_vector_store_qdrant_server_requires_a_url(tmp_path: Path) -> None:
 def test_get_vector_store_accepts_storage_settings_alone(tmp_path: Path) -> None:
     storage = StorageSettings(backend_vector="numpy", qdrant_path=tmp_path / "state" / "qdrant")
     assert isinstance(get_vector_store(storage), NumpyVectorStore)
+
+
+def test_get_vector_store_qdrant_local_uses_the_embedded_path(tmp_path: Path) -> None:
+    """``qdrant_local`` is the embedded engine, and it reads ``qdrant_path``.
+
+    The two Qdrant modes differ in *where* the index lives, and the mistake
+    that matters is silently running embedded when the operator asked for a
+    server (or the reverse) — so the location is asserted, not just the type.
+    """
+    settings = Settings(home=tmp_path)
+    settings.storage.backend_vector = "qdrant_local"
+    store = get_vector_store(settings)
+
+    assert isinstance(store, QdrantVectorStore)
+    assert store.is_embedded is True
+    assert store.location == str(settings.storage.qdrant_path)
+
+
+def test_get_vector_store_qdrant_server_uses_the_configured_url(tmp_path: Path) -> None:
+    """``qdrant_server`` is the remote engine, and it reads ``qdrant_url``."""
+    settings = Settings(home=tmp_path)
+    settings.storage.backend_vector = "qdrant_server"
+    settings.storage.qdrant_url = "http://qdrant.internal:6333"
+    store = get_vector_store(settings)
+
+    assert isinstance(store, QdrantVectorStore)
+    assert store.is_embedded is False
+    assert store.location == "http://qdrant.internal:6333"
+
+
+@pytest.mark.requires_vector
+@pytest.mark.skipif(not HAS_QDRANT, reason="qdrant-client is not installed")
+def test_get_vector_store_auto_prefers_the_server_when_a_url_is_set(tmp_path: Path) -> None:
+    """``auto`` picks the server when one is configured, not the embedded one.
+
+    The embedded engine takes an exclusive lock on its directory, so an
+    ``auto`` that ignored ``qdrant_url`` would quietly serialise the
+    deployment onto the laptop instead of the server it was pointed at.
+    """
+    settings = Settings(home=tmp_path)
+    settings.storage.qdrant_url = "http://qdrant.internal:6333"
+    store = get_vector_store(settings)
+
+    assert isinstance(store, QdrantVectorStore)
+    assert store.is_embedded is False
+    assert store.location == "http://qdrant.internal:6333"
+
+
+def test_get_vector_store_auto_prefers_the_server_when_the_extra_is_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same claim, without needing the ``vector`` extra installed.
+
+    ``auto`` asks whether Qdrant is importable and then decides *where* it
+    runs. The availability probe is stubbed so the policy is pinned on every
+    machine — the store is constructed but never opened, so no client is
+    needed and nothing is contacted.
+    """
+    monkeypatch.setattr("paa.storage.vector.qdrant_available", lambda: True)
+    settings = Settings(home=tmp_path)
+    settings.storage.qdrant_url = "http://qdrant.internal:6333"
+    store = get_vector_store(settings)
+
+    assert isinstance(store, QdrantVectorStore)
+    assert store.is_embedded is False
+    assert store.location == "http://qdrant.internal:6333"
+
+
+def test_get_vector_store_auto_prefers_the_embedded_engine_without_a_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half of ``auto``: no URL means the local, embedded engine."""
+    monkeypatch.setattr("paa.storage.vector.qdrant_available", lambda: True)
+    settings = Settings(home=tmp_path)
+    store = get_vector_store(settings)
+
+    assert isinstance(store, QdrantVectorStore)
+    assert store.is_embedded is True
+    assert store.location == str(settings.storage.qdrant_path)
 
 
 @pytest.mark.requires_vector

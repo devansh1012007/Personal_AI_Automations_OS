@@ -29,6 +29,9 @@ from typing import TYPE_CHECKING
 import structlog
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    from paa.memory.creator import MemoryCreator
     from paa.runtime import Runtime
 
 __all__ = ["Daemon"]
@@ -88,7 +91,7 @@ class Daemon:
 
     # -- supervision -------------------------------------------------------
 
-    async def _supervise(self, name: str, loop) -> None:
+    async def _supervise(self, name: str, loop: Callable[[], Awaitable[None]]) -> None:
         """Run a loop, restarting it on unexpected error so one failing loop
         cannot silently take the daemon down."""
         while not self._stop.is_set():
@@ -164,7 +167,12 @@ class Daemon:
 
     # -- collaborators -----------------------------------------------------
 
-    def _memory_creator(self):
+    def _memory_creator(self) -> MemoryCreator | None:
+        """Build the memory creator, or ``None`` when it cannot be built.
+
+        ``None`` is not a daemon failure: the ingestion loop then has nothing
+        to drain, and the dispatch and maintenance loops carry on regardless.
+        """
         try:
             from paa.memory.creator import MemoryCreator
 

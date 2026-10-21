@@ -254,7 +254,12 @@ class AnthropicProvider(HttpModelProvider):
         return payload
 
     def _to_response(self, payload: dict[str, Any], *, latency_ms: float) -> CompletionResponse:
-        usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+        # Bind before narrowing: ``payload.get("usage")`` called twice is two
+        # separate expressions, and a type checker narrows only the one it
+        # inspected, so the value that reaches the token counts has to be the
+        # one that was checked.
+        raw_usage = payload.get("usage")
+        usage: dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
         return CompletionResponse(
             text=_extract_text(payload),
             model=str(payload.get("model") or self._model),

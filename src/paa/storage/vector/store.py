@@ -336,17 +336,31 @@ def normalise_filters(filters: Filters | None, *, substrate: str) -> NormalisedF
                 substrate=substrate,
                 field=repr(field),
             )
-        values: tuple[FilterValue, ...] = (
-            tuple(raw) if isinstance(raw, (list, tuple, set, frozenset)) else (raw,)
-        )
-        for value in values:
-            _check_filter_value(value, field=field, substrate=substrate)
+        values: tuple[FilterValue, ...]
+        if isinstance(raw, (list, tuple, set, frozenset)):
+            # A membership list. Each element is checked on its own, so a bool
+            # *inside* a list is refused the same way a bare bool is.
+            values = tuple(raw)
+            for value in values:
+                _check_filter_value(value, field=field, substrate=substrate)
+        else:
+            # Not one of the container types, so it is a single value. The check
+            # doubles as the narrowing: it refuses the types the filter
+            # contract does not allow and returns the rest as a FilterValue.
+            values = (_check_filter_value(raw, field=field, substrate=substrate),)
         normalised[field] = values
 
     return normalised
 
 
-def _check_filter_value(value: Any, *, field: str, substrate: str) -> None:
+def _check_filter_value(value: Any, *, field: str, substrate: str) -> FilterValue:
+    """Validate one filter value and return it narrowed to :data:`FilterValue`.
+
+    Returning the narrowed value is what lets the caller build a
+    ``tuple[FilterValue, ...]`` without casting: the accepted set is exactly
+    ``str`` and ``int``, and everything else is refused here rather than
+    downstream.
+    """
     # bool is checked first because it is a subclass of int and would otherwise
     # slip through the isinstance below.
     if isinstance(value, bool):
@@ -358,7 +372,7 @@ def _check_filter_value(value: Any, *, field: str, substrate: str) -> None:
             value_type="bool",
         )
     if isinstance(value, (str, int)):
-        return
+        return value
     raise StorageError(
         "unsupported filter value type; filters accept str and int only",
         substrate=substrate,

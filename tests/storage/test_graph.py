@@ -50,7 +50,9 @@ async def _make_store(kind: str, db: Database, root: Path) -> GraphStore:
 
 
 @pytest.fixture(params=BACKENDS)
-async def store(request: pytest.FixtureRequest, db: Database, tmp_path: Path) -> AsyncIterator[GraphStore]:
+async def store(
+    request: pytest.FixtureRequest, db: Database, tmp_path: Path
+) -> AsyncIterator[GraphStore]:
     graph = await _make_store(request.param, db, tmp_path)
     try:
         yield graph

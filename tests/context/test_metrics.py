@@ -597,7 +597,13 @@ def test_planning_cost_discount_makes_depth_cheaper() -> None:
 
 @pytest.mark.parametrize(
     ("nodes", "cost", "depth", "gamma"),
-    [(-1, 1.0, 0, 0.5), (1, -1.0, 0, 0.5), (1, 1.0, -1, 0.5), (1, 1.0, 0, -0.5), (1.5, 1.0, 0, 0.5)],
+    [
+        (-1, 1.0, 0, 0.5),
+        (1, -1.0, 0, 0.5),
+        (1, 1.0, -1, 0.5),
+        (1, 1.0, 0, -0.5),
+        (1.5, 1.0, 0, 0.5),
+    ],
 )
 def test_planning_cost_rejects_out_of_domain(
     nodes: object, cost: float, depth: object, gamma: float

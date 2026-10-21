@@ -256,7 +256,9 @@ def normalise_rel_types(rel_types: Iterable[str] | None) -> tuple[str, ...] | No
         raise ValueError("rel_types must be None (meaning 'all') or a non-empty selection")
     unknown = sorted(set(ordered) - EDGE_TYPES)
     if unknown:
-        raise ValueError(f"unknown relationship type(s): {unknown}; expected a subset of EDGE_TYPES")
+        raise ValueError(
+            f"unknown relationship type(s): {unknown}; expected a subset of EDGE_TYPES"
+        )
     return ordered
 
 

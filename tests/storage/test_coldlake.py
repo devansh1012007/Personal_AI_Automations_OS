@@ -699,7 +699,9 @@ async def test_retrieve_stream_chunks_a_large_artifact(
     assert b"".join(chunks) == payload
 
 
-async def test_archiving_a_missing_file_is_refused(artifacts: ArtifactArchive, tmp_path: Path) -> None:
+async def test_archiving_a_missing_file_is_refused(
+    artifacts: ArtifactArchive, tmp_path: Path
+) -> None:
     with pytest.raises(StorageError, match="not a readable file"):
         await artifacts.archive(tmp_path / "does-not-exist.txt")
     with pytest.raises(StorageError, match="not a readable file"):

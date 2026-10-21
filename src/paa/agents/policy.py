@@ -136,7 +136,7 @@ class PolicyRiskAgent(Agent):
         self._anti_goals = anti_goals or []
         self._rule_cache: list[dict[str, Any]] | None = None
 
-    async def handle(self, message: AgentMessage, ctx: AgentContext) -> AgentResult[dict]:
+    async def handle(self, message: AgentMessage, ctx: AgentContext) -> AgentResult[PolicyVerdict]:
         started = time.perf_counter()
         steps: list[dict[str, Any]] = message.payload.get("steps", [])
         goal: str = message.payload.get("goal", "")
@@ -237,9 +237,8 @@ class PolicyRiskAgent(Agent):
             if rule["rule_kind"] != "regex" or not rule["is_active"]:
                 continue
             try:
-                if re.search(rule["pattern"], blob, re.IGNORECASE):
-                    if rule["severity"] == "block":
-                        return PolicyVerdict.blocked(f"policy rule {rule['rule_name']!r} matched")
+                if re.search(rule["pattern"], blob, re.IGNORECASE) and rule["severity"] == "block":
+                    return PolicyVerdict.blocked(f"policy rule {rule['rule_name']!r} matched")
             except re.error:
                 # A malformed operator rule must not crash the gate; log and
                 # skip, because failing closed on every task would be worse.

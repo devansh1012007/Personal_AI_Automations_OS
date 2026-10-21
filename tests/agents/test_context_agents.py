@@ -24,16 +24,26 @@ test.
 
 Each test seeds a decoy — a row the old wildcard behaviour swept in — so a
 regression cannot hide behind an assertion that only checks the happy path.
+
+The file also covers the *worker* builder's half of the module, because the
+one thing it must guarantee is the thing the planner builder does not: a
+worker packet carries no narrative memory (RFC §2.2). That guarantee is a
+security boundary rather than a size optimisation, so it is checked on the
+compiled packet — the artefact the worker would actually receive — instead of
+on the filter that fed it.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import uuid
+from collections.abc import Iterable, Sequence
 
 import pytest
 
-from paa.agents.context_agents import PlannerContextBuilder
-from paa.context.gatherer import ContextElement
+from paa.agents.base import AgentContext, AgentMessage, MessageType
+from paa.agents.context_agents import PlannerContextBuilder, WorkerContextBuilder
+from paa.context.gatherer import BoundedContextGatherer, ContextElement, ContextPacket
+from paa.core.types import ComplexityModality, PermissionMode
 from paa.memory.facts import FactRepository
 from paa.storage.relational.database import Database
 
@@ -209,3 +219,116 @@ class TestTheOrderingIsReproducible:
 
         assert [element.id for element in first] == ["id-z", "id-a"]
         assert [element.id for element in second] == [element.id for element in first]
+
+
+class _LeakyGatherer(BoundedContextGatherer):
+    """A gatherer that lets a narrative element into the worker packet.
+
+    The real gatherer drops every narrative domain before ranking, so this
+    cannot happen on the happy path — which is exactly why the builder needs
+    a check of its own. The check is the last line of defence, and a last
+    line of defence that is never exercised is one that has never been
+    tested.
+    """
+
+    def compile_worker_packet(
+        self,
+        hot_facts: Iterable[ContextElement],
+        semantic_matches: Iterable[ContextElement],
+        required_slots: Sequence[str],
+        *,
+        token_ceiling: int | None = None,
+    ) -> ContextPacket:
+        return ContextPacket(
+            elements=(
+                # A legitimate fact first, and the leaked one second: a check
+                # that only looked at the head of the packet would pass this
+                # by, and the whole point is that *every* element is checked.
+                ContextElement(
+                    id="factual-1",
+                    content="the report lives at reports/q3.md",
+                    memory_domain="operational",
+                ),
+                ContextElement(
+                    id="narrative-1",
+                    content="what the user said about the plan last Tuesday",
+                    memory_domain="narrative",
+                ),
+            ),
+            density=1.0,
+            allocated_tokens=16,
+            routing_directive="PROCEED_TO_PLANNER",
+            pollution_ratio=0.0,
+            utility_score=0.5,
+            entropy=0.0,
+            token_ceiling=1000,
+        )
+
+
+def _worker_msg() -> AgentMessage:
+    return AgentMessage(
+        task_id=uuid.uuid4(),
+        correlation_id=uuid.uuid4(),
+        sender="planner",
+        recipient="context_builder_worker",
+        intent=MessageType.CONTEXT_REQUEST,
+        payload={"step": {"action": "write the report"}},
+    )
+
+
+def _worker_ctx() -> AgentContext:
+    return AgentContext(
+        correlation_id=uuid.uuid4(),
+        modality=ComplexityModality.STANDARD,
+        permission_mode=PermissionMode.AUTO,
+    )
+
+
+class TestTheWorkerPacketCarriesNoNarrative:
+    """RFC §2.2's planner/worker split is a security boundary, not a size
+    optimisation: the worker runs semi-trusted code, and the planner's
+    long-horizon thinking must never reach it.
+
+    The builder therefore checks the *compiled packet* — the artefact the
+    worker would actually receive — rather than trusting the filter that fed
+    it, and it refuses rather than shipping a packet that carries narrative.
+    """
+
+    async def test_a_packet_carrying_narrative_memory_is_refused(self) -> None:
+        """The packet never reaches the worker: the task fails instead."""
+        builder = WorkerContextBuilder(gatherer=_LeakyGatherer())
+
+        result = await builder.run(_worker_msg(), _worker_ctx())
+
+        assert not result.ok
+        assert "narrative memory leaked" in str(result.error)
+
+    async def test_the_refusal_is_an_explicit_raise_not_an_assert(self) -> None:
+        """``python -O`` strips asserts, so the type of the refusal is part of
+        the contract.
+
+        An ``assert``-based check disappears when the interpreter is
+        optimised, and with it the only guarantee that keeps narrative out of
+        a sandbox. A raised ``ValueError`` is enforced either way, so the
+        exception *type* is not a detail: it is what makes the check survive
+        ``-O``.
+        """
+        builder = WorkerContextBuilder(gatherer=_LeakyGatherer())
+
+        with pytest.raises(ValueError, match="narrative memory leaked"):
+            await builder.handle(_worker_msg(), _worker_ctx())
+
+    async def test_a_clean_worker_packet_is_delivered(self) -> None:
+        """The refusal must not be the only thing the builder does.
+
+        A check that refused everything would satisfy both tests above, so
+        the ordinary path is pinned too: a packet with no narrative in it is
+        compiled, returned, and reported with its token accounting.
+        """
+        builder = WorkerContextBuilder()
+
+        result = await builder.run(_worker_msg(), _worker_ctx())
+
+        assert result.ok
+        assert result.value is not None
+        assert "elements" in result.value

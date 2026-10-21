@@ -323,7 +323,12 @@ class Runtime:
             sandbox=sandbox,
         )
 
-        recovery = RecoveryEngine(ledger, db, requeuer=queue, max_attempts=settings.queue.max_delivery_attempts)
+        recovery = RecoveryEngine(
+            ledger,
+            db,
+            requeuer=queue,
+            max_attempts=settings.queue.max_delivery_attempts,
+        )
 
         backpressure = None
         if queue is not None:

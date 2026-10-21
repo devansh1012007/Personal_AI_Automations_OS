@@ -6,9 +6,11 @@ a specific attack, and that a rejected package leaves ZERO trace in the registry
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
+import structlog.testing
 
 from paa.core.types import PermissionMode
 from paa.marketplace.installer import InstallGate, PackageInstaller
@@ -104,6 +106,89 @@ class TestLocalRegistry:
         reg = LocalDirectoryRegistry(tmp_path)
         with pytest.raises(FileNotFoundError):
             await reg.fetch("nope")
+
+    async def test_unparseable_index_degrades_to_an_empty_registry(self, tmp_path: Path) -> None:
+        """A corrupt index must not take the registry down with it."""
+        reg = LocalDirectoryRegistry(tmp_path)
+        (tmp_path / "index.json").write_text("{not json", encoding="utf-8")
+
+        assert await reg.search("anything") == []
+
+    async def test_wrongly_shaped_index_degrades_to_an_empty_registry(
+        self, tmp_path: Path
+    ) -> None:
+        """Valid JSON that is not a list of entries is as corrupt as no JSON.
+
+        Read back as a mapping, the old code iterated its *keys* and failed
+        the search with ``AttributeError: 'str' object has no attribute
+        'get'`` — a crash in the middle of a lookup, for a file the registry
+        had already decided how to treat.
+        """
+        reg = LocalDirectoryRegistry(tmp_path)
+        (tmp_path / "index.json").write_text('{"package_name": "x"}', encoding="utf-8")
+
+        assert await reg.search("x") == []
+
+    async def test_an_entry_missing_a_required_key_degrades_to_an_empty_registry(
+        self, tmp_path: Path
+    ) -> None:
+        """A list of half-written entries is the same failure, not a narrower one.
+
+        ``search`` and ``publish`` read ``package_name`` and ``version`` by
+        direct subscript, so an entry without them is not an entry: the old
+        code passed the shape check and then died with ``KeyError:
+        'version'`` in the middle of a lookup. The whole index is unusable
+        once one entry is, so it degrades whole.
+        """
+        reg = LocalDirectoryRegistry(tmp_path)
+        (tmp_path / "index.json").write_text('[{"package_name": "x"}]', encoding="utf-8")
+
+        assert await reg.search("x") == []
+
+    async def test_publishing_replaces_a_malformed_index(self, tmp_path: Path) -> None:
+        """The next publish heals the file rather than preserving the damage.
+
+        ``publish`` rewrites the index from what it loaded, so an index that
+        degraded to empty is replaced by a clean one — the unusable entry
+        does not survive to break the next lookup.
+        """
+        reg = LocalDirectoryRegistry(tmp_path)
+        (tmp_path / "index.json").write_text('[{"package_name": "x"}]', encoding="utf-8")
+
+        await reg.publish(_package())
+
+        entries = json.loads((tmp_path / "index.json").read_text(encoding="utf-8"))
+        assert [e["package_name"] for e in entries] == ["google_search"]
+
+    async def test_the_caller_can_tell_the_three_ways_of_being_empty(
+        self, tmp_path: Path
+    ) -> None:
+        """An empty registry and a broken registry are different failures.
+
+        All three states return no hits, so the log is what tells them apart:
+        nothing at all for an index that was never there,
+        ``marketplace.index_corrupt`` for one that does not parse, and
+        ``marketplace.index_malformed`` for one whose shape is wrong.
+        """
+        reg = LocalDirectoryRegistry(tmp_path)
+
+        with structlog.testing.capture_logs() as logs:
+            assert await reg.search("anything") == []
+        assert [entry for entry in logs if entry["event"].startswith("marketplace.index")] == []
+
+        (tmp_path / "index.json").write_text("{not json", encoding="utf-8")
+        with structlog.testing.capture_logs() as logs:
+            assert await reg.search("anything") == []
+        assert [entry["event"] for entry in logs if "marketplace.index" in entry["event"]] == [
+            "marketplace.index_corrupt"
+        ]
+
+        (tmp_path / "index.json").write_text('{"package_name": "x"}', encoding="utf-8")
+        with structlog.testing.capture_logs() as logs:
+            assert await reg.search("anything") == []
+        assert [entry["event"] for entry in logs if "marketplace.index" in entry["event"]] == [
+            "marketplace.index_malformed"
+        ]
 
 
 class TestInstallerGates:

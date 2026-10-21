@@ -10,7 +10,7 @@ Used at two boundaries:
 * **Agent JSON** — a model asked for structured output produces something
   shaped almost right, and "almost" is the expensive case.
 
-SPEC DEVIATION (docs/adr/0010): the JSON Schema subset below is implemented in
+SPEC DEVIATION (docs/adr/0028): the JSON Schema subset below is implemented in
 pure Python rather than delegating to ``jsonschema``.
 
 The reason is determinism, which RFC §13 requires of every host-side check.
@@ -38,9 +38,20 @@ from pydantic import ValidationError as PydanticValidationError
 
 from paa.core.errors import SchemaValidationError
 
-__all__ = ["SchemaError", "SchemaValidator", "validate_instance"]
+__all__ = ["JsonSchema", "SchemaError", "SchemaValidator", "validate_instance"]
 
 log = structlog.get_logger(__name__)
+
+#: A JSON Schema node: a mapping of keywords, or one of the two boolean
+#: schemas — ``true`` accepts every value, ``false`` accepts none.
+#:
+#: Both forms are legal JSON Schema, so a validator whose schema parameter is
+#: typed as ``dict`` alone describes a strict subset of the language it claims
+#: to implement — and the boolean form is the half that carries the
+#: security-relevant meaning. ``false`` is a schema that *forbids* a value, and
+#: a validator that cannot even represent it will accept the payload it was
+#: written to reject.
+JsonSchema = dict[str, Any] | bool
 
 #: JSON Schema keywords this implementation understands. Anything outside this
 #: set is ignored (or raises, under ``strict_keywords``) rather than silently
@@ -169,7 +180,7 @@ def _matches_type(value: Any, expected: str) -> bool:
 
 def validate_instance(
     payload: Any,
-    schema: dict[str, Any],
+    schema: JsonSchema,
     *,
     path: str = "$",
     errors: list[SchemaError] | None = None,
@@ -187,14 +198,27 @@ def validate_instance(
     ``minProperties``/``maxProperties``, and the ``anyOf``/``oneOf``/``allOf``/
     ``not`` combinators. ``$ref`` is deliberately **not** supported — see
     :meth:`SchemaValidator.validate`.
+
+    The two boolean schemas are supported in full: ``true`` accepts any value
+    and ``false`` accepts none, so a ``false`` at any depth of the schema
+    rejects the payload it governs.
     """
     if errors is None:
         errors = []
-    if not isinstance(schema, dict):
-        return errors
     # `True`/`{}` accept anything; `False` accepts nothing.
-    if schema is False:  # pragma: no cover - defensive
+    #
+    # The boolean check comes *first*, and it has to: `isinstance(False, dict)`
+    # is False, so a shape guard ahead of it would swallow the forbidding
+    # schema on its way out and accept the very payload the schema exists to
+    # reject. The order of these two branches is the whole difference between
+    # "a false schema forbids this value" and "a false schema forbids
+    # nothing".
+    if schema is False:
         errors.append(SchemaError(path, "schema forbids any value here"))
+        return errors
+    if not isinstance(schema, dict):
+        # A boolean `true` schema accepts anything, and a node that is neither
+        # a mapping nor a boolean is not ours to interpret.
         return errors
 
     if schema.get("nullable") and payload is None:
@@ -234,14 +258,19 @@ def validate_instance(
     if (subschemas := schema.get("allOf")) is not None:
         for index, sub in enumerate(subschemas):
             validate_instance(payload, sub, path=f"{path}/allOf[{index}]", errors=errors)
-    if (subschemas := schema.get("anyOf")) is not None:
-        if not any(not validate_instance(payload, sub, path=path) for sub in subschemas):
-            errors.append(SchemaError(path, "value matched none of the anyOf alternatives"))
+    if (subschemas := schema.get("anyOf")) is not None and not any(
+        not validate_instance(payload, sub, path=path) for sub in subschemas
+    ):
+        errors.append(SchemaError(path, "value matched none of the anyOf alternatives"))
     if (subschemas := schema.get("oneOf")) is not None:
         matched = sum(1 for sub in subschemas if not validate_instance(payload, sub, path=path))
         if matched != 1:
             errors.append(
-                SchemaError(path, f"expected exactly one oneOf match, got {matched}", matched=matched)
+                SchemaError(
+                    path,
+                    f"expected exactly one oneOf match, got {matched}",
+                    matched=matched,
+                )
             )
     if (negated := schema.get("not")) is not None and not validate_instance(
         payload, negated, path=path
@@ -283,7 +312,11 @@ def validate_instance(
 
     # -- arrays ------------------------------------------------------------
     if isinstance(payload, (list, tuple)):
-        if (item_schema := schema.get("items")) is not None and isinstance(item_schema, dict):
+        # The guard is "is there an item schema", not "is it a mapping": a
+        # boolean ``items`` schema is a schema, and ``items: false`` forbids
+        # every item. Requiring a mapping here would skip it, and the array
+        # would validate as though it had no item constraints at all.
+        if (item_schema := schema.get("items")) is not None:
             for index, item in enumerate(payload):
                 validate_instance(item, item_schema, path=f"{path}[{index}]", errors=errors)
         if (prefix := schema.get("prefixItems")) is not None:
@@ -330,9 +363,12 @@ def validate_instance(
             errors.append(SchemaError(path, f"{payload} must be greater than {bound}"))
         if (bound := schema.get("exclusiveMaximum")) is not None and payload >= bound:
             errors.append(SchemaError(path, f"{payload} must be less than {bound}"))
-        if (divisor := schema.get("multipleOf")) is not None and divisor:
-            if abs(payload / divisor - round(payload / divisor)) > 1e-9:
-                errors.append(SchemaError(path, f"{payload} is not a multiple of {divisor}"))
+        if (
+            (divisor := schema.get("multipleOf")) is not None
+            and divisor
+            and abs(payload / divisor - round(payload / divisor)) > 1e-9
+        ):
+            errors.append(SchemaError(path, f"{payload} is not a multiple of {divisor}"))
 
     return errors
 
@@ -349,7 +385,7 @@ class SchemaValidator:
         ``$ref`` means a constraint the author believed was enforced never was.
         """
 
-    def unsupported_keywords(self, schema: dict[str, Any]) -> set[str]:
+    def unsupported_keywords(self, schema: JsonSchema) -> set[str]:
         """Keywords present in ``schema`` that this validator ignores."""
         found: set[str] = set()
 
@@ -369,7 +405,7 @@ class SchemaValidator:
     def validate(
         self,
         payload: Any,
-        schema: dict[str, Any],
+        schema: JsonSchema,
         *,
         schema_name: str = "payload",
     ) -> Any:
@@ -389,8 +425,9 @@ class SchemaValidator:
                     [
                         SchemaError(
                             "$",
-                            f"schema uses unsupported keyword(s) {sorted(blocking or unsupported)}; "
-                            "see docs/adr/0010 for the supported subset",
+                            "schema uses unsupported keyword(s) "
+                            f"{sorted(blocking or unsupported)}; "
+                            "see docs/adr/0028 for the supported subset",
                         )
                     ],
                 )
@@ -410,7 +447,7 @@ class SchemaValidator:
             raise SchemaValidationError(schema_name, list(errors))
         return payload
 
-    def check(self, payload: Any, schema: dict[str, Any]) -> list[SchemaError]:
+    def check(self, payload: Any, schema: JsonSchema) -> list[SchemaError]:
         """Non-raising variant for the engine, which collects rather than aborts."""
         return validate_instance(payload, schema)
 
@@ -445,7 +482,7 @@ class SchemaValidator:
 
     def validate_tool_output(
         self,
-        skill_output_schema: dict[str, Any] | type[BaseModel] | None,
+        skill_output_schema: JsonSchema | type[BaseModel] | None,
         payload: Any,
         *,
         skill_name: str = "skill",

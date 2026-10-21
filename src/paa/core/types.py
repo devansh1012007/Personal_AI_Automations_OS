@@ -12,7 +12,7 @@ from __future__ import annotations
 import enum
 import uuid
 from dataclasses import dataclass
-from typing import Final, NewType
+from typing import Final, NewType, cast
 
 __all__ = [
     "MODALITY_PROFILES",
@@ -312,11 +312,31 @@ class ModalityProfile:
         This is the closed form of the geometric series in RFC §11.1 and bounds
         tree-of-thought expansion. ``B == 1`` degenerates to a linear chain, so
         the series formula is undefined and we return ``D + 1`` instead.
+
+        A negative recursion ceiling is refused, exactly as
+        :meth:`token_quota_at_depth` refuses a negative depth: the ceiling is a
+        *depth*, and a depth below zero has no meaning. The refusal is also
+        what keeps the return type honest. Python's ``**`` returns a ``float``
+        for a negative exponent, so ``B ** (D + 1)`` with ``D == -2`` is
+        ``0.5`` — and the closed form would hand a *float* back from a method
+        that promises an ``int``. A node budget that is not an integer is not a
+        budget; the guard turns that from a silent lie into a loud error at the
+        boundary, where the profile that carries it can be fixed.
         """
         b, d = self.branch_factor, self.recursion_ceiling
+        if d < 0:
+            raise ValueError(f"recursion_ceiling must be non-negative, got {d}")
         if b <= 1:
             return d + 1
-        return (b ** (d + 1) - 1) // (b - 1)
+        # ``int.__pow__`` is typed ``Any`` for a non-literal exponent: the
+        # result is an ``int`` for a non-negative exponent and a ``float`` for
+        # a negative one, and typeshed declines to choose between them. The
+        # guard above makes the exponent ``D + 1 >= 1``, so the power is an
+        # exact integer and the division below is exact too. The cast states
+        # an invariant this method now *enforces* rather than assumes; it
+        # asserts a fact about the domain, it does not widen a type.
+        power = cast(int, b ** (d + 1))
+        return (power - 1) // (b - 1)
 
     def token_quota_at_depth(self, depth: int) -> int:
         """Token budget for a sub-agent at nesting ``depth``: ``ceiling / 2^depth``.

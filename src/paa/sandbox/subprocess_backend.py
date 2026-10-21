@@ -43,7 +43,6 @@ import asyncio
 import contextlib
 import ctypes
 import os
-import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -52,6 +51,7 @@ import structlog
 
 from paa.config import SandboxSettings
 from paa.core.errors import SandboxError
+from paa.sandbox._win32 import IS_WINDOWS, last_error, win_dll
 from paa.sandbox.base import (
     IsolationLevel,
     Sandbox,
@@ -65,8 +65,6 @@ from paa.sandbox.watchdog import ResourceWatchdog
 __all__ = ["SubprocessSandbox"]
 
 log = structlog.get_logger(__name__)
-
-_IS_WINDOWS = sys.platform == "win32"
 
 #: How long to wait for a killed process to actually die before giving up and
 #: reporting the result anyway. A process wedged in an uninterruptible kernel
@@ -169,14 +167,14 @@ class _WindowsJobObject:
 
     def create(self) -> bool:
         """Create the job and apply limits. ``False`` on any failure."""
-        if not _IS_WINDOWS:
+        if not IS_WINDOWS:
             return False
         try:
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+            kernel32 = win_dll("kernel32")
             kernel32.CreateJobObjectW.restype = ctypes.c_void_p
             handle = kernel32.CreateJobObjectW(None, None)
             if not handle:
-                log.debug("sandbox.job_object.create_failed", error=ctypes.get_last_error())
+                log.debug("sandbox.job_object.create_failed", error=last_error())
                 return False
 
             info = _JobObjectExtendedLimitInformation()
@@ -198,7 +196,7 @@ class _WindowsJobObject:
                 ctypes.sizeof(info),
             )
             if not ok:
-                log.debug("sandbox.job_object.set_info_failed", error=ctypes.get_last_error())
+                log.debug("sandbox.job_object.set_info_failed", error=last_error())
                 kernel32.CloseHandle(ctypes.c_void_p(handle))
                 return False
 
@@ -232,7 +230,7 @@ class _WindowsJobObject:
                     log.debug(
                         "sandbox.job_object.assign_failed",
                         pid=pid,
-                        error=ctypes.get_last_error(),
+                        error=last_error(),
                     )
                 return bool(ok)
             finally:
@@ -341,7 +339,7 @@ class SubprocessSandbox(Sandbox):
         job_active = job.create()
 
         popen_kwargs: dict[str, Any] = {}
-        if not _IS_WINDOWS:
+        if not IS_WINDOWS:
             # New session => new process group => killpg reaches grandchildren.
             # start_new_session is preferred over preexec_fn=os.setsid: it is
             # implemented in the child after fork by CPython itself and is safe
@@ -389,6 +387,11 @@ class SubprocessSandbox(Sandbox):
         stdout_reader = asyncio.create_task(self._read_capped(proc.stdout, cap))
         stderr_reader = asyncio.create_task(self._read_capped(proc.stderr, cap))
 
+        # ``None`` is a real outcome here, not a placeholder: the process was
+        # killed and never reaped, and ``SandboxResult.exit_code`` says
+        # exactly that ("killed before an exit status existed") instead of
+        # inventing a 0 or a -1 for a run that never had an exit status.
+        exit_code: int | None
         try:
             if spec.timeout_seconds is None:
                 exit_code = await proc.wait()
@@ -526,7 +529,7 @@ class SubprocessSandbox(Sandbox):
         if job.active:
             job.terminate()
 
-        if _IS_WINDOWS:
+        if IS_WINDOWS:
             with contextlib.suppress(Exception):
                 killer = await asyncio.create_subprocess_exec(
                     "taskkill",
@@ -567,7 +570,7 @@ class SubprocessSandbox(Sandbox):
         return {
             "backend": self.name,
             "isolation_level": self.isolation_level.name,
-            "memory_enforcement": "job_object" if _IS_WINDOWS else "watchdog",
+            "memory_enforcement": "job_object" if IS_WINDOWS else "watchdog",
             "network_severed": False,
             "filesystem_confined": False,
             "syscall_filtered": False,

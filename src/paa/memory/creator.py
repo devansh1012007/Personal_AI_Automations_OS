@@ -298,8 +298,14 @@ _PREDICATES = (
     "are",
     "is",
 )
+#: The lexicon as a regex alternation, built once so the sentence pattern
+#: below reads as a pattern and the lexicon itself stays in one place.
+_PREDICATE_ALTERNATION = "|".join(_PREDICATES)
+
 _SENTENCE_RE = re.compile(
-    r"^(?P<subject>.{2,80}?)\s+(?P<predicate>" + "|".join(_PREDICATES) + r")\s+(?P<object>.{2,200})$",
+    r"^(?P<subject>.{2,80}?)\s+"
+    rf"(?P<predicate>{_PREDICATE_ALTERNATION})"
+    r"\s+(?P<object>.{2,200})$",
     re.IGNORECASE,
 )
 _KEY_VALUE_RE = re.compile(r"^(?P<key>[A-Za-z][\w \-/]{1,40})\s*:\s*(?P<value>\S.*)$")
@@ -1012,7 +1018,17 @@ class MemoryCreator:
         """
         if self._sink is None or not fact_ids:
             return
-        facts = [f for f in (await self._facts.get_fact(fid) for fid in fact_ids) if f is not None]
+        # A plain loop, not a generator expression: an ``await`` inside one
+        # makes it an *async* generator, and a synchronous comprehension over
+        # an async generator raises ``TypeError: 'async_generator' object is
+        # not iterable``. The hand-off therefore failed on every signal that
+        # wrote a fact — but only once a sink was attached, and nothing
+        # attaches one yet, so the defect was latent rather than loud.
+        facts: list[Fact] = []
+        for fid in fact_ids:
+            fact = await self._facts.get_fact(fid)
+            if fact is not None:
+                facts.append(fact)
         try:
             indexed = await self._sink.enqueue(facts)
         except Exception as exc:
@@ -1240,7 +1256,7 @@ def _scalar_to_text(value: Any, *, signal_id: str | None) -> str | None:
 
 def _as_confidence(value: Any, default: float) -> float:
     try:
-        parsed = float(value)  # type: ignore[arg-type]
+        parsed = float(value)
     except (TypeError, ValueError):
         return default
     return min(1.0, max(0.0, parsed))

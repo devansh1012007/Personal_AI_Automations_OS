@@ -10,8 +10,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-import pytest
-
 from paa.coder.hooks import HookRegistry, deny_tool_hook
 from paa.coder.loop import AgentLoop, ModelTurn, ToolCall
 from paa.coder.permissions import PermissionMode, ToolPermissionPolicy
@@ -45,7 +43,7 @@ class RecordingTool:
         return self.result
 
 
-def _loop(model, tools, **kw) -> AgentLoop:  # noqa: ANN001, ANN003
+def _loop(model, tools, **kw) -> AgentLoop:
     return AgentLoop(model, {t.name: t for t in tools}, session=Session(), **kw)
 
 
@@ -94,7 +92,9 @@ class TestPermissionGate:
             ]
         )
         loop = _loop(
-            model, [tool], permissions=ToolPermissionPolicy(mode=PermissionMode.BYPASS, deny=["bash(rm*)"])
+            model,
+            [tool],
+            permissions=ToolPermissionPolicy(mode=PermissionMode.BYPASS, deny=["bash(rm*)"]),
         )
         result = await loop.run("clean up")
 
@@ -117,11 +117,14 @@ class TestPermissionGate:
             [ModelTurn(tool_calls=[ToolCall("bash", {"command": "ls"})]), ModelTurn(text="done")]
         )
 
-        async def approve(name, args, reason):  # noqa: ANN001, ANN202
+        async def approve(name, args, reason):
             return True
 
         loop = _loop(
-            model, [tool], permissions=ToolPermissionPolicy(mode=PermissionMode.ASK), confirm=approve
+            model,
+            [tool],
+            permissions=ToolPermissionPolicy(mode=PermissionMode.ASK),
+            confirm=approve,
         )
         await loop.run("list files")
         assert len(tool.calls) == 1
@@ -193,7 +196,7 @@ class TestBounds:
         tool = RecordingTool("noop")
 
         class Loopy:
-            async def propose(self, window, tools):  # noqa: ANN001, ANN202
+            async def propose(self, window, tools):
                 return ModelTurn(tool_calls=[ToolCall("noop", {})])
 
         loop = AgentLoop(

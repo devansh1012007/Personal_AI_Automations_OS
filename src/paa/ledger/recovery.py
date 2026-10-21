@@ -338,7 +338,7 @@ class RecoveryEngine:
             LedgerEvent.create(
                 cid,
                 EventType.RECOVERY_REPLAY_COMPLETED,
-                session_id=projection.session_id and uuid.UUID(projection.session_id),
+                session_id=_session_uuid(projection),
                 payload={
                     "outcome": outcome.value,
                     "phase": projection.phase.value,
@@ -404,7 +404,7 @@ class RecoveryEngine:
             LedgerEvent.create(
                 cid,
                 EventType.STATE_ROLLBACK_TRIGGERED,
-                session_id=projection.session_id and uuid.UUID(projection.session_id),
+                session_id=_session_uuid(projection),
                 payload={
                     "reason": "post_crash_workspace_drift",
                     "drifted_paths": list(drifted)[:100],
@@ -422,7 +422,7 @@ class RecoveryEngine:
             LedgerEvent.create(
                 uuid.UUID(projection.correlation_id),
                 EventType.TASK_ABANDONED,
-                session_id=projection.session_id and uuid.UUID(projection.session_id),
+                session_id=_session_uuid(projection),
                 payload={"reason": reason, "attempts": projection.attempts},
                 discriminator=f"recovery-v{projection.state_version}",
             )
@@ -476,3 +476,32 @@ class RecoveryEngine:
 
 def _utc(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+
+def _session_uuid(projection: TaskProjection) -> uuid.UUID | None:
+    """The projection's session id as a UUID, or ``None`` when it has none.
+
+    The projection carries the session id as *text* — it is a replayed field
+    and the projection has to stay JSON-serialisable — while the ledger event
+    carries it as a UUID. The two are not the same value type, and the
+    conversion has to be explicit.
+
+    An empty string is not a session id: a projection carrying one is a
+    projection with no session. The ``and`` idiom that used to stand here
+    returned the empty string *itself* — neither a UUID nor ``None`` — which
+    the event's validation then rejected. The rejection did not stop the
+    sweep, which survives a bad lineage by design, but it cost that lineage
+    its recovery record: no ``RECOVERY_REPLAY_COMPLETED`` was written, and the
+    lineage was reported as UNRECOVERABLE — a request for a human to look at
+    it. Guarding on the value rather than on its truth keeps the two cases
+    apart: no session is ``None``, and a session is a UUID.
+
+    A value that is neither empty nor a UUID is *corruption* rather than an
+    absent session, and it is left to raise: ``uuid.UUID`` rejects it, and
+    the sweep reports that lineage as unrecoverable rather than writing an
+    audit event that claims a session the projection cannot name. The
+    ``NewType`` discipline over ``CorrelationId``/``SessionId``/``TaskId``
+    exists to catch a transposed id, and a value that is not a UUID at all is
+    the same class of mistake.
+    """
+    return uuid.UUID(projection.session_id) if projection.session_id else None

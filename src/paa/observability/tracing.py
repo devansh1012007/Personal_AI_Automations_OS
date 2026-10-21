@@ -225,12 +225,17 @@ class Tracer:
         try:
             yield span
         except BaseException as exc:
-            # Bound as a default argument, not captured by closure: Python
-            # unbinds the `except ... as exc` name when the block exits, so a
-            # late-evaluated lambda referencing it would raise NameError — and
-            # _safely would swallow that, silently leaving every failed span
-            # marked OK. Exactly the bug this module must not have.
-            self._safely(lambda e=exc: self._mark_error(span, e), "mark_error")
+            # The exception is bound to a *fresh* name so that the *value* is
+            # captured rather than the name. Python unbinds the ``except ... as
+            # exc`` name when the block exits, so a closure over that name
+            # raises NameError if it is ever evaluated after the block — and
+            # _safely swallows exceptions, so the span would carry no error at
+            # all: the failure would be invisible in the one record an
+            # operator reads. The assignment copies the value into a local
+            # that is never unbound, so the mark holds however the lambda is
+            # called.
+            failure = exc
+            self._safely(lambda: self._mark_error(span, failure), "mark_error")
             raise
         else:
             self._safely(lambda: self._mark_ok(span), "mark_ok")

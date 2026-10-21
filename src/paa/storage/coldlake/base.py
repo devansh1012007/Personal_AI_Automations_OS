@@ -12,6 +12,14 @@ performs. It is *not* the union of both classes' methods: ``iter_blobs`` and
 ``total_bytes`` are filesystem bookkeeping with no S3 counterpart that means
 the same thing, and a protocol that included them would force the S3
 implementation to fake them.
+
+Narrow is not the same as approximate. Every signature below is the one the
+implementations actually have, because ``runtime_checkable`` proves only that
+the *methods* exist — a protocol that named a keyword no implementation
+accepts would pass ``isinstance`` and then fail in the caller, at runtime,
+with a ``TypeError`` that says nothing about the real mistake. The
+conformance is proved by a test (``tests/storage/test_blobstore_contract.py``)
+rather than asserted in prose.
 """
 
 from __future__ import annotations
@@ -45,12 +53,21 @@ class BlobStore(Protocol):
 
     def put_stream(
         self,
-        stream: IO[bytes],
+        source: IO[bytes],
         *,
         compress: bool = True,
-        chunk_size: int | None = None,
+        size: int | None = None,
     ) -> BlobRef:
-        """Store the contents of ``stream`` and return a reference to it."""
+        """Store the contents of ``source`` and return a reference to it.
+
+        ``size`` is an optional hint at the raw payload length, and a hint
+        rather than a promise: a store told a length the bytes contradict
+        refuses the write rather than recording a size that is a lie.
+
+        The names here are the implementations' names, deliberately — the
+        module docstring says why a protocol's signatures are load-bearing
+        and where the conformance is proved.
+        """
         ...
 
     def get(self, digest: str) -> bytes:

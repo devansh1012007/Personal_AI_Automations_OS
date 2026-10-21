@@ -18,7 +18,16 @@ def repo(db: Database) -> FactRepository:
     return FactRepository(db)
 
 
-async def _fact(db: Database, repo: FactRepository, entity: str, pred: str, val: str, *, idle_days: float = 0, conf: float = 1.0) -> str:
+async def _fact(
+    db: Database,
+    repo: FactRepository,
+    entity: str,
+    pred: str,
+    val: str,
+    *,
+    idle_days: float = 0,
+    conf: float = 1.0,
+) -> str:
     eid = await repo.upsert_entity("project", entity)
     fid = await repo.add_fact(eid, pred, val, confidence=conf)
     if idle_days:
@@ -77,7 +86,9 @@ class TestConsolidation:
         )
         assert len(survivors) == 1
 
-    async def test_differing_values_are_never_merged(self, db: Database, repo: FactRepository) -> None:
+    async def test_differing_values_are_never_merged(
+        self, db: Database, repo: FactRepository
+    ) -> None:
         """Same entity+predicate, different value = contradiction, NOT duplicate.
         The curator must leave these for a human (RFC §2.1 agent 9)."""
         eid = await repo.upsert_entity("project", "Alpha")
@@ -126,7 +137,9 @@ class TestOrphans:
 
 
 class TestBudget:
-    async def test_budget_stops_the_pass_between_phases(self, db: Database, repo: FactRepository) -> None:
+    async def test_budget_stops_the_pass_between_phases(
+        self, db: Database, repo: FactRepository
+    ) -> None:
         """A zero-length budget must stop before any phase runs and record where."""
         report = await MemoryCurator(db).run_maintenance(budget_seconds=0.0)
         assert not report.completed_fully
@@ -145,7 +158,7 @@ class TestRobustness:
     ) -> None:
         curator = MemoryCurator(db)
 
-        async def boom(report, *, now):  # noqa: ANN001, ANN202
+        async def boom(report, *, now):
             raise RuntimeError("phase exploded")
 
         monkeypatch.setattr(curator, "_phase_prune_edges", boom)

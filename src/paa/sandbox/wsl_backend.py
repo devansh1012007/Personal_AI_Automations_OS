@@ -30,7 +30,6 @@ import asyncio
 import contextlib
 import re
 import shutil
-import sys
 import time
 from pathlib import Path, PureWindowsPath
 
@@ -38,6 +37,7 @@ import structlog
 
 from paa.config import SandboxSettings
 from paa.core.errors import SandboxError
+from paa.sandbox._win32 import IS_WINDOWS
 from paa.sandbox.base import (
     IsolationLevel,
     Sandbox,
@@ -138,7 +138,7 @@ class WslSandbox(Sandbox):
         return self._healthy
 
     async def _probe(self) -> bool:
-        if sys.platform != "win32" or shutil.which("wsl.exe") is None:
+        if not IS_WINDOWS or shutil.which("wsl.exe") is None:
             log.debug("sandbox.wsl.unavailable", reason="wsl.exe not on PATH")
             return False
         try:

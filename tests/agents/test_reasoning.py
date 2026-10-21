@@ -9,6 +9,7 @@ verdict must be un-overridable by the model.
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 from typing import Any
 
 from paa.agents.base import AgentContext, AgentMessage, MessageType
@@ -89,7 +90,11 @@ class TestPlannerNormalisation:
 
     async def test_known_fields_are_coerced(self) -> None:
         model = ScriptedModel(
-            {"execution_steps": [{"index": "0", "action": "go", "mutates": 1, "risk_profile": "0.5"}]}
+            {
+                "execution_steps": [
+                    {"index": "0", "action": "go", "mutates": 1, "risk_profile": "0.5"}
+                ]
+            }
         )
         planner = StrategicPlanner(model=model)
         step = (await planner.run(_msg(MessageType.PLAN_PROPOSAL, {"goal": "x"}), _ctx())).value[
@@ -135,13 +140,14 @@ class TestCriticOverride:
     async def test_deterministic_fail_beats_model_pass(self) -> None:
         class FailValidator:
             async def validate(self, output: dict) -> Any:
-                class R:
-                    passed = False
-                    findings = [{"rule": "ast", "message": "os.system"}]
+                return SimpleNamespace(
+                    passed=False,
+                    findings=[{"rule": "ast", "message": "os.system"}],
+                )
 
-                return R()
-
-        critic = CriticReviewer(model=ScriptedModel({"verdict": "PASS"}), validation_engine=FailValidator())
+        critic = CriticReviewer(
+            model=ScriptedModel({"verdict": "PASS"}), validation_engine=FailValidator()
+        )
         result = await critic.run(
             _msg(MessageType.REVIEW_RESULT, {"output": {"source_files": {"x.py": "bad"}}}), _ctx()
         )
@@ -151,11 +157,7 @@ class TestCriticOverride:
     async def test_model_is_not_even_consulted_on_deterministic_fail(self) -> None:
         class FailValidator:
             async def validate(self, output: dict) -> Any:
-                class R:
-                    passed = False
-                    findings: list = []
-
-                return R()
+                return SimpleNamespace(passed=False, findings=[])
 
         model = ScriptedModel({"verdict": "PASS"})
         critic = CriticReviewer(model=model, validation_engine=FailValidator())

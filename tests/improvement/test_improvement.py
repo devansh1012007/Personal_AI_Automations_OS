@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import uuid
-from datetime import timedelta
 
 import numpy as np
 import pytest
@@ -116,10 +115,14 @@ class TestReflectionEngine:
 
         cid = new_correlation_id()
         await ledger.append(
-            LedgerEvent.create(cid, EventType.TASK_REQUESTED, payload={"request": {"goal": "deploy the service"}})
+            LedgerEvent.create(
+                cid, EventType.TASK_REQUESTED, payload={"request": {"goal": "deploy the service"}}
+            )
         )
         await ledger.append(LedgerEvent.create(cid, EventType.USER_CORRECTION))
-        await ledger.append(LedgerEvent.create(cid, EventType.STATE_ROLLBACK_TRIGGERED, discriminator="r1"))
+        await ledger.append(
+            LedgerEvent.create(cid, EventType.STATE_ROLLBACK_TRIGGERED, discriminator="r1")
+        )
 
         engine = ReflectionEngine(ledger, vault_path=tmp_path)
         report = await engine.run_weekly()
@@ -139,10 +142,14 @@ class TestReflectionEngine:
         )
         cid = new_correlation_id()
         await ledger.append(
-            LedgerEvent.create(cid, EventType.TASK_REQUESTED, payload={"request": {"goal": "docker deploy"}})
+            LedgerEvent.create(
+                cid, EventType.TASK_REQUESTED, payload={"request": {"goal": "docker deploy"}}
+            )
         )
         for i in range(3):
-            await ledger.append(LedgerEvent.create(cid, EventType.USER_CORRECTION, discriminator=f"c{i}"))
+            await ledger.append(
+                LedgerEvent.create(cid, EventType.USER_CORRECTION, discriminator=f"c{i}")
+            )
 
         await ReflectionEngine(ledger, vault_path=tmp_path).run_weekly()
         final = (tmp_path / "playbooks.md").read_text(encoding="utf-8")
@@ -180,7 +187,8 @@ class TestPrototypicalClassifier:
         assert clf.classify(np.array([1.0, 1.0], dtype=np.float32)).label == "a"
 
     def test_empty_classifier_returns_unknown(self) -> None:
-        assert PrototypicalClassifier().classify(np.array([1.0], dtype=np.float32)).label == "unknown"
+        result = PrototypicalClassifier().classify(np.array([1.0], dtype=np.float32))
+        assert result.label == "unknown"
 
 
 class TestDistillation:
@@ -197,11 +205,11 @@ class TestDistillation:
 
     async def test_recipe_registered_only_after_passing_smoke_test(self, db: Database) -> None:
         class PassTester:
-            async def smoke_test(self, recipe):  # noqa: ANN001, ANN202
+            async def smoke_test(self, recipe):
                 return True
 
         class FailTester:
-            async def smoke_test(self, recipe):  # noqa: ANN001, ANN202
+            async def smoke_test(self, recipe):
                 return False
 
         d_ok = SkillDistiller(db, sandbox_tester=PassTester())

@@ -75,7 +75,7 @@ class StrategicPlanner(Agent):
         self._model = model
         self._max_retries = max_retries
 
-    async def handle(self, message: AgentMessage, ctx: AgentContext) -> AgentResult[dict]:
+    async def handle(self, message: AgentMessage, ctx: AgentContext) -> AgentResult[dict[str, Any]]:
         if ctx.modality is ComplexityModality.SIMPLE:
             # Defensive: the orchestrator bypasses the planner at SIMPLE.
             return AgentResult.failure("planner must not run at SIMPLE modality")
@@ -126,7 +126,7 @@ class StrategicPlanner(Agent):
 
         return AgentResult.failure(f"planning failed after retries: {last_error}")
 
-    def _deterministic_plan(self, goal: str, ceiling: int) -> AgentResult[dict]:
+    def _deterministic_plan(self, goal: str, ceiling: int) -> AgentResult[dict[str, Any]]:
         """Split a goal on obvious conjunctions. Crude but honest.
 
         Used when no model is available. It will not decompose well, which is
@@ -134,7 +134,7 @@ class StrategicPlanner(Agent):
         critic then apply more scrutiny.
         """
         parts = [p.strip() for p in re.split(r"\b(?:then|and then|;|\n)\b", goal) if p.strip()]
-        steps = [
+        steps: list[dict[str, Any]] = [
             {"index": i, "action": part, "agent": "worker", "requires": [], "mutates": True}
             for i, part in enumerate(parts[:ceiling])
         ] or [{"index": 0, "action": goal, "agent": "worker", "requires": [], "mutates": True}]
@@ -218,7 +218,7 @@ class CriticReviewer(Agent):
         self._validator = validation_engine
         self._max_rejections = max_rejections
 
-    async def handle(self, message: AgentMessage, ctx: AgentContext) -> AgentResult[dict]:
+    async def handle(self, message: AgentMessage, ctx: AgentContext) -> AgentResult[dict[str, Any]]:
         output = message.payload.get("output") or {}
         findings: list[dict[str, Any]] = []
 
@@ -267,7 +267,7 @@ class CriticReviewer(Agent):
                 confidence=0.6,
             )
 
-    async def _deterministic(self, output: dict[str, Any], findings: list[dict]) -> bool:
+    async def _deterministic(self, output: dict[str, Any], findings: list[dict[str, Any]]) -> bool:
         """Run host-side checks. Returns False on any hard failure."""
         if self._validator is None:
             return True
@@ -334,7 +334,7 @@ class TaskRouter(Agent):
             return False
         return eligible_agents >= self._min_agents
 
-    async def handle(self, message: AgentMessage, ctx: AgentContext) -> AgentResult[dict]:
+    async def handle(self, message: AgentMessage, ctx: AgentContext) -> AgentResult[dict[str, Any]]:
         goal = message.payload.get("goal", "")
         candidates: list[str] = list(message.payload.get("eligible_agents", []))
 
@@ -428,7 +428,7 @@ class WorkerCell(Agent):
         self._sandbox = sandbox
         self.required_permissions = (Permission.SANDBOX_RUN,)
 
-    async def handle(self, message: AgentMessage, ctx: AgentContext) -> AgentResult[dict]:
+    async def handle(self, message: AgentMessage, ctx: AgentContext) -> AgentResult[dict[str, Any]]:
         step = message.payload.get("step", {})
         index = message.payload.get("index", 0)
 

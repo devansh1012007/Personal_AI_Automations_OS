@@ -39,13 +39,14 @@ import asyncio
 import contextlib
 import ctypes
 import enum
-import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 import structlog
+
+from paa.sandbox._win32 import IS_WINDOWS, win_dll
 
 __all__ = [
     "HeartbeatTracker",
@@ -164,11 +165,11 @@ def _windows_rss_mb(pid: int) -> float | None:
     memory counters, and asking for more than needed is how a monitoring path
     turns into a privilege-escalation path.
     """
-    if sys.platform != "win32":
+    if not IS_WINDOWS:
         return None
     try:
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
-        psapi = ctypes.WinDLL("psapi", use_last_error=True)  # type: ignore[attr-defined]
+        kernel32 = win_dll("kernel32")
+        psapi = win_dll("psapi")
         handle = kernel32.OpenProcess(
             _PROCESS_QUERY_LIMITED_INFORMATION | _PROCESS_VM_READ, False, pid
         )

@@ -349,12 +349,18 @@ def _database_identity(dsn: str) -> str:
         return "unknown"
 
 
-class _Row(dict):
+class _Row(dict[str, Any]):
     """A mapping row that also answers positional integer access, in column order.
 
     Bridges the gap between psycopg (name access) and ``sqlite3.Row`` (name *and*
     index access). ``fetch_value`` reads ``row[0]``; repositories read by name;
     both must work against one row object.
+
+    The value type is ``Any`` on purpose: a column's value type is the
+    *table's* business, not this row adapter's, and the repository layer
+    coerces a column as it reads it (see ``from_iso`` and ``loads``). Naming
+    the parameters keeps the row a *typed* mapping rather than an untyped
+    one, without pretending to know what a given column holds.
     """
 
     __slots__ = ()
@@ -611,7 +617,14 @@ class PostgresDatabase:
     async def integrity_check(self) -> bool:
         """PostgreSQL has no PRAGMA integrity_check; a successful ping stands in."""
         try:
-            return (await self.fetch_value("SELECT 1")) == 1
+            value = await self.fetch_value("SELECT 1")
+            # The ping answered if the server said 1. ``fetch_value`` hands
+            # back whatever the driver returned — it is deliberately untyped,
+            # because the column it read is the caller's to interpret — so
+            # the comparison is *bound* to a bool here instead of being
+            # returned as the driver's own ``Any``.
+            answered: bool = value == 1
+            return answered
         except Exception:  # pragma: no cover - needs a live server
             return False
 

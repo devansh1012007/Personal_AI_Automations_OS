@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from itertools import pairwise
+
 import pytest
 
 from paa.core.errors import RecursionGuardError
@@ -118,7 +120,7 @@ class TestCycleDetection:
     def test_a_five_node_cycle_is_refused(self) -> None:
         guard = RecursionGuard(modality=ComplexityModality.MAX)
         chain = ["n0", "n1", "n2", "n3", "n4"]
-        for depth, (source, target) in enumerate(zip(chain, chain[1:], strict=False), start=1):
+        for depth, (source, target) in enumerate(pairwise(chain), start=1):
             guard.register(source, target, depth=depth)
 
         with pytest.raises(RecursionGuardError, match="cycle"):

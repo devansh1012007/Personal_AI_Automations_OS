@@ -548,7 +548,13 @@ class Database:
 
     async def integrity_check(self) -> bool:
         result = await self.fetch_value("PRAGMA integrity_check")
-        return result == "ok"
+        # The pragma answers with the text "ok" or with the text of the
+        # problem it found. ``fetch_value`` hands back whatever the driver
+        # returned — it is deliberately untyped, because the column it read
+        # is the caller's to interpret — so the comparison is *bound* to a
+        # bool here instead of being returned as the driver's own ``Any``.
+        healthy: bool = result == "ok"
+        return healthy
 
     async def table_names(self) -> list[str]:
         rows = await self.fetch_all(

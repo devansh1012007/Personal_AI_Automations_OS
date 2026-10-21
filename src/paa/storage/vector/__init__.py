@@ -58,6 +58,7 @@ from paa.storage.vector.store import (
     VectorStore,
     normalise_filters,
     payload_matches,
+    resolve_storage_settings,
     spec_for,
 )
 
@@ -110,7 +111,9 @@ def get_vector_store(settings: Settings | StorageSettings) -> VectorStore:
 
     The store is returned unconnected; the first operation opens it.
     """
-    storage = getattr(settings, "storage", settings)
+    # Resolved through the shared helper so this factory, the two backends and
+    # every other caller agree on *which* half of the settings they read.
+    storage = resolve_storage_settings(settings)
     backend = storage.backend_vector
 
     if backend == "numpy":

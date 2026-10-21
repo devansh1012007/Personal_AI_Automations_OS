@@ -33,7 +33,6 @@ import abc
 import enum
 import os
 import posixpath
-import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Self
@@ -42,6 +41,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from paa.core.errors import SandboxError
 from paa.core.types import ComplexityModality, ModalityProfile
+from paa.sandbox._win32 import IS_WINDOWS
 
 __all__ = [
     "IsolationLevel",
@@ -513,7 +513,11 @@ def build_child_env(spec: SandboxSpec, *, workspace: Path | None = None) -> dict
     env: dict[str, str] = {}
     ws = str(workspace) if workspace is not None else str(spec.workspace_path)
 
-    if sys.platform == "win32":
+    # ``IS_WINDOWS`` rather than a bare ``sys.platform == "win32"``: a direct
+    # comparison is folded against the platform the checker runs on, so the
+    # Windows branch below would read as dead code and never be type-checked
+    # at all. The constant keeps the branch live — see ``paa.sandbox._win32``.
+    if IS_WINDOWS:
         system_root = os.environ.get("SYSTEMROOT") or r"C:\Windows"
         for key in _WINDOWS_BOOTSTRAP_KEYS:
             if (value := os.environ.get(key)) is not None:

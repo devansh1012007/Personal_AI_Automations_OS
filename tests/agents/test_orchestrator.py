@@ -30,7 +30,7 @@ class _FakeAgent(Agent):
         self._fail_times = fail_times
         self.call_count = 0
 
-    async def handle(self, message: AgentMessage, ctx: AgentContext) -> AgentResult:
+    async def handle(self, message: AgentMessage, ctx: AgentContext) -> AgentResult[Any]:
         self.call_count += 1
         if self.call_count <= self._fail_times:
             return AgentResult.failure("scripted failure")
@@ -38,7 +38,7 @@ class _FakeAgent(Agent):
 
 
 def _orchestrator(ledger: LedgerStore, **agent_overrides: Any) -> ChiefOrchestrator:
-    defaults = {
+    agents: dict[str, Agent] = {
         "context_builder": _FakeAgent(
             AgentRole.CONTEXT_BUILDER_PLANNER, {"routing_directive": "PROCEED_TO_PLANNER"}
         ),
@@ -52,8 +52,22 @@ def _orchestrator(ledger: LedgerStore, **agent_overrides: Any) -> ChiefOrchestra
         "worker": _FakeAgent(AgentRole.WORKER, {"patch": "", "step_index": 0}),
         "critic": _FakeAgent(AgentRole.CRITIC, {"verdict": "PASS", "findings": []}),
     }
-    defaults.update(agent_overrides)
-    return ChiefOrchestrator(ledger, permission_mode=PermissionMode.AUTO, **defaults)
+    agents.update(agent_overrides)
+    # Every agent slot is passed by name rather than splatted from a dict. A
+    # splat of a single-typed dict into a signature whose keywords have
+    # *different* types is unverifiable — and a slot omitted here would be
+    # silently dropped, taking the override with it.
+    return ChiefOrchestrator(
+        ledger,
+        context_builder=agents.get("context_builder"),
+        worker_context_builder=agents.get("worker_context_builder"),
+        planner=agents.get("planner"),
+        policy=agents.get("policy"),
+        worker=agents.get("worker"),
+        critic=agents.get("critic"),
+        router=agents.get("router"),
+        permission_mode=PermissionMode.AUTO,
+    )
 
 
 async def _events(ledger: LedgerStore, cid: Any) -> list[EventType]:

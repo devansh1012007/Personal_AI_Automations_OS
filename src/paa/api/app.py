@@ -15,7 +15,9 @@ Two guarantees enforced here:
   up with (RFC §6.2).
 
 FastAPI is imported lazily inside :func:`create_app` so the rest of the package
-imports without the ``api`` extra installed.
+imports without the ``api`` extra installed. Typing this module needs that
+extra too: the route decorators carry FastAPI's real types, and the ``dev``
+extra installs it.
 """
 
 from __future__ import annotations

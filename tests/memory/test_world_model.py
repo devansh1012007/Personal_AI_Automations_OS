@@ -72,6 +72,29 @@ class TestManagedWrites:
         assert world.read_managed(BeliefDocument.ACTIVE_CONSTRAINTS) == ""
 
 
+class TestBeliefDocument:
+    """The enum mixes in ``str``, so its inherited API is part of its contract.
+
+    ``title`` is ``str.title`` — a method — and shadowing it with a property
+    replaced a callable with a plain string, so any consumer that treated a
+    ``BeliefDocument`` as the string it is got ``TypeError: 'str' object is
+    not callable`` the moment it called ``doc.title()``.
+    """
+
+    def test_display_title_is_the_human_readable_name(self) -> None:
+        assert BeliefDocument.CURRENT_FOCUS.display_title == "Current Focus"
+        assert BeliefDocument.OPERATING_THEMES.display_title == "Operating Themes"
+
+    def test_the_inherited_str_title_is_not_shadowed(self) -> None:
+        assert BeliefDocument.CURRENT_FOCUS.title() == "current_focus.md".title()
+        assert BeliefDocument.CURRENT_FOCUS.title() == "Current_Focus.Md"
+
+    def test_created_document_is_headed_with_the_display_title(self, world: WorldModel) -> None:
+        world.update_belief_state(BeliefDocument.CURRENT_FOCUS, "Shipping the API")
+        text = world.path_for(BeliefDocument.CURRENT_FOCUS).read_text(encoding="utf-8")
+        assert text.startswith("# Current Focus")
+
+
 class TestEpisodicCompression:
     def test_recurring_observations_become_a_pattern(self, world: WorldModel) -> None:
         obs = [

@@ -31,6 +31,20 @@ __all__ = ["HttpRegistry", "LocalDirectoryRegistry", "MarketplaceRegistry", "Reg
 
 log = structlog.get_logger(__name__)
 
+#: The keys every index entry must carry, and carry as strings.
+#:
+#: ``search`` and ``publish`` read these two by direct subscript, so an entry
+#: without them is not an entry — and an index holding one is not an index.
+#: They are strings because they are the package's identity: ``fetch`` globs
+#: the directory on ``package_name`` and the installer gates a package on its
+#: name and version.
+_REQUIRED_ENTRY_KEYS = ("package_name", "version")
+
+
+def _has_identity(entry: dict[Any, Any]) -> bool:
+    """Whether an index entry carries the keys the registry reads directly."""
+    return all(isinstance(entry.get(key), str) for key in _REQUIRED_ENTRY_KEYS)
+
 
 @dataclass(slots=True)
 class RegistryEntry:
@@ -68,14 +82,55 @@ class LocalDirectoryRegistry(MarketplaceRegistry):
         return self._dir / "index.json"
 
     def _load_index(self) -> list[dict[str, Any]]:
+        """The index as a list of entries, or an empty list if it is unusable.
+
+        The index is a file on disk that nothing validates on the way in, so
+        it is read back as *untrusted*. A file that is valid JSON but not a
+        list of usable entries is as unusable as one that does not parse at
+        all, and both must degrade to an empty registry rather than fail a
+        search in the middle of a lookup — with an ``AttributeError`` about
+        ``str.get`` when the file was a mapping, or a ``KeyError`` about
+        ``version`` when it was a list of half-written entries.
+
+        Degrading rather than raising is this file's rule rather than an
+        accident of convenience. ``search`` returns a list of hits and has no
+        error channel, and a registry whose index file is damaged must still
+        answer a lookup. The caller is not left guessing which failure it
+        was, though, because the three states log three different things:
+        *no event at all* for an index that was never there,
+        ``marketplace.index_corrupt`` for one that does not parse, and
+        ``marketplace.index_malformed`` for one whose shape is wrong. An
+        empty registry and a broken registry are different failures, and the
+        log is what tells them apart.
+
+        All or nothing: one unusable entry makes the whole index unusable.
+        Half an index is a partial absorb, and the house rule for malformed
+        input is containment, never partial absorption (see
+        ``memory/creator.py``'s "stop on first suspicion"). Adopting the good
+        entries and dropping the bad ones would hide the damage until the
+        next publish overwrote the file anyway.
+        """
         path = self._index_path()
         if not path.exists():
             return []
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            raw = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             log.warning("marketplace.index_corrupt", path=str(path))
             return []
+        if not isinstance(raw, list):
+            log.warning("marketplace.index_malformed", path=str(path))
+            return []
+        entries: list[dict[str, Any]] = []
+        for entry in raw:
+            # ``isinstance`` narrows the JSON value to an object; JSON object
+            # keys are always strings, so an entry that parsed as an object
+            # really is a ``dict[str, Any]``.
+            if not isinstance(entry, dict) or not _has_identity(entry):
+                log.warning("marketplace.index_malformed", path=str(path))
+                return []
+            entries.append(entry)
+        return entries
 
     def _save_index(self, entries: list[dict[str, Any]]) -> None:
         self._index_path().write_text(json.dumps(entries, indent=2), encoding="utf-8")
@@ -84,6 +139,10 @@ class LocalDirectoryRegistry(MarketplaceRegistry):
         q = query.lower().strip()
         hits: list[RegistryEntry] = []
         for entry in self._load_index():
+            # ``_load_index`` has already established that ``entry`` carries
+            # ``package_name`` and ``version`` as strings, so the subscripts
+            # below cannot fail. The remaining fields are optional and are
+            # read defensively.
             haystack = f"{entry.get('package_name','')} {entry.get('description','')}".lower()
             if not q or q in haystack:
                 hits.append(

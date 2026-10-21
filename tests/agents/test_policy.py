@@ -8,12 +8,17 @@ tests prove the decisions themselves are right across the permission modes.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterable, Sequence
+from contextlib import AbstractAsyncContextManager
+from typing import Any
 
 import pytest
 
 from paa.agents.base import AgentContext, AgentMessage, MessageType
 from paa.agents.policy import PolicyRiskAgent, _flatten
 from paa.core.types import ComplexityModality, PermissionMode
+from paa.storage.relational.connection import TransactionConnection
+from paa.storage.relational.dialect import Dialect
 
 # asyncio_mode=auto (pyproject) detects async tests; no module mark needed, and
 # a module-level asyncio mark would wrongly tag the sync tests here.
@@ -106,7 +111,9 @@ class TestSafeMode:
     )
     async def test_irreversible_ops_are_blocked(self, command: list[str]) -> None:
         agent = PolicyRiskAgent()
-        verdict = await _decide(agent, [{"action": "danger", "command": command}], PermissionMode.SAFE)
+        verdict = await _decide(
+            agent, [{"action": "danger", "command": command}], PermissionMode.SAFE
+        )
         assert verdict["decision"] == "STATUS_BLOCKED"
 
     async def test_reversible_work_passes_in_safe(self) -> None:
@@ -174,3 +181,107 @@ class TestStructuralModelFreedom:
         call — RFC §13 made unbreakable by construction."""
         agent = PolicyRiskAgent()
         assert "_model" not in agent.__dict__
+
+
+class _FakeRuleDB:
+    """A relational backend that serves operator rules and nothing else.
+
+    ``_load_rules`` reads ``hot_serving_policy_rules`` with a single
+    ``fetch_all`` and turns each row into a plain dict, so one table's worth
+    of rows is the whole surface this fake has to offer. The rest of the
+    backend is present but inert, because the policy gate is read-only by
+    construction: it never writes, never opens a transaction, and never asks
+    for a dialect.
+    """
+
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self._rows = rows
+        self.queries: list[str] = []
+
+    @property
+    def dialect(self) -> Dialect:
+        raise NotImplementedError("the rule loader never asks for a dialect")
+
+    async def fetch_all(self, sql: str, params: Sequence[Any] = ()) -> list[Any]:
+        self.queries.append(sql)
+        return list(self._rows)
+
+    async def fetch_one(self, sql: str, params: Sequence[Any] = ()) -> Any | None:
+        return None
+
+    async def fetch_value(self, sql: str, params: Sequence[Any] = ()) -> Any:
+        return None
+
+    async def execute(self, sql: str, params: Sequence[Any] = ()) -> int:
+        raise NotImplementedError("the policy gate never writes")
+
+    async def execute_many(self, sql: str, rows: Iterable[Sequence[Any]]) -> None:
+        raise NotImplementedError("the policy gate never writes")
+
+    def transaction(self) -> AbstractAsyncContextManager[TransactionConnection]:
+        raise NotImplementedError("the policy gate never opens a transaction")
+
+    async def connect(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+    async def table_names(self) -> list[str]:
+        return ["hot_serving_policy_rules"]
+
+
+def _rule(**overrides: Any) -> dict[str, Any]:
+    rule: dict[str, Any] = {
+        "rule_name": "no-docs",
+        "rule_kind": "regex",
+        "pattern": "documentation",
+        "severity": "block",
+        "threshold": 0.0,
+        "is_active": 1,
+    }
+    rule.update(overrides)
+    return rule
+
+
+class TestOperatorRules:
+    """The operator-authored rule path (``hot_serving_policy_rules``).
+
+    A matching pattern is only a block when the rule says so: the severity
+    is part of the decision, not an afterthought. These tests pin that, and
+    pin that a malformed operator rule is skipped rather than being allowed
+    to take the gate down with it.
+    """
+
+    async def test_matching_block_rule_blocks_the_plan(self) -> None:
+        agent = PolicyRiskAgent(db=_FakeRuleDB([_rule()]))
+        steps = [{"action": "write documentation"}]
+        verdict = await _decide(agent, steps, PermissionMode.AUTO)
+        assert verdict["decision"] == "STATUS_BLOCKED"
+        assert "no-docs" in str(verdict["reason"])
+
+    async def test_non_blocking_severity_does_not_block(self) -> None:
+        """The pattern matched; the severity says warn. Nothing is blocked."""
+        agent = PolicyRiskAgent(db=_FakeRuleDB([_rule(severity="warn")]))
+        steps = [{"action": "write documentation"}]
+        verdict = await _decide(agent, steps, PermissionMode.AUTO)
+        assert verdict["decision"] == "STATUS_APPROVED"
+
+    async def test_inactive_rule_is_ignored(self) -> None:
+        agent = PolicyRiskAgent(db=_FakeRuleDB([_rule(is_active=0)]))
+        steps = [{"action": "write documentation"}]
+        verdict = await _decide(agent, steps, PermissionMode.AUTO)
+        assert verdict["decision"] == "STATUS_APPROVED"
+
+    async def test_non_regex_rule_kind_is_ignored(self) -> None:
+        agent = PolicyRiskAgent(db=_FakeRuleDB([_rule(rule_kind="keyword")]))
+        steps = [{"action": "write documentation"}]
+        verdict = await _decide(agent, steps, PermissionMode.AUTO)
+        assert verdict["decision"] == "STATUS_APPROVED"
+
+    async def test_malformed_pattern_is_skipped_not_fatal(self) -> None:
+        """A broken operator regex must not take the security gate down."""
+        agent = PolicyRiskAgent(db=_FakeRuleDB([_rule(pattern="[unclosed")]))
+        steps = [{"action": "write documentation"}]
+        verdict = await _decide(agent, steps, PermissionMode.AUTO)
+        assert verdict["decision"] == "STATUS_APPROVED"

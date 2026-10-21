@@ -307,10 +307,11 @@ class KuzuGraphStore(GraphStore):
                 e.valid_from = $valid_from,
                 e.valid_to = NULL
         """
-        readback_query = f"""
-            MATCH (a:{_NODE_TABLE} {{id: $from_id}})-[e:{rel_type}]->(b:{_NODE_TABLE} {{id: $to_id}})
-            RETURN {_EDGE_RETURN}
-        """
+        readback_query = (
+            f"MATCH (a:{_NODE_TABLE} {{id: $from_id}})-[e:{rel_type}]->"
+            f"(b:{_NODE_TABLE} {{id: $to_id}})"
+            f" RETURN {_EDGE_RETURN}"
+        )
         # Kuzu rejects a parameter the query does not reference, so each
         # statement is handed exactly the bindings it names.
         endpoint_params = {"from_id": edge.from_entity_id, "to_id": edge.to_entity_id}

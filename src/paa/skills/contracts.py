@@ -42,6 +42,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from paa.core.errors import SkillContractError
 from paa.core.types import Permission
+from paa.validation.schema_validator import JsonSchema
 
 __all__ = [
     "SEMVER_PATTERN",
@@ -116,12 +117,17 @@ def validate_json_schema_shape(schema: Any, *, field_name: str) -> dict[str, Any
     return schema
 
 
-def schema_errors(instance: Any, schema: dict[str, Any], *, path: str = "$") -> list[str]:
+def schema_errors(instance: Any, schema: JsonSchema, *, path: str = "$") -> list[str]:
     """Validate ``instance`` against a **deliberate subset** of JSON Schema.
 
+    SPEC DEVIATION (docs/adr/0028): the subset is implemented in pure Python
+    rather than by depending on ``jsonschema``, so that this control is
+    present in every install.
+
     Supported keywords: ``type``, ``properties``, ``required``,
-    ``additionalProperties`` (bool form), ``enum``, ``items``, ``minimum``,
-    ``maximum``, ``minLength``, ``maxLength``, ``minItems``, ``maxItems``.
+    ``additionalProperties`` (bool form), ``enum``, ``items``, ``pattern``,
+    ``minimum``, ``maximum``, ``minLength``, ``maxLength``, ``minItems``,
+    ``maxItems``.
 
     Why a subset rather than the ``jsonschema`` package: ``jsonschema`` is not
     a declared dependency, and this validator sits on the *output* path of
@@ -131,10 +137,23 @@ def schema_errors(instance: Any, schema: dict[str, Any], *, path: str = "$") -> 
     rather than treated as failures, so a richer schema still validates on the
     parts we do understand instead of rejecting everything.
 
+    The two boolean schemas are honoured in full: ``true`` accepts any value,
+    ``false`` accepts none.
+
     :returns: human-readable error strings; empty means valid.
     """
     errors: list[str] = []
+    # A boolean schema is legal JSON Schema and it carries the half of the
+    # language that decides *rejection*: ``false`` forbids every value. The
+    # check has to come before the shape guard below, because
+    # ``isinstance(False, dict)`` is False — a shape guard first would accept
+    # the very payload the forbidding schema was written to reject.
+    if schema is False:
+        errors.append(f"{path}: schema forbids any value here")
+        return errors
     if not isinstance(schema, dict):
+        # A boolean ``true`` schema accepts anything, and a node that is
+        # neither a mapping nor a boolean is not ours to interpret.
         return errors
 
     expected = schema.get("type")
@@ -142,9 +161,9 @@ def schema_errors(instance: Any, schema: dict[str, Any], *, path: str = "$") -> 
         actual = "null" if instance is None else type(instance).__name__
         return [f"{path}: expected type {expected!r}, got {actual}"]
 
-    if (allowed := schema.get("enum")) is not None and isinstance(allowed, list):
-        if instance not in allowed:
-            errors.append(f"{path}: value is not one of the {len(allowed)} permitted values")
+    allowed = schema.get("enum")
+    if isinstance(allowed, list) and instance not in allowed:
+        errors.append(f"{path}: value is not one of the {len(allowed)} permitted values")
 
     if isinstance(instance, dict):
         errors.extend(_object_errors(instance, schema, path))
@@ -206,7 +225,11 @@ def _array_errors(instance: list[Any], schema: dict[str, Any], path: str) -> lis
         errors.append(f"{path}: expected at least {min_items} items, got {len(instance)}")
     if isinstance(max_items := schema.get("maxItems"), int) and len(instance) > max_items:
         errors.append(f"{path}: expected at most {max_items} items, got {len(instance)}")
-    if isinstance(item_schema := schema.get("items"), dict):
+    # "Is there an item schema", not "is it a mapping": a boolean ``items``
+    # schema is a schema, and ``items: false`` forbids every item. Requiring
+    # a mapping here skipped it, and the array validated as though it had no
+    # item constraints at all.
+    if (item_schema := schema.get("items")) is not None:
         for index, item in enumerate(instance):
             errors.extend(schema_errors(item, item_schema, path=f"{path}[{index}]"))
     return errors

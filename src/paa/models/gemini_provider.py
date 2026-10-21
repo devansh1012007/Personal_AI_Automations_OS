@@ -214,13 +214,23 @@ class GeminiProvider(HttpModelProvider):
 _ROLE_MAP: dict[str, str] = {"user": "user", "assistant": "model"}
 
 
-def _to_gemini_schema(schema: dict[str, Any]) -> dict[str, Any]:
+def _to_gemini_schema(schema: object) -> dict[str, Any]:
     """Project a PAA JSON Schema onto the subset ``responseSchema`` accepts.
 
     Recursive and total: unknown keywords are dropped, ``type`` is upper-cased to
     the proto enum form Gemini expects, and nested ``properties``/``items`` are
     projected too. The result is always a valid Gemini schema, never a 400 in
     disguise.
+
+    The argument is typed ``object`` rather than ``dict`` because the runtime
+    cannot promise a mapping here. :meth:`~paa.models.base.CompletionRequest.with_schema`
+    copies with ``model_copy(update=...)``, which bypasses pydantic's
+    validation, so a schema that was never validated arrives as whatever the
+    caller passed. A non-mapping degrades to an empty schema — the same
+    treatment :func:`~paa.models.base.validate_against_schema` and
+    :func:`~paa.models.base.minimal_instance_for_schema` give it — rather than
+    raising out of a provider call, where the router's escalation machinery
+    only knows how to recognise a provider *failure*.
     """
     if not isinstance(schema, dict):
         return {}

@@ -265,7 +265,9 @@ class TestFacts:
         """A fact stored at 1.0 but two years idle must read as decayed, not 1.0."""
         eid = await repo.upsert_entity("project", "Alpha")
         old = utc_now() - timedelta(days=730)
-        fid = await repo.add_fact(eid, "status", "active", domain=MemoryDomain.SEMANTIC, confidence=1.0)
+        fid = await repo.add_fact(
+            eid, "status", "active", domain=MemoryDomain.SEMANTIC, confidence=1.0
+        )
         # Backdate the last_queried_at so decay has elapsed.
         await repo._db.execute(
             "UPDATE hot_serving_active_facts SET last_queried_at = ? WHERE id = ?",
@@ -277,7 +279,9 @@ class TestFacts:
     async def test_min_confidence_filters_on_decayed_value(self, repo: FactRepository) -> None:
         eid = await repo.upsert_entity("project", "Alpha")
         old = utc_now() - timedelta(days=2000)
-        fid = await repo.add_fact(eid, "status", "stale", domain=MemoryDomain.SEMANTIC, confidence=1.0)
+        fid = await repo.add_fact(
+            eid, "status", "stale", domain=MemoryDomain.SEMANTIC, confidence=1.0
+        )
         await repo._db.execute(
             "UPDATE hot_serving_active_facts SET last_queried_at = ? WHERE id = ?",
             (to_iso(old), fid),

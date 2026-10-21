@@ -35,15 +35,13 @@ import importlib.util
 import math
 import re
 from collections import Counter
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 import structlog
 
+from paa.config import ModelSettings, Settings
 from paa.core.errors import StorageError
-
-if TYPE_CHECKING:
-    from paa.config import ModelSettings, Settings
 
 __all__ = [
     "Embedder",
@@ -52,6 +50,7 @@ __all__ = [
     "SentenceTransformerEmbedder",
     "cosine_similarity",
     "get_embedder",
+    "resolve_model_settings",
 ]
 
 log = structlog.get_logger(__name__)
@@ -369,6 +368,21 @@ def _sentence_transformers_available() -> bool:
         return False
 
 
+def resolve_model_settings(settings: ModelSettings | Settings) -> ModelSettings:
+    """Accept either the full :class:`~paa.config.Settings` or its model half.
+
+    The mirror of :func:`paa.storage.vector.store.resolve_storage_settings`,
+    and for the same reason: half the call sites hold one and half hold the
+    other, and an ``isinstance`` here beats a ``getattr`` because it actually
+    narrows for the type checker. ``getattr(settings, "models", settings)``
+    looks equivalent, but it yields the *union* of the attribute type and the
+    fallback type — ``Any | ModelSettings | Settings`` — which the type
+    checker cannot narrow: every attribute read off the result is then either
+    an unchecked ``Any`` or a ``union-attr`` error.
+    """
+    return settings.models if isinstance(settings, Settings) else settings
+
+
 def get_embedder(settings: ModelSettings | Settings) -> Embedder:
     """Pick an encoder: the real model if it is installed, else the fallback.
 
@@ -381,7 +395,7 @@ def get_embedder(settings: ModelSettings | Settings) -> Embedder:
     explicit statement that degraded recall is unacceptable, so booting anyway
     would be the wrong kind of helpful.
     """
-    models = getattr(settings, "models", settings)
+    models = resolve_model_settings(settings)
 
     if _sentence_transformers_available():
         log.debug(

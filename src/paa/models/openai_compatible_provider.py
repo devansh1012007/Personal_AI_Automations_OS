@@ -133,8 +133,14 @@ class OpenAICompatibleProvider(HttpModelProvider):
             )
 
         choice = choices[0] if isinstance(choices[0], dict) else {}
-        message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
-        usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+        # Bind before narrowing. ``choice.get("message")`` called twice is two
+        # separate expressions, and a type checker can only narrow the one it
+        # inspected — so the value that reaches the ``CompletionResponse`` has
+        # to be the one that was checked.
+        raw_message = choice.get("message")
+        message: dict[str, Any] = raw_message if isinstance(raw_message, dict) else {}
+        raw_usage = payload.get("usage")
+        usage: dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
 
         return CompletionResponse(
             text=str(message.get("content") or ""),

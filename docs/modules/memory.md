@@ -63,6 +63,13 @@ Marker-fenced vault documents (`current_foods.md`… actually `current_focus.md`
 Rewrites only the managed `<!-- paa:managed:BEGIN/END -->` section, preserving
 human text; atomic writes (temp + `os.replace`) (`world_model.py:95`).
 
+`BeliefDocument` is a `str`-mixin enum, so its inherited string API is part of
+its contract: `doc.title` is `str.title` (a *method*) and must stay callable.
+The document's human-readable name is therefore `doc.display_title`
+("Current Focus"), not `doc.title` — a property named `title` would shadow
+`str.title` and turn `doc.title()` into `TypeError: 'str' object is not
+callable`.
+
 ## Inputs and outputs
 
 | Operation | Input | Output | Side effects |

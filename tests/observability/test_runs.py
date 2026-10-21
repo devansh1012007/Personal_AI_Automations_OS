@@ -465,3 +465,110 @@ class TestTheRowConversion:
 
         assert run is not None
         assert json.dumps(run.to_trace_json())
+
+
+# ---------------------------------------------------------------------------
+# The skill aggregate
+# ---------------------------------------------------------------------------
+
+
+class TestSkillStats:
+    """The aggregate the optimiser reads before it rewrites anything.
+
+    The rule the aggregate has to honour: **an empty sample is not a
+    failure**. A skill with no evidence is a skill the optimiser must not
+    rewrite, and a skill whose runs all failed is a different thing
+    entirely. The two must never be reported the same way, because one of
+    them is an instruction to act and the other is an absence of
+    instructions.
+    """
+
+    async def test_a_skill_with_no_runs_has_no_samples(
+        self, runs: ExecutionRunRepository
+    ) -> None:
+        stats = await runs.skill_stats("never-run")
+
+        assert stats.skill_name == "never-run"
+        assert stats.sample_count == 0
+        assert stats.success_rate == 0.0
+        assert stats.mean_latency_ms == 0.0
+        assert stats.correction_rate == 0.0
+        assert stats.escalation_rate == 0.0
+        assert stats.mean_tokens == 0.0
+        # The point of the zeroes: two runs is not enough to act on either.
+        assert stats.is_significant is False
+
+    async def test_an_unfinished_run_is_excluded_not_counted_as_a_failure(
+        self, runs: ExecutionRunRepository
+    ) -> None:
+        """A run that has not ended is not a run that failed.
+
+        Counting it would report a success rate of 0% for a skill that is
+        simply still working, and the optimiser would read that as a
+        verdict.
+        """
+        cid = new_correlation_id()
+        await runs.start_run(
+            correlation_id=cid, agent_role="worker", skill_name="slow"
+        )
+
+        stats = await runs.skill_stats("slow")
+
+        assert stats.sample_count == 0
+        assert stats.success_rate == 0.0
+        assert stats.is_significant is False
+
+    async def test_finished_runs_are_aggregated(self, runs: ExecutionRunRepository) -> None:
+        """The numbers the optimiser actually acts on."""
+        for index, exit_code in enumerate((0, 0, 1)):
+            cid = new_correlation_id()
+            trace_id = await runs.start_run(
+                correlation_id=cid, agent_role="worker", skill_name="mixed"
+            )
+            await runs.finish_run(
+                trace_id,
+                exit_code=exit_code,
+                tokens_consumed=100 * (index + 1),
+                escalated=index == 2,
+            )
+
+        stats = await runs.skill_stats("mixed")
+
+        assert stats.sample_count == 3
+        assert stats.success_rate == pytest.approx(2 / 3)
+        assert stats.escalation_rate == pytest.approx(1 / 3)
+        assert stats.mean_tokens == pytest.approx(200.0)
+        assert stats.mean_latency_ms >= 0.0
+        assert stats.is_significant is False  # three runs is below the bar of five
+
+    async def test_a_backend_that_answers_nothing_is_not_a_crash(self) -> None:
+        """The aggregate query always returns a row — so a missing one is an anomaly.
+
+        An aggregate without a ``GROUP BY`` returns exactly one row even
+        when nothing matched, so a backend that answers nothing at all is
+        not saying "no runs" — it is saying nothing. The reading is still
+        the zeroed one, because the optimiser's rule is that an empty
+        sample is not a failure, but it must not be a crash either.
+        """
+
+        class SilentBackend:
+            async def fetch_one(self, sql: str, params: Any = ()) -> Any:
+                return None
+
+            async def fetch_all(self, sql: str, params: Any = ()) -> list[Any]:
+                return []
+
+            async def fetch_value(self, sql: str, params: Any = ()) -> Any:
+                return None
+
+            async def execute(self, sql: str, params: Any = ()) -> int:
+                return 0
+
+            async def execute_many(self, sql: str, rows: Any) -> None:
+                return None
+
+        stats = await ExecutionRunRepository(SilentBackend()).skill_stats("quiet")  # type: ignore[arg-type]
+
+        assert stats.sample_count == 0
+        assert stats.success_rate == 0.0
+        assert stats.is_significant is False

@@ -246,7 +246,9 @@ class SignalRepository:
                 ids,
             )
 
-        claimed = [_signal_from_row(row).model_copy(update={"sync_status": "processing"}) for row in rows]
+        claimed = [
+            _signal_from_row(row).model_copy(update={"sync_status": "processing"}) for row in rows
+        ]
         log.debug("signal.claimed", count=len(claimed))
         return claimed
 

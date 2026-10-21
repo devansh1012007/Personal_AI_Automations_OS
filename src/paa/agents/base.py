@@ -37,7 +37,7 @@ import abc
 import enum
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar
 
 import structlog
 from pydantic import BaseModel, ConfigDict, Field
@@ -61,6 +61,7 @@ __all__ = [
     "AgentMessage",
     "AgentResult",
     "MessageType",
+    "OrchestratorLike",
     "RiskLevel",
 ]
 
@@ -267,6 +268,31 @@ class AgentContext(BaseModel):
         return self.permission_mode.grants(permission)
 
 
+class OrchestratorLike(Protocol):
+    """The one thing an agent may ask of the orchestrator.
+
+    Declared here, as a protocol, rather than imported from
+    :mod:`paa.agents.orchestrator`, because the orchestrator imports *this*
+    module: a protocol keeps the dependency one-way and lets an agent be
+    handed a fake orchestrator in a test without dragging the real one — and
+    everything it reaches for, including a model — along with it.
+
+    It is deliberately one method wide. An agent delegates; it does not drive
+    the lifecycle, read the ledger, or decide policy. Widening this surface
+    would put the control path back inside the agent.
+    """
+
+    async def mediate_delegation(
+        self,
+        *,
+        sender: str,
+        target: str,
+        intent: MessageType,
+        payload: dict[str, Any],
+        ctx: AgentContext,
+    ) -> AgentResult[Any]: ...
+
+
 class Agent(abc.ABC):
     """Base class for every agent in the hierarchy.
 
@@ -286,7 +312,7 @@ class Agent(abc.ABC):
         *,
         name: str | None = None,
         ledger: LedgerStore | None = None,
-        orchestrator: Any = None,
+        orchestrator: OrchestratorLike | None = None,
     ) -> None:
         self.name = name or self.role.value
         self._ledger = ledger

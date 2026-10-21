@@ -8,13 +8,16 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from paa.config import Settings, reset_settings_cache
 from paa.core.types import PermissionMode
 from paa.runtime import Runtime
+
+if TYPE_CHECKING:
+    from fastapi.testclient import TestClient
 
 pytest.importorskip("fastapi", reason="needs the api extra")
 
@@ -25,7 +28,9 @@ class ScriptedModel:
     def __init__(self) -> None:
         self.calls = 0
 
-    async def complete_structured(self, prompt: str, schema: dict, **kw: Any) -> dict:
+    async def complete_structured(
+        self, prompt: str, schema: dict[str, Any], **kw: Any
+    ) -> dict[str, Any]:
         self.calls += 1
         props = schema.get("properties", {})
         if "execution_steps" in props:
@@ -64,7 +69,7 @@ async def runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncItera
 
 
 @pytest.fixture
-def client(runtime: Runtime):  # noqa: ANN201
+def client(runtime: Runtime) -> TestClient:
     from fastapi.testclient import TestClient
 
     from paa.api import create_app

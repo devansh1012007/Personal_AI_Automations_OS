@@ -61,6 +61,7 @@ from paa.storage.vector.store import (
     as_unit_vector,
     is_unsatisfiable,
     normalise_filters,
+    resolve_storage_settings,
     spec_for,
     validate_collection_name,
     validate_payload,
@@ -549,7 +550,7 @@ class QdrantVectorStore(VectorStore):
     @classmethod
     def from_settings(cls, settings: Settings | StorageSettings) -> QdrantVectorStore:
         """Build from config, preferring a configured server over embedded mode."""
-        storage = getattr(settings, "storage", settings)
+        storage = resolve_storage_settings(settings)
         if storage.qdrant_url:
             return cls(url=storage.qdrant_url)
         return cls(path=storage.qdrant_path)

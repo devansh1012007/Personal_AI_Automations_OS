@@ -7,6 +7,7 @@ they exercise the actual wiring end-to-end without a model server.
 
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 
 import pytest
@@ -165,6 +166,246 @@ class TestTaskLifecycle:
         result = runner.invoke(app, ["recover"])
         assert result.exit_code == 0
         assert "scanned" in result.stdout
+
+
+class TestCorrelationIdSpelling:
+    """A UUID has two spellings, and every command must accept both.
+
+    The ledger stores the hyphenated form. A command that handed its raw
+    argument to one lookup and the canonical one to another therefore found
+    the task's head and then failed to replay it — the same id, two
+    different answers, and an unhandled replay error rather than a message.
+    """
+
+    def test_status_accepts_the_hex_spelling(self) -> None:
+        submit = runner.invoke(app, ["submit", "do a thing", "--agent", "worker"])
+        hexed = uuid.UUID(_extract_cid(submit.stdout)).hex
+
+        result = runner.invoke(app, ["status", hexed])
+
+        assert result.exit_code == 0, result.output
+        assert "phase" in result.stdout
+
+    def test_run_accepts_the_hex_spelling(self) -> None:
+        submit = runner.invoke(app, ["submit", "do a thing", "--agent", "worker"])
+        hexed = uuid.UUID(_extract_cid(submit.stdout)).hex
+
+        result = runner.invoke(app, ["run", hexed])
+
+        assert result.exit_code == 0, result.output
+        assert "phase" in result.stdout
+
+    def test_ledger_accepts_the_hex_spelling(self) -> None:
+        """The third id-taking command, and the one that read the id twice."""
+        submit = runner.invoke(app, ["submit", "do a thing", "--agent", "worker"])
+        hexed = uuid.UUID(_extract_cid(submit.stdout)).hex
+
+        result = runner.invoke(app, ["ledger", hexed])
+
+        assert result.exit_code == 0, result.output
+        assert "TASK_REQUESTED" in result.stdout
+        assert "chain integrity" in result.stdout
+
+    def test_gate_accepts_the_hex_spelling(self) -> None:
+        """The fourth id-taking command.
+
+        A task that is not parked on a gate says so — which is the answer
+        that proves the id was *found* rather than merely well-formed.
+        """
+        submit = runner.invoke(app, ["submit", "do a thing", "--agent", "worker"])
+        hexed = uuid.UUID(_extract_cid(submit.stdout)).hex
+
+        result = runner.invoke(app, ["gate", hexed])
+
+        assert result.exit_code == 1, result.output
+        assert "not awaiting human attestation" in result.stdout
+        assert "no such task" not in result.stdout
+
+    def test_run_reports_an_unusable_id_cleanly(self) -> None:
+        """A value that is not a UUID is a message, not a traceback."""
+        result = runner.invoke(app, ["run", "not-a-uuid"])
+
+        assert result.exit_code == 1
+        assert "invalid correlation id" in result.stdout
+
+    def test_run_reports_an_unknown_task_cleanly(self) -> None:
+        """A well-formed id for a task that does not exist is a message too.
+
+        The replay's own refusal — "cannot replay an empty history without
+        an initial projection" — is an invariant, not something an operator
+        can act on. ``paa status`` already answers this case with "no such
+        task"; ``paa run`` used to raise.
+        """
+        result = runner.invoke(app, ["run", "11111111-1111-1111-1111-111111111111"])
+
+        assert result.exit_code == 1
+        assert "no such task" in result.stdout
+
+    @pytest.mark.parametrize("command", ["status", "run", "ledger", "gate"])
+    def test_every_command_answers_an_unusable_id_the_same_way(
+        self, command: str
+    ) -> None:
+        """One rule for every command that takes a task id.
+
+        The commands differ in what they do with a task; they must not
+        differ in what they say about an argument that is not one.
+        """
+        result = runner.invoke(app, [command, "not-a-uuid"])
+
+        assert result.exit_code == 1
+        assert "invalid correlation id" in result.stdout
+        assert result.exception is not None
+        assert isinstance(result.exception, SystemExit)
+
+    @pytest.mark.parametrize("command", ["status", "run", "ledger", "gate"])
+    def test_every_command_answers_an_unknown_id_the_same_way(
+        self, command: str
+    ) -> None:
+        """A well-formed id for a task that does not exist.
+
+        ``paa gate`` used to answer this case with an unhandled
+        ``ValueError`` from the replay — the same traceback ``paa run``
+        used to raise — because it went straight to the projection without
+        asking whether the lineage was there.
+        """
+        result = runner.invoke(app, [command, "11111111-1111-1111-1111-111111111111"])
+
+        assert result.exit_code == 1
+        assert "no such task" in result.stdout
+        assert result.exception is not None
+        assert isinstance(result.exception, SystemExit)
+
+
+class TestServeBindHost:
+    """``paa serve`` may not open a public listener by accident.
+
+    The RFC's "no public edge ingestion" rule is a property of the *bind*,
+    not of the field the bind was spelled in: ``Settings.api_host`` is
+    validated to be loopback, and ``--host`` reached the same socket
+    without ever passing that validator. A flag is the easier path to
+    reach, so the unguarded path was the one an operator was most likely
+    to take by accident.
+    """
+
+    @staticmethod
+    def _no_server(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        """Stop the command from actually serving; report what it tried."""
+        import uvicorn
+
+        from paa.daemon import Daemon
+
+        served: list[str] = []
+
+        # The stub replaces a bound method, so ``self`` is the instance the
+        # real method would have received. Annotating it as ``object`` would
+        # hide ``self.config`` from the type checker, and a stub that cannot
+        # read the host it was about to serve is a stub that proves nothing.
+        async def fake_serve(self: uvicorn.Server) -> None:
+            served.append(str(self.config.host))
+
+        async def fake_start(self: Daemon) -> None:
+            return None
+
+        async def fake_stop(self: Daemon) -> None:
+            return None
+
+        monkeypatch.setattr(uvicorn.Server, "serve", fake_serve)
+        monkeypatch.setattr(Daemon, "start", fake_start)
+        monkeypatch.setattr(Daemon, "stop", fake_stop)
+        return served
+
+    def test_a_public_host_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        served = self._no_server(monkeypatch)
+
+        result = runner.invoke(app, ["serve", "--host", "0.0.0.0"])
+
+        assert result.exit_code == 1, result.output
+        assert "refusing to bind" in result.stdout
+        assert "0.0.0.0" in result.stdout
+        # The refusal names the way out, or it is just an obstacle.
+        assert "PAA_ALLOW_NON_LOOPBACK=1" in result.stdout
+        assert served == []
+        # A clean refusal, not an exception the operator has to read a
+        # traceback for.
+        assert result.exception is not None
+        assert isinstance(result.exception, SystemExit)
+
+    def test_a_public_host_is_refused_before_anything_is_built(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A refused bind must not have opened the database first.
+
+        The check belongs *before* the runtime is built: a refusal that
+        arrives after the ledger is open and the daemon is running leaves
+        the operator with a half-started server to clean up.
+        """
+        self._no_server(monkeypatch)
+        built: list[str] = []
+
+        async def fake_build(**_kwargs: object) -> object:
+            built.append("built")
+            raise AssertionError("the runtime must not be built for a refused bind")
+
+        monkeypatch.setattr("paa.cli.main._build_runtime", fake_build)
+
+        result = runner.invoke(app, ["serve", "--host", "0.0.0.0"])
+
+        assert result.exit_code == 1, result.output
+        assert built == []
+        assert result.exception is not None
+        assert isinstance(result.exception, SystemExit)
+
+    def test_the_escape_hatch_permits_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A deliberate non-loopback bind stays possible.
+
+        A containerised runtime *has* to bind something other than
+        loopback — Docker rewrites the destination to the container's
+        address — so the escape hatch is a real feature, and the flag has
+        to be able to reach it.
+        """
+        served = self._no_server(monkeypatch)
+        monkeypatch.setenv("PAA_ALLOW_NON_LOOPBACK", "1")
+        from paa.config import reset_settings_cache
+
+        reset_settings_cache()
+
+        result = runner.invoke(app, ["serve", "--host", "0.0.0.0"])
+
+        assert result.exit_code == 0, result.output
+        assert served == ["0.0.0.0"]
+        assert "http://0.0.0.0" in result.stdout
+
+    def test_a_loopback_host_is_served(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The flag still works for the address it is for."""
+        served = self._no_server(monkeypatch)
+
+        result = runner.invoke(app, ["serve", "--host", "127.0.0.1"])
+
+        assert result.exit_code == 0, result.output
+        assert served == ["127.0.0.1"]
+
+    def test_a_public_host_in_the_setting_is_refused_cleanly(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The setting's own refusal, without the traceback.
+
+        The validator already refuses a non-loopback ``PAA_API_HOST``; it
+        does so by raising, and a configuration error the operator caused
+        is not a crash.
+        """
+        self._no_server(monkeypatch)
+        monkeypatch.setenv("PAA_API_HOST", "0.0.0.0")
+        from paa.config import reset_settings_cache
+
+        reset_settings_cache()
+
+        result = runner.invoke(app, ["serve"])
+
+        assert result.exit_code == 1, result.output
+        assert "invalid configuration" in result.stdout
+        assert "not loopback" in result.stdout
+        assert result.exception is not None
+        assert isinstance(result.exception, SystemExit)
 
 
 class TestErrorHandling:
