@@ -19,7 +19,8 @@ A blob's name *is* the SHA-256 of its raw bytes, so:
   the ledger's hash chain proves what the runtime believed, and these blobs are
   what it believed it about. Silent bit-rot in an archive nobody reads until
   they urgently need it is the worst failure mode this layer has, so a mismatch
-  raises :class:`StorageError` rather than returning plausible-looking bytes.
+  raises :class:`~paa.storage.coldlake.errors.Corrupt` rather than returning
+  plausible-looking bytes.
 
 Fan-out
 -------
@@ -37,11 +38,12 @@ runtime targets a machine where a single 500 MB archived artifact read into a
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import shutil
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Final
 
@@ -49,7 +51,13 @@ import structlog
 import zstandard
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
-from paa.core.errors import StorageError
+from paa.storage.coldlake.errors import (
+    BlobFailure,
+    Corrupt,
+    MalformedRequest,
+    NotFound,
+    translate_blob_error,
+)
 
 if TYPE_CHECKING:
     # Imported for the type only: ``base`` imports this module for ``BlobRef``,
@@ -78,6 +86,15 @@ DEFAULT_CHUNK_SIZE: Final = 1024 * 1024
 _HASH_LENGTH: Final = 64
 _COMPRESSED_SUFFIX: Final = ".zst"
 _RAW_SUFFIX: Final = ".bin"
+
+#: How much of a rejected value is echoed back in the error.
+#:
+#: The digest is caller-supplied, and a caller-supplied value has no business
+#: being an unbounded string in a ledger payload — the error's details are
+#: merged verbatim into one. 128 characters is enough to recognise the value
+#: that was rejected and short enough that a megabyte of garbage cannot make
+#: the ledger grow by a megabyte.
+_ECHOED_VALUE_LIMIT: Final = 128
 
 
 class BlobRef(BaseModel):
@@ -115,12 +132,12 @@ class BlobRef(BaseModel):
         """
         prefix = f"{CAS_URI_SCHEME}://"
         if not uri.startswith(prefix):
-            raise StorageError(
+            raise MalformedRequest(
                 f"not a CAS uri: {uri!r}", substrate=_SUBSTRATE, uri=uri
             )
         digest = uri[len(prefix) :]
         if len(digest) != _HASH_LENGTH:
-            raise StorageError(
+            raise MalformedRequest(
                 f"malformed CAS uri: {uri!r}", substrate=_SUBSTRATE, uri=uri
             )
         return digest
@@ -147,8 +164,16 @@ class ContentAddressedStore:
         self._staging = self._root / "staging"
         self._zstd_level = zstd_level
         self._chunk_size = chunk_size
-        self._blobs.mkdir(parents=True, exist_ok=True)
-        self._staging.mkdir(parents=True, exist_ok=True)
+        try:
+            self._blobs.mkdir(parents=True, exist_ok=True)
+            self._staging.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            # Constructing the store is a boundary too: a root that cannot be
+            # created is a substrate failure, and it used to escape as a raw
+            # ``OSError`` out of the constructor.
+            raise translate_blob_error(
+                exc, substrate=_SUBSTRATE, path=str(self._root), op="create"
+            ) from exc
 
     # -- paths -------------------------------------------------------------
 
@@ -193,7 +218,9 @@ class ContentAddressedStore:
             )
 
         payload = (
-            zstandard.ZstdCompressor(level=self._zstd_level).compress(data) if compress else data
+            _compress(data, level=self._zstd_level, substrate=_SUBSTRATE)
+            if compress
+            else data
         )
         self._commit(target, payload)
         log.debug("cas.put", sha256=digest, size=len(data), stored=len(payload))
@@ -247,14 +274,16 @@ class ContentAddressedStore:
                         # callers get the same structured error either way,
                         # rather than an opaque "Src size is incorrect".
                         if size is not None:
-                            raise StorageError(
+                            raise MalformedRequest(
                                 "declared size does not match the bytes read",
                                 substrate=_SUBSTRATE,
                                 declared=size,
                                 actual=raw_bytes,
                             ) from exc
-                        raise StorageError(
-                            f"compression failed: {exc}", substrate=_SUBSTRATE
+                        raise BlobFailure(
+                            "the payload could not be compressed",
+                            substrate=_SUBSTRATE,
+                            driver_error="ZstdError",
                         ) from exc
                 else:
                     for chunk in _iter_chunks(source, self._chunk_size):
@@ -266,7 +295,7 @@ class ContentAddressedStore:
             # content to flush and may not trip the frame check, and the
             # uncompressed path has no frame check at all.
             if size is not None and size != raw_bytes:
-                raise StorageError(
+                raise MalformedRequest(
                     "declared size does not match the bytes read",
                     substrate=_SUBSTRATE,
                     declared=size,
@@ -291,8 +320,19 @@ class ContentAddressedStore:
             return BlobRef(
                 sha256=digest, size_bytes=raw_bytes, compressed_bytes=compressed_bytes
             )
+        except OSError as exc:
+            # The staging write, the rename, or the read from the caller's
+            # stream: all three are the substrate failing to take the payload,
+            # and all three used to escape as a raw ``OSError``.
+            raise translate_blob_error(
+                exc, substrate=_SUBSTRATE, path=str(scratch), op="write"
+            ) from exc
         finally:
-            scratch.unlink(missing_ok=True)
+            # The cleanup must not replace the failure that brought us here:
+            # a staging file left behind is recoverable, and the failure that
+            # is being reported is not.
+            with contextlib.suppress(OSError):
+                scratch.unlink(missing_ok=True)
 
     def _commit(self, target: Path, payload: bytes) -> None:
         """Write via a staging file and rename, so a blob is never half-there.
@@ -307,11 +347,13 @@ class ContentAddressedStore:
             scratch.write_bytes(payload)
             os.replace(scratch, target)
         except OSError as exc:
-            raise StorageError(
-                f"could not write blob: {exc}", substrate=_SUBSTRATE, path=str(target)
+            raise translate_blob_error(
+                exc, substrate=_SUBSTRATE, path=str(target), op="write"
             ) from exc
         finally:
-            scratch.unlink(missing_ok=True)
+            # The cleanup must not replace the failure that brought us here.
+            with contextlib.suppress(OSError):
+                scratch.unlink(missing_ok=True)
 
     # -- reads -------------------------------------------------------------
 
@@ -322,10 +364,10 @@ class ContentAddressedStore:
         never act on corrupted bytes.
         """
         path = self._require(digest)
-        raw = self._read_all(path)
+        raw = self._read_all(path, digest)
         actual = hashlib.sha256(raw).hexdigest()
         if actual != digest:
-            raise StorageError(
+            raise Corrupt(
                 "blob failed hash verification; the archive is corrupt",
                 substrate=_SUBSTRATE,
                 expected=digest,
@@ -346,18 +388,37 @@ class ContentAddressedStore:
         """
         path = self._require(digest)
         hasher = hashlib.sha256()
-        with path.open("rb") as handle:
+        try:
+            handle = path.open("rb")
+        except OSError as exc:
+            # The open is outside the ``with`` on purpose: a file that cannot
+            # be opened is a substrate failure, and it used to escape this
+            # generator as a raw ``OSError``.
+            raise translate_blob_error(
+                exc, substrate=_SUBSTRATE, path=str(path), sha256=digest, op="open"
+            ) from exc
+        with handle:
             source: IO[bytes]
             if path.suffix == _COMPRESSED_SUFFIX:
                 source = zstandard.ZstdDecompressor().stream_reader(handle)
             else:
                 source = handle
-            for chunk in _iter_chunks(source, self._chunk_size):
+            chunks = _translated_chunks(
+                _iter_chunks(source, self._chunk_size),
+                translate=lambda exc: translate_blob_error(
+                    exc,
+                    substrate=_SUBSTRATE,
+                    path=str(path),
+                    sha256=digest,
+                    op="read",
+                ),
+            )
+            for chunk in chunks:
                 hasher.update(chunk)
                 yield chunk
         actual = hasher.hexdigest()
         if actual != digest:
-            raise StorageError(
+            raise Corrupt(
                 "blob failed hash verification; the archive is corrupt",
                 substrate=_SUBSTRATE,
                 expected=digest,
@@ -365,7 +426,7 @@ class ContentAddressedStore:
                 path=str(path),
             )
 
-    def _read_all(self, path: Path) -> bytes:
+    def _read_all(self, path: Path, digest: str) -> bytes:
         try:
             with path.open("rb") as handle:
                 if path.suffix != _COMPRESSED_SUFFIX:
@@ -375,16 +436,17 @@ class ContentAddressedStore:
                 # content size, and the one-shot API refuses those outright.
                 return zstandard.ZstdDecompressor().stream_reader(handle).read()
         except OSError as exc:
-            raise StorageError(
-                f"could not read blob: {exc}", substrate=_SUBSTRATE, path=str(path)
+            raise translate_blob_error(
+                exc, substrate=_SUBSTRATE, path=str(path), sha256=digest, op="read"
             ) from exc
         except zstandard.ZstdError as exc:
             # A truncated or scrambled frame is corruption too; report it the
             # same way rather than leaking a codec-specific exception.
-            raise StorageError(
-                f"blob is not a readable zstd frame: {exc}",
+            raise Corrupt(
+                "blob is not a readable zstd frame",
                 substrate=_SUBSTRATE,
                 path=str(path),
+                sha256=digest,
             ) from exc
 
     # -- metadata ----------------------------------------------------------
@@ -403,7 +465,14 @@ class ContentAddressedStore:
         path = self._locate(digest)
         if path is None:
             return None
-        compressed_bytes = path.stat().st_size
+        try:
+            compressed_bytes = path.stat().st_size
+        except OSError as exc:
+            # The blob was there a moment ago and is not now: a race, and the
+            # answer is the same as the one for a blob that was never there.
+            raise translate_blob_error(
+                exc, substrate=_SUBSTRATE, path=str(path), sha256=digest, op="stat"
+            ) from exc
         if path.suffix != _COMPRESSED_SUFFIX:
             return BlobRef(
                 sha256=digest, size_bytes=compressed_bytes, compressed_bytes=compressed_bytes
@@ -415,14 +484,19 @@ class ContentAddressedStore:
         )
 
     def _raw_size(self, path: Path) -> int:
-        with path.open("rb") as handle:
-            header = handle.read(18)  # a zstd frame header is at most 18 bytes
-            declared = zstandard.frame_content_size(header)
-            if declared >= 0:
-                return declared
-            handle.seek(0)
-            reader = zstandard.ZstdDecompressor().stream_reader(handle)
-            return sum(len(chunk) for chunk in _iter_chunks(reader, self._chunk_size))
+        try:
+            with path.open("rb") as handle:
+                header = handle.read(18)  # a zstd frame header is at most 18 bytes
+                declared = zstandard.frame_content_size(header)
+                if declared >= 0:
+                    return declared
+                handle.seek(0)
+                reader = zstandard.ZstdDecompressor().stream_reader(handle)
+                return sum(len(chunk) for chunk in _iter_chunks(reader, self._chunk_size))
+        except OSError as exc:
+            raise translate_blob_error(
+                exc, substrate=_SUBSTRATE, path=str(path), op="stat"
+            ) from exc
 
     def iter_blobs(self) -> Iterator[BlobRef]:
         """Walk the archive. Sorted, so two runs enumerate in the same order."""
@@ -445,9 +519,20 @@ class ContentAddressedStore:
         with an operational consequence. It is also exact and cheap, where the
         raw total would mean decompressing blobs whose frames declare no size.
         """
-        return sum(
-            path.stat().st_size for path in self._blobs.rglob("*") if path.is_file()
-        )
+        total = 0
+        for path in self._blobs.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                total += path.stat().st_size
+            except OSError as exc:
+                # A file that vanished between the listing and the stat: the
+                # archive is being swept under us, and the number we report
+                # is then approximate rather than exact.
+                raise translate_blob_error(
+                    exc, substrate=_SUBSTRATE, path=str(path), op="stat"
+                ) from exc
+        return total
 
     # -- deletion ----------------------------------------------------------
 
@@ -464,8 +549,8 @@ class ContentAddressedStore:
         try:
             path.unlink()
         except OSError as exc:
-            raise StorageError(
-                f"could not delete blob: {exc}", substrate=_SUBSTRATE, path=str(path)
+            raise translate_blob_error(
+                exc, substrate=_SUBSTRATE, path=str(path), sha256=digest, op="delete"
             ) from exc
         log.info("cas.deleted", sha256=digest)
         return True
@@ -474,14 +559,19 @@ class ContentAddressedStore:
         """Sweep partial writes abandoned by a crash. Returns how many were removed."""
         removed = 0
         for leftover in self._staging.glob("*.part"):
-            leftover.unlink(missing_ok=True)
+            try:
+                leftover.unlink(missing_ok=True)
+            except OSError as exc:
+                raise translate_blob_error(
+                    exc, substrate=_SUBSTRATE, path=str(leftover), op="delete"
+                ) from exc
             removed += 1
         return removed
 
     def _require(self, digest: str) -> Path:
         path = self._locate(digest)
         if path is None:
-            raise StorageError("blob not found", substrate=_SUBSTRATE, sha256=digest)
+            raise NotFound("blob not found", substrate=_SUBSTRATE, sha256=digest)
         return path
 
     def __repr__(self) -> str:
@@ -497,11 +587,62 @@ def _validate_digest(digest: str) -> None:
     This is a path-traversal guard as much as a typo check: a digest becomes
     directory components, so a value containing separators or ``..`` must never
     reach :meth:`_leaf`.
+
+    The rejected value is echoed, but only up to a bound: the digest is
+    caller-supplied and a caller-supplied value has no business being an
+    unbounded string in a ledger payload.
     """
     if len(digest) != _HASH_LENGTH or not all(c in "0123456789abcdef" for c in digest):
-        raise StorageError(
-            f"not a sha256 hex digest: {digest!r}", substrate=_SUBSTRATE, value=digest
+        raise MalformedRequest(
+            f"not a sha256 hex digest: {digest[:_ECHOED_VALUE_LIMIT]!r}",
+            substrate=_SUBSTRATE,
+            value=digest[:_ECHOED_VALUE_LIMIT],
         )
+
+
+def _compress(data: bytes, *, level: int, substrate: str) -> bytes:
+    """The compressed payload, with the codec's own failure translated.
+
+    A codec exception escaping the store would break the one invariant the
+    error vocabulary exists to keep — that a caller never has to know which
+    library compressed the blob — so it is translated here, where both
+    implementations can share the same answer.
+    """
+    try:
+        return zstandard.ZstdCompressor(level=level).compress(data)
+    except zstandard.ZstdError as exc:
+        raise BlobFailure(
+            "the payload could not be compressed",
+            substrate=substrate,
+            driver_error="ZstdError",
+        ) from exc
+
+
+def _translated_chunks(
+    reader: Iterator[bytes],
+    *,
+    translate: Callable[[BaseException], Exception],
+) -> Iterator[bytes]:
+    """The reader's chunks, with the substrate's failures translated.
+
+    The translation is around the *read* and not around the caller's loop.
+    A consumer that closes the generator early raises ``GeneratorExit`` at the
+    yield point, and a consumer that throws into the generator raises its own
+    exception there; both are the consumer's business, and neither is a
+    substrate failure. So the yield stays outside the translated region, and
+    only the read is inside it.
+    """
+    while True:
+        try:
+            chunk = next(reader)
+        except StopIteration:
+            return
+        except Exception as exc:
+            translated = translate(exc)
+            if translated is exc:
+                raise
+            raise translated from exc
+        yield chunk
 
 
 def _iter_chunks(source: IO[bytes], chunk_size: int) -> Iterator[bytes]:
@@ -529,9 +670,13 @@ def copy_file_into(store: BlobStore, path: Path, *, compress: bool = True) -> Bl
     try:
         with path.open("rb") as handle:
             return store.put_stream(handle, compress=compress, size=path.stat().st_size)
+    except FileNotFoundError as exc:
+        # The *host* file is missing, not a blob: named separately so the
+        # message says which of the two things is not there.
+        raise NotFound("host file not found", substrate=_SUBSTRATE, path=str(path)) from exc
     except OSError as exc:
-        raise StorageError(
-            f"could not read host file: {exc}", substrate=_SUBSTRATE, path=str(path)
+        raise translate_blob_error(
+            exc, substrate=_SUBSTRATE, path=str(path), op="read"
         ) from exc
 
 
@@ -550,8 +695,15 @@ def export_to_file(store: BlobStore, digest: str, destination: Path) -> Path:
                 sink.write(chunk)
         os.replace(scratch, destination)
         return destination
+    except OSError as exc:
+        # Writing the blob back out to the host is a filesystem operation,
+        # and a raw ``OSError`` from it would reach the caller unchanged.
+        raise translate_blob_error(
+            exc, substrate=_SUBSTRATE, path=str(destination), op="write"
+        ) from exc
     finally:
-        scratch.unlink(missing_ok=True)
+        with contextlib.suppress(OSError):
+            scratch.unlink(missing_ok=True)
 
 
 def purge(store: ContentAddressedStore) -> None:

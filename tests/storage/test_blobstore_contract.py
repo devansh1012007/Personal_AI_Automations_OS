@@ -26,6 +26,12 @@ import pytest
 
 from paa.storage.coldlake import ArtifactArchive, ContentAddressedStore
 from paa.storage.coldlake.base import BlobStore
+from paa.storage.coldlake.errors import (
+    BlobError,
+    Corrupt,
+    MalformedRequest,
+    NotFound,
+)
 from paa.storage.coldlake.minio_backend import S3BlobStore
 from paa.storage.relational.database import Database
 from tests.storage.test_minio_backend import StubS3Client
@@ -180,6 +186,120 @@ def test_contract_names_the_parameters_the_stores_use(
     for store in (cas, s3_store):
         theirs = _caller_parameter_names(store, "put_stream")
         assert theirs == contract, f"{type(store).__name__}.put_stream"
+
+
+# ---------------------------------------------------------------------------
+# The error clause
+# ---------------------------------------------------------------------------
+#
+# The contract now says what each method raises, and this checks that the two
+# implementations agree with it. Before the vocabulary the contract was
+# silent about failure, and the silence is what let the same condition — a
+# missing bucket — arrive as two different exception types depending on which
+# method the caller had used.
+
+
+def _corrupt_the_only_blob(store: Any, s3_client: StubS3Client) -> None:
+    """Replace the stored blob's bytes with something that is not a frame.
+
+    A frame that is not a frame is corruption, and corruption has to be the
+    same class on both substrates and on both read paths.
+    """
+    if isinstance(store, ContentAddressedStore):
+        path = next(store.root.rglob("*.zst"))
+        path.write_bytes(b"not a zstd frame at all")
+        return
+    key, (_body, meta) = next(iter(s3_client.objects.items()))
+    s3_client.objects[key] = (b"not a zstd frame at all", meta)
+
+
+class TestTheErrorClause:
+    def test_every_contract_method_states_what_it_raises(self) -> None:
+        """The clause has to be *in the contract*, not only in the code.
+
+        A method whose docstring names no failure is a method whose failure
+        behaviour is unspecified — which is how the divergence between
+        ``put`` and ``put_stream`` went unnoticed for so long.
+        """
+        members = (
+            "NotFound",
+            "AccessDenied",
+            "Unreachable",
+            "Corrupt",
+            "MalformedRequest",
+            "NotSupported",
+            "BlobFailure",
+        )
+        for name in _declared_methods():
+            if name == "__repr__":
+                continue
+            doc = inspect.getdoc(getattr(BlobStore, name)) or ""
+            assert any(member in doc for member in members), name
+
+    def test_a_missing_blob_is_not_found_on_both_substrates(
+        self, cas: ContentAddressedStore, s3_store: S3BlobStore
+    ) -> None:
+        """The same condition, the same class, on either substrate.
+
+        And the error names the **digest**: the address the caller asked
+        about, not the substrate's internal key.
+        """
+        digest = "a" * 64
+        for store in (cas, s3_store):
+            with pytest.raises(NotFound) as excinfo:
+                store.get(digest)
+            assert excinfo.value.details["sha256"] == digest
+            assert isinstance(excinfo.value, BlobError)
+
+    def test_a_missing_blob_is_not_found_in_the_streaming_path_on_both(
+        self, cas: ContentAddressedStore, s3_store: S3BlobStore
+    ) -> None:
+        digest = "b" * 64
+        for store in (cas, s3_store):
+            with pytest.raises(NotFound) as excinfo:
+                list(store.get_stream(digest))
+            assert excinfo.value.details["sha256"] == digest
+
+    def test_a_hostile_digest_is_a_malformed_request_on_both(
+        self, cas: ContentAddressedStore, s3_store: S3BlobStore
+    ) -> None:
+        """A digest becomes path components, so it is refused at the door."""
+        for store in (cas, s3_store):
+            with pytest.raises(MalformedRequest):
+                store.exists("../../etc/passwd")
+
+    def test_a_lying_size_hint_is_a_malformed_request_on_both(
+        self, cas: ContentAddressedStore, s3_store: S3BlobStore
+    ) -> None:
+        """The hint is checked the same way whichever way the bytes arrived."""
+        for store in (cas, s3_store):
+            with pytest.raises(MalformedRequest):
+                store.put_stream(io.BytesIO(b"twelve bytes"), size=999)
+
+    def test_a_corrupt_frame_is_corrupt_on_both(
+        self,
+        cas: ContentAddressedStore,
+        s3_store: S3BlobStore,
+        s3_client: StubS3Client,
+    ) -> None:
+        """Corruption is corruption: one class, both substrates, both paths."""
+        for store in (cas, s3_store):
+            ref = store.put(b"a payload that will be mangled")
+            _corrupt_the_only_blob(store, s3_client)
+            with pytest.raises(Corrupt):
+                store.get(ref.sha256)
+            with pytest.raises(Corrupt):
+                list(store.get_stream(ref.sha256))
+
+    def test_a_missing_blob_is_an_answer_not_an_error_on_both(
+        self, cas: ContentAddressedStore, s3_store: S3BlobStore
+    ) -> None:
+        """``exists`` and ``stat`` answer; they do not raise for absence."""
+        digest = "c" * 64
+        for store in (cas, s3_store):
+            assert store.exists(digest) is False
+            assert store.stat(digest) is None
+            assert store.delete(digest) is False
 
 
 # ---------------------------------------------------------------------------
