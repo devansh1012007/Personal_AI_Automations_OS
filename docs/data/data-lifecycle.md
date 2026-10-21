@@ -76,26 +76,48 @@ scheme (which made retries impossible under a UNIQUE constraint).
 
 ### Creation
 `MemoryCreator.run_batch()` (`memory/creator.py`) claims unprocessed signals
-(`SignalRepository.claim_unprocessed`, `signals.py:209`) and writes entities
-and facts via `FactRepository.upsert_entity` / `add_fact` (`facts.py:199`,
-`:429`) into `hot_serving_entity_index` and `hot_serving_active_facts`.
+(`SignalRepository.claim_unprocessed`, `signals.py:212`) and writes entities
+and facts via `FactRepository.upsert_entity` / `add_fact` (`facts.py:337`,
+`:779`) into `hot_serving_entity_index` and `hot_serving_active_facts`.
 
 Facts are **never overwritten**: `add_fact` appends a new version; `supersede`
-links `old → new` (`facts.py:500`, refuses cycles). `supersession_chain`
-walks back with a visited-set guard (`facts.py:532`).
+links `old → new` (`facts.py:850`, refuses cycles). `supersession_chain`
+walks back with a visited-set guard (`facts.py:882`).
 
 Confidence stored is `initial_confidence` (C₀); the effective confidence
 `C(t) = C₀·e⁻ˡᵃᵐᵇᵈᵃ·t` is computed lazily at read time
-(`memory/decay.py`, `domains.py:120`).
+(`memory/decay.py::effective_confidence`, `decay.py:57`).
 
 ### Retrieval
 - `FactRepository.query_facts()` filters by `min_confidence` on **decayed**
   confidence in Python (cannot push into SQL because it's derived), bounded by
   `max_scan=10_000`, sorted by `(-confidence, -importance, created_at)`
-  (`facts.py:554`).
-- `resolve_entity()`: exact → alias → fuzzy (FTS5 trigram) (`facts.py:299`).
+  (`facts.py:904`).
+- `resolve_entity()` (`facts.py:456`): a three-rung ladder — exact → alias →
+  fuzzy — in which the **Python gate is the authority**. The gate is a
+  character-trigram Jaccard similarity over the 3-grams of the raw,
+  case-folded text (`facts.py:157`, `:203`) — FTS5's own gram model, so a
+  pair the gate accepts is a pair the index can hold. The database only
+  decides *which rows the gate gets to look at*, and it returns a candidate
+  set that is a **superset** of the gate's acceptance set for **ASCII**
+  corpora: a **phrase**
+  query ("is the term a substring of the row's text?") with a **broad**
+  fallback ("does the row share at least one of the term's grams?"), which
+  is the gate's own precondition. The phrase query is a precision pass; the
+  broad one runs when the phrase rows do not clear the floor. Candidates are
+  ordered by a **portable total order** — the count proxy `DESC`, then the
+  unique `e.id ASC` — so the `LIMIT` cut is the same cut on both substrates
+  and the gate's tie-break is deterministic. For an ASCII corpus SQLite and
+  PostgreSQL therefore
+  return the same entity, the same match kind and the same score for the
+  same term; the details, and the recorded non-ASCII limitations, are in
+  [**ADR-0029**](../adr/0029-entity-resolution-parity.md). The parity is
+  exact for **ASCII** corpora and bounded outside it: the *column* is folded
+  by the engine, so PostgreSQL's locale-aware `lower()` sees rows SQLite
+  cannot, and the two substrates can answer differently for the same
+  non-ASCII name.
 - Context gatherer reads hot facts with decayed confidence at read time
-  (`context_agents.py:162`).
+  (`context_agents.py:223`).
 
 ### Mutation / invalidation
 - `DecaySweeper.sweep()` (`memory/decay.py`): per-domain `decay_lambda`; facts

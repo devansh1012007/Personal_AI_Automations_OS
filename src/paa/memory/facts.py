@@ -27,11 +27,41 @@ name the ingestion path will eventually see.
 
 SPEC DEVIATION (docs/adr/0001): the RFC specifies PostgreSQL ``pg_trgm`` for
 fuzzy entity resolution. The SQLite equivalent is the FTS5 trigram index the
-schema maintains by trigger. FTS5 ranks with bm25, which is unbounded and not
-comparable across queries, so a bm25 score cannot be thresholded. We rank with
-bm25 but *gate* with an explicit character-trigram Jaccard similarity, which is
-bounded in [0,1] and means the same thing for every query — otherwise "xyz"
-would resolve to whatever row happened to come back first.
+schema maintains by trigger. Neither engine's own relevance score can
+*decide*: FTS5 ranks with bm25, which is unbounded and not comparable across
+queries, and ``pg_trgm`` scores the raw alias blob rather than each alias. So
+neither engine's score is used to decide, and neither is used to cut: the
+candidate rows are ordered by a **portable count of the term's grams** — a
+count of the row's text as the query sees it, which is the count the gate
+counts with but not the gate's score — and the decision is made in Python by
+an explicit character-trigram Jaccard similarity, which is bounded in [0,1]
+and means the same thing for every query — otherwise "xyz" would resolve to
+whatever row happened to come back first.
+
+The candidate query itself is built by the dialect seam
+(:meth:`paa.storage.relational.dialect.Dialect.entity_candidates_sql`), which
+is where the two engines' idioms live: an FTS5 ``MATCH`` on one, a portable
+``LIKE`` count on the other. The seam returns the statement *together with the
+parameters that statement takes*, so this module binds what the engine asked
+for rather than what it guessed. That change to the seam's shape amends
+ADR-0025 and is recorded in **ADR-0029** (``docs/adr/0029-entity-resolution-parity.md``).
+
+**The case fold is the seam's, and the gate's fold is the same fold.** The
+ways the two engines handle case are all different — FTS5's tokenizer folds
+the term it is asked about, PostgreSQL's ``LIKE`` is case-sensitive
+outright, SQLite's ``LIKE`` folds ASCII case and is case-sensitive only
+outside it, SQLite's ``lower()`` folds ASCII only and PostgreSQL's follows
+the locale — so a fold left to the engine is a fold the two engines do not
+agree on. The seam folds the term once, in Python
+(:func:`paa.storage.relational.dialect.fold_case`), and both engines' phrase
+predicates are built from the text it produces; the gate's gram model uses
+the same function, so the candidate query asks about the same *term* the
+gate scores. The *column* the query reads is folded by the engine, and that
+fold is not the same one — and the difference is **one-directional**:
+PostgreSQL's locale-aware ``lower()`` sees rows the other two substrates
+cannot see at all, so the two answers can differ, and the *match kind* can
+differ for the same entity. The recorded limitation of
+``docs/plans/w3-w5.md`` §1.6.
 
 A note on the ``# noqa: S608`` markers below: they sit on the **first**
 fragment of a statement that is assembled from several string literals,
@@ -42,12 +72,11 @@ marker, because an unused marker is itself a finding.
 
 from __future__ import annotations
 
-import re
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 import structlog
 
@@ -55,6 +84,7 @@ from paa.core.types import as_text
 from paa.memory.decay import effective_confidence
 from paa.memory.domains import MemoryDomain
 from paa.storage.relational.base import RelationalBackend
+from paa.storage.relational.dialect import fold_case
 from paa.storage.relational.like import like_pattern, like_predicate
 
 __all__ = [
@@ -73,10 +103,36 @@ EMBEDDING_STATUSES: frozenset[str] = frozenset({"pending", "indexed", "failed", 
 
 #: FTS5's trigram tokenizer indexes 3-character sequences, so a query shorter
 #: than that produces no tokens and can never match. Callers get an exact-match
-#: attempt and nothing else.
+#: attempt and nothing else. It is also the length below which a text has no
+#: grams at all, which is the one case the gate cannot decide by set overlap.
 _MIN_TRIGRAM_CHARS = 3
 
-_WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
+#: The most grams a term may have before the ladder refuses it.
+#:
+#: The candidate query's count proxy is a sum of two ``CASE`` expressions per
+#: gram, and it sits in the statement's ``ORDER BY`` — so SQLite's
+#: expression-depth limit is reached at about 500 *grams* (measured: 498
+#: grams still parse, 499 do not). That limit is SQLite's compiled
+#: ``SQLITE_MAX_EXPR_DEPTH``, 1000 by default, and the ceiling below is a
+#: fraction of it — a build with a *smaller* limit would break earlier, and
+#: the crash would come back.
+#:
+#: A term over the limit does not fail *closed* on the embedded substrate:
+#: the statement is refused as "expression tree is too large", which is not
+#: a ``QueryRejected``, so it escapes the ladder and takes the caller with
+#: it — while the server substrate, which has no such limit, answers "no
+#: match". A divergence, and a crash.
+#:
+#: So the ceiling is here, in Python, and it is the *same* on both
+#: substrates: a term with more grams than this resolves to no match on
+#: both, rather than raising on one. 400 grams is comfortably below the
+#: measured break, and it is far past any name a person has.
+#:
+#: The refusal is made **before any statement is issued** — in
+#: :meth:`FactRepository.resolve_entity`, beside the NUL refusal — so the
+#: two substrates cannot disagree about *how* they answer, and the answer
+#: is the same one on both.
+_MAX_TERM_GRAMS = 400
 
 
 def _has_nul(value: str) -> bool:
@@ -101,23 +157,90 @@ def _has_nul(value: str) -> bool:
 def trigram_similarity(left: str, right: str) -> float:
     """Jaccard overlap of the two strings' character trigram sets, in [0,1].
 
-    Deliberately the same shape as ``pg_trgm.similarity`` so the SQLite and
-    PostgreSQL paths gate fuzzy matches at the same threshold. Case-folded and
-    whitespace-normalised, because "Deploy  Pipeline" and "deploy pipeline" are
-    the same name.
+    The gram set is the 3-grams of the **raw**, case-folded text — no padding
+    and no whitespace-run collapsing — because that is what FTS5's ``trigram``
+    tokenizer indexes. The gate has to be decidable from what the index can
+    see: a gate that scores a pair the index cannot hold accepts a row that
+    no candidate query over the index can return.
+
+    **The gate is the stricter of the two engines' measures.** ``pg_trgm``
+    splits the text into words and *pads* each one, so its gram set holds
+    every word-internal gram the gate holds — a single word's grams are a
+    **subset** of ``pg_trgm``'s — and additionally holds the *boundary* grams
+    the gate does not have (``"  a"``, ``"ba "``). Those extra grams are what
+    make ``pg_trgm`` the more generous of the two: it accepts pairs the gate
+    refuses. What the gate gains is the other direction, the one that
+    matters: **a pair the gate accepts is a pair the engine can see.**
+    Measured over 702 pairs drawn from a 27-name corpus, all 38 pairs the
+    gate accepted at the 0.34 floor had a non-zero ``pg_trgm.similarity`` —
+    so the engine's own candidate query was a superset of the gate's
+    acceptance set over that corpus, while ``pg_trgm`` accepted 48 pairs at
+    that floor and the gate refused 14 of them.
+
+    That measurement is a property of the corpus, not of the design, and it
+    is not what the candidate query rests on: the query asks the **gram
+    count** — the gate's own precondition — expressed the same way on both
+    engines, so it does not depend on ``pg_trgm``'s model at all. Outside
+    ASCII the property is **bounded, not claimed**: the engine folds the
+    *column* with its own ``lower()`` (ASCII-only on SQLite, locale-aware
+    on PostgreSQL), so the two substrates can hold different candidate sets
+    there, and a non-ASCII alias is invisible to the count because the
+    alias column is stored as JSON text and ``json.dumps`` escapes it.
+
+    On SQLite the containment is *exact* rather than a superset: the gate's
+    gram set is the FTS5 token set of the stored text, character for
+    character. Under the padded model it was not — the gate's grams were a
+    strict superset of the index's tokens, and the excess were grams the
+    index cannot hold. The terms ``"aba"`` and ``"abba"`` are the measured
+    case: under the padded model they scored **0.50**, over the 0.34 floor,
+    on the three grams they shared — ``"  a"``, ``" ab"`` and ``"ba "``, every
+    one of them a padding gram — while FTS5's token sets for the two are
+    disjoint (``{"aba"}`` and ``{"abb", "bba"}``). The gate accepted a pair
+    the index could not see at all, so no candidate query over the index
+    could have been a superset of the gate's acceptance set. Under this
+    model the same pair scores **0.00**.
+
+    Two texts shorter than a trigram have no grams to overlap, so they are
+    compared as text instead of as sets: equal after trimming and
+    case-folding scores 1.0, anything else 0.0.
     """
     a, b = _trigrams(left), _trigrams(right)
     if not a or not b:
-        return 1.0 if left.strip().lower() == right.strip().lower() else 0.0
+        return 1.0 if fold_case(left.strip()) == fold_case(right.strip()) else 0.0
     return len(a & b) / len(a | b)
 
 
 def _trigrams(value: str) -> set[str]:
-    normalised = " ".join(value.lower().split())
-    if len(normalised) < _MIN_TRIGRAM_CHARS:
+    """The character trigrams of ``value``, case-folded — FTS5's model.
+
+    The grams are taken from the text **as written**: no padding, and no
+    whitespace-run collapsing. Both were removed deliberately, and the reason
+    is the same for each — a gram the index does not hold is a gram the gate
+    must not score on.
+
+    The padding produced *boundary* grams (``"  a"``, ``"ba "``) that no
+    FTS5 trigram token can ever be, so two texts could share a gram and
+    nothing else — a pair the index could not see. The collapsing changed
+    the text the grams came from: a name written with a double space and the
+    same name written with a single one produced the same grams, so a pair
+    could score 1.0 on a difference the text does not have — and for a row
+    that reached the index by another route the index holds the
+    double-spaced text verbatim, which the collapsing gate never scored.
+
+    Collapsing is not lost where it belongs: the entity boundary collapses
+    the canonical name when it is stored and the term when it is read, so
+    both sides of an entity comparison are already collapsed text by the
+    time the gate sees them.
+
+    **The case fold is the seam's** — :func:`paa.storage.relational.dialect.
+    fold_case` — and the same function the candidate query's term is folded
+    with, so the query asks about the text the gate scores and one place
+    decides what a fold is.
+    """
+    folded = fold_case(value)
+    if len(folded) < _MIN_TRIGRAM_CHARS:
         return set()
-    padded = f"  {normalised} "
-    return {padded[i : i + 3] for i in range(len(padded) - 2)}
+    return {folded[i : i + 3] for i in range(len(folded) - 2)}
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +368,21 @@ class FactRepository:
         a transaction the caller already owns — necessary rather than merely
         convenient, because :meth:`Database.transaction` takes a non-reentrant
         write lock and opening a second one from inside the first deadlocks.
+
+        **The lookup is ordered, and it is the same order the read path
+        uses.** The schema's ``UNIQUE`` on ``canonical_name`` is
+        case-*sensitive*, so the table can hold ``café`` and ``Café`` as two
+        rows while this lookup's ``lower()`` comparison sees one key; an
+        unordered lookup would refresh whichever row the engine's scan
+        reached first, and the two substrates would refresh *different*
+        rows — while :meth:`resolve_entity`, which is ordered, reads one of
+        them. The order is the unique ``id``, so the write path and the
+        read path agree on which row the entity is.
+
+        (For text the two engines fold the same way. Outside ASCII their
+        ``lower()``\\ s are not the same fold, so they can hold different
+        key sets — the recorded limitation of ``docs/plans/w3-w5.md`` §1.6,
+        and the one this order does not address.)
         """
         name = " ".join(canonical_name.split())
         if not name:
@@ -278,7 +416,7 @@ class FactRepository:
 
         async with conn.execute(
             "SELECT id, aliases, importance_weight, attributes FROM hot_serving_entity_index "
-            "WHERE lower(canonical_name) = lower(?)",
+            "WHERE lower(canonical_name) = lower(?) ORDER BY id ASC LIMIT 1",
             (name,),
         ) as cur:
             row = await cur.fetchone()
@@ -340,9 +478,13 @@ class FactRepository:
         *guess*, so it must clear ``fuzzy_floor`` and it reports itself as a
         guess through :attr:`Entity.match`.
 
-        ``fuzzy_floor`` defaults to 0.34, the ``pg_trgm`` default, which
-        tolerates a wrong or missing word in a short name while rejecting
-        unrelated strings.
+        ``fuzzy_floor`` defaults to 0.34 — the number this repository
+        adopted as "``pg_trgm``'s default", which is not quite PostgreSQL's
+        documented default for ``pg_trgm.similarity_threshold`` (0.3), and
+        after ADR-0029 is not ``pg_trgm``'s score at all: it is the
+        **gate's** own score, the Jaccard over the 3-grams of the raw,
+        case-folded text. A floor of 0.34 tolerates a wrong or missing word
+        in a short name while rejecting unrelated strings.
         """
         term = " ".join(name_or_alias.split())
         if not term:
@@ -367,8 +509,58 @@ class FactRepository:
             log.warning("memory.entity_term_refused", reason="nul_byte")
             return None
 
+        # **The term's grams are computed once, here.** The gate scores the
+        # term with them, the candidate query counts them, and the ceiling
+        # below is a property of *them* — so one place computes the set and
+        # every consumer of the term's grams gets the same one.
+        grams = tuple(sorted(_trigrams(term)))
+
+        if len(grams) > _MAX_TERM_GRAMS:
+            # The candidate query's count proxy is a sum of two CASE
+            # expressions per gram, and SQLite's expression-depth limit is
+            # reached at about 500 grams — where the statement is refused
+            # as "expression tree is too large" rather than answered, and
+            # the refusal is not a QueryRejected, so it would escape this
+            # ladder and take the caller with it. The server substrate has
+            # no such limit and would answer "no match". Refused here, the
+            # two substrates agree, and neither raises.
+            #
+            # The refusal is *before any statement*, beside the NUL's: a
+            # term this long is refused the way a term carrying a NUL is,
+            # so the answer is "no match" on both substrates and the
+            # question is never put to a engine that might refuse it.
+            log.warning(
+                "memory.entity_term_refused",
+                reason="too_many_grams",
+                grams=len(grams),
+            )
+            return None
+
+        # **The exact rung has a total order.** The schema's ``UNIQUE`` on
+        # ``canonical_name`` is case-*sensitive* — SQLite's BINARY
+        # collation, PostgreSQL's default — so the table can hold ``café``
+        # and ``Café`` as two rows while the rung's ``lower()`` comparison
+        # sees them as *one* key. Without an order the answer was whichever
+        # row the engine's scan reached first, and the two substrates
+        # reached different rows over the same data.
+        #
+        # ``id`` is the unique key ``AGENTS.md`` requires for a cut: a
+        # ``TEXT`` primary key on SQLite and a ``UUID`` on PostgreSQL, and
+        # ``upsert_entity`` writes the canonical hyphenated form, whose
+        # lexicographic order *is* the UUID's byte order — so
+        # ``ORDER BY id ASC`` is the same order on both engines, and the
+        # answer is the same row on both.
+        #
+        # The order is the part this fixes; the *key set* is the engine's
+        # ``lower()``, and the two engines' folds are the same for ASCII
+        # and not the same outside it — so for non-ASCII names the two
+        # substrates can still hold different keys, and can still answer
+        # differently. That is the recorded limitation of
+        # ``docs/plans/w3-w5.md`` §1.6, and it is not what this order
+        # addresses.
         exact = await self._db.fetch_one(
-            "SELECT * FROM hot_serving_entity_index WHERE lower(canonical_name) = lower(?)",
+            "SELECT * FROM hot_serving_entity_index "
+            "WHERE lower(canonical_name) = lower(?) ORDER BY id ASC LIMIT 1",
             (term,),
         )
         if exact is not None:
@@ -380,9 +572,12 @@ class FactRepository:
         if alias is not None:
             return _to_entity(alias, match="alias")
 
+        # The term is whitespace-collapsed above, so its length is the length
+        # the gate counts grams from: a term shorter than a trigram has no
+        # grams at all, and a pair with no grams cannot be fuzzy-matched.
         if not fuzzy or len(term) < _MIN_TRIGRAM_CHARS:
             return None
-        return await self._fuzzy_resolve(term, fuzzy_floor, candidate_limit)
+        return await self._fuzzy_resolve(term, grams, fuzzy_floor, candidate_limit)
 
     async def _alias_lookup(self, term: str) -> Any:
         """The entity that carries ``term`` as an alias, if one does.
@@ -406,42 +601,113 @@ class FactRepository:
 
         alias_values = self._db.dialect.alias_values("e.aliases")
         try:
+            # **The alias rung has a total order too**, for the same reason
+            # the exact rung has one: the alias column can hold the same
+            # alias twice, under two canonical names that differ only in
+            # case, and a cut with no order is a cut on an order the SQL
+            # does not define. The order is the unique ``id`` — the same
+            # key, and the same order on both substrates, as the exact
+            # rung's.
+            #
+            # **The cut is made here rather than in SQL, and that is
+            # deliberate.** With a ``LIMIT 1`` the engine may satisfy the
+            # order by walking the id index and *stopping at the first
+            # match*, so the alias expansion — which is a table-wide
+            # operation — would be evaluated for some rows and not others.
+            # A corrupt row would then break the lookup only for the
+            # terms whose match lies beyond it, which makes the
+            # degradation a function of the id order (and of the engine's
+            # plan) rather than a property of the rung. Without the
+            # ``LIMIT`` the expansion is evaluated for every row, the
+            # degradation stays total and identical on both substrates,
+            # and the rung still picks a deterministic row: the first of a
+            # totally ordered result.
             return await self._db.fetch_one(
                 "SELECT e.* FROM hot_serving_entity_index e, "  # noqa: S608
                 f"{alias_values} a "
-                "WHERE lower(a.value) = lower(?) LIMIT 1",
+                "WHERE lower(a.value) = lower(?) ORDER BY e.id ASC",
                 (term,),
             )
         except QueryRejected as exc:
             log.warning("memory.entity_alias_lookup_rejected", term=term, error=str(exc))
             return None
 
-    async def _fuzzy_resolve(self, term: str, floor: float, limit: int) -> Entity | None:
-        """Trigram search over ``hot_serving_entity_fts``.
+    async def _fuzzy_resolve(
+        self, term: str, grams: tuple[str, ...], floor: float, limit: int
+    ) -> Entity | None:
+        """Trigram search over the entity index, gated in Python.
 
-        Two passes: the whole term as a phrase, then its words OR'd together.
-        The second pass is what lets "Johnson Alice" find "Alice Johnson" —
-        trigram phrase matching is order-sensitive, and humans are not.
+        **Two queries: the phrase one first, the broad one as the
+        fallback.** The phrase query asks "is the term a substring of the
+        row's text"; the broad query asks "does the row's text share at
+        least one of the term's grams". The broad set contains the phrase
+        set, and a phrase is the stronger signal, so the broad set does not
+        dilute it. (The broad query is what lets "Johnson Alice" find
+        "Alice Johnson" — a phrase is order-sensitive and humans are not.)
+
+        **The fallback is a *gate* decision, not a query decision.** The
+        broad query runs when the phrase rows do not produce a candidate
+        that clears the floor — not merely when the phrase query returned
+        nothing. The two are different, and the difference was a defect:
+        the phrase query is *not* a superset of the gate's acceptance set
+        (it asks about substrings, and the gate asks about gram overlap),
+        so whenever it answered at all the gate never saw the broad set —
+        and a row the gate would have accepted was never scored. Measured:
+        with the entities "Widget Service Platform Operations And
+        Deployment" (a phrase match, scored 0.2553 — below the floor) and
+        "Service Widget" (scored 0.6), the resolution answered **no
+        match**, because the phrase row was scored, missed the floor, and
+        the broad query — the only one that can see the second row — never
+        ran.
+
+        **The narrowing this policy keeps, stated plainly.** While the
+        phrase rows clear the floor, the broad set is *not* consulted —
+        so a row only the broad query can see is not scored even when the
+        gate would have scored it higher. That is the phrase-first policy
+        doing what it says: the phrase query is a precision pass, and a
+        name the term spells out is taken over a name it only resembles.
+        It is a narrowing, and it is deliberate; the alternative — always
+        scoring the broad set — would make the phrase query a pure
+        restriction, since the broad set contains the phrase set.
+
+        **The term's grams are computed once**, by the caller, with the
+        same :func:`_trigrams` the gate scores with, so one place decides
+        what a gram is. They are sorted, because the set's iteration order
+        is not stable between processes and the grams end up in the
+        statement's parameter list — a candidate query whose parameters
+        changed shape between two runs of the same data is a candidate
+        query whose result cannot be reproduced.
+
+        **The gate decides.** Every candidate is re-scored here, in Python,
+        and the best score wins. The database only decides which rows the
+        gate gets to look at — and the candidates arrive in a total order
+        (the count proxy, then the unique id), so the gate's ``>=``
+        tie-break — the last maximum wins — is now deterministic rather
+        than a function of the heap layout.
         """
-        candidates = await self._fts_candidates(_fts_phrase(term), limit)
-        if not candidates:
-            words = [w for w in _WORD_RE.findall(term) if len(w) >= _MIN_TRIGRAM_CHARS]
-            if not words:
-                return None
-            candidates = await self._fts_candidates(
-                " OR ".join(_fts_phrase(w) for w in words), limit
-            )
+        if not grams:
+            # The ladder refuses a term shorter than a trigram, so this
+            # cannot happen — and the resolution path is written to fail
+            # closed rather than to raise, so it returns "no match" if it
+            # ever does.
+            return None
 
-        best: Entity | None = None
-        best_score = floor
-        for row in candidates:
-            entity = _to_entity(row)
-            score = max(
-                trigram_similarity(term, entity.canonical_name),
-                *(trigram_similarity(term, a) for a in entity.aliases or ("",)),
+        # The phrase query is a *precision* first pass: it is the query
+        # that can find the row the term spells out. It is run first, and
+        # its rows are scored by the same gate that scores the broad rows.
+        candidates = await self._entity_candidates(
+            mode="phrase", term=term, grams=grams, limit=limit
+        )
+        best, best_score = _best_candidate(candidates, term, floor)
+        if best is None:
+            # The phrase rows did not produce anything the gate accepts —
+            # either there were none, or the ones there were fell below
+            # the floor. The broad set contains the phrase set, so the
+            # broad rows alone are the fallback; no union is needed.
+            candidates = await self._entity_candidates(
+                mode="broad", term=term, grams=grams, limit=limit
             )
-            if score >= best_score:
-                best, best_score = entity, score
+            best, best_score = _best_candidate(candidates, term, floor)
 
         if best is None:
             return None
@@ -465,19 +731,38 @@ class FactRepository:
             score=best_score,
         )
 
-    async def _fts_candidates(self, query: str, limit: int) -> list[Any]:
+    async def _entity_candidates(
+        self,
+        *,
+        mode: Literal["phrase", "broad"],
+        term: str,
+        grams: tuple[str, ...],
+        limit: int,
+    ) -> list[Any]:
+        """The candidate rows for one of the two queries, or none.
+
+        The statement and the parameters that statement takes both come
+        from the dialect seam, so this call site is engine-agnostic: there
+        is no ``if backend == "postgres"`` here, and there is no way for
+        the two engines' parameters to drift apart at the call site.
+        """
         from paa.storage.relational.errors import QueryRejected
 
         try:
-            return await self._db.fetch_all(
-                self._db.dialect.entity_candidates_sql(query, limit),
-                (query, limit),
+            sql, params = self._db.dialect.entity_candidates_sql(
+                mode=mode,
+                term=term,
+                grams=grams,
+                limit=limit,
             )
+            return await self._db.fetch_all(sql, params)
         except QueryRejected as exc:
             # A malformed MATCH expression is a bad *query*, not a broken
             # database. Resolution failing closed (no match) is correct; taking
             # the whole ingestion batch down with it is not.
-            log.warning("memory.entity_fts_query_rejected", query=query, error=str(exc))
+            log.warning(
+                "memory.entity_candidate_query_rejected", mode=mode, term=term, error=str(exc)
+            )
             return []
 
     async def resolve_or_create(
@@ -813,24 +1098,21 @@ class FactRepository:
 # ---------------------------------------------------------------------------
 
 
-def _fts_phrase(value: str) -> str:
-    """Quote a term as an FTS5 phrase literal.
-
-    Everything the ingestion path resolves is untrusted text, and FTS5 MATCH is
-    a query language: an unquoted ``AND`` or a stray ``*`` would be parsed as an
-    operator. Doubling embedded quotes makes the whole term a literal.
-    """
-    return '"' + value.replace('"', '""') + '"'
-
-
 def _clean_aliases(aliases: Sequence[str] | None, *, exclude: str) -> tuple[str, ...]:
+    """The aliases, normalised, de-duplicated case-insensitively.
+
+    The de-duplication folds with the same :func:`fold_case` the gate
+    uses, so "one place decides what a fold is" holds here too: a change
+    to the fold would otherwise split the gate from the alias
+    de-duplication silently.
+    """
     out: list[str] = []
-    seen = {exclude.lower()}
+    seen = {fold_case(exclude)}
     for alias in aliases or ():
         normalised = " ".join(str(alias).split())
-        if not normalised or normalised.lower() in seen:
+        if not normalised or fold_case(normalised) in seen:
             continue
-        seen.add(normalised.lower())
+        seen.add(fold_case(normalised))
         out.append(normalised)
     return tuple(out)
 
@@ -840,6 +1122,43 @@ def _merge_aliases(
 ) -> list[str]:
     combined = [str(a) for a in existing] + list(incoming)
     return list(_clean_aliases(combined, exclude=exclude))
+
+
+def _best_candidate(rows: Sequence[Any], term: str, floor: float) -> tuple[Entity | None, float]:
+    """The best-scoring candidate of a set, or nothing at all.
+
+    **The gate, in one place.** Every candidate is re-scored here, in
+    Python, and the best score wins; the database only decides which rows
+    the gate gets to look at. A row is scored against its canonical name
+    and against each of its aliases *individually* — an alias is a name
+    the entity answers to, and the JSON blob the column holds is a
+    different text, so scoring the blob would score something the entity
+    is not called.
+
+    **The tie-break is the last maximum, and it is deterministic.** The
+    ``>=`` is the repository's own rule and it is not changed here: among
+    candidates with the same score, the *last* one wins. That is only
+    deterministic because the candidates arrive in a total order — the
+    count proxy, then the unique id — so "the last" is a well-defined row
+    and not a function of the heap layout.
+
+    **The floor is inclusive.** A candidate scoring exactly the floor is
+    accepted, so a floor of 0.34 accepts a 0.34. The floor is the
+    *initial* score too: a candidate that does not reach it is not a
+    candidate at all, and the returned score is the floor when nothing
+    was accepted.
+    """
+    best: Entity | None = None
+    best_score = floor
+    for row in rows:
+        entity = _to_entity(row)
+        score = max(
+            trigram_similarity(term, entity.canonical_name),
+            *(trigram_similarity(term, a) for a in entity.aliases or ("",)),
+        )
+        if score >= best_score:
+            best, best_score = entity, score
+    return best, best_score
 
 
 def _to_entity(row: Any, *, match: str = "exact") -> Entity:

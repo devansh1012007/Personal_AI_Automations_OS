@@ -25,6 +25,7 @@ from paa.storage.relational.like import (
     LIKE_ESCAPE,
     LIKE_ESCAPE_SQL,
     escape_like,
+    like_count_expression,
     like_pattern,
     like_predicate,
 )
@@ -291,3 +292,105 @@ class TestPatternShape:
     )
     def test_the_metacharacters_are_escaped(self, text: str, expected: str) -> None:
         assert like_pattern(text) == expected
+
+
+class TestTheCountExpression:
+    """The per-gram count a candidate query orders its rows by.
+
+    The count is the numerator of the trigram similarity the Python gate
+    computes, expressed in SQL so that SQLite and PostgreSQL can order
+    the same way. The expression is therefore a *number* the engine
+    produces, and these tests are the engine's verdict rather than a
+    re-implementation of it.
+    """
+
+    def test_the_expression_is_the_documented_fragment(self) -> None:
+        """The exact shape, because the caller sums these.
+
+        One expression per gram, summed; the shape is what tells the
+        caller that the sum is a count and the placeholders are the
+        patterns to bind.
+        """
+        assert like_count_expression("e.canonical_name") == (
+            f"(CASE WHEN e.canonical_name LIKE ? {LIKE_ESCAPE_SQL} THEN 1 ELSE 0 END)"
+        )
+
+    def test_the_expression_binds_one_parameter(self) -> None:
+        """The placeholder count is the pattern count.
+
+        One expression per gram means one pattern per expression, and a
+        mismatch here is a runtime error on every call.
+        """
+        assert like_count_expression("name").count("?") == 1
+
+    def test_an_expression_with_no_column_is_refused(self) -> None:
+        """The expression would name no column at all.
+
+        A statement that cannot be parsed is a worse place to find that
+        out than the call that built it.
+        """
+        with pytest.raises(ValueError, match="column"):
+            like_count_expression("")
+
+    def test_the_expression_counts_the_grams_a_row_contains(self) -> None:
+        """The count is the engine's verdict, not a re-implementation of it.
+
+        Checked against SQLite directly — the engine the relational layer
+        actually runs on — so the property is the database's, not this
+        repository's reading of what a ``CASE WHEN ... LIKE`` means. A row
+        carrying one of the two grams counts 1; a row carrying neither
+        counts 0.
+        """
+        grams = ("alp", "zep")
+        with closing(sqlite3.connect(":memory:")) as conn:
+            conn.execute("CREATE TABLE candidates (id INTEGER PRIMARY KEY, name TEXT)")
+            conn.executemany(
+                "INSERT INTO candidates (name) VALUES (?)", [("alpha",), ("zulu",)]
+            )
+            score = " + ".join(like_count_expression("name") for _ in grams)
+            rows = conn.execute(
+                f"SELECT id, {score} AS grams_matched FROM candidates ORDER BY id",
+                [like_pattern(gram) for gram in grams],
+            ).fetchall()
+
+        assert rows == [(1, 1), (2, 0)]
+
+    def test_the_expression_agrees_with_the_pattern_on_a_metacharacter(self) -> None:
+        """The escape clause is *inside* the expression, not beside it.
+
+        A gram carrying a ``%`` is matched literally because the pattern
+        was escaped by :func:`like_pattern` **and** the expression declares
+        the escape character. With either half missing the count is wrong:
+        without the clause the escaped backslash is a literal character no
+        row carries, and without the escaping the ``%`` is a wildcard that
+        matches a row it should not.
+        """
+        with closing(sqlite3.connect(":memory:")) as conn:
+            conn.execute("CREATE TABLE candidates (id INTEGER PRIMARY KEY, name TEXT)")
+            conn.executemany(
+                "INSERT INTO candidates (name) VALUES (?)", [("a%b",), ("axb",)]
+            )
+            rows = conn.execute(
+                f"SELECT id, {like_count_expression('name')} AS matched "
+                "FROM candidates ORDER BY id",
+                (like_pattern("a%b"),),
+            ).fetchall()
+
+        assert rows == [(1, 1), (2, 0)]
+
+    def test_the_expression_survives_the_postgres_placeholder_translation(self) -> None:
+        """The SQL half has to reach psycopg's dialect intact.
+
+        The runtime speaks to two engines, and the Postgres one rewrites
+        ``?`` to ``%s``. The count is built by summing one expression per
+        gram, so every one of them carries a placeholder that has to be
+        translated, and the escape clause has to come through untouched.
+        """
+        from paa.storage.relational.postgres import _qmark_to_pyformat
+
+        sql = f"SELECT 1 ORDER BY {like_count_expression('a')} + {like_count_expression('b')}"
+
+        translated = _qmark_to_pyformat(sql)
+
+        assert translated.count("%s") == 2
+        assert translated.count(LIKE_ESCAPE_SQL) == 2

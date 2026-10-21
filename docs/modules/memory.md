@@ -30,20 +30,54 @@ tool, relationship, identity, operational, environmental, workspace — `:78`).
 `narrative_domains()` = {narrative, reflection, strategic, identity} (`:260`).
 
 ### `decay.py` — DecaySweeper
-`effective_confidence(initial, idle_days, domain)` = `C₀·e⁻ˡᵃᵐᵇᵈᵃ·t`
-(`domains.py:120`). `DecaySweeper.sweep()` evicts facts below `prune_floor`
-using keyset pagination (`WHERE id > ?` — correct under deletion; OFFSET would
-skip rows, a documented fix). Doomed facts archived to cold lake then deleted.
-Unknown domain → logged warning, row left untouched (a typo cannot silently
-destroy memory).
+`effective_confidence(initial_confidence, last_queried_at, domain)` =
+`C₀·e⁻ˡᵃᵐᵇᵈᵃ·t` (`decay.py:57`). `DecaySweeper.sweep()` evicts facts below
+`prune_floor` using keyset pagination (`WHERE id > ?` — correct under
+deletion; OFFSET would skip rows, a documented fix). Doomed facts archived
+to cold lake then deleted. Unknown domain → logged warning, row left
+untouched (a typo cannot silently destroy memory).
 
 ### `facts.py` — FactRepository
 `upsert_entity` (idempotent on canonical_name; aliases unioned; importance max)
-(`:199`). `add_fact` appends a new version, never overwrites; `supersede`
-links versions (refuses cycles) (`:429`, `:500`). `supersession_chain` walks
-back with visited-set guard (`:532`). `query_facts` filters decayed confidence
+(`:337`). `add_fact` appends a new version, never overwrites; `supersede`
+links versions (refuses cycles) (`:779`, `:850`). `supersession_chain` walks
+back with visited-set guard (`:882`). `query_facts` filters decayed confidence
 in Python (derived, can't push to SQL), bounded `max_scan=10_000`
-(`:554`). `resolve_entity`: exact → alias → fuzzy FTS5 (`:299`).
+(`:904`).
+
+`resolve_entity` (`:456`) is a three-rung ladder — exact → alias → fuzzy —
+and the **gate is the authority**: a Python character-trigram Jaccard
+similarity (`trigram_similarity`, `:150`) decides, and the database only
+decides *which rows the gate gets to look at*. The gate's gram model is
+FTS5's — the 3-grams of the raw, case-folded text (`:203`), no padding and
+no whitespace-run collapsing — so a pair the gate accepts is a pair the
+index can hold.
+
+The candidate set comes from the dialect seam
+(`storage/relational/dialect.py::entity_candidates_sql`), which asks one of
+two questions: a **phrase** query ("is the term a substring of the row's
+text?") and a **broad** query ("does the row share at least one of the
+term's grams?"). The broad query asks the gate's own precondition, so for
+**ASCII corpora** the candidate set is a superset of the gate's acceptance
+set; the phrase query is a precision pass, and the broad one is the fallback
+when the phrase rows do not clear the floor. The rows are ordered by a
+**portable total order** — the count proxy `DESC`, then the unique `e.id
+ASC` — so the `LIMIT` cut is the same cut on both substrates and the gate's
+tie-break is deterministic rather than a function of the heap layout. The two
+substrates agree on the answer — id, match kind and score — for ASCII
+corpora; outside ASCII the parity is **bounded**, and the three mechanisms
+that bound it are named in the Known gaps below and in ADR-0029.
+
+A term carrying a NUL is refused before any statement is issued, on both
+substrates (`:482`); so is a term with more than `_MAX_TERM_GRAMS` grams
+(`:135`, `:508`), because the count proxy's `CASE` sum would otherwise hit
+SQLite's expression-depth limit and be refused as "expression tree is too
+large" — which is not a `QueryRejected` and would escape the fail-closed
+ladder. Recorded in
+[**ADR-0029**](../adr/0029-entity-resolution-parity.md); the case fold lives
+in the seam (`dialect.py::fold_case`, `:121`) and the seam returns the
+candidate query together with the parameters it takes, which amends
+ADR-0025.
 
 ### `creator.py` — MemoryCreator
 Ingests unprocessed signals into hot-serving facts/entities. Called by daemon
@@ -99,7 +133,14 @@ callable`.
 
 ## Failure behavior
 
-- FTS5 malformed MATCH → `[]` (failing closed) (`facts.py`).
+- A candidate query the engine refuses → `[]` (failing closed), so the fuzzy
+  rung answers "no match" rather than taking the caller with it
+  (`facts.py::_entity_candidates`). The FTS5 quoting is an injection
+  barrier, so a term carrying `"`, `*`, `AND`, `OR`, `NEAR`, `(` or `)` is
+  *answered* as text — it matches nothing and raises nothing.
+- A term carrying a NUL → no match, and **no statement is issued at all**
+  (`facts.py:482`); the two substrates refuse a NUL in different places, so
+  the refusal has to be in one place.
 - Unknown memory domain → `KeyError`; never silently defaults to decaying
   (`domains.py:250`, `facts.py::_to_fact`).
 - Decay archive failure → logged at error, doesn't block eviction.
@@ -110,7 +151,13 @@ callable`.
 - Changing `decay_lambda` values affects eviction; source of truth is
   `domains.py` (not `MemorySettings.decay_lambda` — potential drift).
 - Tests: `tests/memory/` (37 tests decay/domains/contradiction; 76
-  creator/curator/world-model per README).
+  creator/curator/world-model per README). Entity resolution has its own
+  three suites: `tests/memory/test_entity_resolution.py` (the candidate set,
+  the gate, the total order — embedded substrate only),
+  `tests/storage/test_dialect.py` (the seam's statement, parameters and
+  order — no database needed), and
+  `tests/storage/test_entity_parity.py` (the same corpus through both
+  substrates — `requires_postgres`, skipped without `PAA_TEST_POSTGRES_DSN`).
 
 ## Known gaps
 
@@ -118,6 +165,22 @@ callable`.
   (decay/curator use domain `prune_floor`).
 - `MemorySettings.decay_lambda` duplicates `domains.py` but isn't read by them
   (config/drift question).
+- Entity resolution's parity is exact for ASCII and **bounded** outside it.
+  The candidate query folds the *column* with the engine's `lower()`
+  (ASCII-only on SQLite, locale-aware on PostgreSQL) while the term is
+  folded in Python; the alias column is JSON text, so `json.dumps` escapes a
+  non-ASCII alias and the count proxy cannot see it; and the exact and alias
+  rungs still compare with the engine's `lower()`. All three need a stored
+  Python-computed normalisation to close, which is a schema change in both
+  DDL files plus a Python-executed backfill. Recorded in
+  [**ADR-0029**](../adr/0029-entity-resolution-parity.md).
+- The non-ASCII divergence is **one-directional**: PostgreSQL's locale-aware
+  `lower()` sees rows the ASCII-only fold cannot, so the two substrates can
+  answer differently — and for the same entity they can report a different
+  *match kind* (measured: `"İstanbul"` is an `exact` answer at 1.0 on
+  PostgreSQL and a `fuzzy` guess at 0.625 on SQLite). The parity suite
+  measures this rather than assuming it
+  (`tests/storage/test_entity_parity.py::TestTheRecordedDivergence`).
 
 ## Related documents
 
@@ -126,3 +189,4 @@ callable`.
 - [`data/data-models-and-relationships.md`](../data/data-models-and-relationships.md) — `hot_serving_*` schema.
 - [`runtime/background-jobs-and-events.md`](../runtime/background-jobs-and-events.md) — decay sweep daemon loop.
 - [`docs/adr/0014` memory domains note](../../README.md) — 18 domains over 6 mechanisms.
+- [`docs/adr/0029`](../adr/0029-entity-resolution-parity.md) — entity resolution is the same answer on both substrates.

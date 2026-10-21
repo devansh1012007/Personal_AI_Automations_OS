@@ -280,13 +280,46 @@ rows). Archives doomed facts to cold lake before deleting.
 
 ### `memory/facts.py` — FactRepository
 **Responsibility:** `upsert_entity`, `add_fact` (appends, never overwrites;
-`supersede` links versions), `resolve_entity` (exact → alias → fuzzy FTS5),
+`supersede` links versions), `resolve_entity` (exact → alias → fuzzy),
 `query_facts` (decayed confidence filtered in Python), supersession chains.
+
+`resolve_entity` is a three-rung ladder in which the **Python gate is the
+authority**: a character-trigram Jaccard similarity over the 3-grams of the
+raw, case-folded text — FTS5's own gram model — decides, and the database
+only decides which rows the gate gets to look at. For **ASCII corpora** the
+candidate set is a
+**superset** of the gate's acceptance set: a **phrase** query (the term is a
+substring of the row's text) with a **broad** fallback (the row shares at
+least one of the term's grams — the gate's own precondition), the broad one
+running when the phrase rows do not clear the floor. Candidates are ordered
+by a **portable total order** — the count proxy `DESC`, then the unique
+`e.id ASC` — so the cut is the same on both substrates and the tie-break is
+deterministic. For an ASCII corpus SQLite and PostgreSQL return the same
+entity, match kind and score; outside it the parity is **bounded** — see the
+known bound below ([**ADR-0029**](../adr/0029-entity-resolution-parity.md)).
 
 **Public interface:** `FactRepository`, `Fact`, `Entity`.
 
-**Failure behavior:** FTS5 malformed MATCH → returns `[]` (failing closed)
-(`facts.py`). `supersede` refuses cycles (`facts.py:500`).
+**Failure behavior:** a candidate query the engine refuses → returns `[]`
+(failing closed), so the fuzzy rung answers "no match" (`facts.py`). A term
+carrying a NUL is refused before any statement is issued, on both
+substrates (`facts.py:482`); so is a term with more than `_MAX_TERM_GRAMS`
+grams (`facts.py:135`, refused at `facts.py:508`), because the count proxy's
+`CASE` sum would otherwise hit SQLite's expression-depth limit and be refused
+as "expression tree is too large" — which is not a `QueryRejected` and would
+escape the ladder.
+`supersede` refuses cycles (`facts.py:850`).
+
+**Known bound:** the parity is exact for ASCII and **bounded** outside it.
+The candidate query folds the *column* with the engine's `lower()`
+(ASCII-only on SQLite, locale-aware on PostgreSQL), so the divergence is
+one-directional — PostgreSQL sees rows SQLite cannot — and for the same
+entity the two substrates can report a different *match kind* and score
+(measured: `"İstanbul"` is `exact` at 1.0 on PostgreSQL, `fuzzy` at 0.625 on
+SQLite). The alias column is JSON text, so `json.dumps` escapes a non-ASCII
+alias and the count proxy cannot see it. All three need a stored
+Python-computed normalisation to close
+([**ADR-0029**](../adr/0029-entity-resolution-parity.md)).
 
 ### `memory/creator.py`, `curator.py`, `contradiction.py`, `world_model.py`
 - `MemoryCreator.run_batch()` — ingests signals into facts (`daemon.py:167`).

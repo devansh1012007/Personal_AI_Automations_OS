@@ -27,15 +27,21 @@ value does not survive the trip.
 from __future__ import annotations
 
 import uuid
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 
 from paa.memory.domains import MemoryDomain
-from paa.memory.facts import FactRepository
+from paa.memory.facts import FactRepository, _trigrams, trigram_similarity
 from paa.storage.relational.database import Database, to_iso, utc_now
 from paa.storage.relational.errors import MalformedDocument
+
+#: The vocabulary view of the entity index's FTS5 table. ``fts5vocab`` is the
+#: only way to read the *tokenizer's own output* back, and the tokenizer's
+#: output is what the gate's model has to agree with.
+_FTS_VOCAB = "hot_serving_entity_fts_vocab"
 
 
 @pytest.fixture
@@ -251,6 +257,142 @@ class TestTheCorruptRow:
         exact_other = await repo.resolve_entity("Other Service")
         assert exact_other is not None
         assert exact_other.canonical_name == "Other Service"
+
+
+class TestTheGateModel:
+    """The gate's grams must be the index's grams.
+
+    The gate decides which entity a name refers to; the database only decides
+    which rows the gate gets to look at. That division is only sound if the
+    gate's gram set is the one the index holds — a gate that scores a pair
+    the index cannot hold accepts a row that no candidate query over the
+    index can return, and the two substrates then disagree about the answer.
+
+    The gate's model used to be the *padded* one: two leading spaces, one
+    trailing, whitespace runs collapsed. That is not what FTS5's ``trigram``
+    tokenizer indexes, and the difference was load-bearing. The terms
+    ``"aba"`` and ``"abba"`` shared only *padding* grams under it, so the
+    gate scored them 0.50 — over the 0.34 floor — while the tokenizer's token
+    sets for the two were disjoint. The gate accepted a pair the index could
+    not see at all.
+
+    These tests pin the tokenizer's model: the 3-grams of the raw,
+    case-folded text.
+    """
+
+    @pytest.fixture
+    async def fts_vocab(self, db: Database) -> AsyncIterator[None]:
+        """The vocabulary view of the entity index's FTS5 table.
+
+        It lists the tokens the index *holds*, per document and per column,
+        which is the only way to compare the gate's model with the
+        tokenizer's.
+        """
+        await db.execute(
+            f"CREATE VIRTUAL TABLE {_FTS_VOCAB} "
+            "USING fts5vocab(hot_serving_entity_fts, 'instance')"
+        )
+        yield
+
+    async def _tokens(self, db: Database, rowid: int) -> set[str]:
+        """The tokens the index holds for one document's canonical name."""
+        rows = await db.fetch_all(
+            f"SELECT term FROM {_FTS_VOCAB} WHERE doc = ? AND col = 'canonical_name'",
+            (rowid,),
+        )
+        return {str(row["term"]) for row in rows}
+
+    async def test_the_gate_grams_are_the_tokens_the_index_holds(
+        self, repo: FactRepository, db: Database, fts_vocab: None
+    ) -> None:
+        """The two sets are equal, over a corpus that exercises the edges.
+
+        Spaces, punctuation, digits and mixed case — because those are what
+        the padding and the collapsing used to change.
+        """
+        corpus = (
+            "Widget Service",
+            "ACME-42 Corp",
+            "alpha-beta",
+            "Widgt Servce",
+            "johnson alice",
+            "Deploy  Pipeline",
+        )
+        for name in corpus:
+            await repo.upsert_entity("project", name)
+
+        # A row that arrived by another route. The repository collapses a
+        # double space when it stores a name, but the index holds whatever
+        # it was given — and the gate has to score the text the index holds.
+        await db.execute(
+            "INSERT INTO hot_serving_entity_index "
+            "(id, class, canonical_name, aliases, created_at, updated_at) "
+            "VALUES ('direct-1', 'project', 'Widget  Service', '[]', "
+            "'2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')"
+        )
+
+        rows = await db.fetch_all(
+            "SELECT rowid, canonical_name FROM hot_serving_entity_index"
+        )
+        assert len(rows) == len(corpus) + 1
+        for row in rows:
+            stored = str(row["canonical_name"])
+            tokens = await self._tokens(db, int(row["rowid"]))
+            assert tokens == _trigrams(stored), (
+                f"the gate's model drifted from the tokenizer's for {stored!r}: "
+                f"index={sorted(tokens)} gate={sorted(_trigrams(stored))}"
+            )
+
+    async def test_a_pair_that_shares_no_gram_is_refused(
+        self, repo: FactRepository, db: Database, fts_vocab: None
+    ) -> None:
+        """The measured defect, closed.
+
+        ``"aba"`` and ``"abba"`` share no gram of their own text — the
+        tokenizer's token sets are ``{"aba"}`` and ``{"abb", "bba"}``, and
+        their intersection is empty. Under the padded model the gate scored
+        the pair 0.50, over the 0.34 floor, on three grams the index cannot
+        hold; so no candidate query over the index could have been a
+        superset of the gate's acceptance set.
+        """
+        first = await repo.upsert_entity("project", "aba")
+        second = await repo.upsert_entity("project", "abba")
+
+        first_row = await db.fetch_one(
+            "SELECT rowid FROM hot_serving_entity_index WHERE id = ?", (first,)
+        )
+        second_row = await db.fetch_one(
+            "SELECT rowid FROM hot_serving_entity_index WHERE id = ?", (second,)
+        )
+        assert first_row is not None and second_row is not None
+
+        first_tokens = await self._tokens(db, int(first_row["rowid"]))
+        second_tokens = await self._tokens(db, int(second_row["rowid"]))
+        assert first_tokens == {"aba"}
+        assert second_tokens == {"abb", "bba"}
+        assert first_tokens.isdisjoint(second_tokens)
+
+        # The gate's score follows the index: the pair shares nothing, so
+        # the gate refuses it.
+        assert trigram_similarity("aba", "abba") == 0.0
+        assert trigram_similarity("aba", "aba") == 1.0
+
+    def test_a_text_shorter_than_a_trigram_is_compared_as_text(self) -> None:
+        """The one case the gate cannot decide by set overlap.
+
+        A text shorter than three characters has no grams at all, so there
+        is nothing to overlap: the two are compared as text instead. Equal
+        after trimming and case-folding is 1.0, anything else is 0.0.
+        """
+        assert _trigrams("ab") == set()
+        assert _trigrams("abc") == {"abc"}
+
+        assert trigram_similarity("ab", "AB") == 1.0
+        assert trigram_similarity("ab", "cd") == 0.0
+        # A short text and a long one are compared as text too, so they are
+        # equal only when they are the same text. Under the padded model
+        # this pair scored 0.40 on two padding grams — over the floor.
+        assert trigram_similarity("ab", "abc") == 0.0
 
 
 class TestFacts:

@@ -53,6 +53,13 @@ because those paths have to answer rather than refuse.
 The whole decision, with the consequence at each call site spelled out, is
 in ``docs/adr/0023-like-pattern-escaping.md`` (SPEC DEVIATION
 (docs/adr/0023)).
+
+The **SQL half** of a LIKE lives here as well, so that the escape character
+and the clause are declared in one place: :func:`like_predicate` builds the
+search predicate over a list of columns, and :func:`like_count_expression`
+builds the per-gram count a caller orders candidate rows by. Neither of them
+builds a pattern — a pattern is a value, and a value is bound by the caller
+— so the pattern half of both is :func:`like_pattern`.
 """
 
 from __future__ import annotations
@@ -64,6 +71,7 @@ __all__ = [
     "LIKE_ESCAPE",
     "LIKE_ESCAPE_SQL",
     "escape_like",
+    "like_count_expression",
     "like_pattern",
     "like_predicate",
 ]
@@ -163,3 +171,57 @@ def like_predicate(*columns: str) -> str:
     if not columns:
         raise ValueError("a LIKE predicate needs at least one column")
     return " OR ".join(f"{column} LIKE ? {LIKE_ESCAPE_SQL}" for column in columns)
+
+
+def like_count_expression(column: str) -> str:
+    """The SQL half of "how many of a term's grams are in this column".
+
+    Builds ``"(CASE WHEN column LIKE ? ESCAPE '\\' THEN 1 ELSE 0 END)"`` — a
+    1 when the column contains the bound pattern and a 0 when it does not,
+    for use in an ``ORDER BY`` expression. A caller that wants to count a
+    term's grams sums one of these per gram and binds one pattern per
+    expression, in the order the expressions appear.
+
+    The pattern half is :func:`like_pattern`, and it is *bound* rather than
+    interpolated: a pattern is a value, and a value belongs in the parameter
+    list. The caller is the only party that knows which grams the term has,
+    and building the pattern here would put the escaping rule in two places
+    — the rule that has to be in one place (see ``docs/adr/0023``).
+
+    The escape character is declared on the comparison, so the fragment
+    reads the same on both engines and a pattern that was escaped for SQLite
+    is not silently unescaped by PostgreSQL's default.
+
+    The column name is interpolated because a column name is a module-level
+    constant at every call site, never caller input — the same rule
+    :func:`like_predicate` follows, and the same reason
+    :data:`LIKE_ESCAPE_SQL` is a constant rather than something assembled
+    from a value.
+
+    **The fragment is the same on both engines; one difference inside it is
+    not.** SQLite's ``LIKE`` folds ASCII case and PostgreSQL's does not, so
+    the count of a case-differing pair is 1 on one engine and 0 on the
+    other.
+
+    **Folding the column does not make the count portable.** A caller
+    that needs the count to mean the same thing on both engines is tempted
+    to fold the column itself — ``like_count_expression("lower(e.name)")``
+    — and that fixes the ASCII ``LIKE``-case axis only. The two engines'
+    ``lower()``\\ s are *different folds*: SQLite's is ASCII-only and
+    PostgreSQL's is locale-aware, so the folded column still differs
+    outside ASCII (measured: the row ``"CAFÉ NOIR"`` against the term
+    ``"café"`` counts 1 on SQLite and 2 on PostgreSQL). The column's fold
+    is the **engine's**, and that is the recorded limitation
+    (ADR-0029's limitation (a)); the count is portable for ASCII text,
+    which is where the corpus and the floor's calibration live. What the
+    caller *can* do is fold the text in Python — the seam's
+    :func:`paa.storage.relational.dialect.fold_case` — and bind that; a
+    fold left to the engine is a fold the two engines do not agree on.
+
+    :raises ValueError: if the column is empty. The expression would name
+        no column at all, and a statement that cannot be parsed is a worse
+        place to find that out than the call that built it.
+    """
+    if not column:
+        raise ValueError("a LIKE count expression needs a column")
+    return f"(CASE WHEN {column} LIKE ? {LIKE_ESCAPE_SQL} THEN 1 ELSE 0 END)"
