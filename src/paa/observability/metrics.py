@@ -259,6 +259,19 @@ class Histogram:
     maximum: float = -math.inf
     _cursor: int = 0
 
+    def __post_init__(self) -> None:
+        """Refuse a capacity that cannot retain anything.
+
+        A ring of zero slots is not a ring: ``observe`` reaches
+        ``self.samples[self._cursor] = value`` and raises an
+        ``IndexError`` about a list index, some distance from the
+        configuration mistake that caused it, and only once the first
+        observation arrives. The capacity is a decision made when the
+        histogram is built, so the refusal is made there too.
+        """
+        if self.capacity < 1:
+            raise ValueError(f"a histogram must retain at least one sample, got {self.capacity}")
+
     def observe(self, value: float) -> None:
         numeric = float(value)
         if not math.isfinite(numeric):
@@ -281,8 +294,29 @@ class Histogram:
     def summary(
         self, quantiles: tuple[float, ...] = DEFAULT_PERCENTILES
     ) -> dict[str, float | int]:
+        """The published summary of the series.
+
+        The six **numeric** fields — ``count``, ``sum``, ``min``, ``max``,
+        ``mean`` and ``window`` — are present whether or not there are
+        samples, so a consumer never has to write ``summary.get("window",
+        0)``: the shape of the answer does not change with the size of
+        the answer. The percentiles are added only when there is
+        something to summarise, because a percentile of no samples is
+        not a small number, it is no number.
+
+        This is the shape that lands in the ``telemetry`` column of a run
+        row, so it is a published contract rather than an internal
+        detail.
+        """
         if not self.samples:
-            return {"count": 0, "sum": 0.0, "min": 0.0, "max": 0.0, "mean": 0.0}
+            return {
+                "count": 0,
+                "sum": 0.0,
+                "min": 0.0,
+                "max": 0.0,
+                "mean": 0.0,
+                "window": 0,
+            }
         ordered = sorted(self.samples)
         out: dict[str, float | int] = {
             "count": self.count,

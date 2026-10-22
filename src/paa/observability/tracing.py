@@ -18,8 +18,18 @@ The governing rule in this module: **a tracing failure must never break the
 operation being traced.** Telemetry is a diagnostic aid; an exporter that
 cannot reach its collector, a serialisation error on an attribute, or a bug in
 this file must not be able to fail a user's task. Every internal step is
-wrapped, and the only exception :meth:`Tracer.span` ever propagates is the one
+wrapped, and the only exception :meth:`Tracer.span` propagates is the one
 raised by the caller's own body.
+
+**With one deliberate hole, at ``BaseException``.** :meth:`Tracer._safely`
+catches ``Exception``, not ``BaseException``, so an exporter that raises
+``KeyboardInterrupt`` or ``SystemExit`` — or a cancellation that arrives as
+one — propagates out of the span and out of the traced operation. That is the
+right way round: those are how a process is *told to stop*, and a rule that a
+telemetry failure can never interrupt the user has stopped being a safety
+rule and become a way of ignoring them. The hole is small, and it is stated
+here and pinned by the suite rather than left implicit in a helper's
+``except`` clause.
 """
 
 from __future__ import annotations
@@ -152,10 +162,12 @@ def _new_span_id() -> str:
 class Tracer:
     """Creates and records spans.
 
-    :param exporter: called with each finished :class:`Span`. Any exception it
-        raises is caught and logged — this is the seam the OTLP bridge plugs
-        into, and a collector being down is a normal condition, not an error the
-        traced operation should learn about.
+    :param exporter: called with each finished :class:`Span`. Any
+        ``Exception`` it raises is caught and logged — this is the seam
+        the OTLP bridge plugs into, and a collector being down is a
+        normal condition, not an error the traced operation should
+        learn about. A ``BaseException`` it raises is **not** caught:
+        see the module docstring for why the boundary is there.
     :param metrics: when supplied, every finished span's duration is also
         observed into ``span_duration_ms``.
     """
@@ -303,6 +315,17 @@ class Tracer:
         The module's governing rule, in one place. Logged at debug: a collector
         outage is not the user's problem and should not fill their console, but
         it must be discoverable when someone goes looking for missing traces.
+
+        The ``except`` clause names ``Exception`` and not
+        ``BaseException``, and that is the boundary of the rule rather
+        than an oversight. ``KeyboardInterrupt`` and ``SystemExit`` are
+        how a process is told to stop; swallowing them would produce a
+        runtime that cannot be interrupted, and swallowing a
+        ``CancelledError`` would break the event loop's cancellation
+        outright. A ``BaseException`` raised by an exporter therefore
+        propagates — and because it propagates out of the ``finally``
+        block of :meth:`Tracer.span`, it replaces the body\'s own
+        exception on its way out. The suite pins both halves.
         """
         try:
             action()

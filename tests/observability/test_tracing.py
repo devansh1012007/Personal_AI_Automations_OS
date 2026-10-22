@@ -220,3 +220,210 @@ class TestTheIdentity:
 
         assert str(uuid.UUID(span.trace_id)) == span.trace_id
         assert len(span.span_id) == 16
+
+
+class TestTheBaseExceptionBoundary:
+    """Where the governing rule stops, and why that is the right place.
+
+    The module's rule is that a tracing failure must never break the
+    operation being traced, and :meth:`Tracer._safely` is where the rule
+    is implemented — with one deliberate hole. It catches ``Exception``,
+    not ``BaseException``, so an exporter that raises ``KeyboardInterrupt``
+    (or ``SystemExit``, or a cancellation that arrives as one)
+    propagates out of the span and out of the traced operation.
+
+    The hole is right, and it is worth saying why. ``KeyboardInterrupt``
+    and ``SystemExit`` are how a process is *told to stop*, and
+    swallowing them would produce a runtime that cannot be interrupted;
+    swallowing a ``CancelledError`` would break the event loop's
+    cancellation entirely. A rule that a telemetry failure never
+    interrupts the user has stopped being a safety rule and become a
+    way of ignoring the user.
+
+    What was missing was not the behaviour but the *statement* of it.
+    The module's docstring claimed that the only exception
+    :meth:`Tracer.span` ever propagates is the one raised by the
+    caller's own body — and that claim is false for a
+    ``BaseException``. So the boundary is pinned here, and the
+    docstring corrected to say what is true.
+    """
+
+    async def test_an_exporter_that_interrupts_propagates(self) -> None:
+        """The boundary, from the outside.
+
+        The interruption reaches the caller rather than being logged and
+        forgotten, and the caller's own code is the thing that decides
+        what to do about it.
+        """
+
+        def interrupting_exporter(span: Span) -> None:
+            raise KeyboardInterrupt("the operator pressed ctrl-c")
+
+        tracer = Tracer(exporter=interrupting_exporter)
+
+        with pytest.raises(KeyboardInterrupt):
+            async with tracer.span("work"):
+                pass
+
+    async def test_the_span_is_still_finished_and_retained_when_the_exporter_interrupts(
+        self,
+    ) -> None:
+        """The interruption does not leave the span open.
+
+        The span's end time and status are set before the exporter is
+        called, so an interrupted span is still a *record*: it is the
+        operation that was interrupted, not the bookkeeping that
+        records it.
+        """
+
+        def interrupting_exporter(span: Span) -> None:
+            raise KeyboardInterrupt
+
+        tracer = Tracer(exporter=interrupting_exporter)
+
+        with pytest.raises(KeyboardInterrupt):
+            async with tracer.span("work") as span:
+                pass
+
+        assert span.is_finished
+        assert span.status == SpanStatus.OK
+        assert [s.name for s in tracer.finished_spans] == ["work"]
+
+    async def test_an_ordinary_failure_from_the_exporter_does_not_replace_the_bodies(
+        self,
+    ) -> None:
+        """The other half of the asymmetry, and the one the rule is about.
+
+        An ``Exception`` from the exporter is swallowed, so the body's
+        own exception is the one the caller catches — the same type, the
+        same message, the same object.
+        """
+
+        def failing_exporter(span: Span) -> None:
+            raise RuntimeError("the collector is down")
+
+        tracer = Tracer(exporter=failing_exporter)
+        original = ValueError("kaboom")
+
+        with pytest.raises(ValueError) as caught:
+            async with tracer.span("work"):
+                raise original
+
+        assert caught.value is original
+
+    async def test_an_interruption_replaces_the_bodies_own_exception(self) -> None:
+        """The asymmetry, stated exactly.
+
+        The body's exception is raised from the ``except`` block and the
+        exporter's from the ``finally`` block, and a ``finally`` block
+        that raises replaces the exception in flight. So a
+        ``BaseException`` from the exporter wins over the body's
+        ``Exception`` — the opposite of what the rule does for ordinary
+        exceptions.
+
+        That is the price of the hole, and it is a price worth paying
+        only because the hole is small: it takes an exporter that
+        raises ``KeyboardInterrupt``, which is not something a collector
+        outage does.
+        """
+
+        def interrupting_exporter(span: Span) -> None:
+            raise KeyboardInterrupt
+
+        tracer = Tracer(exporter=interrupting_exporter)
+
+        with pytest.raises(KeyboardInterrupt):
+            async with tracer.span("work") as span:
+                raise ValueError("kaboom")
+
+        # The span still records what happened to the body.
+        assert span.status == SpanStatus.ERROR
+        assert span.error == "ValueError: kaboom"
+
+
+class TestTheRetainedSpans:
+    """The bounded ring of finished spans."""
+
+    async def test_the_ring_keeps_the_newest_spans_and_drops_the_oldest(self) -> None:
+        """The same bound the histograms have, for the same reason.
+
+        This process is expected to run for weeks, so a span ring that
+        only grew would be a slow memory leak in a process designed to
+        run for weeks on a machine with ~3.5 GB free.
+        """
+        tracer = Tracer(max_retained_spans=3)
+
+        for index in range(5):
+            async with tracer.span(f"span-{index}"):
+                pass
+
+        assert [span.name for span in tracer.finished_spans] == [
+            "span-2",
+            "span-3",
+            "span-4",
+        ]
+
+    async def test_the_retained_spans_are_a_copy(self) -> None:
+        """The list a caller gets is not the ring itself.
+
+        A caller iterating the list while spans are being finished would
+        otherwise be iterating a list that changes under it.
+        """
+        tracer = Tracer()
+        async with tracer.span("one"):
+            pass
+
+        retained = tracer.finished_spans
+        retained.clear()
+
+        assert [span.name for span in tracer.finished_spans] == ["one"]
+
+    async def test_clear_empties_the_ring(self) -> None:
+        """The ring can be emptied, and the tracer keeps working.
+
+        A worker returning to an idle pool wants the previous run's
+        spans out of the way; the tracer itself is not affected.
+        """
+        tracer = Tracer()
+        async with tracer.span("one"):
+            pass
+        async with tracer.span("two"):
+            pass
+
+        tracer.clear()
+
+        assert tracer.finished_spans == []
+
+        async with tracer.span("three"):
+            pass
+
+        assert [span.name for span in tracer.finished_spans] == ["three"]
+
+    async def test_the_spans_of_a_trace_are_grouped_together(self) -> None:
+        """One trace, many spans — and the grouping is by trace id.
+
+        This is the join the run row makes: a run row carries a trace
+        id, and the spans of that trace are the ones that ran inside
+        it.
+
+        The order is **finish** order, not start order, and the inner
+        span finishes first because it is nested — so the ring reads
+        ``inner`` then ``outer``. "Oldest first" in the ring's
+        docstring means oldest *finished*, which is the order a
+        duration-sorted reader wants.
+        """
+        tracer = Tracer()
+
+        async with tracer.span("outer") as outer, tracer.span("inner") as inner:
+            pass
+
+        other = Tracer()
+        async with other.span("elsewhere"):
+            pass
+
+        assert [span.name for span in tracer.spans_for_trace(outer.trace_id)] == [
+            "inner",
+            "outer",
+        ]
+        assert inner.trace_id == outer.trace_id
+        assert tracer.spans_for_trace("not-a-trace") == []

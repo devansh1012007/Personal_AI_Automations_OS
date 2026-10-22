@@ -23,7 +23,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import structlog
 
@@ -36,10 +36,8 @@ from paa.core.types import (
     as_text,
     as_uuid,
 )
+from paa.storage.relational.base import RelationalBackend
 from paa.storage.relational.database import dumps, from_iso, loads, to_iso, utc_now
-
-if TYPE_CHECKING:
-    from paa.storage.relational.base import RelationalBackend
 
 __all__ = ["ExecutionRun", "ExecutionRunRepository", "InvalidTraceIdError", "SkillStats"]
 
@@ -325,6 +323,16 @@ class ExecutionRunRepository:
         Every optional parameter left as ``None`` preserves the existing value.
         ``COALESCE(?, column)`` in the UPDATE is what makes a partial finish
         (say, an exit code without token counts) non-destructive.
+
+        The two exceptions are the ones a *finish* is for: ``ended_at``,
+        which defaults to now — a finish that did not end the run would
+        leave it open forever, and ``IN_FLIGHT`` forever with it — and
+        ``duration_ms``, which is computed rather than supplied.
+
+        ``exit_code`` is preserved like the rest, and that matters because
+        the status is derived from it: a caller that could not learn the
+        exit code must not turn a recorded success into a failure by
+        omitting the field. An omission is not a value.
         """
         existing = await self.get_run(trace_id)
         if existing is None:
@@ -339,7 +347,7 @@ class ExecutionRunRepository:
             UPDATE hot_serving_execution_runs SET
                 ended_at        = ?,
                 duration_ms     = ?,
-                exit_code       = ?,
+                exit_code       = COALESCE(?, exit_code),
                 tokens_consumed = COALESCE(?, tokens_consumed),
                 peak_rss_mb     = COALESCE(?, peak_rss_mb),
                 model_used      = COALESCE(?, model_used),

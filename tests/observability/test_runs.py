@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -56,7 +56,7 @@ from paa.core.types import (
     new_correlation_id,
     new_session_id,
 )
-from paa.observability.runs import ExecutionRunRepository, InvalidTraceIdError
+from paa.observability.runs import ExecutionRun, ExecutionRunRepository, InvalidTraceIdError
 from paa.observability.tracing import _new_span_id, _new_trace_id
 from paa.storage.relational.database import Database
 
@@ -572,3 +572,590 @@ class TestSkillStats:
         assert stats.sample_count == 0
         assert stats.success_rate == 0.0
         assert stats.is_significant is False
+
+
+# ---------------------------------------------------------------------------
+# Closing a run
+# ---------------------------------------------------------------------------
+
+
+class TestFinishRun:
+    """Closing a run, and the row that comes back.
+
+    ``finish_run`` was the one method of this repository the suite used
+    as *setup* and never asserted: every test that needed a finished run
+    called it and moved on. So the method that writes the outcome — the
+    exit code, the duration, the telemetry — had no test of its own, and
+    the promise its docstring makes about a partial finish had none
+    either.
+
+    The promise is worth having, because the run row is *derived* state
+    that an optimiser reads: a finish that erases what an earlier finish
+    recorded is not a cosmetic loss, it is a skill's success rate
+    changing because a caller was less informed the second time.
+    """
+
+    async def test_the_row_that_comes_back_is_the_row_that_was_written(
+        self, runs: ExecutionRunRepository
+    ) -> None:
+        """Every field a finish accepts, asserted one by one.
+
+        The return value was the gap: ``finish_run`` **returns** the
+        completed row, and nothing ever looked at it. The returned row
+        and the row a later reader sees have to be the same row, or the
+        method is lying about what it did.
+        """
+        started = datetime(2026, 3, 1, 9, 0, tzinfo=UTC)
+        ended = started + timedelta(milliseconds=1500)
+        correlation = new_correlation_id()
+        session = new_session_id()
+        parent_span = _new_span_id()
+        trace_id = await runs.start_run(
+            correlation_id=correlation,
+            session_id=session,
+            agent_role="coder",
+            skill_name="deploy",
+            span_parent_id=parent_span,
+            modality=ComplexityModality.STANDARD,
+            permission_mode=PermissionMode.ASK,
+            model_used="local-model",
+            started_at=started,
+        )
+
+        finished = await runs.finish_run(
+            trace_id,
+            exit_code=0,
+            telemetry={"counters": {"tokens": 3}},
+            tokens_consumed=1234,
+            peak_rss_mb=56.5,
+            model_used="escalated-model",
+            escalated=True,
+            error_detail="a remark",
+            ended_at=ended,
+        )
+
+        assert finished is not None
+        assert finished.trace_id == trace_id
+        assert finished.correlation_id == correlation
+        assert finished.session_id == session
+        assert finished.span_parent_id == parent_span
+        assert finished.agent_role == "coder"
+        assert finished.skill_name == "deploy"
+        assert finished.modality == ComplexityModality.STANDARD.value
+        assert finished.permission_mode == PermissionMode.ASK.value
+        assert finished.started_at == started
+        assert finished.ended_at == ended
+        assert finished.duration_ms == 1500
+        assert finished.exit_code == 0
+        assert finished.tokens_consumed == 1234
+        assert finished.peak_rss_mb == pytest.approx(56.5)
+        assert finished.model_used == "escalated-model"
+        assert finished.escalated is True
+        assert finished.telemetry == {"counters": {"tokens": 3}}
+        assert finished.error_detail == "a remark"
+        assert finished.is_finished is True
+        assert finished.status == "OK"
+
+    async def test_the_returned_row_is_the_row_a_later_reader_sees(
+        self, runs: ExecutionRunRepository
+    ) -> None:
+        """The method returns what it wrote, not what it meant to write.
+
+        The two are separated by a read: the finish writes and then
+        re-reads. A write that silently failed would leave the returned
+        row and the stored row different, and the returned row is what
+        the caller acts on.
+        """
+        trace_id = await runs.start_run(
+            correlation_id=new_correlation_id(), agent_role="worker"
+        )
+
+        finished = await runs.finish_run(trace_id, exit_code=0, tokens_consumed=7)
+        stored = await runs.get_run(trace_id)
+
+        assert finished is not None
+        assert stored is not None
+        assert finished == stored
+
+    async def test_a_run_is_in_flight_until_it_is_finished(
+        self, runs: ExecutionRunRepository
+    ) -> None:
+        """An open run is not a failed run.
+
+        The status says so, and the status is what the optimiser reads:
+        a crashed-mid-run process must not make a skill's success rate
+        look catastrophic on the next boot.
+        """
+        trace_id = await runs.start_run(
+            correlation_id=new_correlation_id(), agent_role="worker"
+        )
+
+        open_run = await runs.get_run(trace_id)
+
+        assert open_run is not None
+        assert open_run.is_finished is False
+        assert open_run.status == "IN_FLIGHT"
+        assert open_run.ended_at is None
+        assert open_run.duration_ms is None
+
+    async def test_a_non_zero_exit_code_is_an_error(self, runs: ExecutionRunRepository) -> None:
+        """The other side of the same rule."""
+        trace_id = await runs.start_run(
+            correlation_id=new_correlation_id(), agent_role="worker"
+        )
+
+        finished = await runs.finish_run(trace_id, exit_code=2)
+
+        assert finished is not None
+        assert finished.status == "ERROR"
+        assert finished.is_finished is True
+
+    async def test_the_duration_comes_from_the_stored_start_not_the_caller(
+        self, runs: ExecutionRunRepository
+    ) -> None:
+        """The caller's stopwatch and the row's start time can disagree.
+
+        A retry, a resumed run, a clock the caller measured before the
+        insert — and only one of them is what the table says. So the
+        duration is computed from the row's own ``started_at``, and the
+        caller is not asked for it at all.
+        """
+        started = datetime(2026, 3, 1, 9, 0, tzinfo=UTC)
+        trace_id = await runs.start_run(
+            correlation_id=new_correlation_id(),
+            agent_role="worker",
+            started_at=started,
+        )
+
+        finished = await runs.finish_run(
+            trace_id, exit_code=0, ended_at=started + timedelta(seconds=2, milliseconds=250)
+        )
+
+        assert finished is not None
+        assert finished.duration_ms == 2250
+
+    async def test_a_duration_is_never_negative(self, runs: ExecutionRunRepository) -> None:
+        """A clock that went backwards does not produce a negative latency.
+
+        The column is an INTEGER and a reader would report it as one, so
+        a negative duration would read as a run that took less than no
+        time at all. It is clamped rather than refused: the finish
+        happened, and the row should say so.
+        """
+        started = datetime(2026, 3, 1, 9, 0, tzinfo=UTC)
+        trace_id = await runs.start_run(
+            correlation_id=new_correlation_id(),
+            agent_role="worker",
+            started_at=started,
+        )
+
+        finished = await runs.finish_run(
+            trace_id, exit_code=0, ended_at=started - timedelta(seconds=5)
+        )
+
+        assert finished is not None
+        assert finished.duration_ms == 0
+
+    async def test_the_telemetry_round_trips_through_the_json_column(
+        self, runs: ExecutionRunRepository
+    ) -> None:
+        """Telemetry is a JSON column, so telemetry is JSON.
+
+        The column carries a ``json_valid`` constraint, and the value
+        that reaches it is whatever the caller passed — a metrics
+        snapshot, a dict of counters. A value that does not survive the
+        round trip is a value the reader never sees.
+        """
+        trace_id = await runs.start_run(
+            correlation_id=new_correlation_id(), agent_role="worker"
+        )
+        telemetry = {
+            "counters": {"tokens": 12},
+            "gauges": {},
+            "histograms": {"graph_traversal_latency": {"count": 2, "p95": 4.8}},
+        }
+
+        finished = await runs.finish_run(trace_id, exit_code=0, telemetry=telemetry)
+
+        assert finished is not None
+        assert finished.telemetry == telemetry
+        assert json.dumps(finished.telemetry)
+
+    async def test_a_partial_finish_does_not_destroy_what_is_already_written(
+        self, runs: ExecutionRunRepository
+    ) -> None:
+        """The docstring's promise, as an assertion.
+
+        *"Every optional parameter left as ``None`` preserves the
+        existing value. ``COALESCE(?, column)`` in the UPDATE is what
+        makes a partial finish (say, an exit code without token counts)
+        non-destructive."*
+
+        So: finish the run once, with everything; finish it again with
+        only an exit code; and everything the first finish wrote must
+        still be there. The second finish knows less than the first,
+        and knowing less is not a reason to erase.
+        """
+        trace_id = await runs.start_run(
+            correlation_id=new_correlation_id(),
+            agent_role="worker",
+            skill_name="deploy",
+        )
+        await runs.finish_run(
+            trace_id,
+            exit_code=0,
+            tokens_consumed=120,
+            peak_rss_mb=31.5,
+            model_used="local-model",
+            escalated=True,
+            telemetry={"counters": {"x": 1}},
+            error_detail="the first attempt complained",
+        )
+
+        second = await runs.finish_run(trace_id, exit_code=1)
+
+        assert second is not None
+        assert second.tokens_consumed == 120
+        assert second.peak_rss_mb == pytest.approx(31.5)
+        assert second.model_used == "local-model"
+        assert second.escalated is True
+        assert second.telemetry == {"counters": {"x": 1}}
+        assert second.error_detail == "the first attempt complained"
+        # The exit code the *second* finish supplied is the one that counts:
+        # a value that was given is a value that is written.
+        assert second.exit_code == 1
+
+    async def test_a_finish_that_supplies_no_exit_code_does_not_erase_one(
+        self, runs: ExecutionRunRepository
+    ) -> None:
+        """``exit_code=None`` means "not known", not "there was none".
+
+        A caller that could not learn the exit code — a process that was
+        killed, a worker that lost the thread — must not turn a
+        recorded success into a failure by omitting the field. The
+        ``COALESCE`` promise is about *omission*, and an omission is
+        not a value.
+        """
+        trace_id = await runs.start_run(
+            correlation_id=new_correlation_id(), agent_role="worker"
+        )
+        await runs.finish_run(trace_id, exit_code=0)
+
+        second = await runs.finish_run(trace_id, exit_code=None)
+
+        assert second is not None
+        assert second.exit_code == 0
+        assert second.status == "OK"
+
+    async def test_a_run_that_ends_without_an_exit_code_is_an_error(
+        self, runs: ExecutionRunRepository
+    ) -> None:
+        """The *first* finish of a run has nothing to preserve.
+
+        So ``exit_code=None`` on a run that has never been finished
+        leaves the column empty — and a run that ended without saying how
+        it ended is not a success. The preservation above must not turn
+        this into ``OK``.
+        """
+        trace_id = await runs.start_run(
+            correlation_id=new_correlation_id(), agent_role="worker"
+        )
+
+        finished = await runs.finish_run(trace_id, exit_code=None)
+
+        assert finished is not None
+        assert finished.exit_code is None
+        assert finished.status == "ERROR"
+
+    async def test_finishing_a_run_that_was_never_started_is_not_a_crash(
+        self, runs: ExecutionRunRepository
+    ) -> None:
+        """An unknown trace id is a fact, not a failure.
+
+        The caller has a trace id and the table does not have it — a
+        purge ran, a database was restored, the id was made up. The
+        method says so by returning ``None``, and it does not raise:
+        the caller is closing a run it may never have opened.
+        """
+        finished = await runs.finish_run(str(uuid.uuid4()), exit_code=0)
+
+        assert finished is None
+
+
+# ---------------------------------------------------------------------------
+# The filtered scan
+# ---------------------------------------------------------------------------
+
+
+#: The instant every seeded run is placed relative to.
+_BASE = datetime(2026, 3, 1, 12, 0, tzinfo=UTC)
+
+#: The two correlation ids and the two session ids the population uses.
+_CORRELATION_A = new_correlation_id()
+_CORRELATION_B = new_correlation_id()
+_SESSION_ONE = new_session_id()
+_SESSION_TWO = new_session_id()
+
+
+async def _seed_runs(runs: ExecutionRunRepository) -> dict[str, str]:
+    """Four runs, each distinguishable from the others by one field.
+
+    The population is small on purpose. A filter test asserts *which*
+    rows come back, so every row has to be separable from every other
+    by the field under test — a population of ten runs that all shared a
+    skill name would make a skill-name filter vacuous.
+
+    ``alpha`` and ``gamma`` are finished; ``beta`` is left open, so the
+    ``only_finished`` filter has something to exclude.
+    """
+    ids: dict[str, str] = {}
+    ids["alpha"] = await runs.start_run(
+        correlation_id=_CORRELATION_A,
+        session_id=_SESSION_ONE,
+        agent_role="planner",
+        skill_name="deploy",
+        started_at=_BASE,
+    )
+    ids["beta"] = await runs.start_run(
+        correlation_id=_CORRELATION_A,
+        session_id=_SESSION_TWO,
+        agent_role="worker",
+        skill_name="deploy",
+        started_at=_BASE + timedelta(hours=1),
+    )
+    ids["gamma"] = await runs.start_run(
+        correlation_id=_CORRELATION_B,
+        session_id=_SESSION_ONE,
+        agent_role="planner",
+        skill_name="test",
+        started_at=_BASE + timedelta(hours=2),
+    )
+    ids["delta"] = await runs.start_run(
+        correlation_id=_CORRELATION_B,
+        session_id=_SESSION_TWO,
+        agent_role="worker",
+        skill_name="test",
+        started_at=_BASE + timedelta(hours=3),
+    )
+    await runs.finish_run(ids["alpha"], exit_code=0)
+    await runs.finish_run(ids["gamma"], exit_code=1)
+    await runs.finish_run(ids["delta"], exit_code=0)
+    return ids
+
+
+def _names(rows: list[ExecutionRun], ids: dict[str, str]) -> list[str]:
+    """The seeded names of the rows that came back, in the order they came."""
+    by_trace = {trace: name for name, trace in ids.items()}
+    return [by_trace[row.trace_id] for row in rows]
+
+
+class TestQueryRuns:
+    """The filtered scan — every filter, and the order it returns.
+
+    Six filters, and each one is a different question. A filter that is
+    silently ignored returns every row, and a filter that is
+    mis-transcribed returns the wrong rows; both look the same to a
+    reader who is not checking.
+    """
+
+    async def test_no_filter_returns_everything_newest_first(
+        self, runs: ExecutionRunRepository
+    ) -> None:
+        """The scan's own contract: newest first."""
+        ids = await _seed_runs(runs)
+
+        rows = await runs.query_runs()
+
+        assert _names(rows, ids) == ["delta", "gamma", "beta", "alpha"]
+
+    async def test_the_correlation_id_filter(self, runs: ExecutionRunRepository) -> None:
+        """One lineage, and only that lineage."""
+        ids = await _seed_runs(runs)
+
+        rows = await runs.query_runs(correlation_id=_CORRELATION_A)
+
+        assert _names(rows, ids) == ["beta", "alpha"]
+
+    async def test_the_session_id_filter(self, runs: ExecutionRunRepository) -> None:
+        ids = await _seed_runs(runs)
+
+        rows = await runs.query_runs(session_id=_SESSION_ONE)
+
+        assert _names(rows, ids) == ["gamma", "alpha"]
+
+    async def test_the_skill_name_filter(self, runs: ExecutionRunRepository) -> None:
+        ids = await _seed_runs(runs)
+
+        rows = await runs.query_runs(skill_name="deploy")
+
+        assert _names(rows, ids) == ["beta", "alpha"]
+
+    async def test_the_agent_role_filter(self, runs: ExecutionRunRepository) -> None:
+        ids = await _seed_runs(runs)
+
+        rows = await runs.query_runs(agent_role="planner")
+
+        assert _names(rows, ids) == ["gamma", "alpha"]
+
+    async def test_the_since_filter(self, runs: ExecutionRunRepository) -> None:
+        """``started_at`` at or after the given instant.
+
+        The boundary is inclusive — ``>=`` — and it is inclusive for a
+        reason: a retention sweep that asked for "everything since
+        midnight" must not drop the run that started exactly at
+        midnight.
+        """
+        ids = await _seed_runs(runs)
+
+        rows = await runs.query_runs(since=_BASE + timedelta(hours=2))
+
+        assert _names(rows, ids) == ["delta", "gamma"]
+
+        boundary = await runs.query_runs(since=_BASE + timedelta(hours=2))
+
+        assert _names(boundary, ids) == ["delta", "gamma"]
+
+    async def test_the_only_finished_filter(self, runs: ExecutionRunRepository) -> None:
+        """The unfinished runs are excluded, not counted as failures."""
+        ids = await _seed_runs(runs)
+
+        rows = await runs.query_runs(only_finished=True)
+
+        assert _names(rows, ids) == ["delta", "gamma", "alpha"]
+
+    async def test_the_filters_compose_as_and(self, runs: ExecutionRunRepository) -> None:
+        """Two filters are two filters.
+
+        The docstring says they compose as AND, and the query builds
+        them as a list of clauses joined by AND — so this is the check
+        that the list is joined the way it reads.
+        """
+        ids = await _seed_runs(runs)
+
+        rows = await runs.query_runs(skill_name="deploy", agent_role="planner")
+
+        assert _names(rows, ids) == ["alpha"]
+
+    async def test_the_limit_cuts_the_newest_rows_first(
+        self, runs: ExecutionRunRepository
+    ) -> None:
+        """The limit is applied to the ordered scan, so it keeps the newest.
+
+        A limit applied before the ordering would keep an arbitrary
+        three of four rows; the whole point of "newest first" is that
+        the rows a reader sees are the ones that just happened.
+        """
+        ids = await _seed_runs(runs)
+
+        rows = await runs.query_runs(limit=2)
+
+        assert _names(rows, ids) == ["delta", "gamma"]
+
+    async def test_a_filter_that_matches_nothing_returns_nothing(
+        self, runs: ExecutionRunRepository
+    ) -> None:
+        """An empty answer is an answer.
+
+        A filter for a skill that has never run returns no rows — and
+        returns them as an empty list rather than raising, because
+        "nothing matched" is the most ordinary result a query has.
+        """
+        await _seed_runs(runs)
+
+        rows = await runs.query_runs(skill_name="never-run")
+
+        assert rows == []
+
+
+class TestCount:
+    async def test_the_count_is_the_number_of_rows(self, runs: ExecutionRunRepository) -> None:
+        """Including the unfinished ones.
+
+        The count is a count of rows, not of outcomes: an open run is
+        evidence that a run started, and a count that hid it would
+        under-report the work in flight.
+        """
+        assert await runs.count() == 0
+
+        ids = await _seed_runs(runs)
+
+        assert await runs.count() == len(ids)
+
+
+class TestPurgeOlderThan:
+    """The retention sweep, and the rule it must not break.
+
+    The docstring claims: *"Unfinished runs are never purged regardless
+    of age — an ancient in-flight row is evidence of an unresolved
+    crash, which is the last thing a retention sweep should tidy
+    away."* That claim had no test, and it is the kind of claim a
+    retention sweep breaks by accident.
+    """
+
+    async def test_the_purge_removes_the_finished_runs_older_than_the_cutoff(
+        self, runs: ExecutionRunRepository
+    ) -> None:
+        ids = await _seed_runs(runs)
+
+        removed = await runs.purge_older_than(_BASE + timedelta(hours=2))
+
+        assert removed == 1
+        assert await runs.count() == 3
+        remaining = {row.trace_id for row in await runs.query_runs()}
+        assert ids["alpha"] not in remaining
+        assert ids["gamma"] in remaining
+
+    async def test_an_unfinished_run_is_never_purged_however_old_it_is(
+        self, runs: ExecutionRunRepository
+    ) -> None:
+        """The claim, as an assertion.
+
+        ``beta`` is the oldest unfinished row in the population, and it
+        is older than the cutoff by an hour. A purge that filtered on
+        the age alone would delete it — and delete the evidence that a
+        process died mid-run, which is the one row the recovery sweep
+        exists to find.
+        """
+        ids = await _seed_runs(runs)
+
+        removed = await runs.purge_older_than(_BASE + timedelta(hours=2))
+
+        assert removed == 1
+        remaining = {row.trace_id for row in await runs.query_runs()}
+        assert ids["beta"] in remaining
+
+    async def test_a_run_started_exactly_at_the_cutoff_survives(
+        self, runs: ExecutionRunRepository
+    ) -> None:
+        """The boundary is strict: ``started_at < cutoff``.
+
+        A run that started exactly at the cutoff is not *older* than the
+        cutoff, so it stays. The alternative — an inclusive boundary —
+        would delete one row more than the caller asked for, and the
+        difference between the two is invisible in the count.
+        """
+        trace_id = await runs.start_run(
+            correlation_id=new_correlation_id(),
+            agent_role="worker",
+            started_at=_BASE,
+        )
+        await runs.finish_run(trace_id, exit_code=0)
+
+        removed = await runs.purge_older_than(_BASE)
+
+        assert removed == 0
+        assert await runs.count() == 1
+
+    async def test_the_purge_reports_how_many_rows_it_removed(
+        self, runs: ExecutionRunRepository
+    ) -> None:
+        """The return value is the row count, not a boolean.
+
+        A caller that sweeps on a schedule needs to know whether the
+        sweep did anything, and ``0`` and ``1`` are the difference
+        between "nothing to do" and "something was removed".
+        """
+        await _seed_runs(runs)
+
+        assert await runs.purge_older_than(_BASE + timedelta(days=365)) == 3
+        assert await runs.purge_older_than(_BASE + timedelta(days=365)) == 0
