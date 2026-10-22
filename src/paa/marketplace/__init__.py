@@ -34,6 +34,7 @@ from paa.marketplace.registry_client import (
     LocalDirectoryRegistry,
     MarketplaceRegistry,
     RegistryEntry,
+    RegistryError,
 )
 from paa.marketplace.signing import (
     KeyPair,
@@ -56,6 +57,7 @@ __all__ = [
     "PackageInstaller",
     "PackageManifest",
     "RegistryEntry",
+    "RegistryError",
     "SignatureState",
     "SkillPackage",
     "generate_keypair",
