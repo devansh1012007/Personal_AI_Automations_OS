@@ -556,8 +556,8 @@ still agree on a wrong rule, and the only independent authority is Compose itsel
   merges a service map, this subset does not follow automatically — it follows when
   somebody notices, and the parity test is what makes the noticing cheap.
 * **A refusal set to maintain.** Every shape the corpus carries is refused today; another
-  compose feature that changes the image set has to be added to that list, deliberately, or it
-  becomes a silent wrong answer again. The list is written down here and in the
+  compose feature that changes the image set has to be added to that list, deliberately,
+  or it becomes a silent wrong answer again. The list is written down here and in the
   reader's own comments for exactly that reason, and the corpus in the deployment
   tests is where it is **counted** — a count written in prose is a number nobody can
   check, and three records carried three different ones. The list is a list of **shapes**,

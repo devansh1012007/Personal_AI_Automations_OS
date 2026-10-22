@@ -436,10 +436,10 @@ wrong — and the exit status is the verdict.
 The list is one row per service: the **action**, the **image**, and the **service** in
 parentheses — `pull   postgres:16@sha256:…  (postgres)`. The action is `pull`, `build`
 or `skip`; `skip` is a service a compose profile gates and that you have not enabled,
-and its row ends in a bracket naming the profiles that gate it — `skip   nvidia/cuda@sha256:…
-(gpu)  [behind a compose profile that is not enabled: gpu]`. The bracket is part of the
-report and not part of the row's three fields, and it says the same thing the warning
-on stderr says.
+and its row ends in a bracket naming the profiles that gate it —
+`skip   nvidia/cuda@sha256:…  (gpu)  [behind a compose profile that is not enabled: gpu]`.
+The bracket is part of the report and not part of the row's three fields, and it says
+the same thing the warning on stderr says.
 
 **`--load` imports and stops.** It loads every `*.tar` in the directory and exits; it
 does not then pull the rest of the deployment. A **loaded** image is not digest-verified:
