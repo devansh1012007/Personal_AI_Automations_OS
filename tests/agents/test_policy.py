@@ -117,6 +117,73 @@ class TestLockdown:
         verdict = await _decide(agent, steps, PermissionMode.LOCKDOWN)
         assert verdict["decision"] == "STATUS_APPROVED"
 
+    async def test_a_declared_egress_permission_is_refused_by_the_permission_check(
+        self,
+    ) -> None:
+        """The air-gap branch in ``_check_lockdown`` **cannot fire**.
+
+        The branch refuses a plan whose step declares an egress or an
+        external-write permission, under LOCKDOWN. It is unreachable:
+        ``LOCKDOWN`` grants only ``SANDBOX_RUN``
+        (:data:`paa.core.types._MODE_GRANTS`), so
+        ``_check_permissions`` refuses such a plan first, and the gate never
+        reaches the branch.
+
+        **The refusal is not lost — it is delivered by the other check**, with
+        the other check's reason. This test pins that reason, because the
+        reason is what the ``POLICY_BLOCKED`` ledger payload carries, and a
+        silent change to it would change what a reader of the ledger sees.
+        The dead branch is reported in the wave-2 close-out report, with the
+        exact proposed change and its consequence; it is not patched here,
+        because the change is a **policy** question — *which* refusal should
+        win — and not a coverage question.
+        """
+        agent = PolicyRiskAgent()
+        steps = [{"action": "call out", "required_permissions": ["PERM_NET_EGRESS"]}]
+
+        verdict = await _decide(agent, steps, PermissionMode.LOCKDOWN)
+
+        assert verdict["decision"] == "STATUS_BLOCKED"
+        assert verdict["reason"] == "permissions not granted in LOCKDOWN: ['PERM_NET_EGRESS']"
+        # And the air-gap refusal is not the one that answered: the branch is
+        # unreachable, and this assertion is what says so.
+        assert "egress/external-write requested under LOCKDOWN" not in verdict["reason"]
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "PolicyRiskAgent._check_lockdown's egress branch is unreachable: "
+            "LOCKDOWN grants only SANDBOX_RUN, so _check_permissions refuses a plan "
+            "that declares an egress or external-write permission before the branch "
+            "is reached. The same plans are refused either way — only the recorded "
+            "reason differs — so the fix is a policy decision (which refusal should "
+            "win), not a coverage one, and it is reported rather than made silently. "
+            "The proposed change is to move _check_lockdown ahead of "
+            "_check_permissions in the checks tuple at src/paa/agents/policy.py:156, "
+            "which makes the air-gap refusal the one that answers; the consequence "
+            "is that the reason recorded in the POLICY_BLOCKED payload changes for a "
+            "LOCKDOWN plan that both declares an ungranted permission and trips the "
+            "air-gap check. This marker cannot outlive that decision: it fails "
+            "(strict) the day the branch starts answering."
+        ),
+    )
+    async def test_the_lockdown_air_gap_refusal_names_the_egress(self) -> None:
+        """The proposed end state: the air-gap refusal is the one that answers.
+
+        **This test is not expected to pass today**, and it is not a claim
+        that it should. It pins the *proposed* change — the one-line reorder
+        that makes the unreachable branch reachable — so that the deferral
+        cannot be forgotten and the decision cannot be made silently. If the
+        operator decides instead to delete the branch, this test goes with
+        it.
+        """
+        agent = PolicyRiskAgent()
+        steps = [{"action": "call out", "required_permissions": ["PERM_NET_EGRESS"]}]
+
+        verdict = await _decide(agent, steps, PermissionMode.LOCKDOWN)
+
+        assert verdict["reason"] == "egress/external-write requested under LOCKDOWN"
+
 
 class TestSafeMode:
     @pytest.mark.parametrize(

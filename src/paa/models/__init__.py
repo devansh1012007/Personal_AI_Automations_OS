@@ -28,6 +28,7 @@ from paa.models.anthropic_provider import AnthropicProvider
 from paa.models.base import (
     CompletionRequest,
     CompletionResponse,
+    MalformedSchemaError,
     Message,
     ModelProvider,
     ModelTier,
@@ -36,6 +37,7 @@ from paa.models.base import (
     extract_json_object,
     minimal_instance_for_schema,
     redact,
+    redact_detail,
     validate_against_schema,
 )
 from paa.models.echo_provider import EchoProvider
@@ -74,6 +76,7 @@ __all__ = [
     "EscalatingModelRouter",
     "EscalationDecision",
     "GeminiProvider",
+    "MalformedSchemaError",
     "Message",
     "ModelProvider",
     "ModelTier",
@@ -94,6 +97,7 @@ __all__ = [
     "minimal_instance_for_schema",
     "provider_names",
     "redact",
+    "redact_detail",
     "resolve_model_settings",
     "resolve_spec",
     "validate_against_schema",
@@ -225,6 +229,21 @@ def get_model_router(
     Constructing a provider performs no I/O and opens no connection, so this is
     safe to call during synchronous startup wiring.
 
+    **The whole ``settings`` is handed to the router, not just its model
+    half.** The router's healthcheck probes the frontier — a network call —
+    and it may only do that when the deployment's permission mode permits
+    escalation. The mode lives on ``Settings.policy``, so a router built from
+    the model half alone has no way to know it; it falls back to the
+    most restrictive mode there is (``LOCKDOWN``), which is safe and wrong
+    for a deployment that is not in LOCKDOWN. Narrowing the argument here
+    is what made the safe default the *only* answer the production router
+    could ever give.
+
+    A caller that hands over only ``ModelSettings`` — which carries no mode
+    at all — still gets the fail-closed default, and that is deliberate: a
+    router that does not know its mode has no business assuming that
+    escalation is permitted.
+
     :raises TypeError: if ``settings`` is neither a
         :class:`~paa.config.Settings` nor a
         :class:`~paa.config.ModelSettings`. The refusal is the point — see
@@ -251,6 +270,6 @@ def get_model_router(
     return EscalatingModelRouter(
         build_local_provider(models),
         build_frontier_provider(models),
-        settings=models,
+        settings=settings,
         ledger_store=ledger_store,
     )

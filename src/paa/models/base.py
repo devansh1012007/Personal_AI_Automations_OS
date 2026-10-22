@@ -38,26 +38,26 @@ committed, and not a constraint silently dropped so that an instance is judged
 There are **three** JSON-Schema validators in this tree — this module,
 :mod:`paa.validation.schema_validator` and :mod:`paa.skills.contracts` — and
 they ask **one** question about a keyword's value: *can this keyword use this
-value?* They get the answer from **one** place. The table of keyword shapes
-lives in :mod:`paa.validation.schema_validator`, the module that owns the
-supported-keyword set, and this module reads it through that module's public
-entry point rather than through its private table. So the definition of
-"malformed" is stated once, and the three validators cannot drift apart on
+value?* They get the answer from **one** place: the table of keyword shapes
+lives in :mod:`paa.core.json_schema`, a leaf module that imports nothing from
+this project, and all three validators read it from there. So the definition
+of "malformed" is stated once, and the three validators cannot drift apart on
 it.
 
-**Why the dependency points that way.** :mod:`paa.validation` is the
-deterministic, host-side validation layer; this module and
-:mod:`paa.skills.contracts` are its *consumers*, and :mod:`paa.skills` already
-imports it. The edge therefore adds no new **kind** of dependency — it adds
-:mod:`paa.models` to the set of subsystems that read the one table. It is
-import-safe in the two ways that matter. Nothing under :mod:`paa.validation`
-imports :mod:`paa.models`, so there is no cycle; and nothing under it imports
-an optional extra — ``qdrant``, ``kuzu``, ``sentence-transformers``, ``redis``,
-``psycopg`` and ``boto3`` are all absent from it — so a minimal install still
-imports this module. The price is that importing this module now also imports
-the :mod:`paa.validation` package, which measured about 40 ms on the host this
-was written on; that is the price of one table instead of three, and it is
-paid once per process.
+**Why the dependency points that way.** The table is *data*, and it sits
+below every consumer of it: :mod:`paa.core.json_schema` imports nothing from
+this project, so importing it costs the table and nothing else. The three
+validators are peers — none of them imports another — and each of them keeps
+its own **convention** for reporting a defect: this module raises
+:class:`MalformedSchemaError`, :mod:`paa.skills.contracts` raises
+``ValueError``, and :mod:`paa.validation.schema_validator` reports the defect
+alongside the instance's own errors.
+
+The alternative — the table living in :mod:`paa.validation.schema_validator`,
+where it used to live — put the whole :mod:`paa.validation` package, and
+through it the whole :mod:`paa.sandbox` package, into the model layer's
+import graph: 16 extra modules and about 26 ms on a layer nearly everything
+imports. The edge was safe (no cycle, no optional extra) and still not free.
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ import structlog
 from pydantic import BaseModel, ConfigDict, Field
 
 from paa.core.errors import PaaError
-from paa.validation.schema_validator import SchemaError, validate_instance
+from paa.core.json_schema import SchemaError, schema_shape_errors
 
 __all__ = [
     "CompletionRequest",
@@ -275,8 +275,8 @@ def redact(text: str, *secrets: str | None) -> str:
 def redact_detail(value: Any) -> Any:
     """Scrub one detail value, recursively.
 
-    **What "redacted" means for a free-form detail**, stated once so the
-    error classes that carry one cannot drift apart:
+    **What "redacted" means for a free-form detail**, stated once so that
+    every place that scrubs one cannot drift apart:
 
     * every **string value** is passed through :func:`redact`, at any depth —
       a string inside a list, a tuple or a nested mapping is scrubbed too;
@@ -289,15 +289,19 @@ def redact_detail(value: Any) -> Any:
       credential, and the details have to stay JSON-serialisable for the
       ledger.
 
-    This is the policy the escalation router applies to the details it copies
-    out of a provider's error
-    (``EscalatingModelRouter._redact_detail`` in :mod:`paa.models.router`), and
-    the two are the same rule written twice: same recursion, same treatment of
-    keys, same pass-through of everything that is not a string. The router's
-    copy is private and that file is not this module's to edit, so it has been
-    left alone; retiring it in favour of this one is a separate change, and
-    until it happens this docstring is the note that says the two are meant to
-    be the same.
+    **This is the one copy of that rule.** The escalation router
+    (:class:`~paa.models.router.EscalatingModelRouter`) used to carry a
+    private copy of it — the same recursion, the same treatment of keys, the
+    same pass-through of everything that is not a string — and two copies of
+    one policy are two policies the day one of them is edited. The router now
+    calls this function; there is no second implementation to keep in step.
+
+    The rule itself is the one the whole model layer is built on: **a
+    provider's own output never reaches a log line, a ledger payload, or an
+    exception's message and details.** The details are where it used to
+    escape, because ``PaaError`` merges them into a ledger payload
+    *verbatim* — so the scrub belongs at the boundary that builds them, not
+    in the head of whoever raises the error.
     """
     if isinstance(value, str):
         return redact(value)
@@ -306,6 +310,7 @@ def redact_detail(value: Any) -> Any:
     if isinstance(value, dict):
         return {key: redact_detail(item) for key, item in value.items()}
     return value
+
 
 
 def _redacted_defect(error: SchemaError) -> SchemaError:
@@ -335,28 +340,27 @@ def _malformed_keywords(schema: Any) -> list[SchemaError]:
     """Every keyword in ``schema`` whose value the keyword cannot use.
 
     **One table, for all three validators in this tree.** The shapes live in
-    :mod:`paa.validation.schema_validator` — the module that owns the
-    supported-keyword set and the shape of each keyword's value — and are read
-    from there through its public entry point,
-    :func:`paa.validation.schema_validator.validate_instance`. That function
-    checks the schema's own shape *before* it looks at the instance at all,
-    so the instance half of the call is a throwaway: the errors it returns
-    about the instance are discarded, and what is kept are the ones marked
-    ``schema_error`` — a malformed keyword value, located by the path of the
-    schema node it sits at (``$.properties.a.minLength``).
+    :mod:`paa.core.json_schema` — a leaf module that imports nothing from
+    this project — and are read from there. That module is what says what each
+    keyword's value must look like, and all three validators ask it the same
+    question, so a keyword malformed in one is malformed in all three.
 
-    The table is **not** imported by name, and that is deliberate. It is a
-    private name in another module, and reaching into it would bind this
-    module to that module's internals. The public entry point is the
-    supported way to ask the question, and it is the same one the other two
-    validators ask it through.
+    **Why the table is not in :mod:`paa.validation`.** It used to be: the
+    shapes lived in :mod:`paa.validation.schema_validator` and this module
+    read them from there, which put the whole :mod:`paa.validation` package
+    — and, through it, the whole :mod:`paa.sandbox` package — into the model
+    layer's import graph. That is **16 extra modules and about 26 ms**, paid
+    by every process that imports anything from :mod:`paa.models`, which is
+    nearly all of them, in exchange for a table of data. The table is now in
+    a leaf, and this module's import graph carries the table and nothing
+    else.
 
     The walk covers the **whole** schema, not only the node the instance
     reaches: a broken constraint in a branch this payload never touches is
     still a broken contract, and the author needs to hear about it before the
     payload that does touch it arrives.
     """
-    return [error for error in validate_instance(None, schema) if error.get("schema_error")]
+    return [error for error in schema_shape_errors(schema) if error.get("schema_error")]
 
 
 # ---------------------------------------------------------------------------

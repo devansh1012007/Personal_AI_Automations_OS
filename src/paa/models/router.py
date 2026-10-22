@@ -59,6 +59,7 @@ from paa.models.base import (
     ModelUnavailableError,
     StructuredOutputError,
     redact,
+    redact_detail,
 )
 
 if TYPE_CHECKING:
@@ -120,34 +121,6 @@ def resolve_model_settings(settings: ModelSettings | Settings) -> ModelSettings:
         "settings must be a Settings or a ModelSettings, got "
         f"{type(settings).__name__}"
     )
-
-
-def _redact_detail(value: Any) -> Any:
-    """Recursively scrub strings out of a detail value.
-
-    A detail is not always a string: ``StructuredOutputError.schema_errors`` is
-    a list of strings that embed the model's own output, which is exactly where
-    a provider-echoed credential lands. Redacting only the top-level string
-    left that list verbatim — and ``PaaError.details`` is merged into ledger
-    event payloads *verbatim*, so a leak there becomes a permanent record.
-
-    Keys are deliberately **not** scrubbed. They come from the exception's own
-    detail names (``schema_errors``, ``status_code``, ...), fixed by the code
-    that raised the error rather than by the model, so a key is an identifier
-    callers and ledger payloads are written against — rewriting one would break
-    the contract without removing a leak. Scrubbing the values is sufficient.
-
-    Anything that is not a string, a list/tuple or a dict is passed through
-    unchanged: numbers and booleans cannot carry a credential, and the detail
-    values are required to stay JSON-serialisable for the ledger.
-    """
-    if isinstance(value, str):
-        return redact(value)
-    if isinstance(value, (list, tuple)):
-        return [_redact_detail(item) for item in value]
-    if isinstance(value, dict):
-        return {key: _redact_detail(item) for key, item in value.items()}
-    return value
 
 
 @dataclass
@@ -279,6 +252,28 @@ class EscalatingModelRouter:
     @property
     def max_concurrent_streams(self) -> int:
         return self._settings.max_concurrent_streams
+
+    @property
+    def permission_mode(self) -> PermissionMode:
+        """The deployment's permission mode, as this router was given it.
+
+        **The mode the router acts on, not the mode it guesses.** It is
+        ``Settings.policy.mode`` when the whole ``Settings`` was handed over,
+        and the most restrictive mode there is (``LOCKDOWN``) when it was not
+        — see the constructor for why "unknown" is answered with "no".
+
+        It is exposed because a caller has to be able to *ask* what the
+        router thinks the deployment's mode is: the healthcheck's answer
+        depends on it, and a deployment that cannot see the mode cannot tell
+        whether its frontier is being probed.
+
+        It is deliberately **not** in :meth:`describe`: a router built from
+        the whole ``Settings`` and one built from the model half describe
+        themselves identically today, and the mode is the one thing that
+        genuinely differs between them. The mode is visible in the
+        *behaviour* — the healthcheck — and here.
+        """
+        return self._permission_mode
 
     def token_usage(self) -> dict[str, dict[str, int]]:
         """Per-provider counters as plain dicts, for the metrics registry."""
@@ -554,9 +549,9 @@ class EscalatingModelRouter:
             each of the underlying error's ``details`` entries (``status_code``,
             ``body_excerpt``, ...), prefixed, with every string value — at any
             depth, including inside lists, tuples and nested dicts — passed
-            through :func:`~paa.models.base.redact`. A detail is not always a
-            string: ``StructuredOutputError.schema_errors`` is a list of
-            strings that embed the model's own output, which is where a
+            through :func:`~paa.models.base.redact_detail`. A detail is not
+            always a string: ``StructuredOutputError.schema_errors`` is a list
+            of strings that embed the model's own output, which is where a
             provider-echoed credential lands, so a top-level-only scrub is not
             enough. :class:`PaaError` redacts only the message on the way in
             and merges details into ledger payloads *verbatim*, so the scrub
@@ -627,7 +622,7 @@ class EscalatingModelRouter:
         """
         frontier_ok = self._frontier is not None
         details: dict[str, Any] = {
-            f"underlying_{key}": _redact_detail(value)
+            f"underlying_{key}": redact_detail(value)
             for key, value in exc.details.items()
         }
         details.update(
@@ -678,7 +673,7 @@ class EscalatingModelRouter:
         if local_error is not None:
             details.update(
                 {
-                    f"underlying_{key}": _redact_detail(value)
+                    f"underlying_{key}": redact_detail(value)
                     for key, value in getattr(local_error, "details", {}).items()
                 }
             )

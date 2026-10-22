@@ -333,6 +333,26 @@ bound = any(value is RelationalBackend for value in vars(module).values())
 print("OK\\t{}\\t{}".format("bound" if bound else "unbound", name))
 """
 
+#: A third probe: import one module and report **which of this project's
+#: modules the import brought in**. The first two probes answer "does it
+#: import" and "does it bind the contract"; this one answers "what did it
+#: cost", which is the question a leaf module exists to keep small.
+#:
+#: The answer is a comma-separated list of the ``paa.*`` names in
+#: ``sys.modules`` after the import — the *whole* project-level graph the
+#: import pulled in, not just the direct edges. One line, so the parent
+#: never has to parse anything.
+_LOADED_PROBE = """\
+import importlib
+import sys
+
+name = sys.argv[1]
+importlib.import_module(name)
+loaded = sorted(m for m in sys.modules if m == "paa" or m.startswith("paa."))
+print("LOADED\\t{}".format(",".join(loaded)))
+"""
+
+
 #: A second probe, run once per *tolerated* module, in a fresh interpreter
 #: where some top-level packages have been made unimportable. It answers the
 #: question the tolerance list exists to answer: **does this module really
@@ -592,6 +612,28 @@ def _is_optional_extra_failure(probe: Probe) -> bool:
     if probe.error_type == "ImportError":
         return "extra" in message
     return False
+
+
+def _loaded_modules(module: str) -> set[str]:
+    """Every ``paa.*`` module in ``sys.modules`` after importing ``module``.
+
+    The whole project-level graph, not the direct edges: the point is what
+    the import *cost*, and a package's ``__init__`` is where a subtree is
+    dragged in whole.
+    """
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", _LOADED_PROBE, module],
+            capture_output=True,
+            text=True,
+            timeout=IMPORT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return set()
+    for line in completed.stdout.splitlines():
+        if line.startswith("LOADED\t"):
+            return {name for name in line.split("\t", 1)[1].split(",") if name}
+    return set()
 
 
 @pytest.fixture(scope="module")
@@ -1359,3 +1401,130 @@ def test_the_classified_extra_still_needs_the_extra(tmp_path: Path) -> None:
             "even with the block converted — the extra is not what the guard is "
             "keeping out, so the classification has to change"
         )
+
+
+# ---------------------------------------------------------------------------
+# The keyword table's home
+# ---------------------------------------------------------------------------
+
+#: The leaf that owns the table of keyword shapes — the one place that says
+#: what each JSON Schema keyword's value must look like.
+#:
+#: It is a leaf on purpose: it imports nothing from this project, so a
+#: consumer of the table pays for the table and nothing else.
+KEYWORD_TABLE_MODULE = "paa.core.json_schema"
+
+#: The three validators that ask the table the same question. They are peers:
+#: none of them may import another, and all three read the table from the
+#: leaf.
+KEYWORD_VALIDATORS = (
+    "paa.models.base",
+    "paa.skills.contracts",
+    "paa.validation.schema_validator",
+)
+
+
+def test_the_keyword_table_lives_in_a_leaf() -> None:
+    """The table's home imports nothing from this project.
+
+    A leaf is the whole point of the arrangement. The table is *data*, and a
+    consumer of data should not inherit the subsystems the data happens to
+    live next to — which is exactly what happened when the table sat in
+    :mod:`paa.validation.schema_validator` and the model layer read it from
+    there: the model layer's import graph grew by the whole
+    :mod:`paa.validation` package and, through it, the whole
+    :mod:`paa.sandbox` package.
+
+    Read off the AST rather than the runtime, because the question is about
+    the *source* of the dependency and a runtime probe would say the same
+    thing about a module that imports it lazily.
+    """
+    offenders: list[str] = []
+    found = False
+    for name, path in _module_files():
+        if name != KEYWORD_TABLE_MODULE:
+            continue
+        found = True
+        runtime, type_checking = _imports_of(path)
+        first_party = {
+            imported
+            for imported, _ in runtime | type_checking
+            if _is_first_party(imported)
+        }
+        if first_party:
+            offenders.append(f"{name} imports {sorted(first_party)}")
+    assert found, (
+        f"{KEYWORD_TABLE_MODULE} is not a module of this package — the shared "
+        "keyword table has no leaf home, and the check below would be vacuous."
+    )
+    assert offenders == [], (
+        f"{KEYWORD_TABLE_MODULE} is the leaf that owns the shared keyword table, "
+        f"and it imports this project: {offenders}. A table of data must not "
+        "drag a subsystem along with it."
+    )
+
+
+def test_the_three_validators_read_the_table_from_the_leaf() -> None:
+    """One table, three validators, and none of them imports another.
+
+    The rule is "a malformed keyword value is a schema error", and it has to
+    be the *same* rule in all three validators — that is the whole reason the
+    table was extracted. If one of them reads the table from a place the
+    other two do not, the three can drift apart again, which is the state
+    this arrangement exists to end.
+
+    So the check is structural: each of the three imports the leaf, and none
+    of them imports another of the three.
+    """
+    problems: list[str] = []
+    for name in KEYWORD_VALIDATORS:
+        path = next(path for module, path in _module_files() if module == name)
+        runtime, _ = _imports_of(path)
+        if not any(imported == KEYWORD_TABLE_MODULE for imported, _ in runtime):
+            problems.append(f"{name} does not import {KEYWORD_TABLE_MODULE}")
+        for other in KEYWORD_VALIDATORS:
+            if other == name:
+                continue
+            if any(imported == other for imported, _ in runtime):
+                problems.append(f"{name} imports the other validator {other}")
+    assert problems == [], (
+        "the three JSON-Schema validators must read the one table from the leaf "
+        f"and must not import each other: {problems}"
+    )
+
+    # The *same object*, not a copy of it: a validator that re-declared the
+    # table would satisfy the structural check above and still be able to
+    # drift from the other two.
+    from paa.core.json_schema import KEYWORD_SPECS
+    from paa.validation import schema_validator
+
+    assert schema_validator.KEYWORD_SPECS is KEYWORD_SPECS
+
+
+def test_the_model_layer_does_not_pull_in_the_validation_or_sandbox_packages() -> None:
+    """The measurement, as a lock.
+
+    The model layer is imported by nearly everything, so whatever it drags in
+    is paid by the whole process. It used to drag in the whole
+    :mod:`paa.validation` package and, through it, the whole
+    :mod:`paa.sandbox` package — **16 modules and about 19 ms** — in exchange
+    for a table of keyword shapes.
+
+    The check is a *fresh interpreter* rather than an import in this
+    process, because a test session's ``sys.modules`` is already populated:
+    the sandbox would be in it whether or not this import pulled it in. The
+    child's answer is the only one that measures the import.
+    """
+    loaded = _loaded_modules("paa.models.base")
+
+    assert loaded, "the probe reported nothing — the measurement is not running"
+    dragged = sorted(
+        name
+        for name in loaded
+        if name.startswith(("paa.validation", "paa.sandbox"))
+    )
+    assert dragged == [], (
+        f"importing paa.models.base pulled in {dragged}. The keyword table lives "
+        f"in {KEYWORD_TABLE_MODULE}, which is a leaf; if the model layer needs "
+        "more than the table, it needs the table to be somewhere else."
+    )

@@ -25,8 +25,8 @@ from typing import Any, cast
 
 import pytest
 
-from paa.config import ModelSettings, Settings
-from paa.core.types import ComplexityModality
+from paa.config import ModelSettings, PolicySettings, Settings
+from paa.core.types import ComplexityModality, PermissionMode
 from paa.models import get_model_router
 from paa.models.base import ModelTier
 from paa.models.echo_provider import EchoProvider
@@ -168,3 +168,82 @@ def test_the_router_reports_the_tier_it_was_given() -> None:
     assert router.frontier is not None
     assert router.frontier.tier is ModelTier.FRONTIER
     assert router.describe()["frontier"] is not None
+
+
+# -- the mode the deployment runs in ------------------------------------------
+
+
+def _deployment(tmp_path: Path, mode: PermissionMode) -> Settings:
+    """A whole ``Settings`` whose policy carries ``mode``.
+
+    The model half is the offline pair — a local ``echo`` and an
+    ``anthropic`` frontier — so the healthcheck can be exercised without a
+    server, a key or a socket: ``AnthropicProvider.healthcheck`` is
+    credential-presence only and makes no network call by design.
+    """
+    settings = Settings(_env_file=None, home=tmp_path, policy=PolicySettings(mode=mode))
+    settings.models.local_provider = "echo"
+    settings.models.escalation_provider = "anthropic"
+    return settings
+
+
+def test_the_factory_hands_the_deployment_mode_to_the_router(tmp_path: Path) -> None:
+    """The mode the deployment runs in is the mode the router acts on.
+
+    The mode lives on ``Settings.policy``, and the factory used to narrow its
+    argument to the model half — which carries no mode at all — before handing
+    it over. The router therefore never saw the deployment's mode and fell
+    back to its fail-closed default, ``LOCKDOWN``: safe, and wrong for every
+    deployment that is not in LOCKDOWN.
+
+    The property is asked through the factory rather than through the
+    router's constructor, because the factory *is* the call site the fix is
+    about: the router already read the mode, and the mode never reached it.
+    """
+    router = get_model_router(_deployment(tmp_path, PermissionMode.ASK))
+
+    assert router.permission_mode is PermissionMode.ASK
+
+
+def test_the_factory_fails_closed_when_the_caller_names_no_mode() -> None:
+    """A caller that hands over only the model half still gets the safe one.
+
+    ``ModelSettings`` carries no permission mode, so a router built from it
+    cannot know whether escalation is permitted. "No" is the answer that
+    cannot leak, and it is the answer a **default** has to be.
+    """
+    router = get_model_router(ModelSettings(local_provider="echo"))
+
+    assert router.permission_mode is PermissionMode.LOCKDOWN
+
+
+async def test_the_factory_s_router_probes_the_frontier_when_it_may(tmp_path: Path) -> None:
+    """The end of the chain: the mode reaches the healthcheck.
+
+    The healthcheck probes the frontier — a network call — and it may only do
+    that when the deployment's mode permits escalation. The frontier's key is
+    **absent** from the report when it was not probed, and absent means "not
+    asked", which is not the same as "asked, and it cannot serve".
+    """
+    router = get_model_router(_deployment(tmp_path, PermissionMode.ASK))
+
+    report = await router.healthcheck()
+
+    assert "anthropic" in report
+    assert report["echo"] is True
+
+
+async def test_the_factory_s_router_does_not_probe_it_under_lockdown(
+    tmp_path: Path,
+) -> None:
+    """The other side of the same door: honouring the mode is not blocking.
+
+    A LOCKDOWN deployment must not have its frontier probed, and the reason
+    it did not is the mode it was built with — not a coincidence.
+    """
+    router = get_model_router(_deployment(tmp_path, PermissionMode.LOCKDOWN))
+
+    report = await router.healthcheck()
+
+    assert "anthropic" not in report
+    assert report["echo"] is True

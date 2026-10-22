@@ -1090,30 +1090,27 @@ def test_structured_output_error_redacts_its_details_too() -> None:
 
 
 def test_the_model_layer_and_the_router_share_one_redaction_policy() -> None:
-    """One policy, two copies of it — and this is the check that says so.
+    """One policy, and — now — **one copy** of it.
 
-    The escalation router carries a private copy of the same rule for the
-    details it copies out of a provider's error. The two are the same rule
-    written twice, and the day they drift the router would scrub differently
-    from the class that raised the error. If the router's copy has been
-    retired in favour of the shared one, that is the same outcome, reached
-    the other way.
+    The escalation router used to carry a private copy of the same rule for
+    the details it copies out of a provider's error. The two were the same
+    rule written twice, and the day they drifted the router would scrub
+    differently from the class that raised the error — and the router's copy
+    is the one that reaches the ledger.
+
+    So the check is now about the *copy*, not about the behaviour: the router
+    must not define a second implementation, and the name it uses must be the
+    very object the model layer exports. A behavioural comparison would pass
+    while two copies sat side by side, which is the state this test exists to
+    end.
     """
     from paa.models import router as router_module
 
-    router_redact = getattr(router_module, "_redact_detail", None)
-    if router_redact is None:
-        assert getattr(router_module, "redact_detail", None) is redact_detail
-        return
-
-    for value in (
-        f"key={FAKE_KEY}",
-        [f"key={FAKE_KEY}", 3, None],
-        {"a": f"key={FAKE_KEY}", "b": {"c": [f"key={FAKE_KEY}"]}},
-        3,
-        None,
-    ):
-        assert router_redact(value) == redact_detail(value)
+    assert not hasattr(router_module, "_redact_detail"), (
+        "the router carries a private copy of the redaction policy; there must "
+        "be exactly one implementation of it, and it lives in paa.models.base"
+    )
+    assert getattr(router_module, "redact_detail", None) is redact_detail
 
 
 # ---------------------------------------------------------------------------
@@ -1124,13 +1121,20 @@ def test_the_model_layer_and_the_router_share_one_redaction_policy() -> None:
 def test_the_malformed_schema_error_is_part_of_the_module_s_public_surface() -> None:
     """The class is exported, so a caller can catch it by name.
 
-    ``paa.models.__init__`` re-exports a fixed list of names and is not this
-    task's to edit, so the class is reached through the module that owns it —
-    but it is exported from *that* module, and the shared redaction helper
-    with it.
+    It is exported from the **package** — ``paa.models`` — and not only from
+    the module that owns it, because the package is what a caller reaches for
+    first, and every other model error is exported there. The shared
+    redaction helper is exported with it: it is the one implementation of the
+    policy, and a caller that has to guess which module owns it will write a
+    second one.
     """
+    import paa.models as models_package
     from paa.models import base
 
     assert "MalformedSchemaError" in base.__all__
     assert "redact_detail" in base.__all__
+    assert "MalformedSchemaError" in models_package.__all__
+    assert "redact_detail" in models_package.__all__
+    assert models_package.MalformedSchemaError is MalformedSchemaError
+    assert models_package.redact_detail is redact_detail
     assert issubclass(MalformedSchemaError, PaaError)

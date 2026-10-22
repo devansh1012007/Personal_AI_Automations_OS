@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import pytest
 
+from paa.core import json_schema as json_schema_module
 from paa.core.errors import SchemaValidationError
 from paa.validation import schema_validator as schema_validator_module
 from paa.validation.schema_validator import (
@@ -29,22 +31,30 @@ from paa.validation.schema_validator import (
 # ---------------------------------------------------------------------------
 
 
-def _module_source() -> ast.Module:
-    """The validator's source, parsed.
+def _module_source(module: ModuleType) -> ast.Module:
+    """The module's source, parsed.
 
     The inventory of keywords is read from the source rather than imported
     from the module, so the check below is about what the module *says* it
     supports — and so this file still imports against a source that does
     not have the shape table at all, which is what makes the reversal
     measurable.
+
+    **Two modules are read, because the table has two homes.** The *shapes*
+    live in :mod:`paa.core.json_schema` — the leaf the three validators
+    share — and the *supported keyword set* lives in
+    :mod:`paa.validation.schema_validator`, which is the module that says
+    which keywords it implements. The check below asserts that the two
+    halves are the same set, so reading them from two sources is the point:
+    it is the join that matters.
     """
-    path = Path(schema_validator_module.__file__)
+    path = Path(str(module.__file__))
     return ast.parse(path.read_text(encoding="utf-8"))
 
 
-def _module_level_value(name: str) -> ast.expr | None:
+def _module_level_value(module: ModuleType, name: str) -> ast.expr | None:
     """The value assigned to a module-level ``name``."""
-    for node in _module_source().body:
+    for node in _module_source(module).body:
         if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             if node.target.id == name:
                 return node.value
@@ -80,13 +90,13 @@ def _string_constants(node: ast.AST | None) -> set[str]:
 
 
 def _constrained_keywords() -> set[str]:
-    """The keywords the module declares a *shape* for."""
-    return _string_constants(_module_level_value("_KEYWORD_SPECS"))
+    """The keywords the shared table declares a *shape* for."""
+    return _string_constants(_module_level_value(json_schema_module, "KEYWORD_SPECS"))
 
 
 def _annotation_keywords() -> set[str]:
-    """The keywords the module declares to constrain nothing."""
-    return _string_constants(_module_level_value("_ANNOTATION_KEYWORDS"))
+    """The keywords the shared table declares to constrain nothing."""
+    return _string_constants(_module_level_value(json_schema_module, "ANNOTATION_KEYWORDS"))
 
 # -- boolean schemas --------------------------------------------------------
 
@@ -570,7 +580,9 @@ def test_every_supported_keyword_has_a_declared_shape() -> None:
 
     assert constrained & annotations == set()
     assert constrained | annotations == set(SUPPORTED_KEYWORDS)
-    assert _string_constants(_module_level_value("SUPPORTED_KEYWORDS")) == set(SUPPORTED_KEYWORDS)
+    assert _string_constants(
+        _module_level_value(schema_validator_module, "SUPPORTED_KEYWORDS")
+    ) == set(SUPPORTED_KEYWORDS)
 
 
 def test_the_malformed_table_covers_every_constrained_keyword() -> None:

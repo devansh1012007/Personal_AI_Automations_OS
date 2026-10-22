@@ -35,12 +35,19 @@ regex) is **reported as a schema error and never applied** — and never
 raised. The rule is the same for every keyword, it does not depend on
 ``strict_keywords``, and a valid schema validates exactly what it validated
 before.
+
+**The table that says what each keyword's value must look like lives in
+:mod:`paa.core.json_schema`**, not in this module. It is shared with the
+model layer (:mod:`paa.models.base`) and the skills layer
+(:mod:`paa.skills.contracts`), and this module is neither of those layers'
+dependency — it is one of the three *consumers* of the table. Putting the
+table in a leaf keeps the three validators independent of each other and
+keeps this package's import graph out of the model layer's.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 from typing import Any
 
 import structlog
@@ -48,21 +55,18 @@ from pydantic import BaseModel
 from pydantic import ValidationError as PydanticValidationError
 
 from paa.core.errors import SchemaValidationError
+from paa.core.json_schema import (
+    KEYWORD_SPECS,
+    JsonSchema,
+    SchemaError,
+    json_type_name,
+    schema_shape_errors,
+    value_defects,
+)
 
 __all__ = ["JsonSchema", "SchemaError", "SchemaValidator", "validate_instance"]
 
 log = structlog.get_logger(__name__)
-
-#: A JSON Schema node: a mapping of keywords, or one of the two boolean
-#: schemas — ``true`` accepts every value, ``false`` accepts none.
-#:
-#: Both forms are legal JSON Schema, so a validator whose schema parameter is
-#: typed as ``dict`` alone describes a strict subset of the language it claims
-#: to implement — and the boolean form is the half that carries the
-#: security-relevant meaning. ``false`` is a schema that *forbids* a value, and
-#: a validator that cannot even represent it will accept the payload it was
-#: written to reject.
-JsonSchema = dict[str, Any] | bool
 
 #: JSON Schema keywords this implementation understands. Anything outside this
 #: set is ignored (or raises, under ``strict_keywords``) rather than silently
@@ -119,152 +123,9 @@ _TYPE_MAP: dict[str, tuple[type, ...]] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# The shape a keyword's value must have
-# ---------------------------------------------------------------------------
-
-#: The kinds of value a keyword may carry.
-#:
-#: A *kind* is a shape, not a range: a value that does not have the shape is
-#: malformed, and a malformed value is reported rather than applied. The
-#: ranges that JSON Schema itself imposes (``minLength`` is a non-negative
-#: integer, ``multipleOf`` is strictly positive) are part of the shape, because
-#: a value outside them cannot be used by the keyword either.
-_KIND_TYPE = "type"
-_KIND_NUMBER = "number"
-_KIND_POSITIVE_NUMBER = "positive_number"
-_KIND_NON_NEGATIVE_INT = "non_negative_int"
-_KIND_BOOLEAN = "boolean"
-_KIND_STRING = "string"
-_KIND_REGEX = "regex"
-_KIND_ARRAY = "array"
-_KIND_STRING_ARRAY = "string_array"
-_KIND_SCHEMA = "schema"
-_KIND_SCHEMA_ARRAY = "schema_array"
-_KIND_SCHEMA_MAP = "schema_map"
-
-
-@dataclass(frozen=True, slots=True)
-class _KeywordSpec:
-    """How one supported keyword's value must look."""
-
-    kind: str
-    description: str
-    """What the keyword's own value must be — "expects {description}"."""
-
-    element_description: str = ""
-    """What each element of a container keyword must be, where it has one."""
-
-
-#: Every supported keyword whose value is constrained.
-#:
-#: The union of this table and :data:`_ANNOTATION_KEYWORDS` is exactly
-#: :data:`SUPPORTED_KEYWORDS`, and a test asserts it — so a keyword added to
-#: the supported set without a shape here is a loud failure rather than a
-#: keyword whose value is never checked.
-_KEYWORD_SPECS: dict[str, _KeywordSpec] = {
-    "type": _KeywordSpec(
-        _KIND_TYPE, "a type name or a list of type names", "a type name"
-    ),
-    "properties": _KeywordSpec(
-        _KIND_SCHEMA_MAP, "a mapping of property names to schemas", "a schema"
-    ),
-    "required": _KeywordSpec(_KIND_STRING_ARRAY, "a list of property names", "a string"),
-    "additionalProperties": _KeywordSpec(_KIND_SCHEMA, "a boolean or a schema"),
-    "items": _KeywordSpec(_KIND_SCHEMA, "a schema"),
-    "prefixItems": _KeywordSpec(_KIND_SCHEMA_ARRAY, "a list of schemas", "a schema"),
-    "enum": _KeywordSpec(_KIND_ARRAY, "a list of permitted values"),
-    "minimum": _KeywordSpec(_KIND_NUMBER, "a number"),
-    "maximum": _KeywordSpec(_KIND_NUMBER, "a number"),
-    "exclusiveMinimum": _KeywordSpec(_KIND_NUMBER, "a number"),
-    "exclusiveMaximum": _KeywordSpec(_KIND_NUMBER, "a number"),
-    "multipleOf": _KeywordSpec(_KIND_POSITIVE_NUMBER, "a number greater than zero"),
-    "minLength": _KeywordSpec(_KIND_NON_NEGATIVE_INT, "a non-negative integer"),
-    "maxLength": _KeywordSpec(_KIND_NON_NEGATIVE_INT, "a non-negative integer"),
-    "pattern": _KeywordSpec(_KIND_REGEX, "a valid regular expression"),
-    "minItems": _KeywordSpec(_KIND_NON_NEGATIVE_INT, "a non-negative integer"),
-    "maxItems": _KeywordSpec(_KIND_NON_NEGATIVE_INT, "a non-negative integer"),
-    "uniqueItems": _KeywordSpec(_KIND_BOOLEAN, "a boolean"),
-    "minProperties": _KeywordSpec(_KIND_NON_NEGATIVE_INT, "a non-negative integer"),
-    "maxProperties": _KeywordSpec(_KIND_NON_NEGATIVE_INT, "a non-negative integer"),
-    "anyOf": _KeywordSpec(_KIND_SCHEMA_ARRAY, "a list of schemas", "a schema"),
-    "oneOf": _KeywordSpec(_KIND_SCHEMA_ARRAY, "a list of schemas", "a schema"),
-    "allOf": _KeywordSpec(_KIND_SCHEMA_ARRAY, "a list of schemas", "a schema"),
-    "not": _KeywordSpec(_KIND_SCHEMA, "a schema"),
-    "nullable": _KeywordSpec(_KIND_BOOLEAN, "a boolean"),
-    "definitions": _KeywordSpec(
-        _KIND_SCHEMA_MAP, "a mapping of names to schemas", "a schema"
-    ),
-    "$defs": _KeywordSpec(_KIND_SCHEMA_MAP, "a mapping of names to schemas", "a schema"),
-}
-
-#: Supported keywords that constrain nothing: their value may be anything.
-#:
-#: ``const`` is here rather than in the constrained set because any JSON
-#: value — including ``null`` — is a legal constant.
-_ANNOTATION_KEYWORDS: frozenset[str] = frozenset(
-    {
-        "const",
-        "default",
-        "title",
-        "description",
-        "examples",
-        "$schema",
-        "$id",
-        "$comment",
-    }
-)
-
-
-class SchemaError(dict[str, Any]):
-    """One structural failure, as a plain dict for direct ledger embedding.
-
-    A dict subclass rather than a dataclass so it serialises with no adapter —
-    :class:`~paa.core.errors.SchemaValidationError` takes ``list[dict]`` and
-    the ledger payload wants exactly this shape.
-    """
-
-    def __init__(self, path: str, message: str, **extra: Any) -> None:
-        super().__init__(path=path or "$", message=message, **extra)
-
-    @property
-    def path(self) -> str:
-        return str(self["path"])
-
-    @property
-    def message(self) -> str:
-        return str(self["message"])
-
-    def __str__(self) -> str:
-        return f"{self.path}: {self.message}"
-
-
-def _type_name(value: Any) -> str:
-    """JSON type name for a Python value.
-
-    ``bool`` is checked before ``int`` because ``isinstance(True, int)`` is
-    ``True`` in Python. Without the guard, ``{"type": "integer"}`` would accept
-    ``true``, which is exactly the sort of near-miss this module exists to
-    catch.
-    """
-    if isinstance(value, bool):
-        return "boolean"
-    if value is None:
-        return "null"
-    if isinstance(value, int):
-        return "integer"
-    if isinstance(value, float):
-        return "number"
-    if isinstance(value, str):
-        return "string"
-    if isinstance(value, (list, tuple)):
-        return "array"
-    if isinstance(value, dict):
-        return "object"
-    return type(value).__name__
-
-
-def _matches_type(value: Any, expected: str) -> bool:
+def _matches_type(value: Any, expected: Any) -> bool:
+    if isinstance(expected, list):
+        return any(_matches_type(value, item) for item in expected)
     if expected == "integer":
         # 3.0 is an integer in JSON's data model; 3.5 is not.
         if isinstance(value, bool):
@@ -286,173 +147,6 @@ def _matches_type(value: Any, expected: str) -> bool:
     return isinstance(value, types)
 
 
-def _is_number(value: Any) -> bool:
-    """A JSON number — and not a boolean, which is an ``int`` in Python."""
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
-
-
-def _is_schema(value: Any) -> bool:
-    """A schema node: a mapping, or one of the two boolean schemas."""
-    return isinstance(value, (dict, bool))
-
-
-def _value_defects(spec: _KeywordSpec, value: Any) -> list[tuple[str, str]]:
-    """Every way ``value`` breaks the shape ``spec`` requires.
-
-    Returns ``(path suffix, message)`` pairs; an empty list means the value is
-    usable. The suffix is relative to the keyword's own path, so a defect
-    inside a container keyword points at the element that is wrong.
-
-    The check is deliberately about the *shape* and not about the meaning: a
-    value that has the right shape is applied, and one that does not is
-    reported. Which is why the same function serves both purposes — the
-    report and the decision to apply — and the two cannot drift apart.
-    """
-    kind = spec.kind
-
-    def whole() -> list[tuple[str, str]]:
-        return [("", f"expects {spec.description}, got {_type_name(value)}")]
-
-    if kind == _KIND_TYPE:
-        if isinstance(value, str):
-            return []
-        if isinstance(value, list):
-            return [
-                (f"[{index}]", f"expects {spec.element_description}, got {_type_name(item)}")
-                for index, item in enumerate(value)
-                if not isinstance(item, str)
-            ]
-        return whole()
-    if kind == _KIND_NUMBER:
-        return [] if _is_number(value) else whole()
-    if kind == _KIND_POSITIVE_NUMBER:
-        return [] if _is_number(value) and value > 0 else whole()
-    if kind == _KIND_NON_NEGATIVE_INT:
-        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-            return []
-        return whole()
-    if kind == _KIND_BOOLEAN:
-        return [] if isinstance(value, bool) else whole()
-    if kind == _KIND_STRING:
-        return [] if isinstance(value, str) else whole()
-    if kind == _KIND_REGEX:
-        if not isinstance(value, str):
-            return whole()
-        try:
-            re.compile(value)
-        except (re.error, OverflowError, RecursionError) as exc:
-            # ``re`` raises three different things for three different
-            # malformed patterns: ``re.error`` for a bad syntax,
-            # ``OverflowError`` for an unrepresentable repetition count, and
-            # ``RecursionError`` for a pattern nested past the compiler's
-            # limit. A pattern that cannot be compiled is a broken contract,
-            # not a reason for the gate to raise.
-            return [("", f"expects {spec.description}: {exc}")]
-        return []
-    if kind == _KIND_ARRAY:
-        return [] if isinstance(value, list) else whole()
-    if kind == _KIND_STRING_ARRAY:
-        if not isinstance(value, list):
-            return whole()
-        return [
-            (f"[{index}]", f"expects {spec.element_description}, got {_type_name(item)}")
-            for index, item in enumerate(value)
-            if not isinstance(item, str)
-        ]
-    if kind == _KIND_SCHEMA:
-        return [] if _is_schema(value) else whole()
-    if kind == _KIND_SCHEMA_ARRAY:
-        if not isinstance(value, list):
-            return whole()
-        return [
-            (f"[{index}]", f"expects {spec.element_description}, got {_type_name(item)}")
-            for index, item in enumerate(value)
-            if not _is_schema(item)
-        ]
-    if kind == _KIND_SCHEMA_MAP:
-        if not isinstance(value, dict):
-            return whole()
-        return [
-            (f".{key}", f"expects {spec.element_description}, got {_type_name(item)}")
-            for key, item in value.items()
-            if not _is_schema(item)
-        ]
-    raise AssertionError(f"unknown keyword kind {kind!r}")  # pragma: no cover
-
-
-def _sub_schemas(spec: _KeywordSpec, value: Any, path: str) -> list[tuple[str, Any]]:
-    """The sub-schemas of ``value``, with the path each one sits at.
-
-    Empty for a keyword that holds no sub-schema, and empty for a *malformed*
-    value: there is nothing to descend into, and descending into a value of
-    the wrong type is how a validator starts raising.
-    """
-    kind = spec.kind
-    if kind == _KIND_SCHEMA:
-        return [(path, value)] if _is_schema(value) else []
-    if kind == _KIND_SCHEMA_ARRAY:
-        if not isinstance(value, list):
-            return []
-        return [(f"{path}[{index}]", item) for index, item in enumerate(value)]
-    if kind == _KIND_SCHEMA_MAP:
-        if not isinstance(value, dict):
-            return []
-        return [(f"{path}.{key}", item) for key, item in value.items()]
-    return []
-
-
-def _schema_shape_errors(schema: Any, path: str) -> list[SchemaError]:
-    """Every way ``schema`` breaks the shape the supported keywords require.
-
-    The walk descends into the schema's sub-schemas, so a malformed keyword
-    is reported wherever it sits — not only where the instance happens to
-    reach it. A schema is a contract in its own right: a broken constraint
-    in a branch this payload never touches is still a broken contract, and
-    the author needs to hear about it before the payload that does touch it
-    arrives.
-    """
-    errors: list[SchemaError] = []
-    _walk_schema_shape(schema, path, errors)
-    return errors
-
-
-def _walk_schema_shape(node: Any, path: str, errors: list[SchemaError]) -> None:
-    if not isinstance(node, dict):
-        return
-    for keyword, value in node.items():
-        if not isinstance(keyword, str):
-            # A JSON object always has string keys. A mapping with another
-            # kind of key cannot have come from JSON, and it must not take
-            # the gate down on its way to being reported.
-            errors.append(
-                SchemaError(
-                    path,
-                    "schema keys must be strings",
-                    keyword=repr(keyword),
-                    schema_error=True,
-                )
-            )
-            continue
-        spec = _KEYWORD_SPECS.get(keyword)
-        if spec is None:
-            # An annotation, or a keyword this implementation does not
-            # support — the latter is `SchemaValidator`'s business, not this
-            # walk's, and it has its own rule for it.
-            continue
-        keyword_path = f"{path}.{keyword}"
-        for suffix, message in _value_defects(spec, value):
-            errors.append(
-                SchemaError(
-                    f"{keyword_path}{suffix}",
-                    f"schema keyword {keyword!r} {message}",
-                    keyword=keyword,
-                    schema_error=True,
-                )
-            )
-        for child_path, child in _sub_schemas(spec, value, keyword_path):
-            _walk_schema_shape(child, child_path, errors)
-
-
 def _keyword_value(schema: dict[str, Any], keyword: str) -> Any | None:
     """The value of ``schema[keyword]`` when the keyword can use it.
 
@@ -464,13 +158,13 @@ def _keyword_value(schema: dict[str, Any], keyword: str) -> Any | None:
     """
     if keyword not in schema:
         return None
-    spec = _KEYWORD_SPECS.get(keyword)
+    spec = KEYWORD_SPECS.get(keyword)
     if spec is None:
         # An annotation: any value is acceptable and none of them constrain
         # the instance.
         return schema[keyword]
     value = schema[keyword]
-    if _value_defects(spec, value):
+    if value_defects(spec, value):
         return None
     return value
 
@@ -505,7 +199,7 @@ def validate_instance(
     a broken contract, and the answer to a broken contract is an error the
     author can act on — not a ``TypeError`` out of the gate that decides
     whether an artifact may be committed. The rule is the same for every
-    keyword (see :data:`_KEYWORD_SPECS`), it holds whether or not
+    keyword (see :data:`paa.core.json_schema.KEYWORD_SPECS`), it holds whether or
     ``strict_keywords`` is set, and a malformed keyword is reported *and* not
     applied.
 
@@ -520,7 +214,7 @@ def validate_instance(
         # whose value the keyword cannot use cannot be applied, and applying
         # it is exactly how this gate used to answer a question with a
         # traceback instead of a verdict.
-        errors.extend(_schema_shape_errors(schema, path))
+        errors.extend(schema_shape_errors(schema, path))
     return _validate_instance(payload, schema, path=path, errors=errors)
 
 
@@ -563,9 +257,10 @@ def _validate_instance(
             errors.append(
                 SchemaError(
                     path,
-                    f"expected type {'/'.join(map(str, candidates))}, got {_type_name(payload)}",
+                    "expected type "
+                    f"{'/'.join(map(str, candidates))}, got {json_type_name(payload)}",
                     expected=candidates,
-                    actual=_type_name(payload),
+                    actual=json_type_name(payload),
                 )
             )
             # A type mismatch makes every downstream keyword meaningless —

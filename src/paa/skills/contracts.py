@@ -41,8 +41,8 @@ import structlog
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from paa.core.errors import SkillContractError
+from paa.core.json_schema import JsonSchema, schema_shape_errors
 from paa.core.types import Permission
-from paa.validation.schema_validator import JsonSchema, validate_instance
 
 __all__ = [
     "SEMVER_PATTERN",
@@ -88,28 +88,17 @@ def _malformed_keywords(schema: Any) -> list[str]:
     """Every keyword in ``schema`` whose value the keyword cannot use.
 
     **One table, for all three validators in this tree.** The shapes live in
-    :mod:`paa.validation.schema_validator` — the module that owns the
-    supported-keyword set and the shape of each keyword's value — and are read
-    from there through its public entry point,
-    :func:`paa.validation.schema_validator.validate_instance`. That function
-    checks the schema's own shape *before* it looks at the instance at all, so
-    the instance half of the call is a throwaway: the errors it returns about
-    the instance are discarded, and what is kept are the ones marked
-    ``schema_error`` — a malformed keyword value, located by the path of the
-    schema node it sits at.
-
-    The table is **not** imported by name, and that is deliberate. It is a
-    private name in another module, and reaching into it would bind this
-    module to that module's internals. The public entry point is the
-    supported way to ask the question, and it is the same one the model
-    layer's validator asks it through.
+    :mod:`paa.core.json_schema` — a leaf module that imports nothing from
+    this project — and are read from there. That module is what says what each
+    keyword's value must look like, and all three validators ask it the same
+    question, so a keyword malformed in one is malformed in all three.
 
     The walk covers the **whole** schema, not only the node the instance
     reaches: a broken constraint in a branch this payload never touches is
     still a broken contract, and the author needs to hear about it before the
     payload that does touch it arrives.
     """
-    return [str(error) for error in validate_instance(None, schema) if error.get("schema_error")]
+    return [str(error) for error in schema_shape_errors(schema) if error.get("schema_error")]
 
 
 def validate_json_schema_shape(schema: Any, *, field_name: str) -> dict[str, Any]:
