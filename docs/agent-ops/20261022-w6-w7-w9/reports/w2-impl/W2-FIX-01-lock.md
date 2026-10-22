@@ -568,7 +568,11 @@ $ git status --porcelain -- src tests
   table and the `NEED` line both agree with what I did), but it is a
   miss and it is recorded rather than glossed. The `NEED` line at 03:39:13Z
   is what the work was *for*, and I found it four hours later than I should
-  have.
+  have. A `DONE` line was appended to COMMS.md afterwards
+  (`[2026-10-22T05:23:46Z] W2-FIX-01 -> ORCH | DONE | W2-FIX-01`), left
+  uncommitted in the working tree like every other wave-2 agent's line — the
+  file is shared and not my write-set, and 22 other agents' lines are
+  sitting uncommitted in it too.
 * **One process note on the proofs:** during the proof runs I mislabelled a
   scratch directory (`proof0` for the `observability.runs` revert, then a
   loop that looked for `proof2`) and briefly produced a **green** run for
