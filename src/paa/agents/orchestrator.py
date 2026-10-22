@@ -21,7 +21,7 @@ failure is the only possible one.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol
 
 import structlog
@@ -49,16 +49,64 @@ __all__ = ["BackpressureLike", "ChiefOrchestrator", "TaskOutcome", "TaskRequest"
 
 log = structlog.get_logger(__name__)
 
-#: The events that make up a human gate's history. The *last* one of these in
-#: a lineage says whether a question is still open, has been answered, or has
-#: been refused — see :meth:`ChiefOrchestrator._last_gate_event`.
-_GATE_EVENTS: frozenset[EventType] = frozenset(
-    {
-        EventType.AWAITING_HUMAN_ATTESTATION,
-        EventType.HUMAN_GATE_CLEARED,
-        EventType.HUMAN_GATE_REJECTED,
-    }
-)
+#: The prefix of a human-gate question's discriminator. A gate request is a
+#: *question*, and the discriminator is that question's identity: the stage
+#: that asked, and which question of that stage it is. See
+#: :meth:`ChiefOrchestrator._gate_discriminator` for why the ledger's
+#: idempotency key needs it, and ADR-0034 for the mechanism.
+_GATE_DISCRIMINATOR_PREFIX = "gate"
+
+#: Where a task resumes once a human releases the gate a stage opened, keyed
+#: by the role that asked. The context builder parks *during hydration*, so
+#: the task resumes where the phase map puts a hydrated context
+#: (``PLANNING``); the policy agent parks *during the review*, so the task
+#: resumes where a cleared policy leaves it (``EXECUTING``). A role that is
+#: not listed resumes at ``EXECUTING``, which is the phase map's own default
+#: for a cleared gate.
+_GATE_RESUME_PHASES: dict[str, TaskPhase] = {
+    AgentRole.CONTEXT_BUILDER_PLANNER.value: TaskPhase.PLANNING,
+    AgentRole.POLICY_RISK.value: TaskPhase.EXECUTING,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class _GateQuestion:
+    """One human-gate question, as a lineage records it.
+
+    A question is *opened* by an ``AWAITING_HUMAN_ATTESTATION`` event and
+    *answered* by the ``HUMAN_GATE_CLEARED`` event that names it. The role is
+    the stage that asked — the subject of the question — and the
+    discriminator names the question within that stage.
+
+    One question is open at a time: a task parks on a question, a human
+    answers it, and only then can the next stage ask its own.
+    """
+
+    role: str
+    discriminator: str | None
+    answered: bool
+
+
+def _released_question(
+    questions: list[_GateQuestion], discriminator: str | None
+) -> int | None:
+    """The index of the question a release answers, if it answers one.
+
+    A release that names a question answers *that* question, and answers
+    nothing if the lineage holds no such open question — a release nobody
+    asked for must not release a gate. A release that names none (a lineage
+    written before the discriminator existed) answers the question it
+    follows, which is the only one that can be open.
+    """
+    if discriminator is not None:
+        for index in range(len(questions) - 1, -1, -1):
+            if questions[index].discriminator == discriminator:
+                return None if questions[index].answered else index
+        return None
+    for index in range(len(questions) - 1, -1, -1):
+        if not questions[index].answered:
+            return index
+    return None
 
 
 class BackpressureLike(Protocol):
@@ -390,15 +438,16 @@ class ChiefOrchestrator:
         if state.context_packet is not None or self._context_builder is None:
             return state
 
-        gate = await self._last_gate_event(ctx.correlation_id)
-        if gate is EventType.HUMAN_GATE_CLEARED:
-            # A human has already released this lineage's gate. Asking the
-            # context builder again would raise the same directive, and the
-            # task would park a second time on the answer a human has
-            # already given — the escalation is a question, and the human
-            # answered it (ADR-0034).
-            return state
-        if gate is EventType.AWAITING_HUMAN_ATTESTATION:
+        questions = await self._gate_history(ctx.correlation_id)
+        gate = self._stage_question(questions, AgentRole.CONTEXT_BUILDER_PLANNER)
+        if gate is not None:
+            if gate.answered:
+                # A human has already released this stage's question. Asking
+                # the context builder again would raise the same directive,
+                # and the task would park a second time on the answer a human
+                # has already given — the escalation is a question, and the
+                # human answered it (ADR-0034).
+                return state
             # The question is still open: nobody has answered it. The task
             # stays parked, and the builder is **not** asked again — a
             # builder that answered differently this time (the memory store
@@ -440,19 +489,15 @@ class ChiefOrchestrator:
             # records the directive verbatim so the ledger says which
             # question was asked, not merely that some gate opened
             # (ADR-0034).
-            await self._emit(
-                ctx.correlation_id,
-                EventType.AWAITING_HUMAN_ATTESTATION,
-                session_id=ctx.session_id,
-                payload={
+            return await self._open_gate(
+                ctx,
+                AgentRole.CONTEXT_BUILDER_PLANNER,
+                {
                     "reason": "insufficient context density",
                     "directive": "HARD_STOP_ESCALATE_TO_USER",
                     "vacant_slots": packet.get("vacant_slots", []),
                 },
-                modality=ctx.modality,
-                role=AgentRole.CONTEXT_BUILDER_PLANNER,
             )
-            return await project(self._ledger, ctx.correlation_id)
 
         await self._emit(
             ctx.correlation_id,
@@ -526,6 +571,50 @@ class ChiefOrchestrator:
         if state.policy_decision is not None or self._policy is None:
             return state
 
+        questions = await self._gate_history(ctx.correlation_id)
+        gate = self._stage_question(questions, AgentRole.POLICY_RISK)
+        if gate is not None:
+            if gate.answered:
+                # A human has ruled on this stage's question, and that ruling
+                # *is* the policy decision: the plan is approved. The policy
+                # agent is not asked again, because its second opinion is
+                # not what the human approved — a policy agent that answered
+                # differently on the second consult would either block a task
+                # a human had approved, or (worse) wave through a plan the
+                # human never saw. It would also ask the human the same
+                # question twice, which is the loop ADR-0034 records.
+                #
+                # The decision is recorded with the same event the agent's own
+                # approval uses, so the projection carries it and the stage is
+                # skipped from then on. The payload says who decided: the
+                # human, not the policy agent.
+                await self._emit(
+                    ctx.correlation_id,
+                    EventType.POLICY_CLEARED,
+                    session_id=ctx.session_id,
+                    payload={
+                        "decision": "STATUS_APPROVED",
+                        "reason": "human attestation granted",
+                        "released_by": "human",
+                        "gate": gate.discriminator,
+                    },
+                    modality=ctx.modality,
+                    role=AgentRole.POLICY_RISK,
+                    discriminator=gate.discriminator,
+                )
+                return await project(self._ledger, ctx.correlation_id)
+            # The question is still open: nobody has answered it. The policy
+            # agent is **not** asked again — a gate that is open is a gate
+            # that is waiting, and a second opinion that disagreed with the
+            # first would replace a question for a human with a block (or
+            # worse, a clearance) that no human ever saw.
+            log.info(
+                "orchestrator.policy_gate_still_open",
+                correlation_id=str(ctx.correlation_id),
+                reason=state.awaiting_reason,
+            )
+            return state
+
         message = self._message(
             state,
             ctx,
@@ -556,15 +645,11 @@ class ChiefOrchestrator:
             return await project(self._ledger, ctx.correlation_id)
 
         if verdict.get("requires_human_gate"):
-            await self._emit(
-                ctx.correlation_id,
-                EventType.AWAITING_HUMAN_ATTESTATION,
-                session_id=ctx.session_id,
-                payload={"reason": verdict.get("reason", "human attestation required")},
-                modality=ctx.modality,
-                role=AgentRole.POLICY_RISK,
+            return await self._open_gate(
+                ctx,
+                AgentRole.POLICY_RISK,
+                {"reason": verdict.get("reason", "human attestation required")},
             )
-            return await project(self._ledger, ctx.correlation_id)
 
         await self._emit(
             ctx.correlation_id,
@@ -749,18 +834,47 @@ class ChiefOrchestrator:
 
     # -- human gates -------------------------------------------------------
 
-    async def _last_gate_event(self, correlation_id: uuid.UUID) -> EventType | None:
-        """The lineage's most recent human-gate event, if there is one.
+    async def _open_gate(
+        self, ctx: AgentContext, role: AgentRole, payload: dict[str, Any]
+    ) -> TaskProjection:
+        """Ask a human a question, and park the task on the answer.
 
-        ``HUMAN_GATE_CLEARED`` means a human has answered the question and
-        the task may proceed; ``AWAITING_HUMAN_ATTESTATION`` means the
-        question is still open; ``HUMAN_GATE_REJECTED`` means the human said
-        no and the lineage is blocked (terminal, so it never reaches a
-        caller of this method).
+        The one place a gate is opened. Both stages that can park — the
+        context builder and the policy agent — come through here, so the
+        identity of the question is minted in one place and the two sites
+        cannot drift apart: a discriminator is what tells the ledger that
+        two gate requests in one lineage are two *questions* and not one
+        request delivered twice (ADR-0034).
+
+        The event is written before the caller returns, and the projection it
+        returns is the parked one — the caller does not have to re-read the
+        lineage to learn that the task is now waiting for a human.
+        """
+        questions = await self._gate_history(ctx.correlation_id)
+        await self._emit(
+            ctx.correlation_id,
+            EventType.AWAITING_HUMAN_ATTESTATION,
+            session_id=ctx.session_id,
+            payload=payload,
+            modality=ctx.modality,
+            role=role,
+            discriminator=self._gate_discriminator(questions, role),
+        )
+        return await project(self._ledger, ctx.correlation_id)
+
+    async def _gate_history(self, correlation_id: uuid.UUID) -> list[_GateQuestion]:
+        """Every human-gate question this lineage has asked, in order.
+
+        A question is opened by an ``AWAITING_HUMAN_ATTESTATION`` event and
+        answered by the ``HUMAN_GATE_CLEARED`` event that names it (the
+        release carries the question's discriminator). A
+        ``HUMAN_GATE_REJECTED`` event is a refusal: the lineage ends in
+        ``BLOCKED``, which is terminal, so a rejected question never reaches
+        a caller of this method.
 
         Read from the lineage rather than from the projection, because the
         projection cannot express the fact: ``apply_event`` clears
-        ``awaiting_reason`` when the gate is cleared, and the phase is
+        ``awaiting_reason`` when a gate is cleared, and the phase is
         overwritten by whatever event comes next. The ledger is the truth and
         a projection is one view of it — and this question is about the
         *past* (has someone ruled?) rather than about the present state.
@@ -769,17 +883,87 @@ class ChiefOrchestrator:
         answer can only be "a human has ruled" when a real caller did.
         """
         events = await self._ledger.read_correlation(correlation_id)
-        for event in reversed(events):
-            if event.event_type in _GATE_EVENTS:
-                return event.event_type
+        questions: list[_GateQuestion] = []
+        for event in events:
+            if event.event_type is EventType.AWAITING_HUMAN_ATTESTATION:
+                questions.append(
+                    _GateQuestion(
+                        role=event.agent_role or "",
+                        discriminator=event.discriminator,
+                        answered=False,
+                    )
+                )
+            elif event.event_type is EventType.HUMAN_GATE_CLEARED:
+                index = _released_question(questions, event.discriminator)
+                if index is not None:
+                    questions[index] = replace(questions[index], answered=True)
+        return questions
+
+    @staticmethod
+    def _stage_question(
+        questions: list[_GateQuestion], role: AgentRole
+    ) -> _GateQuestion | None:
+        """The question this stage asked most recently, if it asked one.
+
+        Per *stage*, not per lineage: a stage's own question is the only one
+        it may consult, and the answer to it is the only one that releases
+        that stage. A lineage that asked two questions has one open at a
+        time, and each stage must be able to tell which of them is its own.
+        """
+        for question in reversed(questions):
+            if question.role == role.value:
+                return question
         return None
+
+    @staticmethod
+    def _gate_discriminator(questions: list[_GateQuestion], role: AgentRole) -> str:
+        """The discriminator naming the question a stage is about to ask.
+
+        The discriminator is the *request's identity*, and the ledger's
+        idempotency key is ``correlation | event_type | attempt |
+        discriminator`` (``ledger/events.py::compute_idempotency_key``). So
+        the same request must always produce the same discriminator — or the
+        ledger stops suppressing its redeliveries — and two different
+        requests must never produce the same one — or the second is
+        swallowed and the question is never asked.
+
+        Without one, the two are the same key: a lineage that asked two
+        questions had its second one dropped by the store, the projection
+        never saw it, and the task carried on to commit with the second
+        question unanswered. That is the defect ADR-0034 §6 records.
+
+        The name is the stage that asks and the question's *ordinal* within
+        that stage. The role is in the name because the role is the subject
+        of the question: "is the context sufficient?" belongs to the context
+        builder, "is this plan safe to run?" to the policy agent, and two
+        stages asking at once are two different questions by construction.
+
+        The ordinal counts the questions of that stage that have already been
+        **answered**, not the ones that have been asked, and that is the
+        whole trick:
+
+        * a redelivery of a question nobody has answered yet is the *same*
+          request — nothing has been answered, so the ordinal does not move,
+          the key does not change, and the store suppresses the redelivery;
+        * a genuinely new question can only be asked after the previous one
+          was answered (a stage does not ask again while its question is
+          open), so the ordinal has moved and the new question is a
+          *different* request with a different key.
+
+        Counting the questions *asked* instead would break the first rule: a
+        redelivery would be recorded as a second, different question, and
+        the audit trail would show one human being asked the same thing
+        twice.
+        """
+        answered = sum(1 for q in questions if q.role == role.value and q.answered)
+        return f"{_GATE_DISCRIMINATOR_PREFIX}:{role.value}:{answered + 1}"
 
     async def clear_human_gate(
         self,
         correlation_id: CorrelationId | uuid.UUID,
         *,
         approved: bool,
-        resume_phase: TaskPhase = TaskPhase.EXECUTING,
+        resume_phase: TaskPhase | None = None,
         note: str | None = None,
     ) -> TaskProjection:
         """Record a human's decision on a parked task.
@@ -787,6 +971,26 @@ class ChiefOrchestrator:
         Only a real caller reaches this. Nothing in the automated path can
         clear its own gate, which is what makes ``AWAITING_HUMAN_ATTESTATION``
         meaningful.
+
+        The release names the question it answers — it carries that
+        question's discriminator — so a lineage that asked two questions
+        says which one the human ruled on. Without the name, "the gate" is
+        ambiguous as soon as a second question is asked, and a release would
+        answer whichever question happened to be last.
+
+        A lineage holds at most one *open* question at a time — a stage does
+        not ask again while its question is open — so the release answers the
+        open one. If the projection says the task is waiting but the lineage
+        holds no open question, the release is refused: there is no gate to
+        clear, and inventing one would be a lie the ledger would record.
+
+        The resume phase is the phase the task was working towards when it
+        parked, unless the caller says otherwise: the context builder parks
+        during hydration, so its task resumes at ``PLANNING``, and the
+        policy agent parks during the review, so its task resumes at
+        ``EXECUTING``. That is the release path agreeing with the phase map
+        in ``ledger/replay.py`` instead of asserting a phase the task had
+        not reached.
         """
         state = await project(self._ledger, correlation_id)
         if state.phase is not TaskPhase.AWAITING_HUMAN:
@@ -796,14 +1000,34 @@ class ChiefOrchestrator:
                 phase=state.phase.value,
             )
 
+        cid = uuid.UUID(str(correlation_id))
+        questions = await self._gate_history(cid)
+        question = next((q for q in reversed(questions) if not q.answered), None)
+        if question is None:
+            # The projection says the task is waiting, but the lineage holds
+            # no open question. Refuse rather than release a gate nobody
+            # asked for.
+            raise PaaError(
+                "task is not awaiting human attestation",
+                correlation_id=str(correlation_id),
+                phase=state.phase.value,
+            )
+
+        phase = resume_phase or _GATE_RESUME_PHASES.get(question.role, TaskPhase.EXECUTING)
         await self._emit(
-            uuid.UUID(str(correlation_id)),
+            cid,
             EventType.HUMAN_GATE_CLEARED if approved else EventType.HUMAN_GATE_REJECTED,
             session_id=uuid.UUID(state.session_id) if state.session_id else None,
-            payload={"resume_phase": resume_phase.value, "note": note},
+            payload={
+                "resume_phase": phase.value,
+                "note": note,
+                "gate": question.discriminator,
+                "gate_role": question.role,
+            },
             modality=state.modality,
             role=AgentRole.ORCHESTRATOR,
             attempt=state.attempts,
+            discriminator=question.discriminator,
         )
         return await project(self._ledger, correlation_id)
 

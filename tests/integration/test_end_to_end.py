@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from paa.core.types import EventType, PermissionMode
+from paa.core.types import ComplexityModality, EventType, PermissionMode
 from paa.ledger.events import LedgerEvent
 from paa.ledger.recovery import RecoveryOutcome
 from paa.ledger.replay import TaskPhase
@@ -214,6 +214,116 @@ class TestSecurityGuard:
         try:
             outcome = await rt.submit_and_run("fetch remote data")
             assert outcome.phase is TaskPhase.BLOCKED
+        finally:
+            await rt.close()
+
+
+class TestHumanGate:
+    """Two questions in one lineage are two questions (F-1, ADR-0034).
+
+    The unit suite drives the orchestrator with fakes; this one drives the
+    **real** wiring — the real context builder, the real policy agent, the
+    real ledger — through the reviewer's own measurement: a task that parks
+    on the context builder's question, is answered by a human, resumes, and
+    then meets the policy agent's question.
+
+    Before the fix the second question was swallowed by the ledger's
+    idempotency key (the gate event carried no discriminator, so every gate
+    request in a lineage hashed to the same key), the projection never saw
+    it, and the task committed with the policy's risk gate unanswered.
+    """
+
+    async def test_a_second_question_parks_the_task_again(
+        self, build_runtime: Any
+    ) -> None:
+        model = ScriptedModel(
+            steps=[
+                {
+                    "index": 0,
+                    "action": "risky",
+                    "agent": "worker",
+                    "mutates": True,
+                    "risk_profile": 0.95,
+                }
+            ]
+        )
+        rt = await build_runtime(model=model)
+        try:
+            # The task declares slots the memory store cannot fill, so the
+            # real gatherer's density is 0 and the real context builder
+            # escalates.
+            cid = await rt.submit(
+                "do something risky",
+                modality=ComplexityModality.COMPLEX,
+                required_slots=["slot_a", "slot_b"],
+            )
+
+            first = await rt.run(cid)
+            assert first.phase is TaskPhase.AWAITING_HUMAN
+
+            # A human answers the context builder's question.
+            await rt.orchestrator.clear_human_gate(cid, approved=True)
+            assert (await rt.project(cid)).phase is TaskPhase.PLANNING
+
+            # The task resumes, and the *real* policy agent asks its own
+            # question: the plan carries a step over the always-gate risk
+            # profile.
+            second = await rt.run(cid)
+            assert second.phase is TaskPhase.AWAITING_HUMAN
+            assert second.ok is False
+
+            events = [
+                e.event_type for e in await rt.ledger.read_correlation(cid)
+            ]
+            assert events == [
+                EventType.TASK_REQUESTED,
+                EventType.TASK_QUEUED,
+                EventType.CONTEXT_HYDRATION_REQUESTED,
+                EventType.AWAITING_HUMAN_ATTESTATION,
+                EventType.HUMAN_GATE_CLEARED,
+                EventType.PLAN_COMPILED,
+                EventType.AWAITING_HUMAN_ATTESTATION,
+            ]
+            assert EventType.MUTATION_COMMITTED not in events
+        finally:
+            await rt.close()
+
+    async def test_the_two_questions_carry_two_identities(
+        self, build_runtime: Any
+    ) -> None:
+        """The ledger says which question was asked, and who answered it."""
+        model = ScriptedModel(
+            steps=[
+                {
+                    "index": 0,
+                    "action": "risky",
+                    "agent": "worker",
+                    "mutates": True,
+                    "risk_profile": 0.95,
+                }
+            ]
+        )
+        rt = await build_runtime(model=model)
+        try:
+            cid = await rt.submit(
+                "do something risky",
+                modality=ComplexityModality.COMPLEX,
+                required_slots=["slot_a", "slot_b"],
+            )
+            await rt.run(cid)
+            await rt.orchestrator.clear_human_gate(cid, approved=True)
+            await rt.run(cid)
+
+            events = await rt.ledger.read_correlation(cid)
+            gates = [e for e in events if e.event_type is EventType.AWAITING_HUMAN_ATTESTATION]
+            releases = [e for e in events if e.event_type is EventType.HUMAN_GATE_CLEARED]
+
+            assert len(gates) == 2
+            assert all(g.discriminator for g in gates)
+            assert len({g.discriminator for g in gates}) == 2
+            # The release names the question it answers.
+            assert len(releases) == 1
+            assert releases[0].discriminator == gates[0].discriminator
         finally:
             await rt.close()
 

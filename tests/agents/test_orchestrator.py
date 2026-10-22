@@ -17,13 +17,14 @@ the contract.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
 
 from paa.agents.base import Agent, AgentContext, AgentMessage, AgentResult
 from paa.agents.orchestrator import ChiefOrchestrator, TaskRequest
-from paa.core.types import AgentRole, EventType, PermissionMode
+from paa.core.types import AgentRole, ComplexityModality, EventType, PermissionMode
 from paa.ledger.events import compute_idempotency_key
 from paa.ledger.replay import TaskPhase, project
 from paa.ledger.store import LedgerStore
@@ -228,6 +229,53 @@ class TestExactEventSequence:
             EventType.PLAN_COMPILED,
             EventType.AWAITING_HUMAN_ATTESTATION,
             EventType.HUMAN_GATE_CLEARED,
+        ]
+
+    async def test_the_released_gate_path_emits_the_exact_event_sequence(
+        self, ledger: LedgerStore
+    ) -> None:
+        """The policy gate, answered, and the task carried on.
+
+        The list has one event the pre-fix list did not: ``POLICY_CLEARED``.
+        The pre-fix trace had none, because the policy stage's clearance was
+        never written down — the second ``AWAITING_HUMAN_ATTESTATION`` was
+        swallowed by the ledger's idempotency key, so the stage "cleared" by
+        way of a question that was never asked. The stage's decision is now
+        recorded, and its payload says who made it (``released_by: human``).
+
+        The discriminator changes the gate event's **key**; it does not add,
+        remove or reorder an event. This list is the trace, and the trace is
+        the contract.
+        """
+        orch = _orchestrator(
+            ledger,
+            policy=_FakeAgent(
+                AgentRole.POLICY_RISK,
+                {
+                    "decision": "STATUS_APPROVED",
+                    "requires_human_gate": True,
+                    "reason": "confirm",
+                },
+            ),
+        )
+        cid = await orch.submit(TaskRequest(goal="needs approval"))
+        await orch.run(cid)
+        await orch.clear_human_gate(cid, approved=True)
+        await orch.run(cid)
+
+        assert await _events(ledger, cid) == [
+            EventType.TASK_REQUESTED,
+            EventType.TASK_QUEUED,
+            EventType.CONTEXT_HYDRATION_REQUESTED,
+            EventType.CONTEXT_HYDRATED,
+            EventType.PLAN_COMPILED,
+            EventType.AWAITING_HUMAN_ATTESTATION,
+            EventType.HUMAN_GATE_CLEARED,
+            EventType.POLICY_CLEARED,
+            EventType.EXECUTION_STARTED,
+            EventType.CRITIQUE_CONCLUDED,
+            EventType.EXECUTION_COMPLETED,
+            EventType.MUTATION_COMMITTED,
         ]
 
     async def test_a_retried_step_records_one_critique_not_three(
@@ -485,6 +533,440 @@ class TestHardStopEscalation:
         assert state.phase is TaskPhase.AWAITING_HUMAN
         assert state.needs_recovery is False
         assert state.phase.is_resumable is False
+
+
+class TestGateIdentity:
+    """A gate request has an identity, so two questions are two records (F-1).
+
+    ``AWAITING_HUMAN_ATTESTATION`` is the ledger's one event type for "a
+    human has to rule". The ledger's idempotency key is ``correlation |
+    event_type | attempt | discriminator``
+    (``ledger/events.py::compute_idempotency_key``), so a gate request that
+    carries neither an attempt nor a discriminator hashes to the **same** key
+    as every other gate request in the lineage. The second request is then
+    suppressed as a duplicate: the projection never sees it, the
+    orchestrator sees no pending gate, and the task carries on to
+    ``MUTATION_COMMITTED`` with the second question unanswered.
+
+    Measured against the pre-fix sources: a task that parks on the context
+    builder's question, is answered by a human, resumes, and then meets the
+    policy agent's question ends ``COMMITTED`` with **one** gate event in the
+    ledger and a ``ledger.duplicate_suppressed`` line for the second. The
+    audit trail says the policy never asked.
+
+    The fix gives the question an identity at the emit site: the stage that
+    asked, and which question of that stage it is. The two properties that
+    identity has to hold are tested here — *distinct* across different
+    questions, and *stable* across a redelivery of the same one.
+    """
+
+    def _escalating_builder(self) -> _FakeAgent:
+        return _FakeAgent(
+            AgentRole.CONTEXT_BUILDER_PLANNER,
+            {"routing_directive": "HARD_STOP_ESCALATE_TO_USER", "vacant_slots": ["slot_a"]},
+        )
+
+    def _gating_policy(self) -> _FakeAgent:
+        return _FakeAgent(
+            AgentRole.POLICY_RISK,
+            {
+                "decision": "STATUS_APPROVED",
+                "requires_human_gate": True,
+                "reason": "step exceeds the always-gate risk profile",
+            },
+        )
+
+    async def test_a_second_gate_in_one_lineage_is_recorded_and_parks_the_task(
+        self, ledger: LedgerStore
+    ) -> None:
+        """The reviewer's measurement, as a test.
+
+        A task parks on the context builder's question, a human answers it,
+        the task resumes — and then the policy agent asks its own question.
+        That second question must be **recorded** and must park the task
+        again. Before the fix it was swallowed by the ledger's idempotency
+        key and the task committed with the policy's risk gate unanswered.
+        """
+        orch = _orchestrator(
+            ledger,
+            context_builder=self._escalating_builder(),
+            policy=self._gating_policy(),
+        )
+        cid = await orch.submit(TaskRequest(goal="needs two humans"))
+
+        first = await orch.run(cid)
+        assert first.phase is TaskPhase.AWAITING_HUMAN
+
+        # A human answers the first question, and the task resumes.
+        await orch.clear_human_gate(cid, approved=True)
+        second = await orch.run(cid)
+
+        # The policy agent's question is a *second* question, and it parks.
+        assert second.phase is TaskPhase.AWAITING_HUMAN
+        assert second.ok is False
+
+        events = await ledger.read_correlation(cid)
+        gates = [e for e in events if e.event_type is EventType.AWAITING_HUMAN_ATTESTATION]
+        assert len(gates) == 2, "the second gate request was swallowed by the ledger"
+        assert [g.agent_role for g in gates] == [
+            AgentRole.CONTEXT_BUILDER_PLANNER.value,
+            AgentRole.POLICY_RISK.value,
+        ]
+        assert EventType.MUTATION_COMMITTED not in [e.event_type for e in events]
+
+    async def test_each_gate_question_carries_its_own_identity(
+        self, ledger: LedgerStore
+    ) -> None:
+        """The two questions are distinguishable, and each names its stage.
+
+        The discriminator is the question's identity, and it is what the
+        ledger's key is built from. It says which stage asked, so an
+        operator reading the raw ledger can tell a context-density
+        escalation from a policy approval request without knowing the emit
+        site.
+        """
+        orch = _orchestrator(
+            ledger,
+            context_builder=self._escalating_builder(),
+            policy=self._gating_policy(),
+        )
+        cid = await orch.submit(TaskRequest(goal="needs two humans"))
+        await orch.run(cid)
+        await orch.clear_human_gate(cid, approved=True)
+        await orch.run(cid)
+
+        events = await ledger.read_correlation(cid)
+        gates = [e for e in events if e.event_type is EventType.AWAITING_HUMAN_ATTESTATION]
+
+        assert all(g.discriminator for g in gates), "a gate request carries no discriminator"
+        assert len({g.discriminator for g in gates}) == 2, "the two questions share an identity"
+        assert AgentRole.CONTEXT_BUILDER_PLANNER.value in (gates[0].discriminator or "")
+        assert AgentRole.POLICY_RISK.value in (gates[1].discriminator or "")
+
+        # The two questions have two different ledger keys, which is the
+        # whole mechanism: the key is what the store deduplicates on.
+        assert gates[0].idempotency_key != gates[1].idempotency_key
+
+    async def test_a_release_names_the_question_it_answers(
+        self, ledger: LedgerStore
+    ) -> None:
+        """"The gate" is ambiguous as soon as a lineage has asked twice.
+
+        The release carries the discriminator of the question it answers, so
+        the ledger says which of the two questions the human ruled on, and
+        the two releases cannot collide on the idempotency key either.
+        """
+        orch = _orchestrator(
+            ledger,
+            context_builder=self._escalating_builder(),
+            policy=self._gating_policy(),
+        )
+        cid = await orch.submit(TaskRequest(goal="needs two humans"))
+        await orch.run(cid)
+        await orch.clear_human_gate(cid, approved=True)
+        await orch.run(cid)
+        await orch.clear_human_gate(cid, approved=True)
+
+        events = await ledger.read_correlation(cid)
+        gates = [e for e in events if e.event_type is EventType.AWAITING_HUMAN_ATTESTATION]
+        releases = [e for e in events if e.event_type is EventType.HUMAN_GATE_CLEARED]
+
+        assert len(releases) == 2
+        assert [r.discriminator for r in releases] == [g.discriminator for g in gates]
+        assert releases[0].idempotency_key != releases[1].idempotency_key
+
+    async def test_a_task_parked_on_a_second_gate_is_not_walked_past(
+        self, ledger: LedgerStore
+    ) -> None:
+        """The human-only rule survives the fix.
+
+        Re-running a task whose second gate is open must not carry on, and
+        nothing in the automated path may clear a gate: the only release in
+        the lineage is the one a human asked for. Before the fix this task
+        committed — the second gate had been swallowed, so the orchestrator
+        saw no pending gate at all.
+        """
+        orch = _orchestrator(
+            ledger,
+            context_builder=self._escalating_builder(),
+            policy=self._gating_policy(),
+        )
+        cid = await orch.submit(TaskRequest(goal="needs two humans"))
+        await orch.run(cid)
+        await orch.clear_human_gate(cid, approved=True)
+        await orch.run(cid)
+
+        again = await orch.run(cid)
+
+        assert again.phase is TaskPhase.AWAITING_HUMAN
+        types = await _events(ledger, cid)
+        assert EventType.MUTATION_COMMITTED not in types
+        assert EventType.EXECUTION_STARTED not in types
+        # Exactly one release: the human's. The automated path wrote none.
+        raw = await ledger.read_correlation(cid)
+        cleared = [e for e in raw if e.event_type is EventType.HUMAN_GATE_CLEARED]
+        assert len(cleared) == 1, "something in the automated path cleared a gate"
+        assert len([e for e in raw if e.event_type is EventType.AWAITING_HUMAN_ATTESTATION]) == 2
+
+    async def test_an_answered_gate_does_not_block_the_task(self, ledger: LedgerStore) -> None:
+        """A gate that was opened *and answered* releases the task.
+
+        And the policy agent is not consulted a second time: the human's
+        answer is the decision, and asking again would ask the human the
+        same question twice — the loop ADR-0034 records. Before the fix the
+        agent was consulted again and the second gate was swallowed by the
+        ledger, so the task only moved on because the policy agent happened
+        to be deterministic.
+        """
+        policy = self._gating_policy()
+        orch = _orchestrator(ledger, policy=policy)
+        cid = await orch.submit(TaskRequest(goal="needs approval"))
+
+        parked = await orch.run(cid)
+        assert parked.phase is TaskPhase.AWAITING_HUMAN
+
+        await orch.clear_human_gate(cid, approved=True)
+        resumed = await orch.run(cid)
+
+        assert resumed.phase is TaskPhase.COMMITTED
+        assert policy.call_count == 1, "the policy agent was consulted again after a human ruled"
+
+    async def test_a_redelivery_of_the_same_gate_request_is_suppressed(
+        self, ledger: LedgerStore
+    ) -> None:
+        """The same request, delivered twice, is one question.
+
+        At-least-once delivery is the ledger's own premise: "an at-least-once
+        transport may deliver the same logical event twice; the second write
+        is suppressed rather than duplicated" (``ledger/store.py``). Two
+        workers picking up the same task both ask the builder the same
+        question and both write the answer — the store must recognise the
+        second write as the same request, so the human is asked once and the
+        audit trail says once.
+
+        The barrier in the builder makes the interleaving deterministic:
+        both orchestrators have read the lineage before either writes, so
+        both write the *same* request. A discriminator that minted a fresh
+        identity per write would record two questions here, and the human
+        would be asked the same thing twice.
+        """
+        builder = _BarrierBuilder(parties=2)
+        first = _orchestrator(ledger, context_builder=builder)
+        second = _orchestrator(ledger, context_builder=builder)
+        cid = await first.submit(TaskRequest(goal="needs a human"))
+
+        await asyncio.gather(first.run(cid), second.run(cid))
+
+        events = await ledger.read_correlation(cid)
+        gates = [e for e in events if e.event_type is EventType.AWAITING_HUMAN_ATTESTATION]
+        assert len(gates) == 1, "the same gate request was recorded twice"
+
+    async def test_the_gate_request_minted_for_a_question_is_the_same_request(
+        self, ledger: LedgerStore
+    ) -> None:
+        """The identity is minted from the *request*, not from a counter.
+
+        This one reaches into the emit site on purpose. The public flow
+        cannot re-enter it — a stage does not ask again while its question
+        is open — so the property the fix rests on is only observable where
+        the identity is minted. Two properties, both required:
+
+        * the same question asked twice is the **same** request, so the
+          ledger suppresses the second (a counter that moved on every write
+          would record two questions and ask the human the same thing twice);
+        * a genuinely new question from the same stage is a **different**
+          request, so the ledger records it (this is what the second gate in
+          a lineage is).
+        """
+        orch = _orchestrator(ledger)
+        cid = await orch.submit(TaskRequest(goal="needs approval"))
+        ctx = AgentContext(
+            correlation_id=cid,
+            modality=ComplexityModality.STANDARD,
+            permission_mode=PermissionMode.AUTO,
+        )
+
+        # The same request, delivered twice.
+        await orch._open_gate(ctx, AgentRole.POLICY_RISK, {"reason": "confirm"})
+        await orch._open_gate(ctx, AgentRole.POLICY_RISK, {"reason": "confirm"})
+
+        gates = [
+            e
+            for e in await ledger.read_correlation(cid)
+            if e.event_type is EventType.AWAITING_HUMAN_ATTESTATION
+        ]
+        assert len(gates) == 1, "the same request was recorded twice"
+
+        # A human answers it, and the same stage asks a *new* question.
+        await orch.clear_human_gate(cid, approved=True)
+        await orch._open_gate(ctx, AgentRole.POLICY_RISK, {"reason": "confirm again"})
+
+        gates = [
+            e
+            for e in await ledger.read_correlation(cid)
+            if e.event_type is EventType.AWAITING_HUMAN_ATTESTATION
+        ]
+        assert len(gates) == 2, "the new question was swallowed"
+        assert gates[1].discriminator != gates[0].discriminator
+
+    async def test_the_open_policy_gate_holds_the_task_against_a_policy_agent_that_changes_its_mind(
+        self, ledger: LedgerStore
+    ) -> None:
+        """A gate that is open is a gate that is waiting.
+
+        The policy agent's verdict can change between two runs — a rule
+        table moved, a threshold moved. If the agent were consulted again
+        while its question was unanswered and it now said "approved", the
+        task would walk past a gate no human had ever seen. The question
+        stands until a human answers it, whatever the agent says in the
+        meantime.
+        """
+        policy = _PolicyThatChangesItsMind()
+        orch = _orchestrator(ledger, policy=policy)
+        cid = await orch.submit(TaskRequest(goal="needs approval"))
+
+        parked = await orch.run(cid)
+        assert parked.phase is TaskPhase.AWAITING_HUMAN
+
+        again = await orch.run(cid)
+
+        assert again.phase is TaskPhase.AWAITING_HUMAN
+        assert policy.call_count == 1, "the policy agent was asked again while its gate was open"
+        events = await _events(ledger, cid)
+        assert EventType.POLICY_CLEARED not in events
+        assert EventType.MUTATION_COMMITTED not in events
+
+    async def test_the_policy_stage_does_not_consult_its_agent_while_its_question_is_open(
+        self, ledger: LedgerStore
+    ) -> None:
+        """The precise guard, under the coarse one.
+
+        ``run()`` also checks the task's phase after every stage, and that
+        check fires first — a parked task stops there. Underneath it, each
+        stage consults **its own** question before it consults its agent: a
+        stage whose question is open does not ask again, because a second
+        opinion is not an answer and must never replace a question for a
+        human with a clearance no human saw.
+
+        The stage is driven directly here, because the coarse check makes
+        the branch unreachable through ``run()`` — the phase is
+        ``AWAITING_HUMAN`` whenever the gate event is the last event, which
+        is the only shape the current pipeline writes.
+        """
+        policy = self._gating_policy()
+        orch = _orchestrator(ledger, policy=policy)
+        cid = await orch.submit(TaskRequest(goal="needs approval"))
+        await orch.run(cid)
+        assert policy.call_count == 1
+
+        state = await project(ledger, cid)
+        ctx = AgentContext(
+            correlation_id=cid,
+            modality=ComplexityModality.STANDARD,
+            permission_mode=PermissionMode.AUTO,
+        )
+        held = await orch._check_policy(state, ctx)
+
+        assert policy.call_count == 1, "the policy agent was asked while its question was open"
+        assert held.phase is TaskPhase.AWAITING_HUMAN
+        assert held.policy_decision is None, "the gate was cleared without a human"
+
+    async def test_the_release_resumes_the_task_where_it_parked(self, ledger: LedgerStore) -> None:
+        """The release path and the phase map agree.
+
+        The context builder parks *during hydration*, so the task has not
+        planned when a human rules: the phase it resumes at is ``PLANNING``,
+        the one the phase map puts a hydrated context in. The policy agent
+        parks during the review, so its task resumes at ``EXECUTING`` — where
+        a cleared policy leaves it.
+
+        The release therefore names the phase the task was working towards,
+        rather than asserting a phase the task had not reached.
+        """
+        orch = _orchestrator(
+            ledger,
+            context_builder=self._escalating_builder(),
+            policy=self._gating_policy(),
+        )
+        cid = await orch.submit(TaskRequest(goal="needs two humans"))
+        await orch.run(cid)
+
+        await orch.clear_human_gate(cid, approved=True)
+        assert (await project(ledger, cid)).phase is TaskPhase.PLANNING
+
+        # The task resumes, and the policy stage's own gate parks it again.
+        await orch.run(cid)
+        assert (await project(ledger, cid)).phase is TaskPhase.AWAITING_HUMAN
+
+        await orch.clear_human_gate(cid, approved=True)
+        assert (await project(ledger, cid)).phase is TaskPhase.EXECUTING
+
+    async def test_a_rejected_gate_ends_the_lineage(self, ledger: LedgerStore) -> None:
+        """A human who says no ends the lineage — it does not resume."""
+        orch = _orchestrator(ledger, policy=self._gating_policy())
+        cid = await orch.submit(TaskRequest(goal="needs approval"))
+        await orch.run(cid)
+
+        await orch.clear_human_gate(cid, approved=False)
+        outcome = await orch.run(cid)
+
+        assert outcome.phase is TaskPhase.BLOCKED
+        events = await _events(ledger, cid)
+        assert EventType.HUMAN_GATE_REJECTED in events
+        assert EventType.MUTATION_COMMITTED not in events
+
+
+class _BarrierBuilder(Agent):
+    """A context builder that waits until every caller has asked it.
+
+    The barrier is what makes a concurrent delivery deterministic: each
+    caller has read the lineage (and found no open question) before any of
+    them writes the gate, so all of them write the *same* request.
+    """
+
+    def __init__(self, parties: int) -> None:
+        super().__init__(name=AgentRole.CONTEXT_BUILDER_PLANNER.value)
+        self.role = AgentRole.CONTEXT_BUILDER_PLANNER
+        self._parties = parties
+        self._arrived = 0
+        self._all_arrived = asyncio.Event()
+
+    async def handle(self, message: AgentMessage, ctx: AgentContext) -> AgentResult[Any]:
+        self._arrived += 1
+        if self._arrived >= self._parties:
+            self._all_arrived.set()
+        await self._all_arrived.wait()
+        return AgentResult.success(
+            {"routing_directive": "HARD_STOP_ESCALATE_TO_USER", "vacant_slots": []}
+        )
+
+
+class _PolicyThatChangesItsMind(Agent):
+    """Asks for a human the first time; approves the second.
+
+    The policy agent's verdict is not a constant — a rule table moved, a
+    threshold moved — so a second consult can disagree with the first. A
+    question that is open must survive that.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(name=AgentRole.POLICY_RISK.value)
+        self.role = AgentRole.POLICY_RISK
+        self.call_count = 0
+
+    async def handle(self, message: AgentMessage, ctx: AgentContext) -> AgentResult[Any]:
+        self.call_count += 1
+        if self.call_count == 1:
+            return AgentResult.success(
+                {
+                    "decision": "STATUS_APPROVED",
+                    "requires_human_gate": True,
+                    "reason": "step exceeds the always-gate risk profile",
+                }
+            )
+        return AgentResult.success(
+            {"decision": "STATUS_APPROVED", "requires_human_gate": False, "risk_score": 0.0}
+        )
 
 
 class TestRetry:
