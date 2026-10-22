@@ -3,21 +3,30 @@
 Every test asserts a decision the gate must make with **no model in the loop**.
 The gate has no model dependency to call, so that property is structural; these
 tests prove the decisions themselves are right across the permission modes.
+
+The gate's nine irreversible-operation patterns are covered **one by one**,
+each through the gate's own verdict, and the inventory of patterns is read out
+of the module's source — so a pattern added to the gate without a command that
+trips it cannot land uncovered (R-W2-201).
 """
 
 from __future__ import annotations
 
+import ast
 import math
+import re
 import uuid
 from collections.abc import Iterable, Sequence
 from contextlib import AbstractAsyncContextManager
-from typing import Any
+from pathlib import Path
+from typing import Any, NamedTuple
 
 import numpy as np
 import pytest
 
+from paa.agents import policy as policy_module
 from paa.agents.base import AgentContext, AgentMessage, MessageType
-from paa.agents.policy import PolicyRiskAgent, _flatten
+from paa.agents.policy import _IRREVERSIBLE_PATTERNS, PolicyRiskAgent, _flatten
 from paa.config import PolicySettings
 from paa.core.types import ComplexityModality, PermissionMode
 from paa.storage.relational.connection import TransactionConnection
@@ -124,6 +133,308 @@ class TestSafeMode:
         steps = [{"action": "write", "command": ["python", "-c", "open('a','w').write('x')"]}]
         verdict = await _decide(agent, steps, PermissionMode.SAFE)
         assert verdict["decision"] == "STATUS_APPROVED"
+
+
+# ---------------------------------------------------------------------------
+# The irreversible-pattern inventory
+# ---------------------------------------------------------------------------
+
+#: How many irreversible-operation patterns the gate declares today.
+#:
+#: Written out by hand, and deliberately so. The identity check below already
+#: turns red when the gate gains a pattern that this file has no command for;
+#: this number is the second, blunter tripwire. A tenth pattern means a tenth
+#: row in the table below *and* an edit to this number, in the same diff — a
+#: number that followed the source could never fail.
+EXPECTED_PATTERN_COUNT = 9
+
+
+class _Case(NamedTuple):
+    """One pattern's coverage: the label the gate reports, and the commands.
+
+    ``commands`` holds argv lists, because that is how a plan carries a
+    command (``{"command": ["rm", "-rf", "/data"]}``) and the gate's renderer
+    space-joins an argv list before it scans. A command given as a bare
+    string would take a different path through that renderer, so it would not
+    be the same test.
+    """
+
+    label: str
+    commands: tuple[tuple[str, ...], ...]
+
+
+#: One row per pattern: the command that trips **that** pattern, and no other.
+#:
+#: The key is the pattern's own regex source, so a row cannot be filed under
+#: the wrong rule, and the inventory check compares these keys against the
+#: module's source. Every command is checked to trip exactly one pattern —
+#: the gate reports the *first* pattern it matches, so a command that matched
+#: two would be reported under the earlier label and the test would be
+#: asserting about a rule the command does not really belong to.
+#:
+#: The three commands the suite already used are carried here verbatim.
+_COVERED: dict[str, _Case] = {
+    r"\brm\s+-[rRf]{1,2}\b": _Case(
+        "recursive force delete",
+        (("rm", "-rf", "/data"),),
+    ),
+    r"\bshutil\.rmtree\b": _Case(
+        "recursive tree delete",
+        (("python", "-c", "import shutil; shutil.rmtree('/x')"),),
+    ),
+    r"\bos\.(remove|unlink|rmdir)\b": _Case(
+        "file deletion",
+        (
+            ("python", "-c", "import os; os.remove('/data/x')"),
+            ("python", "-c", "import os; os.unlink('/data/x')"),
+            ("python", "-c", "import os; os.rmdir('/data/d')"),
+        ),
+    ),
+    r"\bDROP\s+(TABLE|DATABASE|SCHEMA)\b": _Case(
+        "destructive DDL",
+        (("psql", "-c", "DROP TABLE production_users"),),
+    ),
+    r"\bTRUNCATE\s+TABLE\b": _Case(
+        "table truncation",
+        (("psql", "-c", "TRUNCATE TABLE events"),),
+    ),
+    r"\bgit\s+push\s+.*--force\b": _Case(
+        "force push",
+        (("git", "push", "--force"),),
+    ),
+    r"\bgit\s+reset\s+--hard\b": _Case(
+        "hard reset",
+        (("git", "reset", "--hard", "HEAD~1"),),
+    ),
+    r"\bmkfs\b|\bdd\s+if=": _Case(
+        "raw device write",
+        (
+            ("mkfs.ext4", "/dev/sda1"),
+            ("dd", "if=/dev/zero", "of=/dev/sda"),
+        ),
+    ),
+    r"\bDELETE\s+FROM\s+\w+\s*(;|$)": _Case(
+        "unqualified delete",
+        (
+            ("psql", "-c", "DELETE FROM audit_log;"),
+            ("psql", "-c", "DELETE FROM audit_log"),
+        ),
+    ),
+}
+
+
+def _assigned_name(target: ast.expr) -> str:
+    """The name a ``Assign``/``AnnAssign`` target binds, or ``""``."""
+    return target.id if isinstance(target, ast.Name) else ""
+
+
+def _literal_pairs(value: ast.expr) -> tuple[tuple[str, str], ...]:
+    """The ``(pattern, label)`` pairs a tuple literal holds.
+
+    Only literal strings are read. A pattern built at runtime cannot be read
+    out of the source, and a sweep that quietly skipped it would report the
+    gate's inventory as complete while missing the row that matters — so a
+    non-literal is an error, not a skip.
+    """
+    if not isinstance(value, ast.Tuple):
+        raise AssertionError("_IRREVERSIBLE_PATTERNS is not a tuple literal")
+    pairs: list[tuple[str, str]] = []
+    for element in value.elts:
+        if not isinstance(element, ast.Tuple) or len(element.elts) != 2:
+            raise AssertionError("_IRREVERSIBLE_PATTERNS holds a row that is not a pair")
+        pattern, label = element.elts
+        if not isinstance(pattern, ast.Constant) or not isinstance(pattern.value, str):
+            raise AssertionError("a pattern is not a literal string")
+        if not isinstance(label, ast.Constant) or not isinstance(label.value, str):
+            raise AssertionError("a label is not a literal string")
+        pairs.append((pattern.value, label.value))
+    return tuple(pairs)
+
+
+def _patterns_in_source() -> tuple[tuple[str, str], ...]:
+    """The ``(pattern, label)`` pairs the policy module declares, read from its source.
+
+    The sweep reads the module's own text rather than importing the table, so
+    the list this file checks itself against is the module's *declared* list —
+    the way ``tests/validation/test_ast_scanner.py`` derives the scanner's
+    rule names from the scanner's source. A pattern added to the gate is a
+    pattern this helper knows about; what the inventory check then demands is
+    that it also has a command that trips it.
+
+    The assignment carries a type annotation, so it is an ``AnnAssign``; a
+    plain ``Assign`` is recognised too, so the sweep keeps working if the
+    annotation is ever dropped.
+    """
+    source = Path(policy_module.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    for node in ast.walk(tree):
+        value: ast.expr | None = None
+        if isinstance(node, ast.AnnAssign):
+            if _assigned_name(node.target) == "_IRREVERSIBLE_PATTERNS":
+                value = node.value
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if _assigned_name(target) == "_IRREVERSIBLE_PATTERNS":
+                    value = node.value
+                    break
+        if value is None:
+            continue
+        return _literal_pairs(value)
+
+    raise AssertionError("_IRREVERSIBLE_PATTERNS is not in the policy module's source")
+
+
+def _plan(command: tuple[str, ...]) -> list[dict[str, Any]]:
+    """The plan the gate is handed for one command."""
+    return [{"action": "danger", "command": list(command)}]
+
+
+def _blob(command: tuple[str, ...]) -> str:
+    """The text the gate actually scans for one command.
+
+    Rendered by the gate's own ``_render`` — the same call the agent makes on
+    the way to the check — so this helper cannot drift from what the gate
+    sees. Re-implementing the join here would be a second copy of the
+    rendering rule, and a second copy is a second thing to forget.
+    """
+    agent = PolicyRiskAgent(settings=PolicySettings())
+    return agent._render("do work", _plan(command))
+
+
+class TestEveryIrreversiblePattern:
+    """Every irreversible-operation pattern, exercised through the gate.
+
+    The gate has nine patterns and the ROADMAP's phrase "SAFE blocks
+    deletion" is a claim about all nine. Three of them had a test; the other
+    six had none, and deleting those six left the suite green — nothing in
+    the tree noticed that the gate had stopped refusing to drop a production
+    table (R-W2-201).
+
+    Two properties make each case a test of **this** pattern rather than of
+    the gate in general:
+
+    * the verdict's *reason* names the pattern's label, and the gate reports
+      the **first** pattern it matches — so a command that matched two rules
+      would be reported under the earlier label;
+    * every command is checked to trip exactly one pattern, which is what
+      keeps the first property honest.
+
+    Both are checked against the gate's own source, so a pattern added to the
+    module without a command that trips it is a red inventory check rather
+    than a silent gap.
+    """
+
+    @pytest.mark.parametrize(
+        ("pattern", "case"),
+        [pytest.param(pattern, case, id=case.label) for pattern, case in _COVERED.items()],
+    )
+    async def test_the_pattern_refuses_the_command_that_trips_it(
+        self, pattern: str, case: _Case
+    ) -> None:
+        """SAFE refuses the command, and says which rule refused it.
+
+        Asserting the label is what makes this a test of *this* pattern: a
+        test that only asserted "blocked" would still pass if the gate had
+        blocked the command for some other reason, and it would keep passing
+        after this pattern was deleted from the module.
+        """
+        for command in case.commands:
+            agent = PolicyRiskAgent(settings=PolicySettings())
+            verdict = await _decide(agent, _plan(command), PermissionMode.SAFE)
+
+            assert verdict["decision"] == "STATUS_BLOCKED", (pattern, command, verdict)
+            assert verdict["reason"] == f"irreversible operation under SAFE mode: {case.label}"
+
+    @pytest.mark.parametrize(
+        ("pattern", "case"),
+        [pytest.param(pattern, case, id=case.label) for pattern, case in _COVERED.items()],
+    )
+    async def test_the_pattern_raises_the_risk_outside_safe(
+        self, pattern: str, case: _Case
+    ) -> None:
+        """Outside SAFE the command is not blocked, but it is not free either.
+
+        The pattern table feeds the risk score as well as the SAFE refusal,
+        and the risk score is what decides whether AUTO mode asks a human. A
+        pattern that stops matching takes the score from 0.8 down to the
+        step count's share (0.05 for a one-step plan), so the gate stops
+        asking — which is why this fails too when the pattern is deleted.
+        """
+        for command in case.commands:
+            agent = PolicyRiskAgent(settings=PolicySettings())
+            verdict = await _decide(agent, _plan(command), PermissionMode.AUTO)
+
+            assert verdict["decision"] == "STATUS_APPROVED", (pattern, command, verdict)
+            assert verdict["risk_score"] == 0.8, (pattern, command, verdict)
+            assert verdict["requires_human_gate"] is True, (pattern, command, verdict)
+
+    def test_the_inventory_is_complete(self) -> None:
+        """Every pattern the gate declares has a command that trips it.
+
+        The comparison is between the module's *source* and this file's
+        table. A tenth pattern added to the gate is a pattern this table
+        does not have, and this check is red until it does — so the next
+        pattern cannot land uncovered, which is exactly what happened to the
+        six that were missing when this file was written.
+        """
+        source_pairs = set(_patterns_in_source())
+        table_pairs = {(pattern, case.label) for pattern, case in _COVERED.items()}
+
+        assert table_pairs == source_pairs, (
+            "the gate's patterns and this file's coverage disagree; "
+            f"uncovered: {sorted(source_pairs - table_pairs)}; "
+            f"stale: {sorted(table_pairs - source_pairs)}"
+        )
+        assert len(source_pairs) == EXPECTED_PATTERN_COUNT
+
+    def test_the_sweep_reads_the_table_the_gate_runs(self) -> None:
+        """The source sweep finds the table the gate actually uses.
+
+        The inventory check trusts the sweep, so the sweep has to be right: if
+        the gate ever built its table in a way the sweep cannot read, the
+        inventory check would be comparing against a shorter list and would
+        report "complete" for a gate it had never read.
+        """
+        assert _patterns_in_source() == _IRREVERSIBLE_PATTERNS
+
+    def test_each_command_trips_exactly_one_pattern(self) -> None:
+        """A command must not trip two rules.
+
+        The gate reports the **first** pattern it matches, so a command that
+        matched two would be reported under the earlier label — and the
+        per-pattern test above would then be asserting about a rule the
+        command does not really belong to. Checking every command against
+        every pattern in the module keeps each case honest, and stops a
+        future broad pattern from quietly taking over an existing case.
+        """
+        for pattern, case in _COVERED.items():
+            for command in case.commands:
+                blob = _blob(command)
+                matched = [
+                    other
+                    for other, _label in _patterns_in_source()
+                    if re.search(other, blob, re.IGNORECASE)
+                ]
+                assert matched == [pattern], (pattern, command, matched)
+
+    async def test_a_qualified_delete_is_not_an_unqualified_delete(self) -> None:
+        """The delete rule is about the *absence* of a WHERE clause.
+
+        ``DELETE FROM t WHERE id = 1`` removes one row; the pattern's label
+        is "unqualified delete" and that is what it matches. A rule that
+        refused every ``DELETE FROM`` would be a different and broader rule,
+        and nothing else in the suite would notice the difference.
+
+        This is a **near-miss** case, not one of the nine: it holds while the
+        rule is present *and* while it is absent, and it turns red only if
+        the rule is broadened.
+        """
+        agent = PolicyRiskAgent(settings=PolicySettings())
+        command = ("psql", "-c", "DELETE FROM audit_log WHERE id = 1")
+        verdict = await _decide(agent, _plan(command), PermissionMode.SAFE)
+
+        assert verdict["decision"] == "STATUS_APPROVED", verdict
 
 
 class TestPathGuards:
