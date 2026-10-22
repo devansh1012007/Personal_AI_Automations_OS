@@ -457,7 +457,7 @@ class MetricsRegistry:
         if value < 0:
             raise ValueError(
                 f"counter {name!r} cannot decrease (got {value!r}); use a gauge "
-                f"if the value legitimately moves in both directions"
+                "if the value legitimately moves in both directions"
             )
         numeric = float(value)
         if not math.isfinite(numeric):
