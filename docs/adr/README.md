@@ -45,6 +45,10 @@ Deviations fall into three classes:
 | [0029](0029-entity-resolution-parity.md) | Entity resolution is the same answer on both substrates | **Correctness** |
 | [0030](0030-deployment-image-contract.md) | The deployment fetches what the compose file actually runs | **Correctness** |
 | [0031](0031-container-start-and-work-budgets.md) | The container's start is not charged to the work | **Correctness** |
+| [0032](0032-blob-error-vocabulary.md) | The blob substrate's failures are named in a vocabulary of their own | **Correctness** |
+| [0033](0033-s3-live-server-suite.md) | The S3 substrate is tested against two S3 servers, not against a mock | **Correctness** |
+| [0034](0034-hard-stop-escalation-parks-the-task.md) | A hard stop parks the task until a human rules | **Correctness** |
+| [0035](0035-unqualified-delete-rule-and-the-plan-s-position.md) | The unqualified-delete rule's answer must not depend on where the step sits | **Correctness** |
 
 > ADR 0027 is reserved for the tool-containment and MCP client layer
 > (`docs/MCP_AND_PLUGINS.md`). It is not indexed here because it does not
