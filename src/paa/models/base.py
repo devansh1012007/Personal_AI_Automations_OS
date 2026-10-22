@@ -26,6 +26,38 @@ Two things in here are load-bearing beyond plumbing:
     reach a log line, a ledger payload or an exception message, so scrubbing
     happens at the boundary rather than being left to each call site to
     remember.
+
+A third rule is stated once here and applied to the whole tree: **a malformed
+keyword value in a schema is a schema error.** A schema whose ``minLength`` is
+a string, or whose ``properties`` is a list, is a broken contract, and the
+answer to a broken contract is an error the author can act on — not a
+``TypeError`` out of the gate that decides whether an artifact may be
+committed, and not a constraint silently dropped so that an instance is judged
+"valid" against a schema nobody wrote.
+
+There are **three** JSON-Schema validators in this tree — this module,
+:mod:`paa.validation.schema_validator` and :mod:`paa.skills.contracts` — and
+they ask **one** question about a keyword's value: *can this keyword use this
+value?* They get the answer from **one** place. The table of keyword shapes
+lives in :mod:`paa.validation.schema_validator`, the module that owns the
+supported-keyword set, and this module reads it through that module's public
+entry point rather than through its private table. So the definition of
+"malformed" is stated once, and the three validators cannot drift apart on
+it.
+
+**Why the dependency points that way.** :mod:`paa.validation` is the
+deterministic, host-side validation layer; this module and
+:mod:`paa.skills.contracts` are its *consumers*, and :mod:`paa.skills` already
+imports it. The edge therefore adds no new **kind** of dependency — it adds
+:mod:`paa.models` to the set of subsystems that read the one table. It is
+import-safe in the two ways that matter. Nothing under :mod:`paa.validation`
+imports :mod:`paa.models`, so there is no cycle; and nothing under it imports
+an optional extra — ``qdrant``, ``kuzu``, ``sentence-transformers``, ``redis``,
+``psycopg`` and ``boto3`` are all absent from it — so a minimal install still
+imports this module. The price is that importing this module now also imports
+the :mod:`paa.validation` package, which measured about 40 ms on the host this
+was written on; that is the price of one table instead of three, and it is
+paid once per process.
 """
 
 from __future__ import annotations
@@ -41,10 +73,12 @@ import structlog
 from pydantic import BaseModel, ConfigDict, Field
 
 from paa.core.errors import PaaError
+from paa.validation.schema_validator import SchemaError, validate_instance
 
 __all__ = [
     "CompletionRequest",
     "CompletionResponse",
+    "MalformedSchemaError",
     "Message",
     "ModelProvider",
     "ModelTier",
@@ -53,6 +87,7 @@ __all__ = [
     "extract_json_object",
     "minimal_instance_for_schema",
     "redact",
+    "redact_detail",
     "validate_against_schema",
 ]
 
@@ -76,10 +111,26 @@ class ModelUnavailableError(PaaError):
     here. A provider that answered but answered badly raises
     :class:`StructuredOutputError` instead — the distinction matters because
     only one of the two is worth retrying against the same provider.
+
+    **The details are scrubbed here, at construction.** The message was
+    always scrubbed; the ``**details`` were not, and they are built out of the
+    provider's *own* output — a body excerpt, a response header, a decoded
+    error payload — which is exactly where a credential lands. ``PaaError``
+    merges ``details`` into a ledger payload **verbatim** and renders them in
+    ``str(error)``, so an unscrubbed detail is a copy of the key in the
+    ledger, in the log aggregator and in whatever the operator pastes into a
+    bug report. The rule is the same one :class:`StructuredOutputError`
+    applies to its ``schema_errors``, and it is applied to the sibling for
+    the same reason: "remember to redact at the raise site" is a rule that
+    holds right up until the one path nobody tested.
     """
 
     def __init__(self, message: str, *, provider: str, **details: Any) -> None:
-        super().__init__(redact(message), provider=provider, **details)
+        super().__init__(
+            redact(message),
+            provider=provider,
+            **{key: redact_detail(value) for key, value in details.items()},
+        )
         self.provider = provider
 
 
@@ -102,6 +153,11 @@ class StructuredOutputError(PaaError):
     line). The scrub happens here, at construction, because "remember to
     redact at the raise site" is a rule that holds right up until the one
     path nobody tested.
+
+    The free-form ``**details`` are scrubbed by the same rule and for the same
+    reason: they are built out of the provider's output too, and a sibling
+    class that scrubbed its message but not its details left the same hole
+    one class over.
     """
 
     def __init__(
@@ -121,11 +177,56 @@ class StructuredOutputError(PaaError):
             schema_errors=redacted_errors,
             attempts=attempts,
             raw_excerpt=redact(raw_excerpt[:400]) if raw_excerpt else None,
-            **details,
+            **{key: redact_detail(value) for key, value in details.items()},
         )
         self.provider = provider
         self.schema_errors = redacted_errors
         self.attempts = attempts
+
+
+class MalformedSchemaError(PaaError):
+    """The schema itself is broken, so no instance can be judged against it.
+
+    A keyword whose value has the wrong shape — ``minLength: "abc"``,
+    ``properties: []`` — is a broken contract, and the answer to a broken
+    contract is an error the author can act on. It used to be a
+    ``TypeError`` out of :func:`validate_against_schema`, which is neither a
+    :class:`~paa.core.errors.PaaError` nor a routable failure: the
+    orchestrator's ``except PaaError`` did not catch it, so no
+    ``EXECUTION_FAILED`` was written and the run died unrecorded.
+
+    **It is deliberately not a :class:`StructuredOutputError`.** That class
+    means "the provider answered, and the answer was wrong", and the
+    escalation router reads it as exactly that: it escalates, and the
+    ``MODEL_ESCALATED`` audit record then says reasoning material left the
+    machine. A malformed schema is the *caller's* mistake, a better model
+    cannot repair it, and nothing left the machine — so the error must not
+    travel the escalation path, and a class of its own is what keeps it off
+    it. Being a :class:`~paa.core.errors.PaaError` is what makes the run
+    record the failure.
+
+    ``malformed_keywords`` carries one entry per defect, each located by the
+    path of the **schema** node it sits at (``$.properties.a.minLength``),
+    which is the same convention the runtime's output gate uses. The defects
+    and the free-form details are scrubbed at construction, for the same
+    reason the two classes above scrub theirs: the guarantee belongs at the
+    boundary, not in the head of whoever raises it.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        malformed_keywords: list[SchemaError],
+        **details: Any,
+    ) -> None:
+        defects = [_redacted_defect(error) for error in malformed_keywords]
+        super().__init__(
+            redact(message),
+            malformed_keywords=defects,
+            **{key: redact_detail(value) for key, value in details.items()},
+        )
+        self.malformed_keywords = defects
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +270,93 @@ def redact(text: str, *secrets: str | None) -> str:
     for pattern in _SECRET_PATTERNS:
         out = pattern.sub(_REDACTED, out)
     return out
+
+
+def redact_detail(value: Any) -> Any:
+    """Scrub one detail value, recursively.
+
+    **What "redacted" means for a free-form detail**, stated once so the
+    error classes that carry one cannot drift apart:
+
+    * every **string value** is passed through :func:`redact`, at any depth —
+      a string inside a list, a tuple or a nested mapping is scrubbed too;
+    * the **keys** are not scrubbed. A key names a field; it is written by the
+      code that raised the error rather than by the provider, and callers and
+      ledger payloads are written against those names, so rewriting one would
+      break the contract without removing a leak;
+    * a value that is not a string, a list/tuple or a mapping — a number, a
+      boolean, ``None`` — is passed through unchanged. It cannot carry a
+      credential, and the details have to stay JSON-serialisable for the
+      ledger.
+
+    This is the policy the escalation router applies to the details it copies
+    out of a provider's error
+    (``EscalatingModelRouter._redact_detail`` in :mod:`paa.models.router`), and
+    the two are the same rule written twice: same recursion, same treatment of
+    keys, same pass-through of everything that is not a string. The router's
+    copy is private and that file is not this module's to edit, so it has been
+    left alone; retiring it in favour of this one is a separate change, and
+    until it happens this docstring is the note that says the two are meant to
+    be the same.
+    """
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, (list, tuple)):
+        return [redact_detail(item) for item in value]
+    if isinstance(value, dict):
+        return {key: redact_detail(item) for key, item in value.items()}
+    return value
+
+
+def _redacted_defect(error: SchemaError) -> SchemaError:
+    """One schema defect, with its message scrubbed.
+
+    A defect names the **keyword** and the **kind** of value it found — never
+    the value itself — so nothing here is a secret in the ordinary case. It is
+    scrubbed anyway, for the same reason the rest of this module scrubs: the
+    guarantee belongs at the construction boundary, and a rule that holds
+    "except for the one field nobody thought of" is not a rule.
+
+    The **path** and the **keyword** are left alone. They name the place in
+    the schema where the defect is, which is what the author needs in order to
+    fix it, and a path is made of the schema's own structure rather than of
+    anything the provider said.
+    """
+    extra = {key: value for key, value in error.items() if key not in ("path", "message")}
+    return SchemaError(error.path, redact(error.message), **extra)
+
+
+# ---------------------------------------------------------------------------
+# The shape of a schema's keywords
+# ---------------------------------------------------------------------------
+
+
+def _malformed_keywords(schema: Any) -> list[SchemaError]:
+    """Every keyword in ``schema`` whose value the keyword cannot use.
+
+    **One table, for all three validators in this tree.** The shapes live in
+    :mod:`paa.validation.schema_validator` — the module that owns the
+    supported-keyword set and the shape of each keyword's value — and are read
+    from there through its public entry point,
+    :func:`paa.validation.schema_validator.validate_instance`. That function
+    checks the schema's own shape *before* it looks at the instance at all,
+    so the instance half of the call is a throwaway: the errors it returns
+    about the instance are discarded, and what is kept are the ones marked
+    ``schema_error`` — a malformed keyword value, located by the path of the
+    schema node it sits at (``$.properties.a.minLength``).
+
+    The table is **not** imported by name, and that is deliberate. It is a
+    private name in another module, and reaching into it would bind this
+    module to that module's internals. The public entry point is the
+    supported way to ask the question, and it is the same one the other two
+    validators ask it through.
+
+    The walk covers the **whole** schema, not only the node the instance
+    reaches: a broken constraint in a branch this payload never touches is
+    still a broken contract, and the author needs to hear about it before the
+    payload that does touch it arrives.
+    """
+    return [error for error in validate_instance(None, schema) if error.get("schema_error")]
 
 
 # ---------------------------------------------------------------------------
@@ -340,11 +528,37 @@ def validate_against_schema(
     and break another; showing all of them converges in a single retry far more
     often.
 
+    **A malformed keyword in ``schema`` is a schema error, and it is raised —
+    as :class:`MalformedSchemaError`, never as a ``TypeError``.** The list
+    above is for the problems with the *instance*: a retry can fix those,
+    because the model can produce a different answer. A schema whose
+    ``minLength`` is a string is a different thing — a broken contract that no
+    amount of retrying can repair, and one that a validator must not paper
+    over by dropping the constraint and answering "valid" against a schema
+    nobody wrote. So the two are kept apart: the instance's problems are
+    returned, and the schema's are raised.
+
     Supported: ``type`` (single or list), ``enum``, ``const``, ``properties``,
     ``required``, ``additionalProperties`` (boolean form), ``items``,
     ``minItems``/``maxItems``, ``minLength``/``maxLength``,
     ``minimum``/``maximum``, ``anyOf``/``oneOf``/``allOf``. Everything else is
     ignored; see the module comment above.
+    """
+    if defects := _malformed_keywords(schema):
+        raise MalformedSchemaError(
+            "the schema carries a keyword whose value cannot be used",
+            malformed_keywords=defects,
+        )
+    return _validate_against_schema(instance, schema, path=path)
+
+
+def _validate_against_schema(
+    instance: Any, schema: dict[str, Any], *, path: str = "$"
+) -> list[str]:
+    """The recursive half of :func:`validate_against_schema`.
+
+    It does not re-check the schema's shape: the shape is a property of the
+    schema, and the entry point has already walked the whole tree once.
     """
     errors: list[str] = []
     if not isinstance(schema, dict) or not schema:
@@ -388,7 +602,7 @@ def _validate_combinator(
     if not isinstance(branches, list):
         return []
     results = [
-        validate_against_schema(instance, b, path=path)
+        _validate_against_schema(instance, b, path=path)
         for b in branches
         if isinstance(b, dict)
     ]
@@ -420,7 +634,7 @@ def _validate_object(instance: dict[str, Any], schema: dict[str, Any], path: str
     for name, sub_schema in properties.items():
         if name in instance and isinstance(sub_schema, dict):
             errors.extend(
-                validate_against_schema(instance[name], sub_schema, path=f"{path}.{name}")
+                _validate_against_schema(instance[name], sub_schema, path=f"{path}.{name}")
             )
     return errors
 
@@ -433,7 +647,9 @@ def _validate_array(instance: list[Any], schema: dict[str, Any], path: str) -> l
         errors.append(f"{path}: expected at most {maximum} items, got {len(instance)}")
     if isinstance(item_schema := schema.get("items"), dict):
         for index, item in enumerate(instance):
-            errors.extend(validate_against_schema(item, item_schema, path=f"{path}[{index}]"))
+            errors.extend(
+                _validate_against_schema(item, item_schema, path=f"{path}[{index}]")
+            )
     return errors
 
 
@@ -462,11 +678,33 @@ def minimal_instance_for_schema(schema: dict[str, Any], *, name: str | None = No
     offline, and by the retry path as a shape hint. The output is *valid*, not
     *meaningful* — every string is a placeholder.
 
-    When ``required`` is present only those properties are emitted, which is the
-    literal minimum. When it is absent, ``{}`` would technically satisfy the
-    schema but would make the echo provider useless as a stand-in, so every
+    When ``required`` is present only those properties are emitted, which is
+    the literal minimum. When it is absent, ``{}`` would technically satisfy
+    the schema but would make the echo provider useless as a stand-in, so every
     declared property is filled instead. Extra declared properties never
     invalidate an object, so both branches are correct.
+
+    **A malformed keyword in ``schema`` is raised as
+    :class:`MalformedSchemaError`,** for the same reason
+    :func:`validate_against_schema` raises it: the keyword's own value says
+    what the smallest value is (``int(schema["minItems"])`` for an array,
+    ``len(value) >= schema["minLength"]`` for a string), and a value of the
+    wrong shape cannot be read as one. It used to be a ``ValueError`` out of
+    ``int()`` or a ``TypeError`` out of a slice.
+    """
+    if defects := _malformed_keywords(schema):
+        raise MalformedSchemaError(
+            "the schema carries a keyword whose value cannot be used",
+            malformed_keywords=defects,
+        )
+    return _minimal_instance_for_schema(schema, name=name)
+
+
+def _minimal_instance_for_schema(schema: dict[str, Any], *, name: str | None = None) -> Any:
+    """The recursive half of :func:`minimal_instance_for_schema`.
+
+    It does not re-check the schema's shape: the shape is a property of the
+    schema, and the entry point has already walked the whole tree once.
     """
     if not isinstance(schema, dict) or not schema:
         return {}
@@ -478,7 +716,7 @@ def minimal_instance_for_schema(schema: dict[str, Any], *, name: str | None = No
     for keyword in ("anyOf", "oneOf", "allOf"):
         branches = schema.get(keyword)
         if isinstance(branches, list) and branches and isinstance(branches[0], dict):
-            return minimal_instance_for_schema(branches[0], name=name)
+            return _minimal_instance_for_schema(branches[0], name=name)
 
     declared = schema.get("type")
     if isinstance(declared, list):
@@ -491,13 +729,13 @@ def minimal_instance_for_schema(schema: dict[str, Any], *, name: str | None = No
         required = schema.get("required")
         wanted = list(required) if required else list(properties)
         return {
-            key: minimal_instance_for_schema(properties.get(key) or {}, name=key)
+            key: _minimal_instance_for_schema(properties.get(key) or {}, name=key)
             for key in wanted
         }
     if declared == "array":
         item_schema = schema.get("items") if isinstance(schema.get("items"), dict) else {}
         count = int(schema.get("minItems") or 0)
-        return [minimal_instance_for_schema(item_schema or {}) for _ in range(count)]
+        return [_minimal_instance_for_schema(item_schema or {}) for _ in range(count)]
     if declared == "integer":
         return int(schema.get("minimum") or 0)
     if declared == "number":
@@ -636,7 +874,20 @@ class ModelProvider(abc.ABC):
         Validation is *not* skipped when a provider claims constrained
         decoding. Every one of them is best-effort in practice, and an unchecked
         claim is exactly the failure this method exists to stop.
+
+        **A malformed schema is refused before the provider is called**, as
+        :class:`MalformedSchemaError`. The schema is the caller's, it is
+        broken, and no answer can satisfy it — so a retry would not help, and
+        asking a frontier model to satisfy it would carry a broken contract
+        off the machine and record an escalation that never happened.
         """
+        if defects := _malformed_keywords(schema):
+            raise MalformedSchemaError(
+                "the schema carries a keyword whose value cannot be used",
+                malformed_keywords=defects,
+                provider=self.name,
+            )
+
         attempt_request = request.with_schema(schema)
         errors: list[str] = []
         raw = ""

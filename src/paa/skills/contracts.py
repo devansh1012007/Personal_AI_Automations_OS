@@ -42,7 +42,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from paa.core.errors import SkillContractError
 from paa.core.types import Permission
-from paa.validation.schema_validator import JsonSchema
+from paa.validation.schema_validator import JsonSchema, validate_instance
 
 __all__ = [
     "SEMVER_PATTERN",
@@ -84,6 +84,34 @@ _SEMVER_RE = re.compile(SEMVER_PATTERN)
 # ---------------------------------------------------------------------------
 
 
+def _malformed_keywords(schema: Any) -> list[str]:
+    """Every keyword in ``schema`` whose value the keyword cannot use.
+
+    **One table, for all three validators in this tree.** The shapes live in
+    :mod:`paa.validation.schema_validator` — the module that owns the
+    supported-keyword set and the shape of each keyword's value — and are read
+    from there through its public entry point,
+    :func:`paa.validation.schema_validator.validate_instance`. That function
+    checks the schema's own shape *before* it looks at the instance at all, so
+    the instance half of the call is a throwaway: the errors it returns about
+    the instance are discarded, and what is kept are the ones marked
+    ``schema_error`` — a malformed keyword value, located by the path of the
+    schema node it sits at.
+
+    The table is **not** imported by name, and that is deliberate. It is a
+    private name in another module, and reaching into it would bind this
+    module to that module's internals. The public entry point is the
+    supported way to ask the question, and it is the same one the model
+    layer's validator asks it through.
+
+    The walk covers the **whole** schema, not only the node the instance
+    reaches: a broken constraint in a branch this payload never touches is
+    still a broken contract, and the author needs to hear about it before the
+    payload that does touch it arrives.
+    """
+    return [str(error) for error in validate_instance(None, schema) if error.get("schema_error")]
+
+
 def validate_json_schema_shape(schema: Any, *, field_name: str) -> dict[str, Any]:
     """Assert that ``schema`` is a JSON Schema *object* schema.
 
@@ -91,6 +119,13 @@ def validate_json_schema_shape(schema: Any, *, field_name: str) -> dict[str, Any
     as a mapping. A top-level ``{"type": "array"}`` or a bare ``true`` schema
     is legal JSON Schema but cannot describe that contract, so it is rejected
     at registration rather than producing a confusing failure at invocation.
+
+    **Every keyword in the schema, at any depth, must carry a value the
+    keyword can use.** A ``minLength`` that is a string, a ``properties`` that
+    is a list, a ``pattern`` that is not a regex: each is a broken contract,
+    and a contract that parses is a contract every downstream layer may rely
+    on. The check walks the whole tree, because a broken constraint in a
+    branch this payload never touches is still a broken contract.
 
     :raises ValueError: with a message naming the field and the problem.
     """
@@ -114,6 +149,11 @@ def validate_json_schema_shape(schema: Any, *, field_name: str) -> dict[str, Any
         isinstance(required, list) and all(isinstance(item, str) for item in required)
     ):
         raise ValueError(f"{field_name}.required must be a list of strings when present")
+    if defects := _malformed_keywords(schema):
+        raise ValueError(
+            f"{field_name} carries a schema keyword whose value cannot be used: "
+            + "; ".join(defects)
+        )
     return schema
 
 
@@ -140,7 +180,40 @@ def schema_errors(instance: Any, schema: JsonSchema, *, path: str = "$") -> list
     The two boolean schemas are honoured in full: ``true`` accepts any value,
     ``false`` accepts none.
 
+    **A malformed keyword value is a schema error, and it is raised — as a
+    ``ValueError``, the way this module already refuses a bad schema *shape*.**
+    The errors returned below are the *instance's* problems; a broken
+    constraint is not one of them, and it used to be answered by *ignoring* the
+    constraint — so the instance came back "valid" against a schema whose
+    ``minLength`` had been quietly dropped. A validator that answers a
+    question about a schema it could not read is worse than one that refuses.
+
+    The rule is the **same** one the model layer's validator applies
+    (:func:`paa.models.base.validate_against_schema`) and the same one the
+    runtime's output gate applies
+    (:func:`paa.validation.schema_validator.validate_instance`): a malformed
+    keyword is *reported*, never raised as a ``TypeError``, and never silently
+    dropped. Only the way it is reported differs, because each module has its
+    own convention — this one raises ``ValueError`` for a bad schema, and
+    :meth:`SkillContract.validate_output` turns that into a
+    :class:`~paa.core.errors.SkillContractError`.
+
     :returns: human-readable error strings; empty means valid.
+    :raises ValueError: when the schema carries a keyword whose value cannot
+        be used.
+    """
+    if defects := _malformed_keywords(schema):
+        raise ValueError(
+            "the schema carries a keyword whose value cannot be used: " + "; ".join(defects)
+        )
+    return _schema_errors(instance, schema, path=path)
+
+
+def _schema_errors(instance: Any, schema: JsonSchema, *, path: str = "$") -> list[str]:
+    """The recursive half of :func:`schema_errors`.
+
+    It does not re-check the schema's shape: the shape is a property of the
+    schema, and the entry point has already walked the whole tree once.
     """
     errors: list[str] = []
     # A boolean schema is legal JSON Schema and it carries the half of the
@@ -213,7 +286,7 @@ def _object_errors(instance: dict[str, Any], schema: dict[str, Any], path: str) 
 
     for key, value in instance.items():
         if key in properties:
-            errors.extend(schema_errors(value, properties[key], path=f"{path}.{key}"))
+            errors.extend(_schema_errors(value, properties[key], path=f"{path}.{key}"))
         elif schema.get("additionalProperties") is False:
             errors.append(f"{path}: unexpected property {key!r}")
     return errors
@@ -231,7 +304,7 @@ def _array_errors(instance: list[Any], schema: dict[str, Any], path: str) -> lis
     # item constraints at all.
     if (item_schema := schema.get("items")) is not None:
         for index, item in enumerate(instance):
-            errors.extend(schema_errors(item, item_schema, path=f"{path}[{index}]"))
+            errors.extend(_schema_errors(item, item_schema, path=f"{path}[{index}]"))
     return errors
 
 
@@ -246,8 +319,13 @@ def _string_errors(instance: str, schema: dict[str, Any], path: str) -> list[str
             if re.search(pattern, instance) is None:
                 errors.append(f"{path}: does not match the declared pattern")
         except re.error:
-            # A malformed pattern in a downloaded contract must not crash the
-            # output gate; treat it as unconstrained and say so.
+            # A pattern that does not compile is a *malformed keyword*, and the
+            # shape check refuses such a schema before the instance is judged
+            # — so this branch is the backstop for a schema that reached the
+            # gate without being checked, not the normal path. It must not
+            # crash the gate that decides whether a skill's output is
+            # believable, so it treats the pattern as unconstrained and says
+            # so.
             log.warning("skills.schema.bad_pattern", path=path)
     return errors
 
@@ -461,11 +539,36 @@ class SkillContract(BaseModel):
 
         RFC §8.2 step 6. Returns error strings; empty means the output is
         believable enough to hand back to the caller.
+
+        :raises SkillContractError: when the contract's own ``output_schema``
+            carries a keyword whose value cannot be used. A defect in the
+            *contract* is not the payload's fault, and reporting it as one
+            would punish the skill for a schema the runtime wrote.
         """
-        return schema_errors(payload, self.output_schema)
+        try:
+            return schema_errors(payload, self.output_schema)
+        except ValueError as exc:
+            raise SkillContractError(
+                "the skill contract's output_schema carries a malformed keyword",
+                skill_name=self.skill_name,
+                findings=[{"field": "output_schema", "problem": str(exc)}],
+            ) from exc
 
     def validate_input(self, payload: Any) -> list[str]:
-        return schema_errors(payload, self.input_schema)
+        """Check the arguments against ``input_schema``.
+
+        :raises SkillContractError: when the contract's own ``input_schema``
+            carries a keyword whose value cannot be used — see
+            :meth:`validate_output`.
+        """
+        try:
+            return schema_errors(payload, self.input_schema)
+        except ValueError as exc:
+            raise SkillContractError(
+                "the skill contract's input_schema carries a malformed keyword",
+                skill_name=self.skill_name,
+                findings=[{"field": "input_schema", "problem": str(exc)}],
+            ) from exc
 
     # -- construction ------------------------------------------------------
 
