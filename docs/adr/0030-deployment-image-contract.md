@@ -12,6 +12,16 @@ from the plan **before** the pin rule ran, and this ADR's own account of how
 Compose merges a `profiles:` list was wrong. The two amendments are read
 together; the second one restates the first where the first was wrong.*
 
+*Amended a third time the same day by W1-IMPR-04 (the wave-1 delta review). The
+third amendment closes a hole the second one **half** closed: the refusal for a
+service whose keys are not written at the reader's indent was bound to "deeper than
+four", so a service written at **three** spaces — which Compose accepts, and which
+the second amendment's own reader could not see — was neither read nor refused. It
+was dropped from the plan, its unpinned image passed the pin rule, and the script
+exited zero. The rule is now the **level** rather than the depth, and the refusal
+set is no longer counted in prose (see "What is refused, and why a refusal is the
+right answer" and "What it costs").*
+
 ## Context
 
 `deploy/fetch-images.sh` existed to fetch the server topology's images with retries and a
@@ -418,8 +428,8 @@ compares two hand-rolled readers rather than Compose.
 
 ### What is refused, and why a refusal is the right answer
 
-Ten shapes are outside the subset, and each is an **error** with its own message,
-before a byte is fetched:
+Every shape the corpus in the deployment tests carries is outside the subset, and each
+is an **error** with its own message, before a byte is fetched:
 
 * Compose's `extends:` — the image would be inherited from another service, and the
   script does not resolve inheritance;
@@ -441,10 +451,16 @@ before a byte is fetched:
   (`postgres: {image: …}`) and a `services:` map on one line (`services: {…}`). Compose
   accepts both, and the reader cannot see a single key of either, so a reader that
   ignored them would plan a stack that is **missing a service, silently**;
-* **a service whose keys are not at the reader's indent** — the reader reads a
-  service's keys at four spaces, and a service written any other way could hide an
+* **a service whose keys are written at another level** — the reader reads a service's
+  keys at four spaces, and a service written at any other level could hide an
   `image:` from the plan. Compose accepts such a file, so the reader refuses it
-  rather than dropping the service from the plan.
+  rather than dropping the service from the plan. **The level is the rule and not the
+  depth**: a service whose keys are at four spaces is read whatever else it carries (a
+  nested `environment:` or `build:` block is deeper than that, and is not a problem),
+  and a service whose keys are at **three** spaces — or at five, or at six — has no
+  key the reader can see. Measured against `docker compose config`, v5.6.0, a service
+  written at three spaces is accepted and its image read out of it, so the shape is a
+  hazard and not a curiosity.
 
 **The refusal is on the construct, not on the spelling of a line.** This is the
 distinction the wave-1 review turned up, and it is now the rule the reader
@@ -509,16 +525,42 @@ wherever it can inject keys into a map the reader reads — the document root, t
 refusal set is a list of shapes that change the *plan*, not of every YAML
 construct.
 
+### A level is read as a level
+
+The reader reads a service's keys at **four spaces**, and the second amendment's
+refusal for a service written any other way was bound to "**deeper** than four". A
+service written at **three** spaces therefore set neither flag: it was not read (the
+key is not at four spaces) and it was not refused (three is not deeper than four). The
+service was dropped from the plan, and the deployment ran it anyway — measured against
+`docker compose config`, v5.6.0, a service at three spaces is accepted and its image
+read out of it. An unpinned image in such a service passed the pin rule, and the script
+exited **zero**: the plan looked right, the gate said nothing, and the deployment
+fetched an image nobody had checked.
+
+The rule is the **level**, and not the depth. A service whose keys are at four spaces
+is read whatever else it carries — a nested `environment:` or `build:` block is deeper
+than four, and is not a problem on its own. A service whose keys are at any other
+level has no key the reader can see, and one of them may be the `image:`; that service
+is refused, loudly, with the file and the shape named.
+
+Both readers carry the rule — the script's `awk` and the test's own Python reader —
+and the corpus carries a spelling of it at three, five and six spaces, so the two
+readers cannot agree on the old rule without the lock failing. The residual is the one
+this ADR records under "What was deliberately NOT done": two hand-rolled readers can
+still agree on a wrong rule, and the only independent authority is Compose itself.
+
 ### What it costs
 
 * **A second thing to keep in step with Compose.** The subset above is a *summary*
   of Compose's merge, and Compose's merge is not frozen. If Compose changes how it
   merges a service map, this subset does not follow automatically — it follows when
   somebody notices, and the parity test is what makes the noticing cheap.
-* **A refusal set to maintain.** Ten shapes are refused today; an eleventh compose
-  feature that changes the image set has to be added to that list, deliberately, or it
+* **A refusal set to maintain.** Every shape the corpus carries is refused today; another
+  compose feature that changes the image set has to be added to that list, deliberately, or it
   becomes a silent wrong answer again. The list is written down here and in the
-  reader's own comments for exactly that reason. The list is a list of **shapes**,
+  reader's own comments for exactly that reason, and the corpus in the deployment
+  tests is where it is **counted** — a count written in prose is a number nobody can
+  check, and three records carried three different ones. The list is a list of **shapes**,
   and a shape has more than one spelling: the corpus in the deployment tests carries
   every spelling of every refused shape, because a refusal bound to one spelling is
   a refusal with a hole in it, and the hole was found twice in one wave.

@@ -363,9 +363,16 @@ The merge is a **subset** of Compose's own, and the shapes it does not implement
 **refused** rather than guessed: Compose's `extends:`, a YAML anchor or an alias, the
 YAML merge key (`<<:`), a multi-line `image:`, a custom YAML tag, the top-level
 `include:`, a `profiles:` that is not a list, a mapping written as a flow mapping
-(`postgres: {image: …}`), and a service whose keys are not written at the four-space
-indent the reader reads. A wrong plan fetches an image the deployment does not run and
-misses one it does, and nothing in the output would say so.
+(`postgres: {image: …}`), and a service whose keys are written at some level other
+than the four-space indent the reader reads — **three spaces as much as six**. A wrong
+plan fetches an image the deployment does not run and misses one it does, and nothing
+in the output would say so.
+
+The level is the rule, and not the depth: a service whose keys sit at four spaces is
+read whatever else it carries (a nested `environment:` or `build:` block is deeper than
+that, and is not a problem), while a service whose keys sit at **any** other level has
+no key the script can see — and one of them may be the `image:`. Compose accepts such
+a file, so the script refuses it rather than dropping the service from the plan.
 
 The refusal is on the **construct**, not on the spelling of a line: `include:
 [other.yml]` is refused exactly as `include:` on a line of its own is, and a key
@@ -425,6 +432,14 @@ so the report is available on a host with no daemon, and it is what the deployme
 check the script against. It also *enforces*: it exits non-zero when the plan names an
 image this deployment cannot pin. The list still prints — you need to see *what* is
 wrong — and the exit status is the verdict.
+
+The list is one row per service: the **action**, the **image**, and the **service** in
+parentheses — `pull   postgres:16@sha256:…  (postgres)`. The action is `pull`, `build`
+or `skip`; `skip` is a service a compose profile gates and that you have not enabled,
+and its row ends in a bracket naming the profiles that gate it — `skip   nvidia/cuda@sha256:…
+(gpu)  [behind a compose profile that is not enabled: gpu]`. The bracket is part of the
+report and not part of the row's three fields, and it says the same thing the warning
+on stderr says.
 
 **`--load` imports and stops.** It loads every `*.tar` in the directory and exits; it
 does not then pull the rest of the deployment. A **loaded** image is not digest-verified:

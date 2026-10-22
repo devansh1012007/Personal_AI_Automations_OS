@@ -264,11 +264,17 @@ err()  { printf '\033[1;31m fail\033[0m %s\n' "$*" >&2; }
 # `COMPOSE_PROFILES` says which profiles the operator has enabled.
 #
 # The output is one tab-separated row per service:
-# "action<TAB>image<TAB>service<TAB>profiles", where the action is "pull" or
-# "build" and the profiles column carries the names of the compose profiles
-# the service is gated behind ("-" when it is gated behind none). A file the
-# reader does not understand comes out as "refuse<TAB>message<TAB>-", and the
-# caller turns it into an error.
+# "action<TAB>image<TAB>service<TAB>profiles", where the action is "pull",
+# "build" or "skip" — "skip" for a service a compose profile gates and the
+# operator has not enabled — and the profiles column carries the names of the
+# compose profiles the service is gated behind ("-" when it is gated behind
+# none). A file the reader does not understand comes out as
+# "refuse<TAB>message<TAB>-", and the caller turns it into an error.
+#
+# `--list` prints one row per service: the action, the image, and the service
+# in parentheses — and, for a "skip" row, a trailing bracket that names the
+# profiles that gate it ("[behind a compose profile that is not enabled: …]"),
+# so the report on stdout and the warning on stderr say the same thing.
 #
 # The profile names travel on the ROW rather than deciding the row's
 # membership, because a service behind a profile is still an image the
@@ -435,17 +441,29 @@ parse_compose() {
     # reader must not depend on which awk it found. The count is exact and
     # the same count the Python reader in the tests makes.
     #
-    # Content indented deeper than the four-space level the reader reads at
-    # is not a problem on its own — a nested map (an `environment:`, a
-    # `build:`) is deeper than that — but a service whose keys the reader
-    # has NOT seen at the four-space level has keys the reader cannot see
-    # at all, and one of them may be the `image:`. The service is refused
-    # at the end of it, when the reader knows it saw nothing.
+    # The hazard is not "deeper than four". The hazard is **a level the
+    # reader does not read**, in either direction: a service whose keys sit
+    # at three spaces, or at five, or at six, has keys the reader cannot
+    # see at all, and one of them may be the `image:`. Compose accepts
+    # every one of those — the indentation of a block mapping is any
+    # indent deeper than its key — so a service written that way is a
+    # stack the deployment runs and the reader does not know about.
+    #
+    # Content at another level is not a problem on its own: a nested map
+    # (an `environment:`, a `build:`) is deeper than the level the reader
+    # reads. What decides it is whether the reader saw a key of THIS
+    # service at ITS OWN level: if it did, the keys of the service were
+    # read and the rest is a nested map under them; if it did not, the
+    # service has no key the reader can see, and the service is refused at
+    # the end of it, when the reader knows it saw nothing.
     in_services && service != "" {
       probe = $0
       indent = 0
       while (substr(probe, indent + 1, 1) == " ") indent++
-      if (indent > 4 && substr(probe, indent + 1, 1) != "#") deep = 1
+      # A blank line and a comment are not keys and cannot hide one.
+      if (indent < length(probe) && substr(probe, indent + 1, 1) != "#" && indent != 4) {
+        other_level = 1
+      }
     }
     in_services && service != "" && $0 ~ /^    [^[:space:]#]/ {
       # A key at four-space indent: one of the keys this reader reads, or
@@ -635,18 +653,18 @@ parse_compose() {
       block_form = 0
       profile_items = 0
       saw_key = 0
-      deep = 0
+      other_level = 0
     }
     function flush_service() {
       # The service that is open is finished: its values land in the merged
       # map, and only the keys this file actually declared — a later file
       # that says nothing about `build:` leaves the earlier file'"'"'s alone.
       if (service == "") return
-      if (!saw_key && deep) {
+      if (!saw_key && other_level) {
         # The reader saw no key of this service at its own level, and there
-        # was content under it. The service'"'"'s keys are written some other
-        # way, and one of them may be the image — so the service is refused
-        # rather than dropped from the plan.
+        # was content at some other level. The service'"'"'s keys are written
+        # some other way, and one of them may be the image — so the service
+        # is refused rather than dropped from the plan.
         refuse(display(FILENAME) ": the service " service " has keys this reader does not understand.\n" \
                "This script reads a service'"'"'s keys at four-space indent, and a\n" \
                "service written any other way could hide an image: from the plan.")

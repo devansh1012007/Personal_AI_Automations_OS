@@ -587,6 +587,29 @@ _REFUSED_SHAPES: dict[str, list[tuple[str, str]]] = {
             "    image: redis:7@sha256:" + _DIGEST + "\n",
             "does not understand",
         ),
+        # The same shape, three spaces deep. Compose accepts this too (a block
+        # mapping's keys may sit at any indent deeper than their key), and it
+        # is the spelling that used to walk straight through: the reader's
+        # rule was "deeper than four", so a service at three spaces was
+        # neither read nor refused — dropped from the plan, with its
+        # unpinned image passing the gate and a zero exit status.
+        (
+            "services:\n"
+            "  postgres:\n"
+            "   image: postgres:16@sha256:" + _DIGEST + "\n"
+            "  redis:\n"
+            "    image: redis:7@sha256:" + _DIGEST + "\n",
+            "does not understand",
+        ),
+        # And five spaces, which is the other side of the reader's level.
+        (
+            "services:\n"
+            "  postgres:\n"
+            "     image: postgres:16@sha256:" + _DIGEST + "\n"
+            "  redis:\n"
+            "    image: redis:7@sha256:" + _DIGEST + "\n",
+            "does not understand",
+        ),
     ],
 }
 
@@ -823,7 +846,7 @@ def _services_of(path: Path) -> list[_Service]:
     in_profiles = False
     profile_items = 0
     saw_key = False
-    deep = False
+    other_level = False
     for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
@@ -865,7 +888,7 @@ def _services_of(path: Path) -> list[_Service]:
             if inline == "":
                 # A service.
                 if service:
-                    if not saw_key and deep:
+                    if not saw_key and other_level:
                         raise _Refused("a service with keys the reader does not understand")
                     services.append(_Service(service, image, has_build, profiles))
                 service = key
@@ -873,7 +896,7 @@ def _services_of(path: Path) -> list[_Service]:
                 has_build = False
                 profiles = ()
                 saw_key = False
-                deep = False
+                other_level = False
                 continue
             if inline[:1] in {"&", "*"}:
                 raise _Refused("an anchor or an alias on a service key")
@@ -881,14 +904,13 @@ def _services_of(path: Path) -> list[_Service]:
         if not in_services or not service:
             continue
         indent = len(line) - len(line.lstrip(" "))
-        if indent > 4:
-            # Content indented deeper than the reader's four-space level.
-            # A nested map is deeper than that, and it is not a problem on
-            # its own — but a service whose keys the reader has NOT seen at
-            # the four-space level has keys the reader cannot see at all,
-            # and one of them may be the `image:`.
-            if line[indent] != "#":
-                deep = True
+        if indent != 4:
+            # Content at a level this reader does not read. A nested map is
+            # deeper than the reader's level, and it is not a problem on its
+            # own — what decides it is whether the reader saw a key of THIS
+            # service at ITS OWN level. If it did not, the service has no key
+            # the reader can see, and one of them may be the `image:`.
+            other_level = True
             continue
         if not _SERVICE_KEY.match(line):
             continue
@@ -936,7 +958,7 @@ def _services_of(path: Path) -> list[_Service]:
         # items in it.
         raise _Refused("a profiles: with no list")
     if service:
-        if not saw_key and deep:
+        if not saw_key and other_level:
             raise _Refused("a service with keys the reader does not understand")
         services.append(_Service(service, image, has_build, profiles))
     return services
@@ -1131,6 +1153,62 @@ def test_the_reader_refuses_the_shapes_it_does_not_understand(tmp_path: Path, ca
     assert stub.pulls() == [], "the script fetched something out of a file it refused"
     with pytest.raises(_Refused):
         _compose_rows(compose)
+
+
+def test_a_service_at_another_level_cannot_hide_an_unpinned_image(tmp_path: Path) -> None:
+    """The pin gate is not bypassable by a service Compose accepts.
+
+    This is the harm, and it is a harm the corpus of refusals cannot
+    express: the corpus says *the reader refuses this shape*, and a refusal
+    is a message on stderr. What an operator has to be protected from is
+    the opposite — a service whose keys the reader cannot see, holding an
+    image with a tag and no digest, and a script that says the plan is
+    fine and exits **zero**.
+
+    The shape is a real one: Compose reads a service whose keys sit at
+    three spaces (a block mapping's keys may be at any indent deeper than
+    their key), and it reads the image out of it. Measured against
+    ``docker compose config``, v5.6.0:
+
+        services:
+          postgres:
+           image: nvidia/cuda:latest
+
+    comes back as ``postgres: image: nvidia/cuda:latest``. So the image is
+    one the deployment runs, and the pin rule has to see it.
+
+    The reader's rule is about the **level** a service's keys are written
+    at and not about how deep they are: the reader reads a service's keys
+    at four spaces, and a service written at any other level has no key
+    the reader can see — so it is refused rather than dropped. This test
+    pins the consequence of that rule rather than the rule itself, because
+    the consequence is what a deployment depends on.
+    """
+    compose = _write_compose(
+        tmp_path,
+        "services:\n"
+        "  postgres:\n"
+        "   image: nvidia/cuda:latest\n"
+        "  redis:\n"
+        "    image: redis:7@sha256:" + _DIGEST + "\n",
+    )
+    stub = _Stub(tmp_path)
+    path = f"{_tool_path(tmp_path)}:{stub.bin}"
+    result = _run(
+        ["--list"],
+        path=path,
+        env={**stub.env(), "PAA_COMPOSE_FILE": str(compose)},
+    )
+    assert result.returncode == 1, (
+        "the plan passed the gate with an unpinned image in it",
+        result.stdout,
+        result.stderr,
+    )
+    assert "does not understand" in result.stderr, result.stderr
+    assert "nvidia/cuda:latest" not in result.stdout, (
+        "the image the reader cannot see was reported as planned"
+    )
+    assert stub.pulls() == [], "the script fetched an image out of a file it refused"
 
 
 def test_the_merged_stack_is_the_stack_the_script_reads() -> None:
