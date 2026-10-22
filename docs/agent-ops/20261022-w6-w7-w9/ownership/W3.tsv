@@ -1,0 +1,14 @@
+W3-IMPL-01	.github/workflows/ci.yml
+W3-IMPL-01	docs/deployment/ci.md
+W3-IMPL-02	README.md
+W3-IMPL-02	docs/adr/0019-untrusted-skill-install.md
+W3-IMPL-02	tests/conventions/test_docs_references.py
+W3-IMPL-02	docs/architecture.md
+W3-IMPL-02	docs/operations/runbook.md
+W3-IMPL-02	docs/operations/incident-response.md
+W3-IMPL-03	src/paa/marketplace/registry_client.py
+W3-IMPL-03	tests/marketplace/test_registry_client.py
+W3-IMPL-04	docs/MCP_AND_PLUGINS.md
+W3-IMPL-04	docs/ROADMAP.md
+W3-IMPL-04	AGENTS.md
+W3-IMPL-04	docs/adr/README.md
