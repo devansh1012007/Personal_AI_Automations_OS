@@ -574,7 +574,7 @@ _REFUSED_SHAPES: dict[str, list[tuple[str, str]]] = {
             "flow mapping",
         ),
     ],
-    "a service whose keys are not at the reader's indent": [
+    "a service at a level the reader does not read": [
         # Compose accepts this file: the service's keys are at six spaces,
         # which is valid YAML. The reader reads a service's keys at four
         # spaces, so it cannot see the `image:` — and a service it cannot
@@ -608,6 +608,74 @@ _REFUSED_SHAPES: dict[str, list[tuple[str, str]]] = {
             "     image: postgres:16@sha256:" + _DIGEST + "\n"
             "  redis:\n"
             "    image: redis:7@sha256:" + _DIGEST + "\n",
+            "does not understand",
+        ),
+        # The spellings below are the other half of the shape: the service
+        # itself is written at a level the reader does not read, so the
+        # reader never OPENS it. There is no service to refuse at the end
+        # of it, and the refusal is at the line that carries it.
+        #
+        # The services map at three spaces. Compose accepts it (measured
+        # against `docker compose config`, v5.6.0: `postgres: image:
+        # postgres:16@sha256:…`), so the deployment runs a service the
+        # reader cannot see at all.
+        (
+            "services:\n"
+            "   postgres:\n"
+            "     image: postgres:16@sha256:" + _DIGEST + "\n",
+            "does not understand",
+        ),
+        # The services map at one space. The same shape, the other side of
+        # the reader's level.
+        (
+            "services:\n"
+            " postgres:\n"
+            "  image: postgres:16@sha256:" + _DIGEST + "\n",
+            "does not understand",
+        ),
+        # The services map at four spaces — the level the reader reads a
+        # service's KEYS at, which is why the key it finds there has no
+        # service to belong to.
+        (
+            "services:\n"
+            "    postgres:\n"
+            "      image: postgres:16@sha256:" + _DIGEST + "\n",
+            "does not understand",
+        ),
+        # The services map at five spaces, deeper than the reader's key
+        # level and deeper than any service it has opened.
+        (
+            "services:\n"
+            "     postgres:\n"
+            "       image: postgres:16@sha256:" + _DIGEST + "\n",
+            "does not understand",
+        ),
+        # A service at three spaces whose keys are at four: the keys are at
+        # the level the reader reads, but they belong to a service the
+        # reader never opened, so they are not the keys of the service it
+        # has open.
+        (
+            "services:\n"
+            "   postgres:\n"
+            "    image: postgres:16@sha256:" + _DIGEST + "\n",
+            "does not understand",
+        ),
+        # THE SPELLING THAT WAS MISSED: a service written at three spaces
+        # BESIDE a service written at two. The reader opened the first and
+        # never opened the second, so the second was dropped from the plan
+        # and nothing was refused — the plan was not empty, so even the
+        # empty-plan refusal did not fire, and the script exited ZERO.
+        #
+        # Compose refuses this file itself (its two services are at two
+        # levels, which is not a mapping), so it is not a hazard on its
+        # own — but the reader must not drop a service from a file it does
+        # not understand, and the refusal says which file and which shape.
+        (
+            "services:\n"
+            "  postgres:\n"
+            "    image: postgres:16@sha256:" + _DIGEST + "\n"
+            "   qdrant:\n"
+            "     image: qdrant/qdrant:v1.19.2@sha256:" + _DIGEST + "\n",
             "does not understand",
         ),
     ],
@@ -835,7 +903,16 @@ def _services_of(path: Path) -> list[_Service]:
       tab-separated row is not a field;
     * a service behind a ``profiles:`` key is **kept** in the plan: it is
       still an image the file names, and the plan's rules apply to it. The
-      FETCH decides whether it is fetched, not the reader.
+      FETCH decides whether it is fetched, not the reader;
+    * **the level is the rule, and not the depth**: a key at a level the
+      reader does not read is refused, whether it is a service written at
+      that level (the reader never opens it, so there is no service to
+      refuse at the end of it) or a key of the open service written at a
+      level the reader does not read (the service has no key the reader can
+      see). A level DEEPER than four is content nested under a key the
+      reader has read — a ``build:`` section, an ``environment:`` map — and
+      it cannot hide the service's own ``image:``, because Compose reads
+      that as a key of the service.
     """
     services: list[_Service] = []
     service = ""
@@ -846,7 +923,7 @@ def _services_of(path: Path) -> list[_Service]:
     in_profiles = False
     profile_items = 0
     saw_key = False
-    other_level = False
+    saw_key_any_indent = False
     for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
@@ -888,7 +965,7 @@ def _services_of(path: Path) -> list[_Service]:
             if inline == "":
                 # A service.
                 if service:
-                    if not saw_key and other_level:
+                    if not saw_key and saw_key_any_indent:
                         raise _Refused("a service with keys the reader does not understand")
                     services.append(_Service(service, image, has_build, profiles))
                 service = key
@@ -896,22 +973,41 @@ def _services_of(path: Path) -> list[_Service]:
                 has_build = False
                 profiles = ()
                 saw_key = False
-                other_level = False
+                saw_key_any_indent = False
                 continue
             if inline[:1] in {"&", "*"}:
                 raise _Refused("an anchor or an alias on a service key")
             continue
-        if not in_services or not service:
+        if not in_services:
             continue
         indent = len(line) - len(line.lstrip(" "))
-        if indent != 4:
-            # Content at a level this reader does not read. A nested map is
-            # deeper than the reader's level, and it is not a problem on its
-            # own — what decides it is whether the reader saw a key of THIS
-            # service at ITS OWN level. If it did not, the service has no key
-            # the reader can see, and one of them may be the `image:`.
-            other_level = True
+        if indent == 4:
+            if not service:
+                # A key at the level the reader reads a service's keys at,
+                # with no service open: the services map itself is written at
+                # the wrong level, and the key belongs to a service the reader
+                # never opened.
+                raise _Refused("a key at four spaces, and no service for it")
+        elif indent == 2:
+            # A line at the service level that is not a service header: a
+            # sequence item, or a scalar where a service belongs. The reader
+            # does not read it, and it is content it cannot see.
+            saw_key_any_indent = True
             continue
+        elif indent > 4 and service:
+            # Content nested under a key the reader has read. It cannot hide
+            # the service's own `image:` — Compose reads that as a key of the
+            # service — so it is allowed here, and the end-of-service rule
+            # decides whether the service's own keys were readable.
+            saw_key_any_indent = True
+            continue
+        else:
+            # A key at a level this reader does not read: one space, or
+            # three, or five with no service open. It is either a service the
+            # reader cannot see, or a key of a service it cannot see, and one
+            # of them may be the image — so the file is refused rather than
+            # read in part.
+            raise _Refused(f"a key at {indent} spaces, a level the reader does not understand")
         if not _SERVICE_KEY.match(line):
             continue
         saw_key = True
@@ -958,7 +1054,7 @@ def _services_of(path: Path) -> list[_Service]:
         # items in it.
         raise _Refused("a profiles: with no list")
     if service:
-        if not saw_key and other_level:
+        if not saw_key and saw_key_any_indent:
             raise _Refused("a service with keys the reader does not understand")
         services.append(_Service(service, image, has_build, profiles))
     return services
@@ -1208,6 +1304,134 @@ def test_a_service_at_another_level_cannot_hide_an_unpinned_image(tmp_path: Path
     assert "nvidia/cuda:latest" not in result.stdout, (
         "the image the reader cannot see was reported as planned"
     )
+    assert stub.pulls() == [], "the script fetched an image out of a file it refused"
+
+
+def test_a_service_at_another_level_is_refused_with_its_shape_named(tmp_path: Path) -> None:
+    """A service the reader never opens is REFUSED, and the refusal says so.
+
+    The shape is a services map written at three spaces — a level the reader
+    does not read a service at. Compose accepts it (measured against
+    ``docker compose config``, v5.6.0: ``postgres: image: …``), so the
+    deployment runs a service the reader cannot see.
+
+    The refusal has to be the **shape's** refusal, and not the empty-plan
+    one. The empty-plan refusal fires only when the file the reader cannot
+    read is the only file there is: it says "there is nothing to fetch",
+    which is a statement about the PLAN, not about the FILE. A file with a
+    readable service beside it produces a non-empty plan, the empty-plan
+    refusal never fires, and the service is dropped with a zero exit
+    status. So the refusal has to name the file and the shape it could not
+    read — otherwise the operator is told the plan is empty when the plan
+    is a lie.
+    """
+    compose = _write_compose(
+        tmp_path,
+        "services:\n"
+        "   postgres:\n"
+        "     image: postgres:16@sha256:" + _DIGEST + "\n",
+    )
+    stub = _Stub(tmp_path)
+    path = f"{_tool_path(tmp_path)}:{stub.bin}"
+    result = _run(
+        ["--list"],
+        path=path,
+        env={**stub.env(), "PAA_COMPOSE_FILE": str(compose)},
+    )
+    assert result.returncode == 1, (result.returncode, result.stdout, result.stderr)
+    assert "does not understand" in result.stderr, result.stderr
+    assert "no images found" not in result.stderr, (
+        "the refusal was the empty-plan one, which says nothing about the shape"
+    )
+    assert str(compose) in result.stderr, result.stderr
+    assert stub.pulls() == [], "the script fetched an image out of a file it refused"
+
+
+def test_a_mixed_file_does_not_drop_the_service_at_another_level(tmp_path: Path) -> None:
+    """A file with a service at each level is refused, and neither is dropped.
+
+    The shape is the one the wave-1 review left open: a service written at
+    two spaces **and** a service written at three, in the same file. The
+    reader opened the first and never opened the second, so the second was
+    dropped from the plan — and, because the plan was not empty, nothing
+    was refused and the script exited **zero**. The deployment ran a
+    service the plan did not contain, and every line of the output said the
+    plan was fine.
+
+    Compose refuses this file itself (its two services are at two levels,
+    which is not a mapping), so the file is not a hazard on its own — but
+    the reader must not read a file in part and report the part it read as
+    the whole. The refusal names the file and the shape.
+    """
+    compose = _write_compose(
+        tmp_path,
+        "services:\n"
+        "  postgres:\n"
+        "    image: postgres:16@sha256:" + _DIGEST + "\n"
+        "   qdrant:\n"
+        "     image: qdrant/qdrant:v1.19.2@sha256:" + _DIGEST + "\n",
+    )
+    stub = _Stub(tmp_path)
+    path = f"{_tool_path(tmp_path)}:{stub.bin}"
+    result = _run(
+        ["--list"],
+        path=path,
+        env={**stub.env(), "PAA_COMPOSE_FILE": str(compose)},
+    )
+    assert result.returncode == 1, (
+        "the plan passed the gate with a service missing from it",
+        result.stdout,
+        result.stderr,
+    )
+    assert "does not understand" in result.stderr, result.stderr
+    assert "no images found" not in result.stderr, (
+        "the refusal was the empty-plan one, which says nothing about the shape"
+    )
+    assert "qdrant" in result.stderr, (
+        "the refusal did not name the key it could not read",
+        result.stderr,
+    )
+    assert stub.pulls() == [], "the script fetched an image out of a file it refused"
+
+
+def test_a_file_at_another_level_beside_a_readable_one_is_refused(tmp_path: Path) -> None:
+    """The MERGED stack cannot launder a file the reader cannot read.
+
+    This is the form of the hole that ends in a **zero** exit status. The
+    empty-plan refusal is a safety net that only fires when the file the
+    reader cannot read is the only file there is: beside a file the reader
+    can read, the plan is not empty, the net does not fire, and the service
+    the reader never opened is dropped from a plan that looks complete.
+
+    The deployment runs the merged stack, so the merged plan is the one
+    that has to be right — and a service in either file is a service the
+    deployment runs. The refusal is per FILE, and it names the file.
+    """
+    unreadable = _write_compose(
+        tmp_path,
+        "services:\n"
+        "   postgres:\n"
+        "     image: postgres:16@sha256:" + _DIGEST + "\n",
+    )
+    readable = tmp_path / "readable.yml"
+    readable.write_text(
+        "services:\n  redis:\n    image: redis:7@sha256:" + _DIGEST + "\n",
+        encoding="utf-8",
+    )
+    stub = _Stub(tmp_path)
+    path = f"{_tool_path(tmp_path)}:{stub.bin}"
+    result = _run(
+        ["--compose", str(unreadable), "--compose", str(readable), "--list"],
+        path=path,
+        env={**stub.env()},
+    )
+    assert result.returncode == 1, (
+        "the merged plan passed the gate with a service missing from it",
+        result.stdout,
+        result.stderr,
+    )
+    assert "does not understand" in result.stderr, result.stderr
+    assert str(unreadable) in result.stderr, result.stderr
     assert stub.pulls() == [], "the script fetched an image out of a file it refused"
 
 

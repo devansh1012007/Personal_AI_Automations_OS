@@ -237,9 +237,10 @@ err()  { printf '\033[1;31m fail\033[0m %s\n' "$*" >&2; }
 # What is NOT in the subset is REFUSED, not guessed: Compose's `extends:`, a
 # YAML anchor or alias, the YAML merge key (`<<:`), a multi-line `image:`, a
 # custom YAML tag, the top-level `include:`, a `profiles:` that is not a
-# list, a mapping written as a flow mapping, and a service whose keys are
-# not at the four-space indent the reader reads. A script that silently
-# mis-merges is worse than one that says "I do not understand this file" —
+# list, a mapping written as a flow mapping, and a service written at a level
+# the reader does not read — its header at three spaces, or its keys at a
+# level that is not four. A script that silently mis-merges is worse than one
+# that says "I do not understand this file" —
 # a wrong plan fetches an image the deployment does not run, and misses one
 # it does.
 #
@@ -434,35 +435,72 @@ parse_compose() {
       }
       next
     }
-    # The indent of a line, COUNTED rather than matched.
+    # The LEVEL of a line, COUNTED rather than matched.
     #
     # An interval expression ("five or more spaces") is not portable between
     # the awks a host may have — mawk does not backtrack into one — and the
     # reader must not depend on which awk it found. The count is exact and
     # the same count the Python reader in the tests makes.
     #
-    # The hazard is not "deeper than four". The hazard is **a level the
-    # reader does not read**, in either direction: a service whose keys sit
-    # at three spaces, or at five, or at six, has keys the reader cannot
-    # see at all, and one of them may be the `image:`. Compose accepts
-    # every one of those — the indentation of a block mapping is any
-    # indent deeper than its key — so a service written that way is a
-    # stack the deployment runs and the reader does not know about.
+    # The reader reads a services map as: a service is a key at two-space
+    # indent, and a service'"'"'s keys are keys at four-space indent. A key at
+    # any OTHER level is a level the reader does not read, and there are two
+    # ways such a key hides a service:
     #
-    # Content at another level is not a problem on its own: a nested map
-    # (an `environment:`, a `build:`) is deeper than the level the reader
-    # reads. What decides it is whether the reader saw a key of THIS
-    # service at ITS OWN level: if it did, the keys of the service were
-    # read and the rest is a nested map under them; if it did not, the
-    # service has no key the reader can see, and the service is refused at
-    # the end of it, when the reader knows it saw nothing.
-    in_services && service != "" {
+    #   * the key IS a service, written at a level the reader does not read
+    #     AS a service — a services map written at three spaces, say. The
+    #     service is not in the plan at all, and one of its keys may be the
+    #     `image:`. There is no service to refuse at the end of it, because
+    #     the reader never opened one: this refusal is at the LINE.
+    #   * the key is a key OF a service, written at a level the reader does
+    #     not read as a service key — a service whose keys sit at three, or
+    #     five, or six spaces. The service is in the plan, but empty, and
+    #     the refusal is at the END of the service, where the reader knows
+    #     it saw no key of it.
+    #
+    # The first is the half that was open: the reader'"'"'s rule was about the
+    # level of a service'"'"'s KEYS, and a service whose HEADER is at a level
+    # the reader does not read was not read and not refused — it was
+    # dropped from the plan, silently, and a file beside it kept the plan
+    # non-empty, so the script exited ZERO.
+    #
+    # A level DEEPER than four is not a hazard on its own: it is content
+    # nested under a key the reader has read (an `environment:` map, a
+    # `build:` section), and the reader cannot find an `image:` in there,
+    # because Compose reads a service'"'"'s `image:` as a key OF the service.
+    # So a deeper line is allowed, and the end-of-service rule decides
+    # whether the service'"'"'s OWN keys were readable.
+    in_services {
       probe = $0
       indent = 0
       while (substr(probe, indent + 1, 1) == " ") indent++
       # A blank line and a comment are not keys and cannot hide one.
-      if (indent < length(probe) && substr(probe, indent + 1, 1) != "#" && indent != 4) {
-        other_level = 1
+      if (indent < length(probe) && substr(probe, indent + 1, 1) != "#") {
+        if (indent == 4) {
+          # A key at the level the reader reads a service'"'"'s keys at. It is
+          # a key of the open service — unless NO service is open, in which
+          # case the services map itself is written at the wrong level and
+          # the key belongs to a service the reader never opened.
+          if (service == "") refuse_level(indent, level_key(probe), 1)
+        } else if (indent == 2) {
+          # A line at the service level that is not a service header: a
+          # sequence item, or a scalar where a service belongs. The reader
+          # does not read it, and it is content it cannot see.
+          saw_key_any_indent = 1
+        } else if (indent > 4 && service != "") {
+          # Content nested under a key the reader has read. It cannot hide
+          # the service'"'"'s own `image:` — Compose reads that as a key of the
+          # service — so it is allowed here, and the end-of-service rule
+          # decides whether the service'"'"'s own keys were readable.
+          saw_key_any_indent = 1
+        } else {
+          # A key at a level this reader does not read: one space, or
+          # three, or five with no service open. It is either a service the
+          # reader cannot see, or a key of a service it cannot see, and one
+          # of them may be the image — so the file is refused rather than
+          # read in part.
+          refuse_level(indent, level_key(probe), 0)
+        }
       }
     }
     in_services && service != "" && $0 ~ /^    [^[:space:]#]/ {
@@ -608,6 +646,49 @@ parse_compose() {
       for (i = 1; i <= count; i++) printf "refuse\t%s\t-\n", lines[i]
       exit 1
     }
+    function level_key(probe, key) {
+      # The key a line carries, for the message that names it: the text up to
+      # the first colon, with the spaces and the quotes around it removed —
+      # the key as YAML reads it. A line that carries no colon has no key,
+      # and the message says "a line" instead.
+      key = probe
+      sub(/^[[:space:]]+/, "", key)
+      sub(/[[:space:]]+$/, "", key)
+      if (index(key, ":") == 0) return ""
+      key = substr(key, 1, index(key, ":") - 1)
+      key = normalise_key(key)
+      # A tab would break the row the message travels on.
+      gsub(/\t/, " ", key)
+      if (length(key) > 40) key = substr(key, 1, 40)
+      return key
+    }
+    function refuse_level(indent, key, orphan, head) {
+      # A key at a level this reader does not read. The file and the shape
+      # are named, because a refusal that does not say what it read is a
+      # refusal the operator has to guess about.
+      #
+      # `orphan` is the second shape of the same refusal: a key at the
+      # level the reader reads a service'"'"'s keys at, with NO service open.
+      # The services map itself is written at the wrong level, so the key
+      # belongs to a service the reader never opened.
+      if (key == "") {
+        head = "the services map has a line at " indent " spaces"
+      } else {
+        head = "the services map has a key at " indent " spaces (" key ")"
+      }
+      if (orphan) {
+        refuse(display(FILENAME) ": " head ", and no service for it: a level this reader does not understand.\n" \
+               "This script reads a service at two spaces and its keys at four spaces, so a key at\n" \
+               "that level with no service open is a service written at a level this reader does\n" \
+               "not understand — and one of its keys may be the image, so the file is refused\n" \
+               "rather than read in part.")
+      }
+      refuse(display(FILENAME) ": " head ", a level this reader does not understand.\n" \
+             "This script reads a service at two spaces and its keys at four spaces. A key at\n" \
+             "another level is a service this reader cannot see, or a key of a service it\n" \
+             "cannot see — and one of them may be the image, so the file is refused\n" \
+             "rather than read in part.")
+    }
     function normalise_key(key) {
       # The key as YAML reads it: the spaces around it and the quotes around
       # it are not part of the name. Compose reads `image :` and
@@ -653,16 +734,16 @@ parse_compose() {
       block_form = 0
       profile_items = 0
       saw_key = 0
-      other_level = 0
+      saw_key_any_indent = 0
     }
     function flush_service() {
       # The service that is open is finished: its values land in the merged
       # map, and only the keys this file actually declared — a later file
       # that says nothing about `build:` leaves the earlier file'"'"'s alone.
       if (service == "") return
-      if (!saw_key && other_level) {
+      if (!saw_key && saw_key_any_indent) {
         # The reader saw no key of this service at its own level, and there
-        # was content at some other level. The service'"'"'s keys are written
+        # was a key at some other level. The service'"'"'s keys are written
         # some other way, and one of them may be the image — so the service
         # is refused rather than dropped from the plan.
         refuse(display(FILENAME) ": the service " service " has keys this reader does not understand.\n" \

@@ -451,16 +451,20 @@ is an **error** with its own message, before a byte is fetched:
   (`postgres: {image: …}`) and a `services:` map on one line (`services: {…}`). Compose
   accepts both, and the reader cannot see a single key of either, so a reader that
   ignored them would plan a stack that is **missing a service, silently**;
-* **a service whose keys are written at another level** — the reader reads a service's
-  keys at four spaces, and a service written at any other level could hide an
-  `image:` from the plan. Compose accepts such a file, so the reader refuses it
-  rather than dropping the service from the plan. **The level is the rule and not the
-  depth**: a service whose keys are at four spaces is read whatever else it carries (a
-  nested `environment:` or `build:` block is deeper than that, and is not a problem),
-  and a service whose keys are at **three** spaces — or at five, or at six — has no
-  key the reader can see. Measured against `docker compose config`, v5.6.0, a service
-  written at three spaces is accepted and its image read out of it, so the shape is a
-  hazard and not a curiosity.
+* **a service written at a level the reader does not read** — the reader reads a
+  service at two spaces and a service's keys at four, and a service written at any
+  other level could hide an `image:` from the plan. Compose accepts such a file, so
+  the reader refuses it rather than dropping the service from the plan. **The level is
+  the rule and not the depth**: a service whose keys are at four spaces is read
+  whatever else it carries (a nested `environment:` or `build:` block is deeper than
+  that, and is not a problem), and a service whose keys are at **three** spaces — or
+  at five, or at six — has no key the reader can see. The same is true of the service
+  itself: a services map written at **one** space, or at three, or at four, or at five,
+  is a stack the deployment runs and the reader does not know about. Measured against
+  `docker compose config`, v5.6.0, every one of those is accepted and its image read
+  out of it, so the shape is a hazard and not a curiosity. (Third amendment: the rule
+  above was about the level of a service's **keys** only, and a service whose header
+  was at another level was dropped from the plan instead of refused.)
 
 **The refusal is on the construct, not on the spelling of a line.** This is the
 distinction the wave-1 review turned up, and it is now the rule the reader
@@ -548,6 +552,75 @@ and the corpus carries a spelling of it at three, five and six spaces, so the tw
 readers cannot agree on the old rule without the lock failing. The residual is the one
 this ADR records under "What was deliberately NOT done": two hand-rolled readers can
 still agree on a wrong rule, and the only independent authority is Compose itself.
+
+### The level of a service is a level too (third amendment)
+
+**The paragraph above was half true, and the half that was false is the half that
+mattered.** The rule it stated was about the level of a service's **keys**. A service
+whose **header** — the `qdrant:` line itself — is written at a level the reader does
+not read was neither read nor refused: the reader opened the service before it, never
+opened this one, and dropped it from the plan. The corpus did not carry the spelling,
+because the shape it carried was the other one, and the test that "verified" the fix
+exercised the **single-service** case — where the plan comes out empty and the
+empty-plan refusal fires by accident, for the wrong reason. The service was not
+refused; it was not seen.
+
+Measured on the tree at `90eda75`:
+
+```
+$ PAA_COMPOSE_FILE=MIXED.yml bash deploy/fetch-images.sh --list
+pull  postgres:16@sha256:0000…  (postgres)
+exit=0
+```
+
+and, in the form that ends in a zero exit status rather than in a dropped row, the
+same file **beside** a file the reader can read:
+
+```
+$ bash deploy/fetch-images.sh --compose SINGLE3.yml --compose NORMAL.yml --list
+pull  redis:7@sha256:0000…  (redis)
+exit=0
+```
+
+The plan was not empty, so the empty-plan refusal did not fire, and the service the
+reader never opened was dropped from a plan that looked complete.
+
+**The rule is now the level of every key in the services map.** The reader reads a
+service at two spaces and a service's keys at four. A key at any other level is a
+level the reader does not read, and there are two ways such a key hides a service:
+
+* the key **is** a service, written at a level the reader does not read as a service —
+  a services map written at three spaces, or at one, or at four. The reader never
+  opens that service, so there is no service to refuse at the end of it: **the refusal
+  is at the line that carries it**, and it names the file, the level and the key;
+* the key is a key **of** a service, written at a level the reader does not read as a
+  service key — a service whose keys sit at three, five or six spaces. The service is
+  open, and the refusal is at the **end** of it, where the reader knows it saw no key
+  of it at its own level: *no key at four spaces, and a key at some other indent*.
+
+A level **deeper** than four is not a hazard on its own: it is content nested under a
+key the reader has read (a `build:` section, an `environment:` map), and it cannot
+hide the service's own `image:`, because Compose reads that as a key of the service.
+So a deeper line is allowed, and the end-of-service rule decides whether the service's
+own keys were readable. This is the shape the previous amendment got right, and it
+stayed right.
+
+**What Compose thinks of the spellings** (measured with `docker compose config`,
+v5.6.0, on copies under `/tmp`): a services map at one, three, four or five spaces is
+**accepted**, and its image is read out of it — every one of them is a stack the
+deployment runs and the reader does not know about. A file with a service at two
+spaces *and* a service at three is **refused by Compose itself** (two levels in one
+mapping is not a mapping), so it is not a hazard on its own; the reader refuses it
+anyway, because a reader that reads a file in part and reports the part it read as
+the whole is a reader that reports a lie.
+
+**The corpus carries every spelling.** The shape is now *a service at a level the
+reader does not read*, and the corpus enumerates the spellings rather than counting
+them: the keys at three, five and six spaces; the services map at one, three, four
+and five spaces; a service at three spaces whose keys are at four; and the mixed file.
+Both readers carry the same rule, so the lock can see the hole it now has — which is
+the point of having two readers that are written from the same words and not from the
+same code.
 
 ### What it costs
 
