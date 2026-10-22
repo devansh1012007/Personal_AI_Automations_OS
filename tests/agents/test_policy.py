@@ -172,11 +172,18 @@ class _Case(NamedTuple):
 #: two would be reported under the earlier label and the test would be
 #: asserting about a rule the command does not really belong to.
 #:
-#: The three commands the suite already used are carried here verbatim.
+#: A pattern with an alternation carries a command for **each** branch, not
+#: one for the alternation: ``DROP (TABLE|DATABASE|SCHEMA)`` has three, and a
+#: test that only ever says ``DROP TABLE`` leaves the other two branches
+#: unpinned. The three commands the suite already used are carried here
+#: verbatim.
 _COVERED: dict[str, _Case] = {
     r"\brm\s+-[rRf]{1,2}\b": _Case(
         "recursive force delete",
-        (("rm", "-rf", "/data"),),
+        (
+            ("rm", "-rf", "/data"),
+            ("rm", "-r", "/data/tree"),
+        ),
     ),
     r"\bshutil\.rmtree\b": _Case(
         "recursive tree delete",
@@ -192,7 +199,11 @@ _COVERED: dict[str, _Case] = {
     ),
     r"\bDROP\s+(TABLE|DATABASE|SCHEMA)\b": _Case(
         "destructive DDL",
-        (("psql", "-c", "DROP TABLE production_users"),),
+        (
+            ("psql", "-c", "DROP TABLE production_users"),
+            ("psql", "-c", "DROP DATABASE analytics"),
+            ("psql", "-c", "DROP SCHEMA public"),
+        ),
     ),
     r"\bTRUNCATE\s+TABLE\b": _Case(
         "table truncation",
@@ -200,7 +211,10 @@ _COVERED: dict[str, _Case] = {
     ),
     r"\bgit\s+push\s+.*--force\b": _Case(
         "force push",
-        (("git", "push", "--force"),),
+        (
+            ("git", "push", "--force"),
+            ("git", "push", "origin", "main", "--force"),
+        ),
     ),
     r"\bgit\s+reset\s+--hard\b": _Case(
         "hard reset",
@@ -393,8 +407,9 @@ class TestEveryIrreversiblePattern:
 
         The inventory check trusts the sweep, so the sweep has to be right: if
         the gate ever built its table in a way the sweep cannot read, the
-        inventory check would be comparing against a shorter list and would
-        report "complete" for a gate it had never read.
+        sweep would refuse rather than skip — a row that is not a literal
+        pair is an error, not a row to overlook — so the inventory check
+        could never report "complete" for a gate it had not really read.
         """
         assert _patterns_in_source() == _IRREVERSIBLE_PATTERNS
 
