@@ -2,10 +2,10 @@
 agent: W1-IMPR-06 | scope: R-W1-301 (deploy/fetch-images.sh drops a service written at a level the reader does not read) | status: DONE
 findings: FIXED 1 | REJECTED 0 | DEFERRED 0
 blockers_major_open: none
-code_commits: see §7 | report_commit: see §7
+code_commits: 7532c9c | report_commit: (this commit)
 tests_added_or_strengthened: 3 (new) + 6 (corpus spellings added to an existing shape)
 ownership_violations: none
-confidence: high (the defect was reproduced on 90eda75, the fix is measured, and the reversal fails 9 cases)
+confidence: high — the defect was reproduced on 90eda75 (three transcripts), the fix is measured (three transcripts), the two readers were compared over 49 shapes with 0 disagreements, and the reversal fails 9 cases. The one thing not verified is a real deployment: Compose's own answer was measured with `docker compose config` v5.6.0 on copies under /tmp, and no stack was ever started.
 <!-- ORCH-DIGEST:END -->
 
 # Improvement report — W1-IMPR-06 (repair of R-W1-301)
