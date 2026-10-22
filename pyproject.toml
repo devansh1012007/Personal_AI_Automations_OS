@@ -64,6 +64,15 @@ dev = [
     # route — and it says so by skipping, which is the quietest way to not
     # test something. The self-referential form is the one `all` already uses.
     "paa[api]",
+    # The S3 driver's own extra, on the same argument. The live S3 suite
+    # (tests/storage/test_s3_live.py) skips itself when the driver is absent,
+    # so without this the documented `pip install -e ".[dev]"` produces an
+    # environment in which the gate can pass while the S3 path is untested —
+    # and the skip says so by *not* failing, which is the quietest way to not
+    # test something. The suite still skips when no *server* is configured:
+    # a missing driver is a missing dependency, and a missing server is a
+    # missing server, and neither is a failure.
+    "paa[s3]",
 ]
 all = [
     "paa[vector,graph,embeddings,api,redis,postgres,s3,otel]",
@@ -88,6 +97,7 @@ markers = [
     "requires_embeddings: needs the sentence-transformers extra",
     "requires_api: needs the fastapi/uvicorn extra",
     "requires_postgres: needs the psycopg extra and a live PostgreSQL server",
+    "requires_s3: needs the boto3 extra and a live S3 server (PAA_TEST_S3_ENDPOINT)",
     "chaos: crash-injection and recovery tests",
 ]
 filterwarnings = ["error::DeprecationWarning:paa.*"]
