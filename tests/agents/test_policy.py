@@ -25,11 +25,15 @@ import pytest
 
 from paa.agents import policy as policy_module
 from paa.agents.base import AgentContext, AgentMessage, MessageType
+from paa.agents.orchestrator import TaskRequest
 from paa.agents.policy import _IRREVERSIBLE_PATTERNS, PolicyRiskAgent, _flatten
 from paa.config import PolicySettings
-from paa.core.types import ComplexityModality, PermissionMode
+from paa.core.types import AgentRole, ComplexityModality, EventType, PermissionMode
+from paa.ledger.store import LedgerStore
 from paa.storage.relational.connection import TransactionConnection
 from paa.storage.relational.dialect import Dialect
+
+from .test_orchestrator import _FakeAgent, _orchestrator
 
 # asyncio_mode=auto (pyproject) detects async tests; no module mark needed, and
 # a module-level asyncio mark would wrongly tag the sync tests here.
@@ -105,11 +109,19 @@ class TestPermissionSubset:
 class TestLockdown:
     async def test_network_command_blocked_even_without_declared_permission(self) -> None:
         """LOCKDOWN is an air-gap promise, enforced on the command itself — not
-        merely on the declared permission the planner may have omitted."""
+        merely on the declared permission the planner may have omitted.
+
+        The **reason** is asserted as well as the decision, because the reason
+        is what says *which* half of ``_check_lockdown`` answered: this is the
+        network-pattern half, and it is the half that carries the promise. The
+        declared-permission half below is the dead one, and it is dead only
+        because the permission check refuses those plans first.
+        """
         agent = PolicyRiskAgent()
         steps = [{"action": "fetch", "command": ["curl", "https://example.com"]}]
         verdict = await _decide(agent, steps, PermissionMode.LOCKDOWN)
         assert verdict["decision"] == "STATUS_BLOCKED"
+        assert verdict["reason"] == "network egress attempted under LOCKDOWN"
 
     async def test_local_only_work_is_permitted_in_lockdown(self) -> None:
         agent = PolicyRiskAgent()
@@ -120,11 +132,20 @@ class TestLockdown:
     async def test_a_declared_egress_permission_is_refused_by_the_permission_check(
         self,
     ) -> None:
-        """The air-gap branch in ``_check_lockdown`` **cannot fire**.
+        """The **declared-permission** half of the air-gap branch cannot fire.
 
-        The branch refuses a plan whose step declares an egress or an
-        external-write permission, under LOCKDOWN. It is unreachable:
-        ``LOCKDOWN`` grants only ``SANDBOX_RUN``
+        ``_check_lockdown`` has two halves, and only one of them is dead.
+
+        The first half refuses a plan whose *command* trips the network
+        patterns — ``curl``, ``httpx.``, ``socket.`` — under LOCKDOWN. It
+        fires, and it is the half that carries the air-gap promise: the
+        module's own docstring says the promise is "enforced independently of
+        declarations", and this is the half that enforces it. A plan that
+        omits the declaration and runs ``curl`` is refused by it.
+
+        The second half refuses a plan whose step *declares* an egress or an
+        external-write permission. That half is unreachable: ``LOCKDOWN``
+        grants only ``SANDBOX_RUN``
         (:data:`paa.core.types._MODE_GRANTS`), so
         ``_check_permissions`` refuses such a plan first, and the gate never
         reaches the branch.
@@ -133,10 +154,11 @@ class TestLockdown:
         the other check's reason. This test pins that reason, because the
         reason is what the ``POLICY_BLOCKED`` ledger payload carries, and a
         silent change to it would change what a reader of the ledger sees.
-        The dead branch is reported in the wave-2 close-out report, with the
-        exact proposed change and its consequence; it is not patched here,
-        because the change is a **policy** question — *which* refusal should
-        win — and not a coverage question.
+        The dead half is reported in the wave-2 close-out report and assessed
+        in wave 2's last round, with the exact proposed change and its
+        consequence; it is not patched here, because the change is a
+        **policy** question — *which* refusal should win — and not a coverage
+        question.
         """
         agent = PolicyRiskAgent()
         steps = [{"action": "call out", "required_permissions": ["PERM_NET_EGRESS"]}]
@@ -145,26 +167,28 @@ class TestLockdown:
 
         assert verdict["decision"] == "STATUS_BLOCKED"
         assert verdict["reason"] == "permissions not granted in LOCKDOWN: ['PERM_NET_EGRESS']"
-        # And the air-gap refusal is not the one that answered: the branch is
-        # unreachable, and this assertion is what says so.
+        # And the air-gap refusal is not the one that answered: the
+        # declared-permission half of the branch is unreachable, and this
+        # assertion is what says so.
         assert "egress/external-write requested under LOCKDOWN" not in verdict["reason"]
 
     @pytest.mark.xfail(
         strict=True,
         reason=(
-            "PolicyRiskAgent._check_lockdown's egress branch is unreachable: "
-            "LOCKDOWN grants only SANDBOX_RUN, so _check_permissions refuses a plan "
-            "that declares an egress or external-write permission before the branch "
-            "is reached. The same plans are refused either way — only the recorded "
-            "reason differs — so the fix is a policy decision (which refusal should "
-            "win), not a coverage one, and it is reported rather than made silently. "
-            "The proposed change is to move _check_lockdown ahead of "
-            "_check_permissions in the checks tuple at src/paa/agents/policy.py:156, "
-            "which makes the air-gap refusal the one that answers; the consequence "
-            "is that the reason recorded in the POLICY_BLOCKED payload changes for a "
-            "LOCKDOWN plan that both declares an ungranted permission and trips the "
-            "air-gap check. This marker cannot outlive that decision: it fails "
-            "(strict) the day the branch starts answering."
+            "The declared-permission half of PolicyRiskAgent._check_lockdown is "
+            "unreachable: LOCKDOWN grants only SANDBOX_RUN, so _check_permissions "
+            "refuses a plan that declares an egress or external-write permission "
+            "before that half is reached. The same plans are refused either way — "
+            "only the recorded reason differs — so the fix is a policy decision "
+            "(which refusal should win), not a coverage one, and it is reported "
+            "rather than made silently. The proposed change is to move "
+            "_check_lockdown ahead of _check_permissions in the checks tuple at "
+            "src/paa/agents/policy.py:164, which makes the air-gap refusal the one "
+            "that answers; the consequence is that the reason recorded in the "
+            "POLICY_BLOCKED payload changes for a LOCKDOWN plan that both declares "
+            "an ungranted permission and trips the air-gap check. This marker cannot "
+            "outlive that decision: it fails (strict) the day that half starts "
+            "answering."
         ),
     )
     async def test_the_lockdown_air_gap_refusal_names_the_egress(self) -> None:
@@ -172,10 +196,10 @@ class TestLockdown:
 
         **This test is not expected to pass today**, and it is not a claim
         that it should. It pins the *proposed* change — the one-line reorder
-        that makes the unreachable branch reachable — so that the deferral
-        cannot be forgotten and the decision cannot be made silently. If the
-        operator decides instead to delete the branch, this test goes with
-        it.
+        that makes the dead half of the branch reachable — so that the
+        deferral cannot be forgotten and the decision cannot be made silently.
+        If the operator decides instead to delete the half, this test goes
+        with it.
         """
         agent = PolicyRiskAgent()
         steps = [{"action": "call out", "required_permissions": ["PERM_NET_EGRESS"]}]
@@ -310,7 +334,7 @@ _COVERED: dict[str, _Case] = {
             ("dd", "if=/dev/zero", "of=/dev/sda"),
         ),
     ),
-    r"\bDELETE\s+FROM\s+\w+\s*(;|$)": _Case(
+    r"\bDELETE\s+FROM\s+\w+\s*(;|\n|$)": _Case(
         "unqualified delete",
         (
             ("psql", "-c", "DELETE FROM audit_log;"),
@@ -536,6 +560,81 @@ class TestEveryIrreversiblePattern:
         agent = PolicyRiskAgent(settings=PolicySettings())
         command = ("psql", "-c", "DELETE FROM audit_log WHERE id = 1")
         verdict = await _decide(agent, _plan(command), PermissionMode.SAFE)
+
+        assert verdict["decision"] == "STATUS_APPROVED", verdict
+
+
+class TestTheUnqualifiedDeleteRule:
+    """The delete rule's answer must not depend on where the step sits.
+
+    The rule is "a ``DELETE`` that does not narrow itself is refused under
+    SAFE". The pattern said so in its label and in the table's prose, and the
+    **renderer** said how a statement ends: the gate joins a plan's parts with
+    newlines. But the pattern anchored its terminator on ``;`` or the end of
+    the *text*, so a delete that was the last part of the rendered plan ended
+    a statement and a delete in the middle of it did not — the same command,
+    refused or allowed depending on the steps that happened to follow it.
+
+    That is not a rule any of the prose states, and it is the wrong direction:
+    the pattern also feeds the **risk score**, so a delete in the middle of a
+    plan scored 0.0 instead of 0.8 and AUTO mode waved it through without
+    asking anybody. ADR-0035 records the change, its cost and its rollback.
+    """
+
+    #: The command the rule is about, and a second step to put after it.
+    _DELETE = ("psql", "-c", "DELETE FROM users")
+    _FOLLOWER = ("ls", "/data")
+
+    def _plan_with(self, *commands: tuple[str, ...]) -> list[dict[str, Any]]:
+        """The plan the gate is handed: one step per command, in order."""
+        return [
+            {"action": f"step {index}", "command": list(command)}
+            for index, command in enumerate(commands)
+        ]
+
+    @pytest.mark.parametrize("followers", [0, 1, 2], ids=["alone", "one after", "two after"])
+    async def test_the_delete_is_refused_wherever_it_sits_in_the_plan(
+        self, followers: int
+    ) -> None:
+        """The same command, the same answer — whatever follows it.
+
+        Before the fix this was position-dependent: ``followers=0`` was
+        refused and ``followers=1`` was **approved**, in the same suite.
+        """
+        agent = PolicyRiskAgent(settings=PolicySettings())
+        commands = (self._DELETE,) + (self._FOLLOWER,) * followers
+        verdict = await _decide(agent, self._plan_with(*commands), PermissionMode.SAFE)
+
+        assert verdict["decision"] == "STATUS_BLOCKED", (followers, verdict)
+        assert verdict["reason"] == "irreversible operation under SAFE mode: unqualified delete"
+
+    async def test_the_delete_is_not_free_outside_safe_either(self) -> None:
+        """Outside SAFE the delete is gated, not waved through.
+
+        The same pattern feeds the risk score, so a delete that is not the
+        last step of the plan used to score 0.0 — and AUTO mode's confidence
+        floor (0.80) never noticed, because the plan looked harmless. The
+        score is 0.8 now, whatever the position, and 0.8 is a gate.
+        """
+        agent = PolicyRiskAgent(settings=PolicySettings())
+        commands = (self._DELETE, self._FOLLOWER)
+        verdict = await _decide(agent, self._plan_with(*commands), PermissionMode.AUTO)
+
+        assert verdict["decision"] == "STATUS_APPROVED", verdict
+        assert verdict["risk_score"] == 0.8, verdict
+        assert verdict["requires_human_gate"] is True, verdict
+
+    async def test_a_qualified_delete_is_still_not_an_unqualified_delete(self) -> None:
+        """The near-miss, in a non-final position too.
+
+        The rule is about the *absence* of a WHERE clause. A delete that
+        narrows itself removes one row and is not this rule's business, so it
+        must stay allowed — and the near-miss above only pinned it in the
+        final position, where the old anchor would have matched it anyway.
+        """
+        agent = PolicyRiskAgent(settings=PolicySettings())
+        commands = (("psql", "-c", "DELETE FROM audit_log WHERE id = 1"), self._FOLLOWER)
+        verdict = await _decide(agent, self._plan_with(*commands), PermissionMode.SAFE)
 
         assert verdict["decision"] == "STATUS_APPROVED", verdict
 
@@ -868,3 +967,112 @@ class TestOperatorRules:
         steps = [{"action": "write documentation"}]
         verdict = await _decide(agent, steps, PermissionMode.AUTO)
         assert verdict["decision"] == "STATUS_APPROVED"
+
+
+# ---------------------------------------------------------------------------
+# The clearance a human grants
+# ---------------------------------------------------------------------------
+
+
+class TestTheHumanGrantedClearance:
+    """What the record of a human's answer says — and what it leaves out.
+
+    The policy stage's decision is written down twice: once when the policy
+    agent approves the plan itself, and once when a **human** answers the gate
+    the policy agent opened. The two records are the same decision about the
+    same plan, and the human's used to carry *less* than the agent's — it said
+    the gate was answered and who answered it, but not **what the policy
+    thought** of the plan: the number the human was actually answering.
+
+    A decision without the number it decided about is half a record, and this
+    is the half that was missing: the reader of the ledger could tell *why*
+    the plan was gated (the reason was carried) and not *how risky* it was
+    judged.
+
+    **Where this test lives.** It is about the orchestrator's record of the
+    policy stage's decision, so ``tests/agents/test_orchestrator.py`` is its
+    natural home — and that file was outside this agent's write-set. The
+    harness is imported from it, unchanged, and the test moves to its natural
+    home in one edit.
+    """
+
+    async def test_the_clearance_carries_the_score_the_policy_gave_the_plan(
+        self, ledger: LedgerStore
+    ) -> None:
+        """A human's clearance records the number the human was answering."""
+        orch = _orchestrator(
+            ledger,
+            policy=_FakeAgent(
+                AgentRole.POLICY_RISK,
+                {
+                    "decision": "STATUS_APPROVED",
+                    "requires_human_gate": True,
+                    "reason": "risk exceeds tolerance",
+                    "risk_score": 0.8,
+                },
+            ),
+        )
+        cid = await orch.submit(TaskRequest(goal="needs approval"))
+        await orch.run(cid)
+
+        # The gate's own payload carries the score: the policy agent is not
+        # consulted again, so this is the only place the lineage can learn it.
+        gates = [
+            event
+            for event in await ledger.read_correlation(cid)
+            if event.event_type is EventType.AWAITING_HUMAN_ATTESTATION
+        ]
+        assert len(gates) == 1
+        assert gates[0].payload["risk_score"] == 0.8
+
+        await orch.clear_human_gate(cid, approved=True)
+        await orch.run(cid)
+
+        clearances = [
+            event
+            for event in await ledger.read_correlation(cid)
+            if event.event_type is EventType.POLICY_CLEARED
+        ]
+        assert len(clearances) == 1
+        payload = clearances[0].payload
+        assert payload["decision"] == "STATUS_APPROVED"
+        assert payload["released_by"] == "human"
+        assert payload["risk_score"] == 0.8, (
+            "the clearance a human grants must record the number the policy "
+            "gave the plan the human approved"
+        )
+
+    async def test_a_clearance_with_no_score_to_record_invents_none(
+        self, ledger: LedgerStore
+    ) -> None:
+        """No score in the lineage means **no score in the clearance**.
+
+        A verdict that never computed one leaves the lineage without a
+        number, and the clearance says so by not carrying a key. Writing
+        ``0.0`` would put a number in the record that nobody measured — and
+        ``0.0`` reads as "this plan was judged harmless", which is a claim
+        about the plan, not about the record.
+        """
+        orch = _orchestrator(
+            ledger,
+            policy=_FakeAgent(
+                AgentRole.POLICY_RISK,
+                {
+                    "decision": "STATUS_APPROVED",
+                    "requires_human_gate": True,
+                    "reason": "risk exceeds tolerance",
+                },
+            ),
+        )
+        cid = await orch.submit(TaskRequest(goal="needs approval"))
+        await orch.run(cid)
+        await orch.clear_human_gate(cid, approved=True)
+        await orch.run(cid)
+
+        clearances = [
+            event
+            for event in await ledger.read_correlation(cid)
+            if event.event_type is EventType.POLICY_CLEARED
+        ]
+        assert len(clearances) == 1
+        assert "risk_score" not in clearances[0].payload

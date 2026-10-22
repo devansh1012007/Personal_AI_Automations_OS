@@ -56,8 +56,10 @@ alongside the instance's own errors.
 The alternative — the table living in :mod:`paa.validation.schema_validator`,
 where it used to live — put the whole :mod:`paa.validation` package, and
 through it the whole :mod:`paa.sandbox` package, into the model layer's
-import graph: 16 extra modules and about 26 ms on a layer nearly everything
+import graph: 16 extra modules and about 20 ms on a layer nearly everything
 imports. The edge was safe (no cycle, no optional extra) and still not free.
+The measurement is recorded once, in :mod:`paa.core.json_schema`, and this
+module quotes it rather than measuring the same edge a second time.
 """
 
 from __future__ import annotations
@@ -88,6 +90,7 @@ __all__ = [
     "minimal_instance_for_schema",
     "redact",
     "redact_detail",
+    "refuse_malformed_schema",
     "validate_against_schema",
 ]
 
@@ -347,13 +350,20 @@ def _malformed_keywords(schema: Any) -> list[SchemaError]:
 
     **Why the table is not in :mod:`paa.validation`.** It used to be: the
     shapes lived in :mod:`paa.validation.schema_validator` and this module
-    read them from there, which put the whole :mod:`paa.validation` package
-    — and, through it, the whole :mod:`paa.sandbox` package — into the model
-    layer's import graph. That is **16 extra modules and about 26 ms**, paid
+    read them from there, which put the whole :mod:`paa.validation` package,
+    and through it the whole :mod:`paa.sandbox` package, into the model
+    layer's import graph. That is **16 extra modules and about 20 ms**, paid
     by every process that imports anything from :mod:`paa.models`, which is
     nearly all of them, in exchange for a table of data. The table is now in
     a leaf, and this module's import graph carries the table and nothing
     else.
+
+    **The number is quoted once.** The measurement is recorded in
+    :mod:`paa.core.json_schema`, which is where the table now lives and
+    therefore where the edge's cost is explained. This module and the import
+    lock quote that figure rather than measuring the edge a second time,
+    because two measurements of one edge in one tree is how two numbers for
+    one edge get into the record.
 
     The walk covers the **whole** schema, not only the node the instance
     reaches: a broken constraint in a branch this payload never touches is
@@ -361,6 +371,38 @@ def _malformed_keywords(schema: Any) -> list[SchemaError]:
     payload that does touch it arrives.
     """
     return [error for error in schema_shape_errors(schema) if error.get("schema_error")]
+
+
+def refuse_malformed_schema(schema: Any, *, provider: str | None = None) -> None:
+    """Refuse a schema whose keyword values cannot be used. Raises otherwise.
+
+    **One rule, one implementation.** The rule is *"a malformed keyword value
+    is a schema error"*, and it has to hold wherever a schema enters the model
+    layer — including on the paths that do not go through
+    :func:`validate_against_schema` first. A provider that overrides
+    :meth:`ModelProvider.complete_structured` (the Anthropic provider forces a
+    tool call rather than parsing prose) must not be able to answer the
+    question differently from the base class: a schema the base class refuses
+    is a schema the override must refuse too, or "one rule, in all three
+    validators" is false on that path.
+
+    So the check lives here, and every implementation of the method calls it.
+    It is a module-level function rather than a method because the rule is
+    about the **schema**, not about the provider: the provider's name is
+    carried for the audit trail, and nothing else about the provider decides
+    whether the schema is usable.
+
+    The schema is the caller's, it is broken, and no answer can satisfy it —
+    so a retry would not help, and asking a frontier model to satisfy it would
+    carry a broken contract off the machine and record an escalation that
+    never happened.
+    """
+    if defects := _malformed_keywords(schema):
+        raise MalformedSchemaError(
+            "the schema carries a keyword whose value cannot be used",
+            malformed_keywords=defects,
+            **({"provider": provider} if provider is not None else {}),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -884,13 +926,12 @@ class ModelProvider(abc.ABC):
         broken, and no answer can satisfy it — so a retry would not help, and
         asking a frontier model to satisfy it would carry a broken contract
         off the machine and record an escalation that never happened.
+
+        The refusal itself is :func:`refuse_malformed_schema`, so an override
+        of this method applies the **same** rule rather than a second copy of
+        it.
         """
-        if defects := _malformed_keywords(schema):
-            raise MalformedSchemaError(
-                "the schema carries a keyword whose value cannot be used",
-                malformed_keywords=defects,
-                provider=self.name,
-            )
+        refuse_malformed_schema(schema, provider=self.name)
 
         attempt_request = request.with_schema(schema)
         errors: list[str] = []

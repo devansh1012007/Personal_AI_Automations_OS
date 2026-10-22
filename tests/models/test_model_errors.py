@@ -45,6 +45,7 @@ from paa.models.base import (
     CompletionRequest,
     MalformedSchemaError,
     Message,
+    ModelProvider,
     ModelUnavailableError,
     StructuredOutputError,
     minimal_instance_for_schema,
@@ -52,8 +53,9 @@ from paa.models.base import (
     validate_against_schema,
 )
 from paa.models.echo_provider import EchoProvider
+from paa.models.openai_compatible_provider import OpenAICompatibleProvider
 
-from .conftest import FAKE_KEY, RequestRecorder, mock_client
+from .conftest import FAKE_KEY, RequestRecorder, mock_client, openai_chat_response
 
 # ---------------------------------------------------------------------------
 # The keyword inventory
@@ -410,7 +412,10 @@ async def test_the_anthropic_path_also_refuses_a_malformed_schema(
 
     The rule is the same here: a malformed keyword is a
     :class:`~paa.models.base.MalformedSchemaError`, never a ``TypeError``, so
-    the failure is recorded by the run and is not routable.
+    the failure is recorded by the run and is not routable. The refusal now
+    happens *before* the request — see
+    :func:`test_every_implementation_of_complete_structured_refuses_a_broken_schema`,
+    which pins that no request is made at all.
     """
     monkeypatch.setenv("PAA_TEST_ANTHROPIC_KEY", FAKE_KEY)
     recorder = RequestRecorder(_anthropic_tool_response)
@@ -428,50 +433,75 @@ async def test_the_anthropic_path_also_refuses_a_malformed_schema(
     assert not isinstance(caught.value, AttributeError)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AnthropicProvider.complete_structured (src/paa/models/anthropic_provider.py:152) "
-        "overrides the generic loop and does not refuse a malformed schema before it "
-        "calls the provider: the broken schema is sent as the tool's input_schema and "
-        "the frontier model is asked about it, and only the response is then refused. "
-        "The base implementation refuses pre-flight for exactly this reason "
-        "(src/paa/models/base.py:884). anthropic_provider.py is read-only for W2-IMPR-02; "
-        "the fix is the same three lines the base uses — call "
-        "paa.models.base._malformed_keywords(schema) and raise MalformedSchemaError "
-        "before self._send(...)."
-    ),
+@pytest.mark.parametrize(
+    ("implementation", "expected_provider"),
+    [
+        ("the generic loop", "openai_compatible"),
+        ("the forced tool call", "anthropic"),
+    ],
+    ids=["base", "anthropic"],
 )
-async def test_the_anthropic_path_does_not_ask_the_frontier_model_about_a_broken_schema(
+async def test_every_implementation_of_complete_structured_refuses_a_broken_schema(
     monkeypatch: pytest.MonkeyPatch,
+    implementation: str,
+    expected_provider: str,
 ) -> None:
-    """A broken contract must not leave the machine.
+    """A broken contract must not leave the machine — on **either** path.
 
-    The base implementation refuses a malformed schema *before* the provider
-    is called, and says why: a frontier model cannot repair a contract whose
-    constraint cannot be read, so asking it only carries the broken contract
-    off the machine and records an escalation that never happened.
+    :meth:`~paa.models.base.ModelProvider.complete_structured` has two
+    implementations: the generic parse-and-retry loop, and the Anthropic
+    provider's forced tool call. The base refuses a malformed schema *before*
+    the provider is called, and says why: a frontier model cannot repair a
+    contract whose constraint cannot be read, so asking it only carries the
+    broken contract off the machine and records an escalation that never
+    happened.
 
-    The Anthropic override does not do that yet. The request is made, the
-    broken schema goes out as the tool's ``input_schema``, and the answer is
-    refused afterwards. ``strict=True`` means this suite goes **red** the day
-    the override refuses pre-flight, so the marker cannot outlive the fix.
+    The override used to disagree with the base on exactly this point: it sent
+    the broken schema as the tool's ``input_schema`` and refused only the
+    *response*. The rule now lives in one place
+    (:func:`paa.models.base.refuse_malformed_schema`) and both paths call it,
+    so the two implementations cannot drift apart on it again.
+
+    The assertion that matters is the second one: **no request was made**.
+    The refusal is worth nothing if the broken schema has already gone out.
     """
     monkeypatch.setenv("PAA_TEST_ANTHROPIC_KEY", FAKE_KEY)
-    recorder = RequestRecorder(_anthropic_tool_response)
-    provider = AnthropicProvider(
-        model="claude-stub",
-        api_key_env="PAA_TEST_ANTHROPIC_KEY",
-        client=mock_client(recorder),
-    )
+    provider: ModelProvider
+    if expected_provider == "anthropic":
+        recorder = RequestRecorder(_anthropic_tool_response)
+        provider = AnthropicProvider(
+            model="claude-stub",
+            api_key_env="PAA_TEST_ANTHROPIC_KEY",
+            client=mock_client(recorder),
+        )
+    else:
+        # The recorder answers a *request*, so the responder takes one — the
+        # house form is `lambda _req: openai_chat_response(...)`. It is never
+        # called on this path (the refusal is pre-flight), and that is the
+        # point: the assertion is that no request was made.
+        recorder = RequestRecorder(lambda _req: openai_chat_response("{}"))
+        provider = OpenAICompatibleProvider(
+            model="stub-model",
+            base_url="https://models.invalid",
+            api_key=FAKE_KEY,
+            client=mock_client(recorder),
+        )
+
     request = CompletionRequest(messages=(Message.user("hello"),))
 
-    with pytest.raises(MalformedSchemaError):
+    with pytest.raises(MalformedSchemaError) as caught:
         await provider.complete_structured(request, _BROKEN_SCHEMA)
 
+    assert not isinstance(caught.value, TypeError)
+    assert not isinstance(caught.value, AttributeError)
     assert recorder.request is None, (
-        "the frontier model was asked to satisfy a schema whose constraint cannot be read"
+        f"the {implementation} asked the model to satisfy a schema whose "
+        "constraint cannot be read"
     )
+    # The defect is *named*, not merely refused: the author has to be able to
+    # see which keyword the schema got wrong.
+    assert [defect["keyword"] for defect in caught.value.malformed_keywords] == ["minimum"]
+    assert caught.value.details.get("provider") == expected_provider
 
 
 # ---------------------------------------------------------------------------

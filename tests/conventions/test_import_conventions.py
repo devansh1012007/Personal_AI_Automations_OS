@@ -1507,8 +1507,14 @@ def test_the_model_layer_does_not_pull_in_the_validation_or_sandbox_packages() -
     The model layer is imported by nearly everything, so whatever it drags in
     is paid by the whole process. It used to drag in the whole
     :mod:`paa.validation` package and, through it, the whole
-    :mod:`paa.sandbox` package — **16 modules and about 19 ms** — in exchange
+    :mod:`paa.sandbox` package — **16 modules and about 20 ms** — in exchange
     for a table of keyword shapes.
+
+    The **20 ms** is the same figure :mod:`paa.core.json_schema` quotes, and
+    that module carries the measurement it came from — one edge, one number,
+    quoted in the three places that mention it. A second measurement of the
+    same edge in the same tree is how two numbers for one edge got into the
+    record in the first place.
 
     The check is a *fresh interpreter* rather than an import in this
     process, because a test session's ``sys.modules`` is already populated:
@@ -1527,4 +1533,47 @@ def test_the_model_layer_does_not_pull_in_the_validation_or_sandbox_packages() -
         f"importing paa.models.base pulled in {dragged}. The keyword table lives "
         f"in {KEYWORD_TABLE_MODULE}, which is a leaf; if the model layer needs "
         "more than the table, it needs the table to be somewhere else."
+    )
+
+
+#: How the three places that mention the edge quote its cost.
+EDGE_QUOTE = re.compile(r"16 (?:extra )?modules and about (\d+) ms")
+
+
+def _edge_quote_sources() -> dict[str, Path]:
+    """The files that quote the cost of the edge, by name."""
+    return {
+        "paa.core.json_schema": PACKAGE_ROOT / "core" / "json_schema.py",
+        "paa.models.base": PACKAGE_ROOT / "models" / "base.py",
+        "the import lock": Path(__file__),
+    }
+
+
+def test_the_import_edge_is_quoted_with_one_number() -> None:
+    """One edge, one number.
+
+    The edge — the model layer reading the keyword table through
+    :mod:`paa.validation.schema_validator` — was quoted as "26 ms" in two
+    files and as "19 ms" in the third, and every one of the three figures was
+    a measurement somebody had taken. Two numbers for one edge in one tree
+    reads as a stale record whichever of them a reader picks, so the figure
+    is measured **once** (:mod:`paa.core.json_schema` carries the method) and
+    the three files quote that figure.
+
+    The check is on the *text*, because the drift it catches is a drift in
+    prose: nothing about the tree changes when a docstring's number is
+    edited, and nothing else in this suite would notice.
+    """
+    quoted: dict[str, set[str]] = {}
+    for name, path in _edge_quote_sources().items():
+        numbers = set(EDGE_QUOTE.findall(path.read_text(encoding="utf-8")))
+        assert numbers, f"{name} does not quote the edge's cost at all"
+        quoted[name] = numbers
+
+    distinct = {number for numbers in quoted.values() for number in numbers}
+    assert len(distinct) == 1, (
+        "one edge, one number: the cost of the import edge the keyword table's "
+        f"move removed is quoted as {sorted(distinct)} across "
+        f"{ {name: sorted(numbers) for name, numbers in quoted.items()} }. "
+        "Re-measure it once and quote that measurement everywhere."
     )

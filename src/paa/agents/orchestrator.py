@@ -21,7 +21,7 @@ failure is the only possible one.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Protocol
 
 import structlog
@@ -85,6 +85,36 @@ class _GateQuestion:
     role: str
     discriminator: str | None
     answered: bool
+    payload: dict[str, Any] = field(default_factory=dict)
+    """What the question was about — the gate event's own payload.
+
+    A question is asked about something, and the answer is an answer *to
+    that*. The policy stage's question carries the reason the plan was gated
+    and the score the policy computed, so a release of that question can say
+    what it was a release *of*: "a human approved a plan the policy scored
+    0.8". Without it the clearance records that a gate was answered and
+    nothing about the thing the human answered.
+
+    Empty for a question whose event carried no payload — a lineage written
+    before the payload said anything, or a stage that asks without saying
+    what about.
+    """
+
+
+def _risk_score_of(payload: dict[str, Any]) -> float | None:
+    """The risk score a payload recorded, if it recorded one.
+
+    ``None`` means **not recorded**, which is not the same as zero. A verdict
+    that never computed a score, and a lineage written before the score was
+    carried, both say "the number is not in the record" — and writing ``0.0``
+    for them would put a number there that nobody measured. A decision
+    without the number it decided about is half a record; a record with an
+    invented number in it is worse.
+    """
+    value = payload.get("risk_score")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
 
 
 def _released_question(
@@ -588,16 +618,28 @@ class ChiefOrchestrator:
                 # approval uses, so the projection carries it and the stage is
                 # skipped from then on. The payload says who decided: the
                 # human, not the policy agent.
+                #
+                # It also carries **the number the policy computed**, when the
+                # policy computed one. The human's answer is about a plan the
+                # policy judged risky enough to gate, and a clearance that
+                # records only "answered" leaves the audit trail unable to
+                # answer "how risky was the plan a human approved?". The score
+                # is read out of the *question* — the policy agent is not
+                # consulted again, by design — so it is the lineage's own
+                # number and not a number invented here.
+                clearance: dict[str, Any] = {
+                    "decision": "STATUS_APPROVED",
+                    "reason": "human attestation granted",
+                    "released_by": "human",
+                    "gate": gate.discriminator,
+                }
+                if (score := _risk_score_of(gate.payload)) is not None:
+                    clearance["risk_score"] = score
                 await self._emit(
                     ctx.correlation_id,
                     EventType.POLICY_CLEARED,
                     session_id=ctx.session_id,
-                    payload={
-                        "decision": "STATUS_APPROVED",
-                        "reason": "human attestation granted",
-                        "released_by": "human",
-                        "gate": gate.discriminator,
-                    },
+                    payload=clearance,
                     modality=ctx.modality,
                     role=AgentRole.POLICY_RISK,
                     discriminator=gate.discriminator,
@@ -645,10 +687,21 @@ class ChiefOrchestrator:
             return await project(self._ledger, ctx.correlation_id)
 
         if verdict.get("requires_human_gate"):
+            # The gate's payload is the *question*, and a question the human
+            # will answer has to say what it is about: the reason the plan
+            # was gated and the score the policy gave it. The score is
+            # carried here because the policy agent is not consulted again
+            # after the gate opens — this is the only place the lineage can
+            # learn it.
+            gate_payload: dict[str, Any] = {
+                "reason": verdict.get("reason", "human attestation required")
+            }
+            if (score := _risk_score_of(verdict)) is not None:
+                gate_payload["risk_score"] = score
             return await self._open_gate(
                 ctx,
                 AgentRole.POLICY_RISK,
-                {"reason": verdict.get("reason", "human attestation required")},
+                gate_payload,
             )
 
         await self._emit(
@@ -891,6 +944,7 @@ class ChiefOrchestrator:
                         role=event.agent_role or "",
                         discriminator=event.discriminator,
                         answered=False,
+                        payload=event.payload,
                     )
                 )
             elif event.event_type is EventType.HUMAN_GATE_CLEARED:

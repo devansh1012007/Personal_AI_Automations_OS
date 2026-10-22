@@ -32,6 +32,14 @@ log = structlog.get_logger(__name__)
 #: Operations that destroy data or are otherwise unrecoverable. Blocked
 #: outright under SAFE; gated elsewhere. Written as explicit patterns rather
 #: than a "dangerous?" heuristic so the list is reviewable in a diff.
+#:
+#: The delete rule's **terminator set is the renderer's own**: the gate joins a
+#: plan's parts with newlines, so a statement ends at a newline as surely as
+#: it ends at a semicolon. Anchoring on "end of the text" alone made the
+#: rule's answer depend on the step's *position* — the same delete refused as
+#: the last step of the plan and allowed in the middle of it — which is not a
+#: rule any of the prose above states. ADR-0035 records the change and its
+#: cost.
 _IRREVERSIBLE_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"\brm\s+-[rRf]{1,2}\b", "recursive force delete"),
     (r"\bshutil\.rmtree\b", "recursive tree delete"),
@@ -41,7 +49,7 @@ _IRREVERSIBLE_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"\bgit\s+push\s+.*--force\b", "force push"),
     (r"\bgit\s+reset\s+--hard\b", "hard reset"),
     (r"\bmkfs\b|\bdd\s+if=", "raw device write"),
-    (r"\bDELETE\s+FROM\s+\w+\s*(;|$)", "unqualified delete"),
+    (r"\bDELETE\s+FROM\s+\w+\s*(;|\n|$)", "unqualified delete"),
 )
 
 

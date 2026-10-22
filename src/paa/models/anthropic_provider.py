@@ -37,6 +37,7 @@ from paa.models.base import (
     ModelTier,
     ModelUnavailableError,
     StructuredOutputError,
+    refuse_malformed_schema,
     validate_against_schema,
 )
 
@@ -165,7 +166,19 @@ class AnthropicProvider(HttpModelProvider):
         block level but the model can still omit an optional-looking required
         field, and an unchecked assumption here would surface as a ``KeyError``
         in whichever agent consumed the dict.
+
+        **The schema is refused before the request leaves the machine**, by the
+        same rule the base class applies
+        (:func:`paa.models.base.refuse_malformed_schema`). An override that
+        skipped the pre-flight would send a schema whose constraint cannot be
+        read as the tool's ``input_schema`` and ask a frontier model to
+        satisfy it — the broken contract would leave the machine, and the
+        escalation record would say reasoning material went out for a request
+        that could never have been answered. So the rule is applied here, from
+        the one implementation, rather than re-implemented.
         """
+        refuse_malformed_schema(schema, provider=self.name)
+
         api_key = self._api_key()
         body = self._build_body(request.with_schema(None))
         self._attach_tool(body, schema)

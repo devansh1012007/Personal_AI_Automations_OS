@@ -12,9 +12,35 @@ refuses is a schema the other two accept.
 :mod:`paa.validation.schema_validator`, and the model layer read it from
 there. That put the whole :mod:`paa.validation` package — and, through it,
 the whole :mod:`paa.sandbox` package — into the model layer's import graph:
-**16 extra modules and about 26 ms**, paid once per process by everything
+**16 extra modules and about 20 ms**, paid once per process by everything
 that imports :mod:`paa.models`, which is nearly everything. The table is data,
 not behaviour, and it has no business dragging a subsystem along with it.
+
+**The milliseconds are a measurement of this edge and of nothing else.** The
+edge was measured **once**, here: the tree as it was *before* the table moved
+(extracted whole, so the comparison is the two trees and not two versions of
+one file) against the tree as it is now, in **60 pairs of fresh interpreters**,
+the two trees interleaved so that a drift in machine load falls on both sides
+alike. The difference in the wall-clock of ``import paa.models.base``:
+**+20.6 ms** as the median of the 60 pairwise differences, **+20.4 ms** as the
+difference of the two medians (213.8 ms against 193.4 ms). The per-pair
+spread ran from -6 ms to +49 ms — the host was running the wave in parallel,
+and one pair is not a measurement — which is why the figure quoted is the
+median and not the minimum.
+
+The **16 modules** are exact, and do not move between hosts: the pre-move
+tree loaded 32 ``paa.*`` modules and this one loads 17, and the difference is
+the seven :mod:`paa.validation` modules and the nine :mod:`paa.sandbox`
+modules the table used to drag in, with :mod:`paa.core.json_schema` added.
+
+**Two older figures measured this same edge, and neither is quoted any more.**
+W2-IMPR-02 measured **+26.4 ms** minimum / **+35.1 ms** median, on an earlier
+host; W2-FIX-02 measured the same edge as the move's saving — **-19.6 /
+-20.4 / -20.4 ms** — on this one. Three numbers for one edge is a record
+that cannot be checked, so the figure is quoted **once**, here, and the two
+other places that mention the cost (:mod:`paa.models.base` and the import
+lock's own docstring) quote this one rather than taking a second measurement
+of their own.
 
 So the table lives here, in a **leaf**: this module imports nothing from this
 project at all — only the standard library — so a consumer of the table pays
