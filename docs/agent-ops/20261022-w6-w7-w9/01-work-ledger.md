@@ -21,7 +21,7 @@ authoritative task table; this file records the live state.)*
 | **W9-0.4** | test `observability/` | **T-008** (wave 2) |
 | **W9-0.5** | wire CI | **T-009** (wave 3) |
 | — | the marketplace's untrusted HTTP body (a recon finding, not in the track document) | **T-011** (wave 2) |
-| — | the records: the ADR index, the track document, `AGENTS.md`, the ROADMAP | **T-012** (wave 3, orchestrator) |
+| — | the records:
 
 ## Tasks
 
@@ -30,12 +30,12 @@ authoritative task table; this file records the live state.)*
 | T-001 | W7-b1, W7-b2 | storage/coldlake | **DEEP** | The blob substrate translates nothing, so a driver's exception crosses the boundary and the contract is silent about failure | `src/paa/storage/coldlake/{errors,minio_backend,base,cas,__init__}.py`, `tests/storage/{test_blob_errors,test_minio_backend,test_blobstore_contract}.py`, `docs/adr/0032-*.md` | the `BlobStore` protocol's error clause; the exception types the S3/CAS stores raise | none | — | C2 with T-002 (both touch the cold lake) | 1 | W1-IMPL-01 | **DONE** (T-001) — ce51df8, ddef4cc | — | `reports/w1-impl/W1-IMPL-01-T-001.md` |
 | T-003 | W6-b4 | deploy | SURFACE | The script reads one compose file and the parity test hard-codes the service set, so a merged stack is invisible to both | `deploy/fetch-images.sh`, `tests/deployment/test_fetch_images.py`, `docker-compose*.yml`, `docs/adr/0030-*.md`, `docs/deployment/docker.md`, `.env.example` | the script's CLI and its env surface (`PAA_COMPOSE_FILE`, `PAA_FETCH_*`) | none | — | C1 with T-001 on `docs/deployment/docker.md` → T-001 does not touch it | 1 | W1-IMPL-02 | **DONE** (T-003) — 954705d, 257b80f, 7532c9c | — | `reports/w1-impl/W1-IMPL-02-T-003.md` |
 | T-004 | W7-b3 | core imports | SURFACE | One commit left eight siblings expressing the same dependency two different ways | `src/paa/memory/{contradiction,decay,curator}.py`, `src/paa/marketplace/installer.py`, `src/paa/skills/registry.py`, `src/paa/agents/{policy,context_agents}.py`, `tests/conventions/test_import_conventions.py` | the import graph of eight modules | none | — | C1 with T-001 on `coldlake/__init__.py` → T-004 does not touch it | 1 | W1-IMPL-03 | **DONE** (T-004) — 7747fa0, a3e6819 | — | `reports/w1-impl/W1-IMPL-03-T-004.md` |
-| T-002 | W6-b3 | storage + deploy | SURFACE | The S3 path is only ever tested against a stub, so the six raw-escape sites were invisible | `tests/storage/test_s3_live.py`, `tests/storage/conftest.py`, `pyproject.toml`, `docs/adr/0033-*.md` | the `PAA_TEST_S3_*` convention; the `requires_s3` marker | SeaweedFS + RustFS containers | T-001 | C2 with T-001 (the error names it asserts) | 2 | — | pending | — | `reports/w2-impl/…` |
-| T-005 | W9-0.1 | validation | SURFACE | The security layer's docstrings are unproven | `src/paa/validation/schema_validator.py`, `tests/validation/*` | the malformed-keyword policy | none | — | — | 2 | — | pending | — | — |
-| T-006 | W9-0.2 | agents | SURFACE | The exact event sequence and the mediated cycle are unasserted; `HARD_STOP` does not park | `src/paa/agents/orchestrator.py`, `tests/agents/*`, `tests/integration/test_end_to_end.py` | the `HARD_STOP` behaviour (D-4) | none | — | — | 2 | — | pending | — | — |
-| T-007 | W9-0.3 | models | SURFACE | The key leaks on the escalation path; the semaphore and the LOCKDOWN spy are unasserted | `src/paa/models/{router,base}.py`, `tests/models/*` | the `MODEL_ESCALATED` discriminator scope | none | — | — | 2 | — | pending | — | — |
-| T-008 | W9-0.4 | observability | SURFACE | The percentiles are labelled but not valued; `logging.py` has zero coverage | `src/paa/observability/{runs,logging}.py`, `tests/observability/*` | none | none | — | — | 2 | — | pending | — | — |
-| T-011 | W7-new | marketplace | SURFACE | The remote registry chooses the local exception type | `src/paa/marketplace/registry_client.py`, `tests/marketplace/*` | the `HttpRegistry` error behaviour | none | — | — | 2 | — | pending | — | — |
+| T-002 | W6-b3 | storage + deploy | SURFACE | The S3 path is only ever tested against a stub, so the six raw-escape sites were invisible | `tests/storage/test_s3_live.py`, `tests/storage/conftest.py`, `pyproject.toml`, `docs/adr/0033-*.md` | the `PAA_TEST_S3_*` convention; the `requires_s3` marker | SeaweedFS + RustFS containers | T-001 | C2 with T-001 (the error names it asserts) | 2 | W2-IMPL-01 | **DONE** — be649ad, 4e0c967 | ADR-0033, amended by W2-IMPR-05 | `reports/w2-impl/W2-IMPL-01-T-002.md` |
+| T-005 | W9-0.1 | validation | SURFACE | The security layer's docstrings are unproven | `src/paa/validation/schema_validator.py`, `tests/validation/*` | the malformed-keyword policy | none | — | — | 2 | W2-IMPL-02 | **DONE** — 7ca81c8, cedf3c7 (+ F-2/F-3: 4a5bac0, 77195f7, d484c04, 2bbacf5, 01c1484) | one keyword table, all three validators | `reports/w2-impl/W2-IMPL-02-T-005.md` |
+| T-006 | W9-0.2 | agents | SURFACE | The exact event sequence and the mediated cycle are unasserted; `HARD_STOP` does not park | `src/paa/agents/orchestrator.py`, `tests/agents/*`, `tests/integration/test_end_to_end.py` | the `HARD_STOP` behaviour (D-4) | none | — | — | 2 | W2-IMPL-03 | **DONE** — 8527fe7, 487c6d5, c504dd6 (+ F-1: c3e14fd, 7ef532c; + R-W2-201: ab3f386, 78cce0b, d8726db, bf13357) | ADR-0034, amended by W2-IMPR-01 | `reports/w2-impl/W2-IMPL-03-T-006.md` |
+| T-007 | W9-0.3 | models | SURFACE | The key leaks on the escalation path; the semaphore and the LOCKDOWN spy are unasserted | `src/paa/models/{router,base}.py`, `tests/models/*` | the `MODEL_ESCALATED` discriminator scope | none | — | — | 2 | W2-IMPL-04 | **DONE** — 514cfad, b2a21a8, 14cd23a, 0e60264 (+ R-W2-203/F-4/F-7: 8841216, 39aba5c, 9674a81, d36bb7a) | the key-secrecy claim | `reports/w2-impl/W2-IMPL-04-T-007.md` |
+| T-008 | W9-0.4 | observability | SURFACE | The percentiles are labelled but not valued; `logging.py` has zero coverage | `src/paa/observability/{runs,logging}.py`, `tests/observability/*` | none | none | — | — | 2 | W2-IMPL-05 | **DONE** — 4808982, 9a92f19, 6117c4a, 377c160, efced61 | the `TYPE_CHECKING` deferral, fulfilled | `reports/w2-impl/W2-IMPL-05-T-008.md` |
+| T-011 | W7-new | marketplace | SURFACE | The remote registry chooses the local exception type | `src/paa/marketplace/registry_client.py`, `tests/marketplace/*` | the `HttpRegistry` error behaviour | none | — | — | **3** (moved: the 5-agent cap) | — | pending | — | — | — |
 | T-010 | W7-b4 | docs | SURFACE | The line-number references rotted and nothing checks them | `docs/**` (named files), `README.md`, `docs/adr/0019-*.md`, `tests/conventions/test_docs_references.py` | none | none | all code tasks | — | 3 | — | pending | — | — |
 | T-009 | W9-0.5 | ci | SURFACE | Nothing enforces the gate on a push | `.github/workflows/*.yml` | the CI contract | a PostgreSQL service container | all code tasks | — | 3 | — | pending | — | — |
 | T-012 | — | records | lead | the track document and the index still describe work that is done | `docs/adr/README.md`, `docs/MCP_AND_PLUGINS.md`, `AGENTS.md`, `docs/ROADMAP.md` | none | none | all | — | 3 | ORCH | pending | — | — |
@@ -75,6 +75,23 @@ authoritative task table; this file records the live state.)*
   the cycle proof (plan §3.2).
 * The `BlobStore` list operation — deliberately not added (D-6).
 * The `docs/` sweep covers all of `docs/` (D-5); the checker is part of T-010.
+
+## Open items (carried, not closed)
+
+Wave 2's delta review (`reports/w2-review/W2-REV-03-delta.md`) closed all five
+MAJORs and left these. None blocks the wave; each needs a decision or a
+later task, and none may be quietly forgotten.
+
+| # | Item | Where | Why it is open |
+|---|---|---|---|
+| 1 | The **SAFE-mode hole**: `DELETE FROM users` is allowed unless it is the last step of the plan | `src/paa/agents/policy.py` | W2-IMPR-04 found it; the rule's answer depends on the step's *position*, which is a **policy decision** over prose — not a test-coverage task's call. It is a MAJOR by the reviewer's own reading |
+| 2 | The **unreachable egress check** in `_check_lockdown` | `src/paa/agents/policy.py` | W2-FIX-02 deliberately did not patch it: making it reachable would change what the policy refuses. Needs the operator's choice — **reorder** (run the check) or **delete** (the check is redundant) |
+| 3 | The **Anthropic override** does not apply the malformed-schema rule | `src/paa/models/…` (the Anthropic provider) | the base class and the override disagree, so "one rule in all three validators" is false for that path. Honestly escalated and marked with a strict xfail, but the rule should hold on every path |
+| 4 | Five **pattern-semantics findings** (the delete rule's position dependence; `git push -f`, `rm -rfv`, `DELETE FROM public.users`, `TRUNCATE` without `TABLE` are all allowed) | `src/paa/agents/policy.py` | each **widens** a security rule; a policy decision, carried forward with reproductions and unpatched |
+| 5 | A companion docstring says the air-gap branch "cannot fire"; the `_NET_PATTERNS` half does fire, only the declared-permission half is dead | `tests/agents/test_policy.py:123` | a record defect, cheap to fix |
+| 6 | The same import edge is quoted as **26 ms** in one place and **19 ms** in the lock's docstring | `src/paa/core/json_schema.py`, `tests/conventions/test_import_conventions.py` | both were measured; nothing says they are different edges. A record defect |
+| 7 | A **human-granted clearance records no risk score** | `src/paa/agents/orchestrator.py:595` | a NIT from the delta review: the gate-cleared event says the gate was answered, not what the policy thought |
+| 8 | A report's **summary line** says "24 silently dropped keywords"; its body says 19 ignored + 1 wrong answer, with 6 `TypeError` + 1 `AttributeError` exact | `reports/w2-improve/W2-IMPR-02-F-2-F-3.md` | a NIT: the summary and the body disagree, and the body is the one that is right |
 
 ## Out-of-plan discoveries
 
