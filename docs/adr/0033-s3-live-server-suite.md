@@ -1,4 +1,4 @@
-# ADR-0033: The S3 substrate is tested against two independent S3 servers, not against a mock
+# ADR-0033: The S3 substrate is tested against two S3 servers, not against a mock
 
 ## Status
 
@@ -42,9 +42,20 @@ in the table", and left it to the next wave. This is that wave.
 
 ## Decision
 
-**The S3 substrate is tested against two independent S3 servers — SeaweedFS
-(the deployment's) and RustFS (a different implementation) — and the same
-test body runs against both.**
+**The S3 substrate is tested against two S3 servers — SeaweedFS (the
+deployment's) and RustFS (a different implementation) — and the same test
+body runs against both.**
+
+**What "two servers" is worth, and what it is not.** The independence of the
+two is the **operator's choice of labels**: nothing in the environment says
+which programs the two endpoints are, and this suite does not establish
+independence. What it does establish is that the two **answer differently** —
+`test_the_two_servers_are_distinguishable` reads what each server says about
+itself and fails if the two answers are the same, so two containers of one
+image cannot pass it. The labels name the implementations the operator
+pointed the suite at; the suite checks that the two are not the same one.
+(The title used to say "two **independent** S3 servers", which is the claim
+the suite cannot make; it is narrowed here to the claim it can.)
 
 The point is not "does S3 work". The point is: **does *this client* work
 against a server it was not written against?** One server cannot answer
@@ -195,36 +206,55 @@ wrong, which is the right granularity — and it is worth recording that
 the answer has two independent supports, because a suite that asserted
 *one* of them would be asserting an implementation detail.
 
-### What ADR-0032's decision 4 got wrong
+### What ADR-0032's decision 4 got wrong, and what it says now
 
-ADR-0032's decision 4 says that boto3's transfer manager "catches the
-driver's `ClientError` and raises an `S3UploadFailedError` instead", and
-that the translation unwraps it.
+ADR-0032's decision 4 **used to** say that boto3's transfer manager "catches
+the driver's `ClientError` and raises an `S3UploadFailedError` instead", and
+that the translation unwraps it. That was wrong about the *mechanism*, and
+ADR-0032 was corrected on 2026-10-22 (see its Amendment). This section is
+the measurement that correction rests on, and it now agrees with the
+corrected decision.
 
-**For `upload_fileobj` — the call `put_stream` makes — it does not.**
+**For `upload_fileobj` — the call `put_stream` makes — it does not wrap.**
 Measured against both servers, on boto3 1.43.117:
 
-| call | raises | carries a response | carries a cause |
-|---|---|---|---|
-| `upload_fileobj` (single-part and multipart) | the driver's `ClientError` (`NoSuchBucket`) | **yes** | no |
-| `upload_file` (the filename variant) | `S3UploadFailedError` | **no** | **no** |
+| call | raises | carries a response of its own | `__cause__` | `__context__` |
+|---|---|---|---|---|
+| `upload_fileobj` (single-part and multipart) | the driver's `ClientError` (`NoSuchBucket`) | **yes** | unset | unset |
+| `upload_file` (the filename variant) | `S3UploadFailedError` | **no** | unset | **the driver's `ClientError`** |
 
 So on the path the store actually takes, there is **no wrapper to unwrap**:
 the raw `ClientError` carries the answer, and the store reads it directly.
 The *outcome* is the one ADR-0032 wanted — one answer from both write
-paths — but it is reached by a different route than the record describes.
+paths — but it is reached by a different route than the old record
+described.
 
-The wrapper is not a fiction, though: it is what `upload_file` produces,
-and it is **opaque** — no response, no cause, and therefore nothing for
-the translation to read. The suite proves what happens if the store ever
-takes that route: the answer degrades from `NotFound` to the unclassified
-`BlobFailure`, and the two write paths stop agreeing. The suite asserts
-the two paths agree, so it catches that.
+The wrapper is not a fiction, though: it is what `upload_file` produces, and
+it is **not empty**. It carries no response *of its own* and no `__cause__`,
+but boto3 raises it inside an `except ClientError` block and without a
+`from`, so the driver's error is the wrapper's implicit `__context__` — and
+`minio_backend.py::_driver_cause` reads the `__context__` as well as the
+`__cause__`. The store's answer on the wrapping route is therefore **the
+same** answer, not a degraded one. `upload_fileobj` — the call `put_stream`
+makes — does not wrap at all.
 
-**The record is wrong; the code is not.** The unwrapping machinery is
+The suite pins it: `tests/storage/test_s3_live.py::test_the_wrapping_upload_route_answers_alike`
+runs the wrapping route against a real server, with the driver's own
+exceptions, and asserts that the two routes answer alike.
+
+*(Corrected 2026-10-22, by W2-FIX-02: this section used to say that the
+wrapper carried no cause and was therefore "opaque — no response, no cause,
+and therefore nothing for the translation to read", and that the answer
+"degrades from `NotFound` to the unclassified `BlobFailure`". Measured on
+both servers, the wrapper carries the driver's error as its implicit
+`__context__` and the store answers alike — `NotFound`, `namespace="bucket"`,
+`s3_code="NoSuchBucket"` — which is what ADR-0032's corrected decision 4 now
+says. See the Amendment at the end of ADR-0032.)*
+
+**The record was wrong; the code is not.** The unwrapping machinery is
 still load-bearing — for the connection-error chain, where the cause is
 the raw `ConnectionRefusedError` — and the translation is correct on the
-path the store takes. What ADR-0032's decision 4 mis-states is the
+path the store takes. What ADR-0032's decision 4 mis-stated was the
 *mechanism*, and a maintainer who believed it would not have thought to
 check whether the wrapper it describes is ever produced. That check is
 this ADR's, and the answer is: not on this path, in this boto3.
