@@ -86,10 +86,22 @@ class ModelUnavailableError(PaaError):
 class StructuredOutputError(PaaError):
     """A provider answered, but the answer did not conform to the schema.
 
-    Carries ``schema_errors`` verbatim so the ledger records *why* the
-    generation was rejected. ``raw_excerpt`` is truncated and redacted: the
-    offending text is the single most useful debugging artefact here, and also
-    the most likely place for a prompt to have carried something sensitive.
+    Carries ``schema_errors`` so the ledger records *why* the generation was
+    rejected — and carries them **redacted**, for the same reason
+    ``raw_excerpt`` is: both are built out of the model's *own output*.
+
+    :func:`validate_against_schema` quotes the offending instance into its
+    message (``f"{path}: {instance!r} is not one of {allowed!r}"``), so a
+    provider that echoes a credential back puts it straight into
+    ``schema_errors``. Redacting the excerpt but not the errors left the same
+    secret in the same exception twice — once scrubbed, once not — and
+    ``PaaError`` merges ``details`` into a ledger payload **verbatim**, so the
+    unscrubbed copy became a permanent record on the escalation path
+    (``EscalatingModelRouter._record_escalation`` copies ``str(error)`` into
+    the ``MODEL_ESCALATED`` payload and into the ``model.escalated`` log
+    line). The scrub happens here, at construction, because "remember to
+    redact at the raise site" is a rule that holds right up until the one
+    path nobody tested.
     """
 
     def __init__(
@@ -102,16 +114,17 @@ class StructuredOutputError(PaaError):
         raw_excerpt: str | None = None,
         **details: Any,
     ) -> None:
+        redacted_errors = [redact(error) for error in schema_errors or []]
         super().__init__(
             redact(message),
             provider=provider,
-            schema_errors=schema_errors or [],
+            schema_errors=redacted_errors,
             attempts=attempts,
             raw_excerpt=redact(raw_excerpt[:400]) if raw_excerpt else None,
             **details,
         )
         self.provider = provider
-        self.schema_errors = schema_errors or []
+        self.schema_errors = redacted_errors
         self.attempts = attempts
 
 

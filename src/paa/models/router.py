@@ -228,9 +228,14 @@ class EscalatingModelRouter:
 
         self._semaphore = asyncio.Semaphore(self._settings.max_concurrent_streams)
         self._usage: dict[str, ProviderUsage] = {}
-        # Monotonic, so repeated escalations within one correlation are distinct
-        # ledger events rather than being collapsed by the idempotency key.
-        self._escalation_seq = 0
+        # No escalation counter lives here on purpose. The discriminator that
+        # keeps repeated escalations apart is a property of the *correlation*
+        # and is read from the ledger when it is needed — see
+        # :meth:`_record_escalation`. A counter on the instance would be a
+        # counter on the *process*, and a restarted router would re-use the
+        # ordinals its predecessor spent, which the ledger's idempotency key
+        # would then suppress: the audit trail would under-count, silently,
+        # across a restart.
 
     # -- introspection ------------------------------------------------------
 
@@ -258,10 +263,35 @@ class EscalatingModelRouter:
     def reset_usage(self) -> None:
         self._usage.clear()
 
-    async def healthcheck(self) -> dict[str, bool]:
-        """Probe both tiers. Never raises — see :meth:`ModelProvider.healthcheck`."""
+    async def healthcheck(
+        self, *, permission_mode: PermissionMode = PermissionMode.ASK
+    ) -> dict[str, bool]:
+        """Probe the tiers the active permission mode permits. Never raises.
+
+        The frontier is probed **only when escalation is permitted in
+        ``permission_mode``**, and the probe is a network call: a hosted
+        provider's ``healthcheck`` issues an authenticated HTTP GET, so
+        probing the frontier under ``LOCKDOWN`` breaks the air-gap promise
+        the mode exists to keep — silently, because a healthcheck looks like
+        the safest call in the system.
+
+        Rule 1 of the policy is the only rule that applies here: a
+        healthcheck has no task, so there is no modality to weigh and the
+        modality floor must not be what decides the answer. ``MAX`` is
+        therefore the modality passed to :meth:`evaluate`, and only the
+        permission-mode rule can block the probe.
+
+        The frontier's key is **absent** from the report when it was not
+        probed. Absent means "not asked", which is not the same as
+        ``False`` ("asked, and it cannot serve") — a frontier that is
+        perfectly healthy is still not probed under ``LOCKDOWN``.
+
+        The default is ``ASK``, matching :meth:`complete`. A deployment in
+        ``LOCKDOWN`` must pass its mode; the router does not know it.
+        """
         report = {self._local.name: await self._local.healthcheck()}
-        if self._frontier is not None:
+        permitted = self.evaluate(ComplexityModality.MAX, permission_mode).allowed
+        if self._frontier is not None and permitted:
             report[self._frontier.name] = await self._frontier.healthcheck()
         return report
 
@@ -597,14 +627,35 @@ class EscalatingModelRouter:
         then times out has still left the machine, and logging on success would
         make exactly the failed escalations invisible.
 
-        The per-router sequence number is used as the event's ``discriminator``
-        because the idempotency key is derived from
-        ``(correlation, event_type, attempt, discriminator)``: without it, a
-        second escalation within one lineage would be suppressed as a duplicate
-        and the audit trail would under-count.
+        The event's ``discriminator`` is the **per-correlation escalation
+        ordinal** — the number of ``MODEL_ESCALATED`` events this lineage
+        already holds, plus one — read from the ledger rather than counted in
+        memory, followed by a per-escalation nonce.
+
+        It used to be a counter on the router instance, which made it *per
+        process*: a restarted router began again at ``escalation:1``, re-used
+        the key its predecessor had already spent, and the ledger **silently
+        suppressed** the second audit record. The audit trail then
+        under-counted exactly when the system was least able to notice — and a
+        restart is not a rare event. Two escalations are two crossings of the
+        privacy boundary, so they are two records.
+
+        Reading the ordinal from the ledger also makes the number the
+        *correlation's*: a lineage's escalations are numbered 1, 2, 3 ...
+        however many routers wrote them. The cost is one read of the lineage
+        per escalation, against one write; escalations are the rare path.
+
+        The nonce is what makes the write **collision-free**. An ordinal
+        alone cannot be: two writers that read the lineage at the same moment
+        take the same ordinal, and the idempotency key would suppress one of
+        the two records — the same silent under-count, in a narrower window.
+        The nonce is the event's own uuid4, which is the ledger's own
+        argument for uniqueness, and the discriminator is
+        ``escalation:<ordinal>:<nonce>``: the ordinal a human reads, the
+        nonce the key is computed from.
         """
         assert self._frontier is not None
-        self._escalation_seq += 1
+        ledger = self._ledger
 
         payload = {
             "from_model": self._local.model,
@@ -620,10 +671,19 @@ class EscalatingModelRouter:
             "leaves_machine": self._frontier.tier >= ModelTier.FRONTIER,
         }
         if local_error is not None:
-            payload["local_error"] = str(local_error)
+            # Redacted, exactly as the local-only path redacts the details it
+            # copies. ``str(error)`` renders the provider's own diagnosis —
+            # its message *and* every detail it carried — and a detail is not
+            # always a string: ``StructuredOutputError.schema_errors`` is a
+            # list of strings built from the model's own output, which is
+            # where a provider-echoed credential lands. ``PaaError`` merges
+            # details into a ledger payload *verbatim*, so an unscrubbed copy
+            # here becomes a permanent record of the credential. The local
+            # path was given this treatment; the escalation path never was.
+            payload["local_error"] = redact(str(local_error))
             payload["local_error_type"] = type(local_error).__name__
 
-        if self._ledger is None:
+        if ledger is None:
             log.warning(
                 "model.escalation_unlogged",
                 unaudited=True,
@@ -651,19 +711,66 @@ class EscalatingModelRouter:
 
         from paa.ledger.events import LedgerEvent
 
-        await self._ledger.append(
-            LedgerEvent.create(
-                correlation_id,
-                EventType.MODEL_ESCALATED,
-                session_id=session_id,
-                payload=payload,
-                execution_mode=decision.modality,
-                discriminator=f"escalation:{self._escalation_seq}",
-            )
+        ordinal = await self._escalation_ordinal(ledger, correlation_id)
+        # The nonce is the event's *own* id, so "the discriminator is unique"
+        # is exactly as strong as "the event id is unique" — the ledger's
+        # own argument — and there is no second source of uniqueness to
+        # justify.
+        event_id = uuid.uuid4()
+        event = LedgerEvent.create(
+            correlation_id,
+            EventType.MODEL_ESCALATED,
+            event_id=event_id,
+            session_id=session_id,
+            payload=payload,
+            execution_mode=decision.modality,
+            discriminator=f"escalation:{ordinal}:{event_id.hex}",
         )
+        stored = await ledger.append(event)
+        if stored.event_id != event.event_id:
+            # The store returned the *existing* event: this escalation's
+            # idempotency key was already spent. With the nonce in the
+            # discriminator that means a uuid4 collision, not a contended
+            # ordinal — the same order of improbability the ledger's own
+            # ``event_id`` relies on. Say so loudly rather than let the
+            # boundary be crossed unrecorded.
+            log.error(
+                "model.escalation_unaudited",
+                unaudited=True,
+                correlation_id=str(correlation_id),
+                impact=(
+                    "reasoning material left the machine and the MODEL_ESCALATED "
+                    "ledger event was suppressed as a duplicate; the privacy "
+                    "boundary is not auditable for this call"
+                ),
+                **payload,
+            )
+            return
+
         log.info(
             "model.escalated",
             correlation_id=str(correlation_id),
             attributed=attributed,
             **payload,
         )
+
+    async def _escalation_ordinal(
+        self, ledger: LedgerStore, correlation_id: uuid.UUID
+    ) -> int:
+        """The ordinal of the next escalation in ``correlation_id``.
+
+        The number of ``MODEL_ESCALATED`` events the lineage already holds,
+        plus one. Read from the ledger so that it is a property of the
+        *lineage* and not of whichever router instance happens to be running —
+        see :meth:`_record_escalation` for why that distinction is the whole
+        fix.
+
+        Two writers that read the lineage at the same moment take the same
+        ordinal. The nonce in the discriminator keeps both records, so the
+        ordinal is a label rather than a strict sequence under contention —
+        which is the trade: a complete audit trail with a possibly-repeated
+        label, or an incomplete one.
+        """
+        events = await ledger.read_correlation(correlation_id)
+        recorded = sum(1 for event in events if event.event_type is EventType.MODEL_ESCALATED)
+        return recorded + 1

@@ -5,7 +5,7 @@ record of it is the whole point of ADR-0015's second decision. The router is
 the only component in the runtime that writes this event and nothing else
 writes it, so these tests are the only place its properties are pinned.
 
-Four of them, each previously untested:
+Five of them, each previously untested:
 
 * the event is written **before** the frontier call, not after — a request
   that leaves the machine and then times out has still left the machine, and
@@ -13,10 +13,11 @@ Four of them, each previously untested:
 * it carries the caller's correlation id when there is one;
 * it gets a *synthetic* correlation id when there is not — an orphan lineage
   beats a missing audit record, and the escalation still happened;
-* two escalations in one lineage are two events, because the per-router
-  sequence number is the discriminator that keeps their idempotency keys
-  apart. Without it the second would be suppressed as a duplicate and the
-  audit trail would under-count.
+* two escalations in one lineage are two events, because the discriminator
+  keeps their idempotency keys apart;
+* and the numbering **survives a restart** — a new router over the same
+  ledger does not re-use the ordinal its predecessor spent, which is the
+  case the ledger's idempotency key would otherwise suppress in silence.
 """
 
 from __future__ import annotations
@@ -47,6 +48,18 @@ def _router(ledger: LedgerStore, *, fail_times: int = 1) -> EscalatingModelRoute
     )
 
 
+def _ordinal(discriminator: str | None) -> int:
+    """The escalation ordinal a discriminator carries.
+
+    The discriminator is ``escalation:<ordinal>:<nonce>``. The **ordinal**
+    is the number the correlation's escalations are numbered by — read from
+    the ledger, so it survives a restart — and the **nonce** is what keeps
+    two of them apart when they are written at the same moment.
+    """
+    assert discriminator is not None, "the escalation event carries no discriminator"
+    return int(discriminator.split(":")[1])
+
+
 async def _escalations(ledger: LedgerStore, correlation_id: uuid.UUID) -> list[Any]:
     events = await ledger.read_correlation(correlation_id)
     return [e for e in events if e.event_type is EventType.MODEL_ESCALATED]
@@ -68,9 +81,9 @@ async def test_an_escalation_writes_one_model_escalated_event(ledger: LedgerStor
     assert len(escalations) == 1
     event = escalations[0]
     assert event.correlation_id == correlation_id
-    # The discriminator is the per-router sequence number, so a second
-    # escalation in the same lineage is not suppressed as a duplicate.
-    assert event.discriminator == "escalation:1"
+    # The discriminator carries the correlation's escalation ordinal, so a
+    # second escalation in the same lineage is not suppressed as a duplicate.
+    assert _ordinal(event.discriminator) == 1
     assert event.payload["from_provider"] == "echo"
     assert event.payload["to_provider"] == "frontier-echo"
     assert event.payload["trigger"] == "local_provider_unavailable"
@@ -151,12 +164,12 @@ async def test_an_unattributed_escalation_still_writes_the_audit_record(
 
 
 async def test_two_escalations_in_one_lineage_are_two_events(ledger: LedgerStore) -> None:
-    """The sequence number keeps the idempotency keys apart.
+    """The ordinal keeps the idempotency keys apart.
 
     The idempotency key is derived from ``(correlation, event_type, attempt,
-    discriminator)``. Without the per-router sequence number as the
-    discriminator, the second escalation in one lineage would be suppressed
-    as a duplicate and the audit trail would under-count.
+    discriminator)``. Without the discriminator as the ordinal, the second
+    escalation in one lineage would be suppressed as a duplicate and the
+    audit trail would under-count.
     """
     router = _router(ledger, fail_times=2)
     correlation_id = uuid.uuid4()
@@ -171,7 +184,54 @@ async def test_two_escalations_in_one_lineage_are_two_events(ledger: LedgerStore
 
     escalations = await _escalations(ledger, correlation_id)
     assert len(escalations) == 2
-    assert [e.discriminator for e in escalations] == ["escalation:1", "escalation:2"]
+    assert [_ordinal(e.discriminator) for e in escalations] == [1, 2]
+    # Two distinct discriminators, not one ordinal and one copy of it.
+    assert len({e.discriminator for e in escalations}) == 2
+
+
+async def test_the_escalation_ordinal_survives_a_router_restart(
+    ledger: LedgerStore,
+) -> None:
+    """A restarted router must not re-use the ordinal its predecessor spent.
+
+    The discriminator used to be a counter on the router *instance*, which
+    made it a counter on the *process*. A restarted router began again at
+    ``escalation:1``, re-used the idempotency key its predecessor had
+    already spent, and the ledger **silently suppressed** the second audit
+    record: the trail said one escalation where there had been two, and
+    nothing anywhere said so.
+
+    The ordinal is now read from the ledger, so it belongs to the
+    *correlation*: the second router's escalation is the second escalation
+    of that lineage, whichever process wrote it.
+    """
+    correlation_id = uuid.uuid4()
+
+    before_restart = _router(ledger)
+    await before_restart.complete(
+        _request(),
+        modality=ComplexityModality.COMPLEX,
+        permission_mode=PermissionMode.ASK,
+        correlation_id=correlation_id,
+    )
+
+    # A *new* router over the same ledger: the shape a restart has.
+    after_restart = _router(ledger)
+    await after_restart.complete(
+        _request(),
+        modality=ComplexityModality.COMPLEX,
+        permission_mode=PermissionMode.ASK,
+        correlation_id=correlation_id,
+    )
+
+    escalations = await _escalations(ledger, correlation_id)
+    assert len(escalations) == 2
+    assert [_ordinal(e.discriminator) for e in escalations] == [1, 2]
+    assert len({e.discriminator for e in escalations}) == 2
+    # Both crossings are recorded, and both say the same thing: the same
+    # trigger, the same lineage, the same providers.
+    assert {e.payload["trigger"] for e in escalations} == {"local_provider_unavailable"}
+    assert {e.payload["to_provider"] for e in escalations} == {"frontier-echo"}
 
 
 async def test_an_escalation_without_a_ledger_is_not_fatal(ledger: LedgerStore) -> None:
