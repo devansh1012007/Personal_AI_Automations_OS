@@ -222,6 +222,30 @@ class EscalatingModelRouter:
             ModelSettings() if settings is None else resolve_model_settings(settings)
         )
 
+        # **The deployment's permission mode, when the router was given one.**
+        #
+        # The mode lives on ``Settings.policy``; ``ModelSettings`` — the model
+        # half, which is what half the call sites hold — carries no mode at
+        # all. So the mode is available at construction *only* when the whole
+        # ``Settings`` was handed over, and it used to be thrown away: the
+        # constructor narrowed the argument to its model half and kept
+        # nothing else. A router built by a LOCKDOWN deployment therefore
+        # probed the frontier like any other, because the one method whose
+        # whole purpose is to look safe defaulted to the permissive mode.
+        #
+        # When the mode is **not** available the answer is the most
+        # restrictive one, not the most permissive one. LOCKDOWN forbids
+        # escalation; a router that does not know its mode has no business
+        # assuming escalation is permitted, and "no" is the answer that
+        # cannot leak. A caller that knows the mode passes it — see
+        # :meth:`healthcheck` — and a caller that does not gets the safe
+        # default, which is the entire point of a default.
+        self._permission_mode: PermissionMode = (
+            settings.policy.mode
+            if isinstance(settings, Settings)
+            else PermissionMode.LOCKDOWN
+        )
+
         self._local = local
         self._frontier = frontier
         self._ledger = ledger_store
@@ -229,13 +253,13 @@ class EscalatingModelRouter:
         self._semaphore = asyncio.Semaphore(self._settings.max_concurrent_streams)
         self._usage: dict[str, ProviderUsage] = {}
         # No escalation counter lives here on purpose. The discriminator that
-        # keeps repeated escalations apart is a property of the *correlation*
-        # and is read from the ledger when it is needed — see
-        # :meth:`_record_escalation`. A counter on the instance would be a
-        # counter on the *process*, and a restarted router would re-use the
-        # ordinals its predecessor spent, which the ledger's idempotency key
-        # would then suppress: the audit trail would under-count, silently,
-        # across a restart.
+        # keeps repeated escalations apart is the *event's own id*, which is
+        # unique across processes and restarts — a counter on the instance
+        # would be a counter on the *process*, and a restarted router would
+        # re-use the ordinals its predecessor spent, which the ledger's
+        # idempotency key would then suppress: the audit trail would
+        # under-count, silently, across a restart. See
+        # :meth:`_record_escalation`.
 
     # -- introspection ------------------------------------------------------
 
@@ -264,7 +288,7 @@ class EscalatingModelRouter:
         self._usage.clear()
 
     async def healthcheck(
-        self, *, permission_mode: PermissionMode = PermissionMode.ASK
+        self, *, permission_mode: PermissionMode | None = None
     ) -> dict[str, bool]:
         """Probe the tiers the active permission mode permits. Never raises.
 
@@ -286,11 +310,22 @@ class EscalatingModelRouter:
         ``False`` ("asked, and it cannot serve") — a frontier that is
         perfectly healthy is still not probed under ``LOCKDOWN``.
 
-        The default is ``ASK``, matching :meth:`complete`. A deployment in
-        ``LOCKDOWN`` must pass its mode; the router does not know it.
+        **The mode is the one the router was constructed with.** The
+        argument is optional, and when it is omitted the router uses the
+        mode it was given at construction: the deployment's own
+        ``Settings.policy.mode`` if the whole ``Settings`` was handed over,
+        and otherwise the most restrictive mode there is (``LOCKDOWN``),
+        because a router that does not know its mode must not assume that
+        escalation is permitted. The default used to be ``ASK`` — the
+        *permissive* mode — which made the safe behaviour opt-in by
+        accident: a router built by a LOCKDOWN deployment probed the
+        frontier unless the caller remembered to pass the mode. The
+        permission mode a caller passes explicitly still wins; this is only
+        about what happens when nobody passes one.
         """
+        mode = self._permission_mode if permission_mode is None else permission_mode
         report = {self._local.name: await self._local.healthcheck()}
-        permitted = self.evaluate(ComplexityModality.MAX, permission_mode).allowed
+        permitted = self.evaluate(ComplexityModality.MAX, mode).allowed
         if self._frontier is not None and permitted:
             report[self._frontier.name] = await self._frontier.healthcheck()
         return report
@@ -468,16 +503,11 @@ class EscalatingModelRouter:
                 trigger, local_error = "local_provider_unavailable", exc
 
         if self._frontier is None:
-            raise ModelUnavailableError(
-                "escalation is permitted but no frontier provider is configured",
-                provider=self._local.name,
-                escalation_trigger=trigger,
-                # Always False inside this branch; carried for parity with the
-                # _local_only error so a caller reads one wiring fact from one
-                # stable key on either path.
-                frontier_configured=False,
-                **decision.to_payload(),
-            ) from local_error
+            # Raised with no chain: the provider's own exception is carried in
+            # the details (scrubbed), never attached to this one. See
+            # :meth:`_local_only_error` for why an exception that may hold a
+            # credential is never chained.
+            raise self._no_frontier_error(trigger, decision, local_error) from None
 
         await self._record_escalation(
             trigger=trigger,
@@ -543,35 +573,124 @@ class EscalatingModelRouter:
             "would escalation even help if I raised the modality or left
             ``LOCKDOWN``?" — and without it the error reads as if configuring
             a frontier provider would have changed the outcome.
+
+        **The provider's exception is not chained to the one this path
+        raises.** See :meth:`_local_only_error`.
         """
+        failure: ModelUnavailableError | StructuredOutputError | None = None
         try:
             return await self._invoke(self._local, request, schema)
         except (ModelUnavailableError, StructuredOutputError) as exc:
-            frontier_ok = self._frontier is not None
-            details: dict[str, Any] = {
-                f"underlying_{key}": _redact_detail(value)
-                for key, value in exc.details.items()
+            failure = exc
+        # The ``try`` above returns; the only way to reach this line is the
+        # handler, which always assigns. The assert is the narrowing the type
+        # checker needs, not a runtime check.
+        assert failure is not None
+        # Raised **outside** the handler, and with no chain. Both matter:
+        # inside the handler the provider's exception is the one being
+        # handled, so raising there would attach it as the new error's
+        # ``__context__`` even without ``from``; and the provider's
+        # exception may carry a credential this router cannot recognise.
+        raise self._local_only_error(failure, decision) from None
+
+    def _local_only_error(
+        self,
+        exc: ModelUnavailableError | StructuredOutputError,
+        decision: EscalationDecision,
+    ) -> ModelUnavailableError:
+        """The error the local-only path raises, with the provider's diagnosis.
+
+        **Why the provider's exception is not chained.** The raised error used
+        to be ``raise ... from exc``, which attaches the provider's own
+        exception as the ``__cause__`` — and the provider's exception is the
+        one object in this story that can hold a credential the router has no
+        way to recognise. The router scrubs the *copy* of the diagnosis it
+        attaches (``underlying_*``, every string value at any depth), but a
+        chained exception is not a copy: it is the provider's object, with
+        whatever the provider put in it, and it is rendered by
+        ``traceback.format_exception`` — which is the text an operator pastes
+        into a bug report. Scrubbing the copy and chaining the original
+        cancels out: the key that was removed from the details is still in the
+        traceback.
+
+        So the router's error carries the diagnosis as *data* (scrubbed, in
+        the details, and therefore safe in a ledger payload) and carries no
+        exception at all. The provider's own exception stays with the
+        provider, which is where its scrubbing belongs — the router cannot
+        promise that an arbitrary provider's exception is clean, and a
+        guarantee it cannot keep is not a guarantee.
+
+        What is lost is the provider's *stack*, not its diagnosis: the type
+        name, the message and every detail are still on the raised error.
+        What is gained is that no credential can reach a traceback through
+        this path, whatever shape the provider's key takes.
+        """
+        frontier_ok = self._frontier is not None
+        details: dict[str, Any] = {
+            f"underlying_{key}": _redact_detail(value)
+            for key, value in exc.details.items()
+        }
+        details.update(
+            {
+                "escalation_block_reason": decision.reason,
+                "escalation_block_reasons": self.block_reasons(
+                    decision.modality, decision.permission_mode
+                ),
+                "underlying_error": type(exc).__name__,
+                "underlying_message": redact(getattr(exc, "message", str(exc))),
+                "frontier_configured": frontier_ok,
+                "escalation_unavailable_reason": (
+                    None if frontier_ok else "no_frontier_configured"
+                ),
+                **decision.to_payload(),
             }
+        )
+        return ModelUnavailableError(
+            "local provider failed and escalation is not permitted",
+            provider=self._local.name,
+            **details,
+        )
+
+    def _no_frontier_error(
+        self,
+        trigger: str,
+        decision: EscalationDecision,
+        local_error: Exception | None,
+    ) -> ModelUnavailableError:
+        """The error raised when escalation is permitted but nothing can serve it.
+
+        The provider's own failure — if there was one — is carried in the
+        details, scrubbed, and **not chained**: the same rule as
+        :meth:`_local_only_error`, for the same reason. The chain used to be
+        the only place the provider's diagnosis appeared on this path, so
+        dropping it without adding the details would have thrown the
+        diagnosis away; with the details, the operator reads the same facts
+        from a surface that cannot carry a credential.
+        """
+        details: dict[str, Any] = {
+            "escalation_trigger": trigger,
+            # Always False inside this branch; carried for parity with the
+            # _local_only error so a caller reads one wiring fact from one
+            # stable key on either path.
+            "frontier_configured": False,
+            **decision.to_payload(),
+        }
+        if local_error is not None:
             details.update(
                 {
-                    "escalation_block_reason": decision.reason,
-                    "escalation_block_reasons": self.block_reasons(
-                        decision.modality, decision.permission_mode
-                    ),
-                    "underlying_error": type(exc).__name__,
-                    "underlying_message": redact(getattr(exc, "message", str(exc))),
-                    "frontier_configured": frontier_ok,
-                    "escalation_unavailable_reason": (
-                        None if frontier_ok else "no_frontier_configured"
-                    ),
-                    **decision.to_payload(),
+                    f"underlying_{key}": _redact_detail(value)
+                    for key, value in getattr(local_error, "details", {}).items()
                 }
             )
-            raise ModelUnavailableError(
-                "local provider failed and escalation is not permitted",
-                provider=self._local.name,
-                **details,
-            ) from exc
+            details["underlying_error"] = type(local_error).__name__
+            details["underlying_message"] = redact(
+                getattr(local_error, "message", str(local_error))
+            )
+        return ModelUnavailableError(
+            "escalation is permitted but no frontier provider is configured",
+            provider=self._local.name,
+            **details,
+        )
 
     async def _invoke(
         self,
@@ -627,10 +746,8 @@ class EscalatingModelRouter:
         then times out has still left the machine, and logging on success would
         make exactly the failed escalations invisible.
 
-        The event's ``discriminator`` is the **per-correlation escalation
-        ordinal** — the number of ``MODEL_ESCALATED`` events this lineage
-        already holds, plus one — read from the ledger rather than counted in
-        memory, followed by a per-escalation nonce.
+        The event's ``discriminator`` is the **event's own uuid4**, written as
+        ``escalation:<nonce>``.
 
         It used to be a counter on the router instance, which made it *per
         process*: a restarted router began again at ``escalation:1``, re-used
@@ -640,19 +757,40 @@ class EscalatingModelRouter:
         restart is not a rare event. Two escalations are two crossings of the
         privacy boundary, so they are two records.
 
-        Reading the ordinal from the ledger also makes the number the
-        *correlation's*: a lineage's escalations are numbered 1, 2, 3 ...
-        however many routers wrote them. The cost is one read of the lineage
-        per escalation, against one write; escalations are the rare path.
+        For a while the discriminator also carried a **per-correlation
+        escalation ordinal** — the number of ``MODEL_ESCALATED`` events the
+        lineage already held, plus one — read from the ledger at write time.
+        That was the wave-2 fix for the per-process counter, and it was
+        *correct about the property and wasteful about the mechanism*: the
+        ordinal was a denormalised copy of a fact the ledger already holds
+        exactly, and it was copied badly.
 
-        The nonce is what makes the write **collision-free**. An ordinal
-        alone cannot be: two writers that read the lineage at the same moment
-        take the same ordinal, and the idempotency key would suppress one of
-        the two records — the same silent under-count, in a narrower window.
-        The nonce is the event's own uuid4, which is the ledger's own
-        argument for uniqueness, and the discriminator is
-        ``escalation:<ordinal>:<nonce>``: the ordinal a human reads, the
-        nonce the key is computed from.
+        * **The ledger already numbers the lineage.** ``state_version`` is
+          dense, per-correlation, and assigned inside the store's per-lineage
+          lock, so "the Nth crossing of this boundary in this lineage" is a
+          fact the ledger answers *deterministically* — including under
+          concurrency, where two writers are serialised and get consecutive
+          versions. The ordinal in the discriminator was a second, racy copy
+          of a number the ledger had already computed.
+        * **The copy was racy where the original was not.** Two writers that
+          read the lineage at the same moment took the same ordinal. Both
+          records survived (the nonce did that job) but the label repeated,
+          so the "per-correlation ordinal" was a sequence only in the
+          sequential case.
+        * **The copy cost a read of the whole lineage** — O(lineage) rows
+          parsed to count a number — and made the audit write depend on that
+          read succeeding. A store whose read failed aborted the escalation
+          before the frontier call, so a *label* could cost a crossing of the
+          privacy boundary.
+
+        So the ordinal is gone, and the discriminator is the nonce alone:
+        ``escalation:<the event's uuid4 hex>``. The uniqueness argument is
+        the ledger's own — "the event id is unique" — and it holds across a
+        restart, across processes, and under concurrency, with **no read at
+        all** before the write. The sequence the ordinal used to carry is
+        still there, and it is still per-correlation: it is the lineage's
+        ``state_version`` order, which is the ledger's own truth and does not
+        need a second number to be derived from it.
         """
         assert self._frontier is not None
         ledger = self._ledger
@@ -711,11 +849,12 @@ class EscalatingModelRouter:
 
         from paa.ledger.events import LedgerEvent
 
-        ordinal = await self._escalation_ordinal(ledger, correlation_id)
         # The nonce is the event's *own* id, so "the discriminator is unique"
         # is exactly as strong as "the event id is unique" — the ledger's
         # own argument — and there is no second source of uniqueness to
-        # justify.
+        # justify, and **nothing to read before the write**. The lineage's
+        # escalation sequence is the ledger's own ordering (see the method
+        # docstring), not a number this router has to go and count.
         event_id = uuid.uuid4()
         event = LedgerEvent.create(
             correlation_id,
@@ -724,16 +863,15 @@ class EscalatingModelRouter:
             session_id=session_id,
             payload=payload,
             execution_mode=decision.modality,
-            discriminator=f"escalation:{ordinal}:{event_id.hex}",
+            discriminator=f"escalation:{event_id.hex}",
         )
         stored = await ledger.append(event)
         if stored.event_id != event.event_id:
             # The store returned the *existing* event: this escalation's
             # idempotency key was already spent. With the nonce in the
-            # discriminator that means a uuid4 collision, not a contended
-            # ordinal — the same order of improbability the ledger's own
-            # ``event_id`` relies on. Say so loudly rather than let the
-            # boundary be crossed unrecorded.
+            # discriminator that means a uuid4 collision — the same order of
+            # improbability the ledger's own ``event_id`` relies on. Say so
+            # loudly rather than let the boundary be crossed unrecorded.
             log.error(
                 "model.escalation_unaudited",
                 unaudited=True,
@@ -753,24 +891,3 @@ class EscalatingModelRouter:
             attributed=attributed,
             **payload,
         )
-
-    async def _escalation_ordinal(
-        self, ledger: LedgerStore, correlation_id: uuid.UUID
-    ) -> int:
-        """The ordinal of the next escalation in ``correlation_id``.
-
-        The number of ``MODEL_ESCALATED`` events the lineage already holds,
-        plus one. Read from the ledger so that it is a property of the
-        *lineage* and not of whichever router instance happens to be running —
-        see :meth:`_record_escalation` for why that distinction is the whole
-        fix.
-
-        Two writers that read the lineage at the same moment take the same
-        ordinal. The nonce in the discriminator keeps both records, so the
-        ordinal is a label rather than a strict sequence under contention —
-        which is the trade: a complete audit trail with a possibly-repeated
-        label, or an incomplete one.
-        """
-        events = await ledger.read_correlation(correlation_id)
-        recorded = sum(1 for event in events if event.event_type is EventType.MODEL_ESCALATED)
-        return recorded + 1

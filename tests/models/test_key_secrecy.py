@@ -1,19 +1,43 @@
-"""No API key ever reaches a log line, a ledger payload, or an exception.
+"""No API key ever reaches a log line, a ledger payload, or a router error.
 
 The escalation boundary is the privacy promise, and a credential that
 crosses it is not a near miss: it is a copy of the key in the ledger, in the
 log aggregator, and in whatever the operator pastes into a bug report.
 
-The leak this file exists to close was on the **escalation** path. The
-local-only path already scrubbed the provider's diagnosis before attaching
-it to the error it raised; the escalation path copied ``str(error)`` into
-the ``MODEL_ESCALATED`` ledger payload and into the ``model.escalated`` log
-line with no scrub at all — and ``str(error)`` renders the exception's
-``details``, which for a schema failure include the model's *own output*,
-because ``validate_against_schema`` quotes the offending instance into its
-message. A provider that echoed a credential back put it straight into
-``schema_errors``, and the same exception redacted its ``raw_excerpt`` while
-leaving that list verbatim.
+**What is claimed, exactly.** No API key reaches:
+
+* a **log line** — every captured structlog record;
+* a **ledger payload** — the ``MODEL_ESCALATED`` event's payload, which the
+  ledger stores verbatim and forever;
+* an **error the router raises** — its message, its details, its exception
+  **chain** (``__cause__`` and ``__context__``) and the **rendered
+  traceback**.
+
+The third one is the one this file was rewritten for. The wave-2 version of
+this file claimed that no key "ever reaches ... an exception" while its
+assertion looked only at ``str(error)`` and ``error.details``: the router
+raised ``... from exc``, so the provider's own unscrubbed exception was the
+error's ``__cause__`` and the key was in the rendered traceback — the surface
+an operator actually pastes into a bug report. The claim is now the one the
+assertion can see, and the assertion sees the chain and the traceback.
+
+**What is not claimed.** A *provider's* exception is the provider's to
+scrub, and the router does not vouch for it: the router never attaches it to
+an error of its own, so it cannot ride along on one, but a provider that
+raises an error carrying its own key still has that key in that error. What
+the router guarantees is about the errors **it** raises, and about every
+copy it makes of a provider's diagnosis: those are scrubbed, at any depth,
+before they are attached or recorded.
+
+**The leak this file was born to close** was on the **escalation** path: it
+copied ``str(error)`` into the ``MODEL_ESCALATED`` ledger payload and into
+the ``model.escalated`` log line with no scrub at all — and ``str(error)``
+renders the exception's ``details``, which for a schema failure include the
+model's *own output*, because ``validate_against_schema`` quotes the
+offending instance into its message. A provider that echoed a credential back
+put it straight into ``schema_errors``. The chain was the *second* leak, and
+the quieter one: it was not in the message and not in the details, so an
+assertion that looked at those two could not see it.
 
 Every assertion here goes through the house helper
 ``assert_no_key_leak`` — there is one, and a fourth copy of it would be a
@@ -23,6 +47,7 @@ fourth thing to keep in step.
 from __future__ import annotations
 
 import json
+import traceback
 import uuid
 from typing import Any
 
@@ -120,7 +145,16 @@ class _UnscrubbedDetailProvider(ModelProvider):
     puts a credential in a detail leaves it in ``str(error)``. The HTTP
     provider scrubs its own body excerpt; the router must not *depend* on
     every provider doing so, because the local-only path does not.
+
+    The exception it raised is **kept** (:attr:`raised`), so a test can ask
+    the sharpest question there is: is the provider's own exception attached
+    to the error the router raised? "Is the key in it" is the question the
+    wave-2 assertion asked; "is it attached at all" is the one that cannot
+    be answered by a pattern the router happens to know.
     """
+
+    def __init__(self) -> None:
+        self.raised: Exception | None = None
 
     @property
     def name(self) -> str:
@@ -135,12 +169,14 @@ class _UnscrubbedDetailProvider(ModelProvider):
         return "unscrubbed"
 
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
-        raise ModelUnavailableError(
+        error = ModelUnavailableError(
             "model endpoint returned HTTP 401",
             provider=self.name,
             status_code=401,
             body_excerpt=f"invalid api key: {FAKE_KEY}",
         )
+        self.raised = error
+        raise error
 
     async def healthcheck(self) -> bool:
         return False
@@ -268,11 +304,19 @@ async def test_the_escalation_payload_scrubs_the_provider_details(
 
 
 async def test_the_local_only_path_still_carries_no_key() -> None:
-    """The path that already scrubbed must keep scrubbing.
+    """The path that already scrubbed must keep scrubbing — chain included.
 
     A guard, not a claim about the fix: the local-only path attaches the
     provider's details as ``underlying_*`` and scrubs them. The escalation
     path now does the same, and this test is what says the two agree.
+
+    The **chain** is part of the claim, and it is the half the wave-2
+    assertion could not see. The provider's own exception is the one object
+    in this story that can hold a credential the router does not recognise:
+    the router scrubs the *copy* of the diagnosis it attaches, but a chained
+    exception is not a copy — it is the provider's object, and
+    ``traceback.format_exception`` renders it. So the router's error carries
+    the diagnosis as data and carries **no exception at all**.
     """
     local = _UnscrubbedDetailProvider()
     router = _router(local)
@@ -286,4 +330,47 @@ async def test_the_local_only_path_still_carries_no_key() -> None:
 
     error = excinfo.value
     assert_no_key_leak(str(error), error.details)
+    assert error.details["underlying_body_excerpt"] == "invalid api key: ***REDACTED***"
+    # The provider's exception is **not attached**: not as the cause, not as
+    # the context. This is the assertion the wave-2 version of this file
+    # could not make — it looked at the message and the details, and the
+    # provider's exception was in neither.
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert local.raised is not None
+    assert error.__cause__ is not local.raised
+    assert error.__context__ is not local.raised
+    # And the rendered traceback — the text an operator pastes into a bug
+    # report — is clean.
+    assert_no_key_leak("".join(traceback.format_exception(error)))
+
+
+async def test_the_no_frontier_path_carries_no_key_either() -> None:
+    """The second path that used to chain the provider's exception.
+
+    ``_route`` raised ``... from local_error`` when escalation was permitted
+    and no frontier was wired — the same leak, on the path where the
+    provider's failure is the very reason the frontier was needed. The
+    diagnosis is not lost by dropping the chain: it is in the details,
+    scrubbed, where it is safe.
+    """
+    local = _UnscrubbedDetailProvider()
+    router = _router(local)  # no frontier: escalation is permitted, nothing can serve it
+
+    with pytest.raises(ModelUnavailableError) as excinfo:
+        await router.complete(
+            _request(),
+            modality=ComplexityModality.COMPLEX,
+            permission_mode=PermissionMode.ASK,
+        )
+
+    error = excinfo.value
+    assert_no_key_leak(str(error), error.details)
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert local.raised is not None
+    assert error.__cause__ is not local.raised
+    assert error.__context__ is not local.raised
+    assert_no_key_leak("".join(traceback.format_exception(error)))
+    # The diagnosis survives the scrub, as data rather than as a chain.
     assert error.details["underlying_body_excerpt"] == "invalid api key: ***REDACTED***"

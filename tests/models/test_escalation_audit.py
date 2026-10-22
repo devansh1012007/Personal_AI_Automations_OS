@@ -15,9 +15,22 @@ Five of them, each previously untested:
   beats a missing audit record, and the escalation still happened;
 * two escalations in one lineage are two events, because the discriminator
   keeps their idempotency keys apart;
-* and the numbering **survives a restart** — a new router over the same
-  ledger does not re-use the ordinal its predecessor spent, which is the
-  case the ledger's idempotency key would otherwise suppress in silence.
+* and that holds **across a restart** — a new router over the same ledger
+  does not re-use its predecessor's key, which is the case the ledger's
+  idempotency key would otherwise suppress in silence.
+
+**The discriminator is the event's own id.** It used to be a counter on the
+router instance, which made it a counter on the *process*: a restarted
+router began again at ``escalation:1``, re-used the key its predecessor had
+spent, and the ledger silently suppressed the second audit record. For a
+while it was ``escalation:<ordinal>:<nonce>``, where the ordinal was the
+lineage's escalation count *read from the ledger* — a denormalised copy of a
+number the ledger already holds exactly, bought with a read of the whole
+lineage and with a race (two writers that read at the same moment took the
+same ordinal). It is ``escalation:<nonce>`` now: the uniqueness argument is
+the ledger's own, and the lineage's sequence is the ledger's own ordering
+(``state_version``, dense and assigned under the lineage's lock) rather than
+a second number derived from it.
 """
 
 from __future__ import annotations
@@ -28,11 +41,13 @@ from typing import Any
 import structlog.testing
 
 from paa.config import ModelSettings
-from paa.core.types import ComplexityModality, EventType, PermissionMode
+from paa.core.types import ComplexityModality, CorrelationId, EventType, PermissionMode
+from paa.ledger.events import LedgerEvent
 from paa.ledger.store import LedgerStore
 from paa.models.base import CompletionRequest, CompletionResponse, Message, ModelTier
 from paa.models.echo_provider import EchoProvider
 from paa.models.router import EscalatingModelRouter
+from paa.storage.relational.database import Database
 
 
 def _request() -> CompletionRequest:
@@ -48,21 +63,67 @@ def _router(ledger: LedgerStore, *, fail_times: int = 1) -> EscalatingModelRoute
     )
 
 
-def _ordinal(discriminator: str | None) -> int:
-    """The escalation ordinal a discriminator carries.
+def _nonce(discriminator: str | None) -> str:
+    """The nonce a discriminator carries.
 
-    The discriminator is ``escalation:<ordinal>:<nonce>``. The **ordinal**
-    is the number the correlation's escalations are numbered by — read from
-    the ledger, so it survives a restart — and the **nonce** is what keeps
-    two of them apart when they are written at the same moment.
+    The discriminator is ``escalation:<nonce>``, and the nonce is the
+    **event's own uuid4** — the ledger's own argument for uniqueness. There
+    is no ordinal in it any more: the lineage's escalation *sequence* is the
+    ledger's own ordering (``state_version``), which is dense, per-lineage
+    and assigned under the lineage's lock, so it is a total order even when
+    two writers escalate at the same moment. The router's read-then-count
+    ordinal could not be that: two writers that read the lineage together
+    took the same number.
     """
     assert discriminator is not None, "the escalation event carries no discriminator"
-    return int(discriminator.split(":")[1])
+    parts = discriminator.split(":")
+    assert len(parts) == 2 and parts[0] == "escalation", (
+        f"unexpected discriminator: {discriminator!r}"
+    )
+    return parts[1]
 
 
 async def _escalations(ledger: LedgerStore, correlation_id: uuid.UUID) -> list[Any]:
     events = await ledger.read_correlation(correlation_id)
     return [e for e in events if e.event_type is EventType.MODEL_ESCALATED]
+
+
+def _versions(escalations: list[Any]) -> list[int]:
+    """The ledger's own numbering of a lineage's escalations.
+
+    ``state_version`` is dense and per-correlation, and the store assigns it
+    under the lineage's lock, so the versions of a lineage's escalations
+    never tie: the lineage's escalation *sequence* is the ledger's own
+    ordering, and it is a **total order** even when two writers escalate at
+    the same moment. The router's old read-then-count ordinal could not
+    promise that — two writers that read the lineage together took the same
+    number, so the label tied.
+
+    What is asserted about it is the *absence of a tie*, not the numbers
+    themselves: the numbers are the store's business, and a test that
+    asserted them would be asserting the ledger's implementation.
+    """
+    return [event.state_version for event in escalations]
+
+
+class _CountingLedger(LedgerStore):
+    """The real ledger, counting the lineage reads asked of it.
+
+    A subclass rather than a stand-in, so it *is* a ``LedgerStore``: the
+    router's parameter is typed as one, and a duck-typed proxy would be
+    testing the proxy as much as the router.
+    """
+
+    def __init__(self, db: Database) -> None:
+        super().__init__(db)
+        self.lineage_reads = 0
+
+    async def read_correlation(
+        self, correlation_id: CorrelationId | uuid.UUID, *, from_version: int = 0
+    ) -> list[LedgerEvent]:
+        self.lineage_reads += 1
+        return await super().read_correlation(correlation_id, from_version=from_version)
+
 
 
 async def test_an_escalation_writes_one_model_escalated_event(ledger: LedgerStore) -> None:
@@ -81,9 +142,11 @@ async def test_an_escalation_writes_one_model_escalated_event(ledger: LedgerStor
     assert len(escalations) == 1
     event = escalations[0]
     assert event.correlation_id == correlation_id
-    # The discriminator carries the correlation's escalation ordinal, so a
-    # second escalation in the same lineage is not suppressed as a duplicate.
-    assert _ordinal(event.discriminator) == 1
+    # The discriminator is the event's own id, so "the discriminator is
+    # unique" is exactly as strong as "the event id is unique" — and a
+    # second escalation in the same lineage is a second event, not a
+    # duplicate the ledger suppresses.
+    assert _nonce(event.discriminator) == event.event_id.hex
     assert event.payload["from_provider"] == "echo"
     assert event.payload["to_provider"] == "frontier-echo"
     assert event.payload["trigger"] == "local_provider_unavailable"
@@ -164,10 +227,10 @@ async def test_an_unattributed_escalation_still_writes_the_audit_record(
 
 
 async def test_two_escalations_in_one_lineage_are_two_events(ledger: LedgerStore) -> None:
-    """The ordinal keeps the idempotency keys apart.
+    """The discriminator keeps the idempotency keys apart.
 
     The idempotency key is derived from ``(correlation, event_type, attempt,
-    discriminator)``. Without the discriminator as the ordinal, the second
+    discriminator)``. Without a discriminator of its own the second
     escalation in one lineage would be suppressed as a duplicate and the
     audit trail would under-count.
     """
@@ -184,15 +247,59 @@ async def test_two_escalations_in_one_lineage_are_two_events(ledger: LedgerStore
 
     escalations = await _escalations(ledger, correlation_id)
     assert len(escalations) == 2
-    assert [_ordinal(e.discriminator) for e in escalations] == [1, 2]
-    # Two distinct discriminators, not one ordinal and one copy of it.
+    # Two distinct discriminators, not one and a copy of it.
     assert len({e.discriminator for e in escalations}) == 2
+    # And the ledger's own order of them is a total order — no tie — so the
+    # lineage's escalation sequence is the ledger's, not a number the router
+    # read and counted (see :func:`_versions`).
+    assert len(set(_versions(escalations))) == 2
 
 
-async def test_the_escalation_ordinal_survives_a_router_restart(
+async def test_the_escalation_path_reads_no_lineage(db: Database) -> None:
+    """The audit write does not read the lineage it is writing to.
+
+    The discriminator used to carry the lineage's escalation ordinal, and
+    the router computed that ordinal by reading the **whole lineage** — every
+    row of it, parsed, to count a number. Three things were wrong with that,
+    and all three are the same thing: the ordinal was a denormalised copy of
+    a fact the ledger already holds exactly.
+
+    * It was **expensive**: O(lineage) rows to count a number, on the path
+      that writes the audit record.
+    * It was a **new failure point**: a store whose read failed aborted the
+      escalation *before* the frontier call, so a *label* could cost a
+      crossing of the privacy boundary.
+    * It was **racy**: two writers that read the lineage at the same moment
+      took the same ordinal, so the "per-correlation ordinal" was a sequence
+      only in the sequential case.
+
+    The discriminator is the event's own id now, so there is nothing to read
+    before the write — and the lineage's sequence is the ledger's own
+    ordering, which is deterministic where the read-then-count ordinal was
+    not.
+    """
+    ledger = _CountingLedger(db)
+    router = EscalatingModelRouter(
+        EchoProvider(fail_times=1),
+        EchoProvider(name="frontier-echo", tier=ModelTier.FRONTIER),
+        settings=ModelSettings(),
+        ledger_store=ledger,
+    )
+
+    await router.complete(
+        _request(),
+        modality=ComplexityModality.COMPLEX,
+        permission_mode=PermissionMode.ASK,
+        correlation_id=uuid.uuid4(),
+    )
+
+    assert ledger.lineage_reads == 0
+
+
+async def test_a_restarted_router_does_not_suppress_the_second_audit_record(
     ledger: LedgerStore,
 ) -> None:
-    """A restarted router must not re-use the ordinal its predecessor spent.
+    """A restarted router must not re-use the key its predecessor spent.
 
     The discriminator used to be a counter on the router *instance*, which
     made it a counter on the *process*. A restarted router began again at
@@ -201,9 +308,10 @@ async def test_the_escalation_ordinal_survives_a_router_restart(
     record: the trail said one escalation where there had been two, and
     nothing anywhere said so.
 
-    The ordinal is now read from the ledger, so it belongs to the
-    *correlation*: the second router's escalation is the second escalation
-    of that lineage, whichever process wrote it.
+    The discriminator is the event's own id now, so it is unique across
+    processes and restarts by construction — there is no state for a
+    restart to lose, and no lineage to read to find out where the
+    predecessor got to.
     """
     correlation_id = uuid.uuid4()
 
@@ -226,8 +334,11 @@ async def test_the_escalation_ordinal_survives_a_router_restart(
 
     escalations = await _escalations(ledger, correlation_id)
     assert len(escalations) == 2
-    assert [_ordinal(e.discriminator) for e in escalations] == [1, 2]
+    # The second router's escalation is a second *event*, with its own id —
+    # the second crossing of that lineage, whichever process wrote it.
     assert len({e.discriminator for e in escalations}) == 2
+    # The ledger's order of the two is a total order: no tie.
+    assert len(set(_versions(escalations))) == 2
     # Both crossings are recorded, and both say the same thing: the same
     # trigger, the same lineage, the same providers.
     assert {e.payload["trigger"] for e in escalations} == {"local_provider_unavailable"}

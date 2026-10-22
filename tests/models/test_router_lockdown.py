@@ -25,10 +25,11 @@ would satisfy the first and break the second.
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 
 import pytest
 
-from paa.config import ModelSettings
+from paa.config import ModelSettings, PolicySettings, Settings
 from paa.core.types import ComplexityModality, EventType, PermissionMode
 from paa.ledger.events import LedgerEvent
 from paa.ledger.store import LedgerStore
@@ -250,3 +251,86 @@ async def test_the_frontier_is_probed_when_escalation_is_permitted() -> None:
 
     assert frontier.healthcheck_count == 1
     assert report["frontier-echo"] is True
+
+
+# -- the mode the router was built with ---------------------------------------
+
+
+def _settings(tmp_path: Path, mode: PermissionMode) -> Settings:
+    """A whole ``Settings`` whose policy carries ``mode``.
+
+    ``_env_file=None``: the repository's own ``.env`` names a local provider
+    and a model, and a test that asserted on the defaults must not be decided
+    by a file that is not part of it.
+    """
+    return Settings(
+        _env_file=None,
+        home=tmp_path,
+        policy=PolicySettings(mode=mode),
+    )
+
+
+async def test_a_router_built_with_lockdown_does_not_probe_the_frontier(
+    tmp_path: Path,
+) -> None:
+    """The mode the router was constructed with is the mode it acts on.
+
+    The mode was available at construction — ``Settings.policy.mode`` — and
+    the constructor used to throw it away, narrowing the argument to its
+    model half and keeping nothing else. The healthcheck then defaulted to
+    ``ASK``, the *permissive* mode, so a router built by a LOCKDOWN
+    deployment probed the frontier like any other: the safe behaviour was
+    opt-in by accident, on the one method whose whole purpose is to look
+    safe.
+    """
+    local = EchoProvider()
+    frontier = _HealthcheckSpy()
+    router = EscalatingModelRouter(
+        local, frontier, settings=_settings(tmp_path, PermissionMode.LOCKDOWN)
+    )
+
+    report = await router.healthcheck()
+
+    assert frontier.healthcheck_count == 0
+    assert "frontier-echo" not in report
+    assert report["echo"] is True
+
+
+async def test_a_router_built_with_ask_does_probe_the_frontier(tmp_path: Path) -> None:
+    """The other side of the same door: honouring the mode is not blocking.
+
+    A gate that refused the frontier under every mode would satisfy the
+    test above while making the healthcheck useless — "the frontier is not
+    in the report" would mean nothing, because it would never be there.
+    """
+    local = EchoProvider()
+    frontier = _HealthcheckSpy()
+    router = EscalatingModelRouter(
+        local, frontier, settings=_settings(tmp_path, PermissionMode.ASK)
+    )
+
+    report = await router.healthcheck()
+
+    assert frontier.healthcheck_count == 1
+    assert report["frontier-echo"] is True
+
+
+async def test_a_router_without_a_known_mode_fails_closed() -> None:
+    """A router that does not know its mode does not assume it may escalate.
+
+    ``ModelSettings`` — the model half, which is what half the call sites
+    hold — carries no permission mode at all, so a router built from it
+    cannot know whether escalation is permitted. The safe answer is the
+    restrictive one: ``LOCKDOWN`` forbids escalation, and "no" is the answer
+    that cannot leak. A caller that knows the mode passes it; a caller that
+    does not gets the frontier left unprobed.
+    """
+    local = EchoProvider()
+    frontier = _HealthcheckSpy()
+    router = _router(local, frontier)  # settings=ModelSettings(): no mode in it
+
+    report = await router.healthcheck()
+
+    assert frontier.healthcheck_count == 0
+    assert "frontier-echo" not in report
+    assert report["echo"] is True

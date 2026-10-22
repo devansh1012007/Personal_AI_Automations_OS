@@ -22,10 +22,12 @@ concurrency would spend.
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections.abc import Callable
 
 from paa.config import ModelSettings
-from paa.core.types import ComplexityModality, PermissionMode
+from paa.core.types import ComplexityModality, EventType, PermissionMode
+from paa.ledger.store import LedgerStore
 from paa.models.base import (
     CompletionRequest,
     CompletionResponse,
@@ -233,3 +235,66 @@ async def test_the_usage_counters_account_for_every_concurrent_call() -> None:
 
     router.reset_usage()
     assert router.token_usage() == {}
+
+
+async def test_two_concurrent_escalations_are_two_records(ledger: LedgerStore) -> None:
+    """Two writers, one lineage, two crossings — and two audit records.
+
+    The concurrency case for the escalation audit, and the one the wave-2
+    tests did not have: they escalated twice, **sequentially**, and read the
+    ordinal out of the discriminator, so nothing said what two writers
+    racing on one lineage would do.
+
+    What is guaranteed, and what this test pins:
+
+    * **both records survive.** The discriminator is the event's own id, so
+      the two idempotency keys differ and the ledger suppresses neither.
+    * **the two records are ordered.** The lineage's own numbering of them
+      is 1, 2 — the ledger's ``state_version`` order, which is dense and
+      assigned under the lineage's lock, so it is a total order even when
+      two writers arrive together. The router's old read-then-count ordinal
+      could not promise that: two writers that read the lineage at the same
+      moment took the *same* ordinal, so the label tied.
+    * **both say the same thing.** Two crossings of the boundary are two
+      records with the same trigger and the same providers, not one record
+      and a copy of it.
+
+    The *order* of the two writers is not asserted, and must not be: which
+    writer gets the lock first is the scheduler's business, not the
+    ledger's, and a test that asserted it would be asserting the event
+    loop's mood.
+    """
+    correlation_id = uuid.uuid4()
+    routers = [
+        EscalatingModelRouter(
+            EchoProvider(fail_times=1),
+            EchoProvider(name="frontier-echo", tier=ModelTier.FRONTIER),
+            settings=ModelSettings(),
+            ledger_store=ledger,
+        )
+        for _ in range(2)
+    ]
+
+    await asyncio.gather(
+        *(
+            router.complete(
+                _request(),
+                modality=ComplexityModality.COMPLEX,
+                permission_mode=PermissionMode.ASK,
+                correlation_id=correlation_id,
+            )
+            for router in routers
+        )
+    )
+
+    events = await ledger.read_correlation(correlation_id)
+    escalations = [e for e in events if e.event_type is EventType.MODEL_ESCALATED]
+    assert len(escalations) == 2
+    # Two distinct discriminators: neither write was suppressed as a
+    # duplicate of the other.
+    assert len({e.discriminator for e in escalations}) == 2
+    # The ledger's own order is a total order — no tie — so the lineage's
+    # numbering of the two crossings is 1, 2.
+    assert len({e.state_version for e in escalations}) == 2
+    assert {e.payload["trigger"] for e in escalations} == {"local_provider_unavailable"}
+    assert {e.payload["to_provider"] for e in escalations} == {"frontier-echo"}
