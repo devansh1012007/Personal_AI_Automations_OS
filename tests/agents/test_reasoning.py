@@ -179,6 +179,77 @@ class TestCriticOverride:
         assert result.value["verdict"] == "FAIL_REJECT_RETRY"
 
 
+class TestCriticDowngrade:
+    """The other half of the critic's ordering constraint.
+
+    "A deterministic FAIL cannot be overturned by a model PASS" is one half,
+    and it was covered twice. The mirror half was uncovered: a deterministic
+    **PASS** *can* be downgraded by the model, and an unparseable model
+    verdict is coerced to a failure rather than read as a pass.
+
+    Both matter because the model's verdict is the only thing standing
+    between a deterministically-valid output and a commit when the
+    deterministic checks found nothing to object to. A critic that read an
+    unknown verdict as "PASS" would be a gate with a hole in it, and a hole
+    in the shape of "anything I do not understand is fine".
+    """
+
+    class _PassingValidator:
+        """A validator that finds nothing wrong."""
+
+        async def validate(self, output: dict) -> Any:
+            return SimpleNamespace(passed=True, findings=[])
+
+    async def test_the_model_can_downgrade_a_deterministic_pass(self) -> None:
+        """The deterministic verdict is authoritative, not the final word.
+
+        The deterministic checks passed; the model looked at the output and
+        did not like it. The model's answer wins, because the ordering
+        constraint is about the *deterministic* checks being un-overridable,
+        not about the model being ignored.
+        """
+        critic = CriticReviewer(
+            model=ScriptedModel({"verdict": "FAIL_REJECT_RETRY"}),
+            validation_engine=TestCriticDowngrade._PassingValidator(),
+        )
+        result = await critic.run(_msg(MessageType.REVIEW_RESULT, {"output": {}}), _ctx())
+
+        assert result.value["verdict"] == "FAIL_REJECT_RETRY"
+        assert result.value["source"] == "hybrid"
+
+    async def test_an_unparseable_model_verdict_is_coerced_to_a_failure(self) -> None:
+        """A verdict the critic does not understand is not a pass.
+
+        The model said something outside the vocabulary ("looks fine to me").
+        Reading that as a pass would make the critic's gate open on any
+        answer it did not recognise, which is the wrong default for a check
+        whose whole job is to stop something.
+        """
+        critic = CriticReviewer(
+            model=ScriptedModel({"verdict": "looks fine to me"}),
+            validation_engine=TestCriticDowngrade._PassingValidator(),
+        )
+        result = await critic.run(_msg(MessageType.REVIEW_RESULT, {"output": {}}), _ctx())
+
+        assert result.value["verdict"] == "FAIL_REJECT_RETRY"
+        assert result.value["source"] == "hybrid"
+
+    async def test_the_model_is_consulted_only_after_the_deterministic_pass(self) -> None:
+        """The mirror of "the model is not consulted on a deterministic fail".
+
+        On a deterministic pass the model *is* consulted — the ordering
+        constraint is a sequence, not a veto.
+        """
+        model = ScriptedModel({"verdict": "PASS"})
+        critic = CriticReviewer(
+            model=model, validation_engine=TestCriticDowngrade._PassingValidator()
+        )
+        result = await critic.run(_msg(MessageType.REVIEW_RESULT, {"output": {}}), _ctx())
+
+        assert model.calls == 1
+        assert result.value["verdict"] == "PASS"
+
+
 class TestRouterOptionality:
     """The router is optional by design (ADR-0011)."""
 

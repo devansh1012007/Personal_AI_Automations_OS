@@ -7,15 +7,18 @@ tests prove the decisions themselves are right across the permission modes.
 
 from __future__ import annotations
 
+import math
 import uuid
 from collections.abc import Iterable, Sequence
 from contextlib import AbstractAsyncContextManager
 from typing import Any
 
+import numpy as np
 import pytest
 
 from paa.agents.base import AgentContext, AgentMessage, MessageType
 from paa.agents.policy import PolicyRiskAgent, _flatten
+from paa.config import PolicySettings
 from paa.core.types import ComplexityModality, PermissionMode
 from paa.storage.relational.connection import TransactionConnection
 from paa.storage.relational.dialect import Dialect
@@ -145,6 +148,151 @@ class TestAntiGoals:
         agent = PolicyRiskAgent(anti_goals=["exfiltrate customer data"])
         steps = [{"action": "write documentation", "mutates": True}]
         verdict = await _decide(agent, steps, PermissionMode.AUTO)
+        assert verdict["decision"] == "STATUS_APPROVED"
+
+
+class _StubVectorStore:
+    """A vector store that is never asked to do anything.
+
+    The anti-goal check asks the gate only whether a vector store is
+    *configured* — the similarity itself is computed from the embedder's
+    answer — so the store is a presence marker. Passing one is what puts the
+    gate on the cosine path instead of the keyword fallback.
+    """
+
+    def __bool__(self) -> bool:
+        return True
+
+
+class _StubEmbedder:
+    """An embedder that answers with hand-built unit vectors.
+
+    The gate compares the plan against an anti-goal with a **cosine
+    similarity**, so the only thing a test needs from an embedder is a
+    similarity it can choose. A real embedder cannot be asked for "exactly
+    0.82", which is why the threshold's boundary was untested: the only
+    anti-goal test in the suite took the keyword fallback, which never reads
+    the threshold at all.
+
+    The vectors are unit vectors, and the dot product is **exact**: the query
+    is ``[1, 0]`` and the anti-goal is ``[s, sqrt(1 - s²)]``, so the product
+    is ``1 * s + 0 * t`` — exactly ``s`` in IEEE-754. The boundary case is
+    therefore a boundary case and not a rounding accident.
+    """
+
+    def __init__(self, similarity: float) -> None:
+        self._similarity = similarity
+        self.calls: list[list[str]] = []
+
+    async def embed(self, texts: list[str]) -> list[np.ndarray]:
+        self.calls.append(list(texts))
+        perpendicular = math.sqrt(max(0.0, 1.0 - self._similarity * self._similarity))
+        vectors = [np.array([1.0, 0.0])]
+        vectors.extend(np.array([self._similarity, perpendicular]) for _ in texts[1:])
+        return vectors
+
+
+class TestAntiGoalCosine:
+    """The 0.82 cosine path — the path the threshold actually lives on.
+
+    The keyword fallback catches a verbatim restatement and nothing else.
+    The cosine path is the one the RFC describes and the one the threshold
+    is read on, and it had no coverage at all.
+
+    **Every test here passes an explicit ``settings=``.** A
+    ``PolicyRiskAgent`` built without one reads the *global* settings — the
+    repository's ``.env`` and ``~/.paa`` — so a threshold assertion that
+    leaned on the default would be environment-dependent, and would quietly
+    stop testing the number it names on a machine whose ``.env`` says
+    something else.
+    """
+
+    ANTI_GOAL = "exfiltrate customer data"
+    BENIGN = "write the quarterly report"
+
+    def _agent(self, similarity: float, *, threshold: float = 0.82) -> PolicyRiskAgent:
+        return PolicyRiskAgent(
+            vector_store=_StubVectorStore(),
+            embedder=_StubEmbedder(similarity),
+            anti_goals=[self.ANTI_GOAL],
+            settings=PolicySettings(anti_goal_threshold=threshold),
+        )
+
+    async def test_the_cosine_path_blocks_at_the_threshold(self) -> None:
+        """Exactly 0.82 is *at* the threshold, and the threshold blocks.
+
+        The step deliberately does **not** contain the anti-goal phrase, so
+        the keyword fallback would not have blocked it: whatever blocks here
+        is the cosine.
+        """
+        agent = self._agent(0.82)
+        verdict = await _decide(agent, [{"action": self.BENIGN}], PermissionMode.AUTO)
+
+        assert verdict["decision"] == "STATUS_BLOCKED"
+        assert verdict["anti_goal_match"] is True
+        # The reason names the computed similarity and the threshold it was
+        # compared against — so the number in the verdict is the number the
+        # gate actually read.
+        assert "similarity 0.820 >= 0.82" in verdict["reason"]
+
+    async def test_just_below_the_threshold_passes(self) -> None:
+        """One ten-thousandth below the threshold is not at it."""
+        agent = self._agent(0.8199)
+        verdict = await _decide(agent, [{"action": self.BENIGN}], PermissionMode.AUTO)
+
+        assert verdict["decision"] == "STATUS_APPROVED"
+        assert verdict["anti_goal_match"] is False
+
+    async def test_the_threshold_is_read_from_the_settings(self) -> None:
+        """0.82 is not hard-coded into the comparison.
+
+        At a threshold of 0.5 a similarity of 0.6 blocks and 0.4 passes, so
+        the gate is reading the configured number rather than a literal.
+        """
+        blocking = self._agent(0.6, threshold=0.5)
+        passing = self._agent(0.4, threshold=0.5)
+
+        assert (
+            await _decide(blocking, [{"action": self.BENIGN}], PermissionMode.AUTO)
+        )["decision"] == "STATUS_BLOCKED"
+        assert (
+            await _decide(passing, [{"action": self.BENIGN}], PermissionMode.AUTO)
+        )["decision"] == "STATUS_APPROVED"
+
+    async def test_an_embedder_failure_blocks_rather_than_passes(self) -> None:
+        """Fail closed.
+
+        A security check that cannot run must not become a security check that
+        passes. The gate refuses the plan rather than proceeding unchecked.
+        """
+
+        class BrokenEmbedder:
+            async def embed(self, texts: list[str]) -> list[np.ndarray]:
+                raise RuntimeError("embedding backend is down")
+
+        agent = PolicyRiskAgent(
+            vector_store=_StubVectorStore(),
+            embedder=BrokenEmbedder(),
+            anti_goals=[self.ANTI_GOAL],
+            settings=PolicySettings(anti_goal_threshold=0.82),
+        )
+        verdict = await _decide(agent, [{"action": self.BENIGN}], PermissionMode.AUTO)
+
+        assert verdict["decision"] == "STATUS_BLOCKED"
+        assert "unavailable" in verdict["reason"]
+
+    async def test_the_cosine_path_replaces_the_keyword_path(self) -> None:
+        """With a vector store configured, the phrase match is not consulted.
+
+        The gate is "cosine at 0.82" or "phrase match", not both — the
+        keyword scan is the *degraded* path, used only when there is no
+        vector store. This test pins which of the two ran: a plan that
+        contains the anti-goal phrase verbatim is judged by the cosine, and a
+        cosine of zero lets it through.
+        """
+        agent = self._agent(0.0)
+        verdict = await _decide(agent, [{"action": self.ANTI_GOAL}], PermissionMode.AUTO)
+
         assert verdict["decision"] == "STATUS_APPROVED"
 
 

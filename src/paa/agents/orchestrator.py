@@ -314,6 +314,16 @@ class ChiefOrchestrator:
 
         try:
             state = await self._hydrate(state, ctx)
+            # A stage may park the task for a human — the context builder
+            # escalates when the context is too thin to plan from. The park
+            # has to be honoured *here*, before the next stage runs: the
+            # check that used to sit after ``_check_policy`` was the only
+            # one, so an escalation raised earlier in the pipeline was
+            # overwritten by the phase of the very next event and the task
+            # carried on to ``MUTATION_COMMITTED`` (ADR-0034). Each stage
+            # that can park is therefore followed by its own check.
+            if state.phase is TaskPhase.AWAITING_HUMAN:
+                return TaskOutcome(ctx.correlation_id, state.phase, state)
             state = await self._plan(state, ctx)
             state = await self._check_policy(state, ctx)
             if state.phase in (TaskPhase.BLOCKED, TaskPhase.AWAITING_HUMAN):
@@ -368,6 +378,13 @@ class ChiefOrchestrator:
     async def _hydrate(self, state: TaskProjection, ctx: AgentContext) -> TaskProjection:
         if state.context_packet is not None or self._context_builder is None:
             return state
+        if await self._human_ruled(ctx.correlation_id):
+            # A human has already released this lineage's gate. Asking the
+            # context builder again would raise the same directive, and the
+            # task would park a second time on the answer a human has
+            # already given — the escalation is a question, and the human
+            # answered it (ADR-0034).
+            return state
 
         await self._emit(
             ctx.correlation_id,
@@ -392,12 +409,18 @@ class ChiefOrchestrator:
 
         packet = result.value if isinstance(result.value, dict) else {}
         if packet.get("routing_directive") == "HARD_STOP_ESCALATE_TO_USER":
+            # The context builder is asking for a human, and the request is
+            # a *stop*: the task waits here until a human rules. The event
+            # records the directive verbatim so the ledger says which
+            # question was asked, not merely that some gate opened
+            # (ADR-0034).
             await self._emit(
                 ctx.correlation_id,
                 EventType.AWAITING_HUMAN_ATTESTATION,
                 session_id=ctx.session_id,
                 payload={
                     "reason": "insufficient context density",
+                    "directive": "HARD_STOP_ESCALATE_TO_USER",
                     "vacant_slots": packet.get("vacant_slots", []),
                 },
                 modality=ctx.modality,
@@ -699,6 +722,22 @@ class ChiefOrchestrator:
             graph.release(edge)
 
     # -- human gates -------------------------------------------------------
+
+    async def _human_ruled(self, correlation_id: uuid.UUID) -> bool:
+        """Whether a human has already released this lineage's gate.
+
+        Read from the lineage rather than from the projection, because the
+        projection cannot express the fact: ``apply_event`` clears
+        ``awaiting_reason`` when the gate is cleared, and the phase is
+        overwritten by whatever event comes next. The ledger is the truth and
+        a projection is one view of it — and this question is about the
+        *past* (has someone ruled?) rather than about the present state.
+
+        Nothing in the automated path calls ``clear_human_gate``, so the
+        answer can only be "yes" when a real caller did.
+        """
+        events = await self._ledger.read_correlation(correlation_id)
+        return any(e.event_type is EventType.HUMAN_GATE_CLEARED for e in events)
 
     async def clear_human_gate(
         self,

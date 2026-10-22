@@ -35,14 +35,24 @@ class TestHappyPath:
         assert outcome.ok
 
     async def test_full_event_sequence_is_recorded(self, runtime: Runtime) -> None:
+        """The exact trace, not merely the presence of its parts.
+
+        The membership check this replaces could not see an event emitted in
+        the wrong place, an extra event, or a missing one — it asked "is
+        ``CRITIQUE_CONCLUDED`` somewhere in here?", which is true whether the
+        lifecycle is the RFC §7 one or a jumble. The list is the same ten
+        events the isolated orchestrator tests assert, so the real wiring is
+        proved to add nothing and remove nothing.
+        """
         outcome = await runtime.submit_and_run("summarise today's notes")
         events = [
             e.event_type for e in await runtime.ledger.read_correlation(outcome.correlation_id)
         ]
 
-        # The RFC §7 happy path, in order.
-        for expected in (
+        assert events == [
             EventType.TASK_REQUESTED,
+            EventType.TASK_QUEUED,
+            EventType.CONTEXT_HYDRATION_REQUESTED,
             EventType.CONTEXT_HYDRATED,
             EventType.PLAN_COMPILED,
             EventType.POLICY_CLEARED,
@@ -50,8 +60,7 @@ class TestHappyPath:
             EventType.CRITIQUE_CONCLUDED,
             EventType.EXECUTION_COMPLETED,
             EventType.MUTATION_COMMITTED,
-        ):
-            assert expected in events, f"missing {expected.value}"
+        ]
 
     async def test_the_chain_is_intact_after_a_full_run(self, runtime: Runtime) -> None:
         outcome = await runtime.submit_and_run("summarise today's notes")
