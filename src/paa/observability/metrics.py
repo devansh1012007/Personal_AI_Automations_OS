@@ -52,6 +52,20 @@ _HISTOGRAM_CAPACITY: Final[int] = 4096
 DEFAULT_PERCENTILES: Final[tuple[float, ...]] = (0.50, 0.95, 0.99)
 
 
+def _validated_capacity(capacity: int) -> int:
+    """A capacity that can retain something.
+
+    The rule lives here so it has one home: :class:`Histogram` owns it
+    and :class:`MetricsRegistry` takes the capacity as a *parameter*, so
+    a caller who passes zero to the registry should hear about it when
+    they pass it — not when the first observation arrives, from an error
+    about a list index.
+    """
+    if capacity < 1:
+        raise ValueError(f"a histogram must retain at least one sample, got {capacity}")
+    return capacity
+
+
 class MetricKind(str, enum.Enum):
     """What a series means, which determines how it may be updated."""
 
@@ -224,11 +238,15 @@ def percentile(sorted_values: list[float], quantile: float) -> float:
         several quantiles, and re-sorting per quantile is the kind of quiet
         O(k·n log n) that shows up on a hot path.
     :param quantile: in ``[0, 1]``.
+    :raises ValueError: if the quantile is outside ``[0, 1]`` — including for
+        an empty series, because a bad argument is a bad argument whatever the
+        data is, and a check that only ran for a non-empty series would mean a
+        caller could pass a quantile the function would have refused.
     """
-    if not sorted_values:
-        return 0.0
     if not 0.0 <= quantile <= 1.0:
         raise ValueError(f"quantile must lie in [0, 1], got {quantile!r}")
+    if not sorted_values:
+        return 0.0
     if len(sorted_values) == 1:
         return float(sorted_values[0])
 
@@ -269,13 +287,23 @@ class Histogram:
         observation arrives. The capacity is a decision made when the
         histogram is built, so the refusal is made there too.
         """
-        if self.capacity < 1:
-            raise ValueError(f"a histogram must retain at least one sample, got {self.capacity}")
+        self.capacity = _validated_capacity(self.capacity)
 
     def observe(self, value: float) -> None:
         numeric = float(value)
         if not math.isfinite(numeric):
             raise ValueError(f"histogram observations must be finite, got {value!r}")
+        if not math.isfinite(self.total + numeric):
+            # The *published* summary has to be JSON. The telemetry
+            # column carries a ``json_valid`` constraint, and
+            # ``json.dumps`` writes an infinite float as the bare token
+            # ``Infinity`` — which is not JSON, and which the column
+            # therefore refuses. A total that overflowed would make
+            # every later snapshot unwritable, and the row it belongs to
+            # is the run record the optimiser reads.
+            raise ValueError(
+                f"histogram observation would overflow the running total, got {value!r}"
+            )
 
         self.count += 1
         self.total += numeric
@@ -327,12 +355,18 @@ class Histogram:
             "window": len(self.samples),
         }
         for quantile in quantiles:
-            # ``round`` and not ``int``: the key names the percentile the
-            # value *is*, and truncating a half-way quantile downward would
-            # label a 99.5th-percentile series "p99". ``round`` on a float
-            # with no ``ndigits`` already returns an ``int``, so the cast
-            # was a no-op that only obscured which of the two roundings
-            # was meant.
+            # ``round`` and not ``int``: truncating a half-way quantile
+            # downward would label a 99.5th-percentile series "p99".
+            # ``round`` on a float with no ``ndigits`` already returns an
+            # ``int``, so the cast was a no-op that only obscured which
+            # of the two roundings was meant.
+            #
+            # The rounding is Python's, which is **banker's** rounding: a
+            # half-way percentage takes the *even* label, so 99.5 is
+            # "p100" and 98.5 is "p98". That is a convention rather than
+            # an accident, and it is pinned by the suite — because a
+            # label that quietly changes shape splits a series' history
+            # in two, so changing it has to be a decision.
             out[f"p{round(quantile * 100)}"] = percentile(ordered, quantile)
         return out
 
@@ -376,7 +410,7 @@ class MetricsRegistry:
     ) -> None:
         self._specs = dict(specs if specs is not None else METRIC_SPECS)
         self._allow_undeclared = allow_undeclared
-        self._histogram_capacity = histogram_capacity
+        self._histogram_capacity = _validated_capacity(histogram_capacity)
         self._lock = threading.Lock()
 
         self._counters: dict[_SeriesKey, float] = {}
@@ -423,11 +457,21 @@ class MetricsRegistry:
         if value < 0:
             raise ValueError(
                 f"counter {name!r} cannot decrease (got {value!r}); use a gauge "
-                "if the value legitimately moves in both directions"
+                f"if the value legitimately moves in both directions"
             )
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            raise ValueError(f"counter {name!r} must be finite, got {value!r}")
         key = _series_key(name, labels)
         with self._lock:
-            self._counters[key] = self._counters.get(key, 0.0) + float(value)
+            total = self._counters.get(key, 0.0) + numeric
+            if not math.isfinite(total):
+                # The same reason the histogram refuses an overflowing
+                # observation: the published snapshot has to be JSON, and
+                # a counter that reached infinity would make every later
+                # snapshot for the series unwritable.
+                raise ValueError(f"counter {name!r} would overflow to a non-finite total")
+            self._counters[key] = total
 
     def gauge(self, name: str, value: float, **labels: Any) -> None:
         """Set a gauge to ``value``."""

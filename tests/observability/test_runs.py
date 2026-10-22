@@ -1066,6 +1066,38 @@ class TestQueryRuns:
 
         assert rows == []
 
+    async def test_the_order_is_total_when_two_runs_started_at_the_same_moment(
+        self, runs: ExecutionRunRepository
+    ) -> None:
+        """A ``LIMIT`` cut needs a total order.
+
+        ``started_at`` is not unique — two runs can start in the same
+        microsecond — and an ``ORDER BY`` on a non-unique column leaves
+        the cut to an order the SQL does not define. SQLite happens to
+        be deterministic for a fixed plan (it returned the rows in
+        *insertion* order here); PostgreSQL promises nothing about ties
+        at all. The trace id, which is the primary key, breaks the tie,
+        and the two substrates then agree on which rows a limit keeps.
+
+        The runs are inserted in the *opposite* order to the one the
+        rule names, so the test cannot pass by accident of insertion
+        order.
+        """
+        same_moment = datetime(2026, 3, 1, 12, 0, tzinfo=UTC)
+        first = str(uuid.uuid4())
+        second = str(uuid.uuid4())
+        for trace_id in sorted([first, second], reverse=True):
+            await runs.start_run(
+                correlation_id=new_correlation_id(),
+                agent_role="worker",
+                trace_id=trace_id,
+                started_at=same_moment,
+            )
+
+        rows = await runs.query_runs(limit=1)
+
+        assert [row.trace_id for row in rows] == [min(first, second)]
+
 
 class TestCount:
     async def test_the_count_is_the_number_of_rows(self, runs: ExecutionRunRepository) -> None:

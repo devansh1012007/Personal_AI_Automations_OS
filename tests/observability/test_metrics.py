@@ -34,6 +34,8 @@ be right by accident on the four numbers somebody wrote down.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from hypothesis import given
 from hypothesis import settings as hyp_settings
@@ -78,6 +80,25 @@ class TestPercentileLabels:
         assert "p2" in summary
         assert "p99" not in summary
         assert "p1" not in summary
+
+    def test_a_half_way_quantile_takes_the_even_label(self) -> None:
+        """The rounding is Python's, which is **banker's** rounding.
+
+        ``round(99.5)`` is 100 and ``round(98.5)`` is 98: a half-way
+        percentage takes the *even* label, whichever way that falls. The
+        test above pins the half-way case that rounds up; this one pins
+        the half-way case that rounds down, which is the case the
+        ``round``-is-not-``int`` argument does not cover.
+
+        It is pinned because a label that quietly changes shape splits a
+        series' history in two — so a change to the convention has to be
+        a decision somebody makes, not something that happens because a
+        rounding function was swapped.
+        """
+        summary = _histogram([1.0, 2.0, 3.0, 4.0]).summary(quantiles=(0.985,))
+
+        assert "p98" in summary
+        assert "p99" not in summary
 
     def test_the_label_names_the_quantile_that_was_asked_for(self) -> None:
         """The key and the value under it are the same percentile.
@@ -128,6 +149,30 @@ class TestPercentileValues:
     def test_a_quantile_outside_the_unit_interval_is_refused(self, quantile: float) -> None:
         with pytest.raises(ValueError):
             percentile([1.0, 2.0], quantile)
+
+    def test_a_bad_quantile_is_refused_even_for_an_empty_series(self) -> None:
+        """The check does not depend on the data.
+
+        An empty series answers ``0.0`` for a *valid* quantile. A
+        quantile outside the unit interval is a bad argument whatever
+        the series holds, and the same bad argument must be refused
+        either way — otherwise the check exists only for the case a
+        caller happens to hit first, and a caller that only ever had
+        empty series would not know it was there.
+        """
+        with pytest.raises(ValueError):
+            percentile([], 1.5)
+
+    def test_a_quantile_that_is_not_a_number_is_refused(self) -> None:
+        """``nan`` is not in ``[0, 1]``, and the comparison says so.
+
+        ``0.0 <= nan <= 1.0`` is false — every comparison with ``nan``
+        is — so the range check catches it. A quantile of ``nan`` that
+        reached the rank formula would poison every summary it was
+        written into.
+        """
+        with pytest.raises(ValueError):
+            percentile([1.0, 2.0], float("nan"))
 
 
 class TestTheRegistryCarriesTheLabels:
@@ -575,6 +620,17 @@ class TestTheRing:
         with pytest.raises(ValueError):
             Histogram(capacity=0)
 
+    def test_a_registry_that_cannot_retain_a_sample_is_refused(self) -> None:
+        """The same rule, one layer up.
+
+        The registry takes the capacity as a *parameter*, so a caller
+        who passes zero to it should hear about it when they pass it —
+        not when the first observation arrives, and not with an error
+        about a list index.
+        """
+        with pytest.raises(ValueError):
+            MetricsRegistry(histogram_capacity=0)
+
 
 class TestTheRegistryRefusesNonsense:
     @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
@@ -589,3 +645,60 @@ class TestTheRegistryRefusesNonsense:
 
         with pytest.raises(ValueError):
             registry.observe("graph_traversal_latency", value)
+
+    def test_an_observation_that_would_overflow_the_total_is_refused(self) -> None:
+        """The published summary has to be JSON.
+
+        The telemetry column carries a ``json_valid`` constraint, and
+        ``json.dumps`` writes an infinite float as the bare token
+        ``Infinity`` — which is not JSON, and which the column refuses.
+        So a total that overflowed would make **every later snapshot**
+        for the series unwritable, and the row it belongs to is the run
+        record the optimiser reads.
+
+        The refusal is at the observation, because that is where the
+        nonsense enters; refusing it later would leave the series
+        permanently poisoned instead.
+        """
+        registry = MetricsRegistry()
+        registry.observe("graph_traversal_latency", 1e308)
+
+        with pytest.raises(ValueError):
+            registry.observe("graph_traversal_latency", 1e308)
+
+    def test_a_counter_that_would_overflow_is_refused(self) -> None:
+        """The same rule on the other side of the registry.
+
+        A counter is published in the same snapshot as a histogram, so
+        the same JSON constraint applies to it.
+        """
+        registry = MetricsRegistry()
+        registry.counter("user_correction_frequency", 1e308)
+
+        with pytest.raises(ValueError):
+            registry.counter("user_correction_frequency", 1e308)
+
+    def test_a_non_finite_counter_is_refused(self) -> None:
+        registry = MetricsRegistry()
+
+        with pytest.raises(ValueError):
+            registry.counter("user_correction_frequency", float("inf"))
+
+    def test_the_snapshot_of_a_healthy_series_is_json(self) -> None:
+        """The end of the chain, checked end to end.
+
+        The snapshot is what lands in the ``telemetry`` column of a run
+        row, and that column is JSON-constrained. So the snapshot has to
+        be JSON — which is a property of the *numbers in it*, not of the
+        containers around them.
+        """
+        registry = MetricsRegistry()
+        registry.counter("user_correction_frequency", 3)
+        registry.gauge("queue_backpressure", 7)
+        registry.observe("graph_traversal_latency", 12.0)
+        registry.observe("graph_traversal_latency", 20.0)
+
+        snapshot = registry.snapshot()
+
+        assert json.dumps(snapshot)
+        assert json.loads(json.dumps(snapshot)) == snapshot

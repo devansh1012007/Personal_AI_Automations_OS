@@ -397,6 +397,14 @@ class ExecutionRunRepository:
         Filters compose as AND. Every parameter left at ``None`` is omitted from
         the WHERE clause entirely rather than becoming ``column IS NULL``, which
         would be a different (and almost never intended) question.
+
+        The order is **total**: ``started_at`` is not unique — two runs
+        can start in the same microsecond — and an ``ORDER BY`` on a
+        non-unique column leaves the ``LIMIT`` cut to an order the SQL
+        does not define. SQLite happens to be deterministic for a fixed
+        plan; PostgreSQL promises nothing about ties at all. The trace
+        id, which is the primary key, breaks the tie, and the two
+        substrates then agree on which rows a limit keeps.
         """
         clauses: list[str] = []
         params: list[Any] = []
@@ -421,7 +429,7 @@ class ExecutionRunRepository:
         params.append(limit)
         rows = await self._db.fetch_all(
             f"SELECT {_COLUMNS} FROM hot_serving_execution_runs{where} "
-            "ORDER BY started_at DESC LIMIT ?",
+            "ORDER BY started_at DESC, trace_id ASC LIMIT ?",
             params,
         )
         return [_row_to_run(r) for r in rows]
