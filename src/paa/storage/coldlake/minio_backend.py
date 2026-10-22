@@ -432,7 +432,6 @@ def _is_ambiguous_absence(translated: Exception) -> bool:
     return _does_not_say_which_absence(code, status)
 
 
-
 def _translate_s3_error(
     exc: BaseException, *, substrate: str = _SUBSTRATE, **details: Any
 ) -> Exception:
@@ -718,7 +717,6 @@ class S3BlobStore:
                 translate=self._translate_probe_failure,
             )
         return False
-
 
     def _bucket_missing(self, details: dict[str, Any], *, substrate: str = _SUBSTRATE) -> NotFound:
         """The error for a bucket that is not there.
