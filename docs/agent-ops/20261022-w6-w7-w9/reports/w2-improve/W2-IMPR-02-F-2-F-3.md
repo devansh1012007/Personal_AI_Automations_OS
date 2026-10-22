@@ -7,6 +7,7 @@ ownership_violations: none — src/paa/models/router.py, src/paa/models/__init__
 claims_audited: 9 from the prior dispatch's report; 7 confirmed, 1 confirmed-with-a-different-number (+40 ms import → measured +26.4 ms min / +35.1 ms median, and 16 new modules, which the prior report did not state), 1 not reproducible (the 1092-pair harness was lost with the host; rebuilt and re-measured at 2496 pairs, 0 differences)
 gaps_found_and_closed_by_this_dispatch: 2 — the keyword inventory in the model suite covered the 16 keywords the model validator *reads*, not the 27 the shared table constrains; and complete_structured has two implementations, and the rule reached one of them
 confidence: high on F-2 and F-3 (the rule is one rule in one table, the reversal is measured against the pre-fix source, and a valid schema's answers are byte-identical); medium on the import direction, whose cost is real and is now measured rather than asserted
+corrections (2026-10-22, W2-FIX-03): 2 — the import figure quoted in the digest and in §4.2 measured the same edge the record now quotes as "about 20 ms" (re-measured once, 60 interleaved pairs: +20.6 ms median of the pairwise differences); and §3.3's table carried no counts, so a reader counting the names in its "silently ignored" row got 20 where the matrix says 19 ignored + 1 wrong answer (6 TypeError + 1 AttributeError + 19 + 1 = 27). The "24 silently dropped keywords" summary this was reported under is in briefs/W2-REV-03.md, not in this report
 <!-- ORCH-DIGEST:END -->
 
 # Improvement report — W2-IMPR-02 (F-2, F-3)
@@ -196,12 +197,21 @@ reaches the keyword.
 
 **Before the fix** (measured on the pre-fix source, both validators):
 
-| Behaviour | Keywords |
-|---|---|
-| raw `TypeError` escaped the model validator | `minLength`, `maxLength`, `minItems`, `maxItems`, `minimum`, `maximum` |
-| raw `AttributeError` escaped the model validator | `properties` (a string or a list) |
-| **silently ignored** — the constraint was *dropped* and the instance came back "valid" | `type`, `required`, `additionalProperties`, `items`, `prefixItems`, `enum`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`, `pattern`, `uniqueItems`, `minProperties`, `maxProperties`, `anyOf`, `oneOf`, `allOf`, `not`, `nullable`, `definitions`, `$defs` |
-| a **wrong** answer rather than a crash | `required: [1, 2]` → *"missing required property 1"*; `enum: "abc"` → a substring test; `type: 5` → the type check silently switched off |
+| Behaviour | Count | Keywords |
+|---|---|---|
+| raw `TypeError` escaped the model validator | 6 | `minLength`, `maxLength`, `minItems`, `maxItems`, `minimum`, `maximum` |
+| raw `AttributeError` escaped the model validator | 1 | `properties` (a string or a list) |
+| **silently ignored** — the constraint was *dropped* and the instance came back "valid" | 19 | `type`, `required`, `additionalProperties`, `items`, `prefixItems`, `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`, `pattern`, `uniqueItems`, `minProperties`, `maxProperties`, `anyOf`, `oneOf`, `allOf`, `not`, `nullable`, `definitions`, `$defs` |
+| a **wrong** answer rather than a crash | 1 | `enum: "abc"` → a substring test |
+
+**6 + 1 + 19 + 1 = 27**, one row for each constrained keyword — and the
+counts are stated here so that a reader cannot get them from counting names.
+(A malformed *value* can behave in more than one way, which is why the
+"wrong answer" row used to list `required: [1, 2]` and `type: 5` beside
+`enum: "abc"`: those keywords are dropped when the value is malformed in one
+way and answered wrongly when it is malformed in another. The **27-keyword
+matrix** measured one malformed value per keyword, and there `enum` is the
+one that was answered wrongly — so the matrix reads 19 dropped, not 20.)
 
 **After the fix**: every one of the **27** constrained keywords is
 **reported** — `MalformedSchemaError` in the model layer, `ValueError` in the
@@ -294,6 +304,20 @@ the *submodule* runs the *package* `__init__`, which imports every backend.
 (medians: 223.9 → 259.0 ms, +35.1 ms). The prior report's "about 40 ms" is
 the right order of magnitude and is not reproducible on this host; the
 module delta is the number that matters, and it was not stated.
+
+> **Corrected 2026-10-22, by W2-FIX-03.** These two figures measured **this
+> same edge** — the model layer reading the keyword table through
+> `paa.validation.schema_validator` — on an earlier host, and they are not
+> the edge's figure of record any more. The edge was re-measured once, on the
+> wave-2 host, over **60 interleaved pairs of fresh interpreters** (the
+> pre-move tree against the current one): **+20.6 ms** median of the pairwise
+> differences, **+20.4 ms** as the difference of the two medians. The figure
+> of record is therefore **about 20 ms**, and it is quoted in exactly three
+> places — `src/paa/core/json_schema.py` (which carries the method),
+> `src/paa/models/base.py` and the import lock's own docstring — all three of
+> which the lock now checks to agree. The table above is left as it was
+> measured: it is a record of what this dispatch saw on that host, and
+> rewriting a historical measurement would be worse than superseding it.
 
 The cost is paid once per process and `paa.cli.main` does **not** import
 `paa.models` [VERIFIED: `src/paa/cli/main.py` imports `paa.sandbox.base`

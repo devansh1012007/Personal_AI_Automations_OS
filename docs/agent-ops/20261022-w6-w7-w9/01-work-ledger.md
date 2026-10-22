@@ -82,16 +82,25 @@ Wave 2's delta review (`reports/w2-review/W2-REV-03-delta.md`) closed all five
 MAJORs and left these. None blocks the wave; each needs a decision or a
 later task, and none may be quietly forgotten.
 
+*W2-FIX-03 (wave 2, last round) closed six of the eight. What is left is
+below, and the closure list is under the table.*
+
 | # | Item | Where | Why it is open |
 |---|---|---|---|
-| 1 | The **SAFE-mode hole**: `DELETE FROM users` is allowed unless it is the last step of the plan | `src/paa/agents/policy.py` | W2-IMPR-04 found it; the rule's answer depends on the step's *position*, which is a **policy decision** over prose — not a test-coverage task's call. It is a MAJOR by the reviewer's own reading |
-| 2 | The **unreachable egress check** in `_check_lockdown` | `src/paa/agents/policy.py` | W2-FIX-02 deliberately did not patch it: making it reachable would change what the policy refuses. Needs the operator's choice — **reorder** (run the check) or **delete** (the check is redundant) |
-| 3 | The **Anthropic override** does not apply the malformed-schema rule | `src/paa/models/…` (the Anthropic provider) | the base class and the override disagree, so "one rule in all three validators" is false for that path. Honestly escalated and marked with a strict xfail, but the rule should hold on every path |
-| 4 | Five **pattern-semantics findings** (the delete rule's position dependence; `git push -f`, `rm -rfv`, `DELETE FROM public.users`, `TRUNCATE` without `TABLE` are all allowed) | `src/paa/agents/policy.py` | each **widens** a security rule; a policy decision, carried forward with reproductions and unpatched |
-| 5 | A companion docstring says the air-gap branch "cannot fire"; the `_NET_PATTERNS` half does fire, only the declared-permission half is dead | `tests/agents/test_policy.py:123` | a record defect, cheap to fix |
-| 6 | The same import edge is quoted as **26 ms** in one place and **19 ms** in the lock's docstring | `src/paa/core/json_schema.py`, `tests/conventions/test_import_conventions.py` | both were measured; nothing says they are different edges. A record defect |
-| 7 | A **human-granted clearance records no risk score** | `src/paa/agents/orchestrator.py:595` | a NIT from the delta review: the gate-cleared event says the gate was answered, not what the policy thought |
-| 8 | A report's **summary line** says "24 silently dropped keywords"; its body says 19 ignored + 1 wrong answer, with 6 `TypeError` + 1 `AttributeError` exact | `reports/w2-improve/W2-IMPR-02-F-2-F-3.md` | a NIT: the summary and the body disagree, and the body is the one that is right |
+| 2 | The **unreachable egress check** in `_check_lockdown` | `src/paa/agents/policy.py` | W2-FIX-02 deliberately did not patch it, and W2-FIX-03 assessed it and **did not patch it either**: making it reachable changes *which* refusal the ledger records, and no prose, ADR or name says which of the two should win. The set of refused plans does **not** change either way. W2-FIX-03's report §6 has the three candidate changes with their consequences and a recommendation: **leave the code alone and let the operator choose between reordering the checks (the air-gap refusal answers, and the `POLICY_BLOCKED` payload's `reason` changes for a LOCKDOWN plan) and deleting the dead half (behaviour-preserving, and the reason never changes)**. It is a judgement about what the policy should *say*, not a defect |
+| 4 | Four **pattern-semantics findings** that survive ADR-0035: `git push -f` (the pattern wants `--force`), `rm -rfv` / `rm --recursive --force` (the flag spellings), `DELETE FROM public.users` (the table name is not one word) and `TRUNCATE events` without `TABLE` — all **allowed** | `src/paa/agents/policy.py` | each **widens** a security rule over prose, so each is a policy decision, carried forward with reproductions and unpatched. ADR-0035 closed the *fifth* of the five — the delete rule's **position dependence** — because that one was an anchor that did not match the renderer's own separator, not a rule anybody wrote |
+| 9 | The **"24 silently dropped keywords"** summary line | `docs/agent-ops/20261022-w6-w7-w9/briefs/W2-REV-03.md:111` (the W2-REV-03 **brief**) — *not* in `reports/w2-improve/W2-IMPR-02-F-2-F-3.md`, which never carried it | the figure is the **brief's**, and the delta review already said so (`reports/w2-review/W2-REV-03-delta.md:408`); the report's own §3.3 table now carries the counts (6 `TypeError` + 1 `AttributeError` + 19 ignored + 1 wrong answer = 27). The brief is the orchestrator's file and outside W2-FIX-03's write-set, so it is reported, not edited |
+
+### Closed in wave 2's last round (W2-FIX-03)
+
+| # | Item | What closed it |
+|---|---|---|
+| 1 | The **SAFE-mode hole** — `DELETE FROM users` allowed unless it was the last step of the plan | **ADR-0035**: the delete pattern's terminator set is now the renderer's own (`;`, a newline, or the end of the text), so the rule's answer no longer depends on the step's *position*. A refusal that did not happen now happens, and the ADR states the cost and the rollback |
+| 3 | The **Anthropic override** did not apply the malformed-schema rule | one implementation of the rule (`paa.models.base.refuse_malformed_schema`), called by the base class **and** by the override; the strict xfail is gone, replaced by an assertion that no request was made |
+| 5 | The docstring that said the air-gap branch "cannot fire" | corrected: the `_NET_PATTERNS` half fires (and the suite now asserts which half answered); only the declared-permission half is dead |
+| 6 | One import edge quoted as 26 ms in one place and 19 ms in another | re-measured once (60 interleaved pairs of fresh interpreters): **about 20 ms**, quoted in the three places that mention it, and a lock now checks that they agree |
+| 7 | A **human-granted clearance recorded no risk score** | the gate event carries the score the policy computed, and the clearance carries it through — with no score in the lineage, no score in the clearance |
+| 8 | A report's **summary line** contradicting its body | the drift was in the W2-REV-03 **brief**, not in the report; the report's §3.3 table now carries the counts, and the brief is reported above |
 
 ## Out-of-plan discoveries
 
