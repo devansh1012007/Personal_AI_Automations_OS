@@ -36,9 +36,11 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import httpx
 import pytest
 
 from paa.core.errors import PaaError
+from paa.models.anthropic_provider import AnthropicProvider
 from paa.models.base import (
     CompletionRequest,
     MalformedSchemaError,
@@ -51,10 +53,7 @@ from paa.models.base import (
 )
 from paa.models.echo_provider import EchoProvider
 
-#: A credential-shaped token. The same shape the rest of the model suite uses,
-#: and long enough to trip the generic redactor.
-FAKE_KEY = "sk-test-abcdef0123456789ABCDEF"
-
+from .conftest import FAKE_KEY, RequestRecorder, mock_client
 
 # ---------------------------------------------------------------------------
 # The keyword inventory
@@ -279,6 +278,200 @@ async def test_minimal_instance_for_schema_reports_a_malformed_keyword() -> None
 
     with pytest.raises(MalformedSchemaError):
         minimal_instance_for_schema({"type": "object", "properties": "not-a-mapping"})
+
+
+# ---------------------------------------------------------------------------
+# The rule is the same in all three validators
+# ---------------------------------------------------------------------------
+
+#: Every keyword the **shared table** constrains, with a value the keyword
+#: cannot use.
+#:
+#: This is the **whole** table, not the part the model validator happens to
+#: read. The three validators in this tree ask one question about a keyword's
+#: value — *can this keyword use this value?* — and they now get the answer
+#: from one place, so a keyword that one of them does not implement is still
+#: constrained by the same table. That is what makes the rule *consistent*
+#: rather than three rules that happen to agree today: a validator that
+#: ignores ``pattern`` cannot quietly accept a schema whose ``pattern`` is not
+#: a regex, because the table says a broken pattern is a broken contract.
+#:
+#: Enumerated from :data:`paa.validation.schema_validator.SUPPORTED_KEYWORDS`
+#: and the shape table beside it. ``const`` is absent on purpose: any JSON
+#: value is a legal constant, so the keyword has no malformed value.
+SHARED_TABLE_CASES: tuple[tuple[str, Any], ...] = (
+    ("type", 5),
+    ("properties", "not-a-mapping"),
+    ("required", "a"),
+    ("additionalProperties", 5),
+    ("items", "not-a-schema"),
+    ("prefixItems", "not-a-list"),
+    ("enum", "abc"),
+    ("minimum", "abc"),
+    ("maximum", "abc"),
+    ("exclusiveMinimum", "abc"),
+    ("exclusiveMaximum", "abc"),
+    ("multipleOf", "abc"),
+    ("minLength", "2"),
+    ("maxLength", "2"),
+    ("pattern", "["),
+    ("minItems", "2"),
+    ("maxItems", "2"),
+    ("uniqueItems", "yes"),
+    ("minProperties", "2"),
+    ("maxProperties", "2"),
+    ("anyOf", "not-a-list"),
+    ("oneOf", "not-a-list"),
+    ("allOf", "not-a-list"),
+    ("not", "not-a-schema"),
+    ("nullable", "yes"),
+    ("definitions", "not-a-mapping"),
+    ("$defs", "not-a-mapping"),
+)
+
+
+@pytest.mark.parametrize(("keyword", "value"), SHARED_TABLE_CASES)
+def test_all_three_validators_refuse_the_same_malformed_keyword(
+    keyword: str, value: Any
+) -> None:
+    """One table, three validators, one verdict.
+
+    The finding was that the rule reached **one** of the three validators and
+    the other two each failed in their own way — one raised a raw
+    ``TypeError``, the other silently dropped the constraint. A per-validator
+    list of malformed keywords cannot hold that line, because the *next* one
+    is added to whichever table someone was looking at.
+
+    So this test asks all three at once, for every constrained keyword:
+
+    * the runtime's output gate (:func:`paa.validation.schema_validator.validate_instance`)
+      **reports** the defect, marked as a schema error and located at the
+      schema node;
+    * the model layer (:func:`paa.models.base.validate_against_schema`) raises
+      a :class:`~paa.models.base.MalformedSchemaError` — a
+      :class:`~paa.core.errors.PaaError`, so the run records it;
+    * the skills layer (:func:`paa.skills.contracts.schema_errors`) raises a
+      ``ValueError``, the way that module already refuses a bad schema shape.
+
+    Only the *way* it is reported differs, because each module has its own
+    convention. Whether it is reported at all does not.
+    """
+    from paa.skills.contracts import schema_errors
+    from paa.validation.schema_validator import validate_instance
+
+    schema = _schema_with(keyword, value)
+
+    defects = [error for error in validate_instance(None, schema) if error.get("schema_error")]
+    assert defects, f"the shared table does not see a malformed {keyword!r}"
+
+    with pytest.raises(MalformedSchemaError):
+        validate_against_schema({"a": "x"}, schema)
+
+    with pytest.raises(ValueError, match="keyword whose value cannot be used"):
+        schema_errors({"a": "x"}, schema)
+
+
+# ---------------------------------------------------------------------------
+# The second implementation of ``complete_structured``
+# ---------------------------------------------------------------------------
+
+#: A schema with a broken constraint, written the way a caller would write
+#: one: the defect is nested in a property, not at the root.
+_BROKEN_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"a": {"type": "integer", "minimum": "5"}},
+}
+
+
+def _anthropic_tool_response(_request: httpx.Request) -> httpx.Response:
+    """A well-formed Anthropic answer, so only the *schema* can be at fault."""
+    return httpx.Response(
+        200,
+        json={
+            "model": "claude-stub",
+            "content": [{"type": "tool_use", "name": "emit_result", "input": {"a": 1}}],
+            "usage": {"input_tokens": 3, "output_tokens": 3},
+            "stop_reason": "tool_use",
+        },
+    )
+
+
+async def test_the_anthropic_path_also_refuses_a_malformed_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``complete_structured`` has **two** implementations, and the rule reaches both.
+
+    :class:`~paa.models.anthropic_provider.AnthropicProvider` overrides the
+    generic parse-and-retry loop with a forced tool call, and it calls
+    :func:`paa.models.base.validate_against_schema` itself. Before the fix
+    that call was the *other* place a raw ``TypeError`` escaped
+    ``complete_structured`` — the reviewer's probe reached it end to end
+    through the real provider.
+
+    The rule is the same here: a malformed keyword is a
+    :class:`~paa.models.base.MalformedSchemaError`, never a ``TypeError``, so
+    the failure is recorded by the run and is not routable.
+    """
+    monkeypatch.setenv("PAA_TEST_ANTHROPIC_KEY", FAKE_KEY)
+    recorder = RequestRecorder(_anthropic_tool_response)
+    provider = AnthropicProvider(
+        model="claude-stub",
+        api_key_env="PAA_TEST_ANTHROPIC_KEY",
+        client=mock_client(recorder),
+    )
+    request = CompletionRequest(messages=(Message.user("hello"),))
+
+    with pytest.raises(MalformedSchemaError) as caught:
+        await provider.complete_structured(request, _BROKEN_SCHEMA)
+
+    assert not isinstance(caught.value, TypeError)
+    assert not isinstance(caught.value, AttributeError)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "AnthropicProvider.complete_structured (src/paa/models/anthropic_provider.py:152) "
+        "overrides the generic loop and does not refuse a malformed schema before it "
+        "calls the provider: the broken schema is sent as the tool's input_schema and "
+        "the frontier model is asked about it, and only the response is then refused. "
+        "The base implementation refuses pre-flight for exactly this reason "
+        "(src/paa/models/base.py:884). anthropic_provider.py is read-only for W2-IMPR-02; "
+        "the fix is the same three lines the base uses — call "
+        "paa.models.base._malformed_keywords(schema) and raise MalformedSchemaError "
+        "before self._send(...)."
+    ),
+)
+async def test_the_anthropic_path_does_not_ask_the_frontier_model_about_a_broken_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A broken contract must not leave the machine.
+
+    The base implementation refuses a malformed schema *before* the provider
+    is called, and says why: a frontier model cannot repair a contract whose
+    constraint cannot be read, so asking it only carries the broken contract
+    off the machine and records an escalation that never happened.
+
+    The Anthropic override does not do that yet. The request is made, the
+    broken schema goes out as the tool's ``input_schema``, and the answer is
+    refused afterwards. ``strict=True`` means this suite goes **red** the day
+    the override refuses pre-flight, so the marker cannot outlive the fix.
+    """
+    monkeypatch.setenv("PAA_TEST_ANTHROPIC_KEY", FAKE_KEY)
+    recorder = RequestRecorder(_anthropic_tool_response)
+    provider = AnthropicProvider(
+        model="claude-stub",
+        api_key_env="PAA_TEST_ANTHROPIC_KEY",
+        client=mock_client(recorder),
+    )
+    request = CompletionRequest(messages=(Message.user("hello"),))
+
+    with pytest.raises(MalformedSchemaError):
+        await provider.complete_structured(request, _BROKEN_SCHEMA)
+
+    assert recorder.request is None, (
+        "the frontier model was asked to satisfy a schema whose constraint cannot be read"
+    )
 
 
 # ---------------------------------------------------------------------------
