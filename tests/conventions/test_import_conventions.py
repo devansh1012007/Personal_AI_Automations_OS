@@ -898,15 +898,23 @@ def test_a_hung_aggregate_import_is_a_verdict(monkeypatch: pytest.MonkeyPatch) -
     The child is a real hang, produced by a real ``sleep``, not a mock of the
     probe: the thing being tested is what the parent does with a child that
     stops answering, and a mock would test the mock.
+
+    The timeout is two seconds rather than one because the verdict can only
+    name the module if the child **started** — it announces each import
+    before it makes it, so a child that never got that far is honestly
+    reported as "the child announced nothing" instead of being blamed on a
+    module it never reached. Two seconds is three orders of magnitude more
+    than the interpreter's startup cost on this host, which is what makes the
+    announcement a fact rather than a race.
     """
-    monkeypatch.setattr(sys.modules[__name__], "AGGREGATE_IMPORT_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(sys.modules[__name__], "AGGREGATE_IMPORT_TIMEOUT_SECONDS", 2)
 
     verdict = _aggregate_import(
         "print('importing\\tpaa.sleeper', flush=True)\nimport time\ntime.sleep(30)"
     )
 
     assert verdict != "", "a hung child produced no verdict at all"
-    assert "1s" in verdict, f"the verdict does not name the timeout: {verdict}"
+    assert "2s" in verdict, f"the verdict does not name the timeout: {verdict}"
     assert "paa.sleeper" in verdict, f"the verdict does not name the module: {verdict}"
 
 
@@ -1182,7 +1190,7 @@ def _relative_source_path(module: str) -> Path:
     for name, path in _module_files():
         if name == module:
             return path.relative_to(PACKAGE_ROOT)
-    raise KeyError(module)
+    raise KeyError(f"{module} is not a module of the package under the convention")
 
 
 def _shadow_package(root: Path, module: str) -> Path:
