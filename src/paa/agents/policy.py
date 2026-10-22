@@ -44,6 +44,19 @@ _IRREVERSIBLE_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"\bDELETE\s+FROM\s+\w+\s*(;|$)", "unqualified delete"),
 )
 
+
+def _matches(pattern: str, blob: str) -> bool:
+    """Whether an irreversible-operation pattern matches the rendered plan.
+
+    One matcher, shared by the SAFE refusal (:meth:`_check_irreversible`) and
+    the risk score (:meth:`_risk_score`), so the two can never disagree about
+    what a pattern means. A test that asks the same question then asks *this*
+    function rather than carrying a second copy of the rule — a copy that
+    would silently go stale the day the rule changed.
+    """
+    return re.search(pattern, blob, re.IGNORECASE) is not None
+
+
 #: Paths no task may write to, regardless of mode.
 _FORBIDDEN_WRITE_ROOTS: tuple[str, ...] = (
     "C:\\Windows",
@@ -213,7 +226,7 @@ class PolicyRiskAgent(Agent):
         if ctx.permission_mode is not PermissionMode.SAFE:
             return None
         for pattern, label in _IRREVERSIBLE_PATTERNS:
-            if re.search(pattern, blob, re.IGNORECASE):
+            if _matches(pattern, blob):
                 return PolicyVerdict.blocked(f"irreversible operation under SAFE mode: {label}")
         return None
 
@@ -303,7 +316,7 @@ class PolicyRiskAgent(Agent):
         """Coarse risk in [0,1]. Used only to decide gating, never to block."""
         score = 0.0
         for _pattern, _label in _IRREVERSIBLE_PATTERNS:
-            if re.search(_pattern, blob, re.IGNORECASE):
+            if _matches(_pattern, blob):
                 score = max(score, 0.8)
         if _NET_PATTERNS.search(blob):
             score = max(score, 0.5)

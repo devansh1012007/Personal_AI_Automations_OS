@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import ast
 import math
-import re
 import uuid
 from collections.abc import Iterable, Sequence
 from contextlib import AbstractAsyncContextManager
@@ -44,7 +43,7 @@ def _ctx(mode: PermissionMode) -> AgentContext:
     )
 
 
-def _msg(steps: list[dict], goal: str = "do work") -> AgentMessage:
+def _msg(steps: list[dict[str, Any]], goal: str = "do work") -> AgentMessage:
     return AgentMessage(
         task_id=uuid.uuid4(),
         correlation_id=uuid.uuid4(),
@@ -55,10 +54,17 @@ def _msg(steps: list[dict], goal: str = "do work") -> AgentMessage:
     )
 
 
-async def _decide(agent: PolicyRiskAgent, steps: list[dict], mode: PermissionMode) -> dict:
+async def _decide(
+    agent: PolicyRiskAgent, steps: list[dict[str, Any]], mode: PermissionMode
+) -> dict[str, Any]:
     result = await agent.run(_msg(steps), _ctx(mode))
     assert result.ok
-    return result.value
+    verdict = result.value
+    # An ``ok`` result carries a verdict; the gate's verdict is a dict. The
+    # narrowing is a check rather than a cast, so the helper's contract is
+    # stated where the helper is.
+    assert isinstance(verdict, dict), "an ok result carries a verdict"
+    return verdict
 
 
 class TestFlatten:
@@ -177,6 +183,12 @@ class _Case(NamedTuple):
 #: test that only ever says ``DROP TABLE`` leaves the other two branches
 #: unpinned. The three commands the suite already used are carried here
 #: verbatim.
+#:
+#: A SQL rule carries **both** cases, because a planner writes SQL in lower
+#: case as often as in upper case and the gate's matcher ignores case. A
+#: matcher that stopped ignoring case would leave the lower-case spelling —
+#: the more common one — unrefused, and every other assertion here would
+#: still pass.
 _COVERED: dict[str, _Case] = {
     r"\brm\s+-[rRf]{1,2}\b": _Case(
         "recursive force delete",
@@ -203,11 +215,15 @@ _COVERED: dict[str, _Case] = {
             ("psql", "-c", "DROP TABLE production_users"),
             ("psql", "-c", "DROP DATABASE analytics"),
             ("psql", "-c", "DROP SCHEMA public"),
+            ("psql", "-c", "drop table production_users"),
         ),
     ),
     r"\bTRUNCATE\s+TABLE\b": _Case(
         "table truncation",
-        (("psql", "-c", "TRUNCATE TABLE events"),),
+        (
+            ("psql", "-c", "TRUNCATE TABLE events"),
+            ("psql", "-c", "truncate table events"),
+        ),
     ),
     r"\bgit\s+push\s+.*--force\b": _Case(
         "force push",
@@ -232,6 +248,7 @@ _COVERED: dict[str, _Case] = {
         (
             ("psql", "-c", "DELETE FROM audit_log;"),
             ("psql", "-c", "DELETE FROM audit_log"),
+            ("psql", "-c", "delete from audit_log;"),
         ),
     ),
 }
@@ -422,14 +439,18 @@ class TestEveryIrreversiblePattern:
         command does not really belong to. Checking every command against
         every pattern in the module keeps each case honest, and stops a
         future broad pattern from quietly taking over an existing case.
+
+        The match is the **gate's own** matcher
+        (``policy._matches``), not a copy of it: a copy would be a second
+        place to forget, and the day the gate's rule changed the copy would
+        go quietly stale while this check went on reporting "exactly one".
         """
+        patterns = _patterns_in_source()
         for pattern, case in _COVERED.items():
             for command in case.commands:
                 blob = _blob(command)
                 matched = [
-                    other
-                    for other, _label in _patterns_in_source()
-                    if re.search(other, blob, re.IGNORECASE)
+                    other for other, _label in patterns if policy_module._matches(other, blob)
                 ]
                 assert matched == [pattern], (pattern, command, matched)
 
@@ -458,6 +479,27 @@ class TestPathGuards:
         steps = [{"action": "install", "command": ["cp", "x", "C:\\Windows\\System32\\y"]}]
         verdict = await _decide(agent, steps, PermissionMode.AUTO)
         assert verdict["decision"] == "STATUS_BLOCKED"
+
+    async def test_a_path_that_climbs_out_of_the_workspace_is_blocked(self) -> None:
+        """The other half of the path guard: traversal, not a system root.
+
+        The forbidden-roots check refuses the system directories; this is the
+        branch that refuses a relative path climbing out of the workspace the
+        gate was told about. The branch only runs when the gate knows its
+        workspace root, so the agent is built with one.
+
+        This is **beyond the nine patterns** — it is the same gate and the
+        same class of defect (a branch of the security check that no test
+        reached), found while auditing the gate's coverage under mutation.
+        """
+        agent = PolicyRiskAgent(
+            settings=PolicySettings(), workspace_root=Path("/workspace/project")
+        )
+        steps = [{"action": "write", "command": "cp 'x' '../../other-project/secrets.txt'"}]
+        verdict = await _decide(agent, steps, PermissionMode.AUTO)
+
+        assert verdict["decision"] == "STATUS_BLOCKED", verdict
+        assert "traversal" in verdict["reason"], verdict
 
 
 class TestAntiGoals:
