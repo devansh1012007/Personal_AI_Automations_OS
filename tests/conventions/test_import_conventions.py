@@ -691,11 +691,7 @@ def test_the_family_resolves_the_contract_one_way(probes: dict[str, Probe]) -> N
     and so a regression points at the sibling that drifted rather than at the
     package as a whole.
     """
-    unresolved = [
-        name
-        for name in FAMILY
-        if not (probes[name].ok and probes[name].bound)
-    ]
+    unresolved = [name for name in FAMILY if not (probes[name].ok and probes[name].bound)]
     assert unresolved == [], f"the family does not resolve the contract at runtime: {unresolved}"
 
     model = probes["paa.memory.creator"]
