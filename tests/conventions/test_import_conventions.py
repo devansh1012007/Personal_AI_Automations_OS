@@ -10,19 +10,25 @@ the same dependency behind ``if TYPE_CHECKING:`` — the same contract resolved
 two different ways in nine modules that one commit changed. The difference is
 invisible until something needs the *class* rather than the *annotation*: a
 runtime ``isinstance``, a pydantic model resolving its annotations at
-class-creation time, or a ``get_type_hints`` call. Nothing in the tree needed
-the class yet, which is exactly why the inconsistency survived a review.
+class-creation time, or a ``get_type_hints`` call. Nothing needed the class
+then, which is exactly why the inconsistency survived a review; the lock's own
+annotation half needs it now, and reads every family member's hints at runtime
+to prove the class is there.
 
-The lock has seven halves, and each fails for a different reason:
+All eight siblings have been converted since — seven by wave 1 (``T-004``) and
+the eighth, :mod:`paa.observability.runs`, by wave 2 (``T-008``) — so the nine
+modules that commit touched now resolve the contract the one way the model
+does. The lock is what holds that true, and it is written so that a conversion
+which is reverted goes **red** instead of waiting for the next reader to
+notice.
+
+The lock has six halves, and each fails for a different reason:
 
 * the **source** half says the contract is not imported behind
-  ``if TYPE_CHECKING:`` anywhere in ``src/paa``, except a documented deferral
-  that names the task that owns the file;
+  ``if TYPE_CHECKING:`` anywhere in ``src/paa``;
 * the **runtime** half says every module that *mentions* the contract — in
   any import form — binds it in its own namespace, to the same object, which
   is what "resolved at runtime" means, as opposed to "annotated at runtime";
-* the **deferral** half says a deferral that has been **acted on** is a
-  failure, so an entry cannot outlive the work that made it unnecessary;
 * the **annotation** half says the family — and the package that owns the
   contract — can have their annotations *read* at runtime, which is the thing
   the first two halves exist for;
@@ -85,8 +91,10 @@ CONTRACT_MODULE = "paa.storage.relational.base"
 CONTRACT_NAME = "RelationalBackend"
 
 #: The eight siblings commit ``1c9ffa3`` left behind, in the order the plan
-#: names them. Seven are converted here; the eighth belongs to wave 2 and is
-#: recorded in :data:`DEFERRED`.
+#: names them. All eight are converted — seven by wave 1 (``T-004``) and the
+#: eighth, :mod:`paa.observability.runs`, by wave 2 (``T-008``) — and they are
+#: named so that a regression points at the sibling that drifted rather than at
+#: the package as a whole, and so the annotation half has a set to walk.
 FAMILY = (
     "paa.memory.contradiction",
     "paa.memory.decay",
@@ -98,25 +106,24 @@ FAMILY = (
     "paa.observability.runs",
 )
 
-#: Modules allowed to keep the contract behind ``if TYPE_CHECKING:``.
-#:
-#: Every entry names the task that owns the file, so a deferral is a handover
-#: and not an excuse: a reader who finds the entry knows who to ask, and the
-#: entry is deleted when that task lands. An entry with no reason is a drift
-#: nobody is coming back to, so the test below refuses one.
-#:
-#: The entry is also **self-invalidating**: a module listed here must *still*
-#: resolve the contract lazily. The moment its owner converts it, the entry
-#: stops being true, the lock goes red, and the entry has to be deleted with
-#: the change that made it unnecessary. A deferral that silently outlives its
-#: deferral is the drift this map exists to prevent, and the map alone cannot
-#: prevent it — only a check can.
-DEFERRED: dict[str, str] = {
-    "paa.observability.runs": (
-        "T-008 (wave 2) owns paa/observability/runs.py and converts this block there; "
-        "this wave does not own the file"
-    ),
-}
+# There is no deferral map.
+#
+# One used to live here. Wave 1 converted seven of the family and left the
+# eighth to wave 2's ``T-008``, so the map held a single entry naming the
+# task that owned the file: a deferral was a **handover** and not an excuse,
+# because a reader who found the entry knew who to ask. The entry was
+# self-invalidating — a deferred module had to *still* resolve the contract
+# behind ``if TYPE_CHECKING:``, so the moment its owner converted it the
+# entry stopped being true and the lock went red.
+#
+# ``T-008`` has landed, the entry is fulfilled, and the map, the class ``F``
+# that pointed at it, and the check that iterated it are **gone**: a facility
+# with no user is the drift this file exists to catch, and a check that walks
+# an empty map cannot fail — the same standard the file applies to a class
+# with no member and to a family in which no class names the contract. A
+# module that genuinely cannot import the contract at runtime has to bring
+# the machinery back, with a check of its own, rather than inherit a hole
+# that is no longer there.
 
 #: The class of every ``if TYPE_CHECKING:`` block left in the package, keyed by
 #: module, with the class as the value.
@@ -145,18 +152,16 @@ DEFERRED: dict[str, str] = {
 #:     library, so there is nothing to defer.
 #: ``E`` — **first-party, cheap, inert.** The block names only first-party
 #:     modules and the standard library, and converting it breaks no import.
-#: ``F`` — **the family.** The block resolves the relational contract, and
-#:     :data:`DEFERRED` owns it: the deferral names the task that converts it.
 #:
-#: Five of the six are **mechanical** properties of the block, and the checks
+#: Four of the five are **mechanical** properties of the block, and the checks
 #: below enforce them: ``A`` and ``B`` are proved by converting the block in
-#: a copy of the tree, ``D`` and ``E`` are read off the AST, and ``F`` is the
-#: deferral map. ``C`` is the one **judgement** — it says the guard was
-#: written on purpose, and the measured price of every block is recorded so
-#: the judgement can be re-examined rather than taken on trust. The price
-#: does not separate the two classes by itself: ``paa.models`` is classed
-#: ``E`` and costs +15.1 ms to convert, more than four of the ten ``C``
-#: members cost. What separates them is the *intent* the guard records.
+#: a copy of the tree, and ``D`` and ``E`` are read off the AST. ``C`` is the
+#: one **judgement** — it says the guard was written on purpose, and the
+#: measured price of every block is recorded so the judgement can be
+#: re-examined rather than taken on trust. The price does not separate the
+#: two classes by itself: ``paa.models`` is classed ``E`` and costs +15.1 ms
+#: to convert, more than four of the ten ``C`` members cost. What separates
+#: them is the *intent* the guard records.
 TYPE_CHECKING_CLASSES: dict[str, str] = {
     "paa.agents.base": "C",
     "paa.agents.orchestrator": "C",
@@ -175,7 +180,6 @@ TYPE_CHECKING_CLASSES: dict[str, str] = {
     "paa.models.registry": "E",
     "paa.models.router": "C",
     "paa.observability.logging": "E",
-    "paa.observability.runs": "F",
     "paa.observability.tracing": "E",
     "paa.runtime": "C",
     "paa.skills.adapters.base": "E",
@@ -195,7 +199,7 @@ TYPE_CHECKING_CLASSES: dict[str, str] = {
 
 #: The classes a block can be in. A class with no member is a class the tree
 #: has outgrown, and the check below refuses one.
-TYPE_CHECKING_CLASS_KEYS: frozenset[str] = frozenset({"A", "B", "C", "D", "E", "F"})
+TYPE_CHECKING_CLASS_KEYS: frozenset[str] = frozenset({"A", "B", "C", "D", "E"})
 
 #: Why each block is in the class it is in — the heavy module it keeps out, the
 #: standard library it defers for nothing, the cycle it closes.
@@ -235,10 +239,6 @@ TYPE_CHECKING_NOTES: dict[str, str] = {
     "paa.models.registry": "names paa.config.ModelSettings: +0.2 ms",
     "paa.models.router": "names paa.ledger.store, which it does not otherwise import: +14.4 ms",
     "paa.observability.logging": "names paa.config, already loaded: -0.1 ms",
-    "paa.observability.runs": (
-        "the eighth member of the contract's family; T-008 (wave 2) owns the file and "
-        "converts the block there"
-    ),
     "paa.observability.tracing": "names paa.config and paa.observability.metrics: +0.9 ms",
     "paa.runtime": "names paa.models.router, which it does not otherwise import: +32.7 ms",
     "paa.skills.adapters.base": "names paa.sandbox.base, paa.skills.contracts and secrets: +2.5 ms",
@@ -632,13 +632,15 @@ def test_the_contract_is_not_imported_behind_type_checking() -> None:
     offenders: list[str] = []
     for name, path in _module_files():
         _, type_checking = _imports_of(path)
-        if (CONTRACT_MODULE, CONTRACT_NAME) in type_checking and name not in DEFERRED:
+        if (CONTRACT_MODULE, CONTRACT_NAME) in type_checking:
             offenders.append(name)
 
     assert offenders == [], (
         f"{offenders} resolve {CONTRACT_NAME} behind `if TYPE_CHECKING:`, which is how "
         "one contract came to be expressed two ways in a single commit. Import it at "
-        "runtime, or record the deferral in DEFERRED with the task that owns the file."
+        "runtime — every module that names the contract binds the same class that "
+        "way, and a module that genuinely cannot is a real import cycle (class A), "
+        "which the lock proves rather than asserts."
     )
 
 
@@ -656,7 +658,7 @@ def test_every_module_that_imports_the_contract_binds_it_at_runtime(
     The half covers every module that **mentions** the contract, in *any*
     import form, and not only the ones that import it at runtime. That is
     what gives it teeth: on a tree where the conversion has been reverted,
-    every one of the seven siblings mentions the contract behind
+    every one of the eight siblings mentions the contract behind
     ``if TYPE_CHECKING:``, and a runtime-only reading of this half would skip
     all of them and pass. Asking "does this module hold the class?" of every
     module that names it asks the question that does not change its answer
@@ -667,8 +669,6 @@ def test_every_module_that_imports_the_contract_binds_it_at_runtime(
         runtime, type_checking = _imports_of(path)
         mentions = (CONTRACT_MODULE, CONTRACT_NAME)
         if mentions not in runtime and mentions not in type_checking:
-            continue
-        if name in DEFERRED:
             continue
         probe = probes[name]
         assert probe.ok, (
@@ -694,7 +694,7 @@ def test_the_family_resolves_the_contract_one_way(probes: dict[str, Probe]) -> N
     unresolved = [
         name
         for name in FAMILY
-        if name not in DEFERRED and not (probes[name].ok and probes[name].bound)
+        if not (probes[name].ok and probes[name].bound)
     ]
     assert unresolved == [], f"the family does not resolve the contract at runtime: {unresolved}"
 
@@ -702,35 +702,6 @@ def test_the_family_resolves_the_contract_one_way(probes: dict[str, Probe]) -> N
     assert model.ok and model.bound, (
         f"the model the family follows does not resolve the contract: {model.describe()}"
     )
-
-
-def test_every_deferral_names_the_task_that_owns_the_file() -> None:
-    """A deferral without an owner is a drift nobody is coming back to.
-
-    And a deferral whose owner has **landed** is the same drift, one task
-    later. The second assertion is the one that makes the map self-invalidating:
-    a deferred module must still resolve the contract behind
-    ``if TYPE_CHECKING:``, so the moment its owner converts it the entry stops
-    being true, this check goes red, and the entry has to be deleted in the
-    same change that made it unnecessary. Without it, the map keeps saying
-    "T-008 owns this" about a file that T-008 finished three waves ago, and
-    the lock — the artefact whose whole job is to keep the convention true —
-    does not notice.
-    """
-    known = {name: path for name, path in _module_files()}
-    for module, reason in DEFERRED.items():
-        assert reason.strip(), f"{module} is deferred without a reason"
-        assert module in known, f"{module} is deferred but no such module exists"
-        assert re.search(r"T-\d{3}", reason), (
-            f"{module} is deferred without naming a task that owns it: {reason!r}"
-        )
-        _, type_checking = _imports_of(known[module])
-        assert (CONTRACT_MODULE, CONTRACT_NAME) in type_checking, (
-            f"{module} is deferred but no longer resolves {CONTRACT_NAME} behind "
-            "`if TYPE_CHECKING:` — the deferral has been acted on, so the entry "
-            "is stale and has to be deleted with the change that made it "
-            "unnecessary."
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -991,8 +962,6 @@ def test_the_family_can_have_its_annotations_read() -> None:
     """
     checked: set[str] = set()
     for name in FAMILY:
-        if name in DEFERRED:
-            continue
         module = importlib.import_module(name)
         for attribute, obj in vars(module).items():
             if not inspect.isclass(obj) or obj.__module__ != name:
@@ -1009,7 +978,7 @@ def test_the_family_can_have_its_annotations_read() -> None:
                 f"but the resolved hints do not mention it: {hints}"
             )
 
-    assert checked == {name for name in FAMILY if name not in DEFERRED}, (
+    assert checked == set(FAMILY), (
         "no class in the family names the contract in its own annotations, so this "
         f"check is vacuous — it covered {sorted(checked)}"
     )
@@ -1269,12 +1238,11 @@ def test_every_type_checking_block_is_classified() -> None:
 def test_the_classification_says_what_it_claims() -> None:
     """Each class is a property of the block it labels, and this enforces it.
 
-    Five of the six classes are **mechanical**: what the block names decides
+    Four of the five classes are **mechanical**: what the block names decides
     the class, and the check reads the names off the AST. ``B`` is the block
     that names a third-party package — an optional extra of this project —
     and nothing else may name one. ``D`` is the block that names only the
-    standard library, and nothing else may do that. ``F`` is the family, and
-    the deferral map says which modules those are.
+    standard library, and nothing else may do that.
 
     ``C`` is the one judgement, and it is checked only for being a *known*
     class; what it asserts is the intent the guard records, and the measured
@@ -1318,12 +1286,6 @@ def test_the_classification_says_what_it_claims() -> None:
                 f"{name} is classified {klass} but names only the standard "
                 f"library {sorted(guarded)} — that is what class D is for"
             )
-
-    family = {name for name, klass in TYPE_CHECKING_CLASSES.items() if klass == "F"}
-    assert family == set(DEFERRED), (
-        "the family class and the deferral map disagree about which modules are "
-        f"the family: {sorted(family)} vs {sorted(DEFERRED)}"
-    )
 
 
 def test_the_classified_cycle_is_still_a_cycle(tmp_path: Path) -> None:
