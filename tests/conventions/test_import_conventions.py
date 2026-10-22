@@ -13,7 +13,7 @@ runtime ``isinstance``, a pydantic model resolving its annotations at
 class-creation time, or a ``get_type_hints`` call. Nothing in the tree needed
 the class yet, which is exactly why the inconsistency survived a review.
 
-The lock has six halves, and each fails for a different reason:
+The lock has seven halves, and each fails for a different reason:
 
 * the **source** half says the contract is not imported behind
   ``if TYPE_CHECKING:`` anywhere in ``src/paa``, except a documented deferral
@@ -31,7 +31,13 @@ The lock has six halves, and each fails for a different reason:
   **counted** against the files on disk rather than claimed in prose;
 * the **extra** half says each module the sweep tolerates a failure for
   really does need the extra it is listed under, so the tolerance list is a
-  set of facts about the tree and not a set of claims about it.
+  set of facts about the tree and not a set of claims about it;
+* the **classification** half says every ``if TYPE_CHECKING:`` block left in
+  the package is **classified** — a cycle, an optional extra, deliberate
+  laziness, a guard that buys nothing, a cheap first-party import, or the
+  family — so a block that was left behind was left behind for a stated
+  reason, and the classification is checked against the tree rather than
+  claimed in prose.
 
 The **sweep** half exists because the other halves cannot see a cycle. A
 module that is part of an import cycle imports fine inside a test session — the
@@ -54,6 +60,7 @@ import importlib
 import inspect
 import os
 import re
+import shutil
 import subprocess
 import sys
 import typing
@@ -67,7 +74,11 @@ import paa
 
 #: The package under the convention.
 PACKAGE_ROOT = Path(paa.__file__).parent
-PACKAGE_NAME = paa.__name__
+
+#: Its dotted name. Annotated because ``paa.__name__`` is ``Any`` to a type
+#: checker, and an ``Any`` in a path expression turns the whole expression
+#: into one.
+PACKAGE_NAME: str = paa.__name__
 
 #: The contract, and the module that owns it.
 CONTRACT_MODULE = "paa.storage.relational.base"
@@ -107,6 +118,147 @@ DEFERRED: dict[str, str] = {
     ),
 }
 
+#: The class of every ``if TYPE_CHECKING:`` block left in the package, keyed by
+#: module, with the class as the value.
+#:
+#: This classification used to live in a paragraph in a run-scoped report — a
+#: directory the next run will not read. It lives here because it is a **fact
+#: about the tree**, and a fact about the tree can be *checked*: the table is
+#: compared against the same AST sweep it was derived from, so a block that
+#: appears without a class fails the lock, and a block that is converted
+#: without being removed from the table fails it too. The table is the
+#: durable form of the plan's "documented and deferred, with the cycle proof".
+#:
+#: The classes are:
+#:
+#: ``A`` — **a real import cycle.** The block cannot be converted: a runtime
+#:     import closes a cycle and the import breaks. Proven rather than
+#:     asserted, by converting the block in a *copy* of the package and
+#:     watching the import fail.
+#: ``B`` — **an optional extra.** The block names a package this project
+#:     provides as an extra. Converting it makes the module need that extra
+#:     at module scope, which a minimal install does not have.
+#: ``C`` — **deliberate laziness.** The block names a first-party module the
+#:     author wanted to keep out of this module's import, and the price of
+#:     the laziness is measured and recorded in :data:`TYPE_CHECKING_NOTES`.
+#: ``D`` — **the guard buys nothing.** The block names only the standard
+#:     library, so there is nothing to defer.
+#: ``E`` — **first-party, cheap, inert.** The block names only first-party
+#:     modules and the standard library, and converting it breaks no import.
+#: ``F`` — **the family.** The block resolves the relational contract, and
+#:     :data:`DEFERRED` owns it: the deferral names the task that converts it.
+#:
+#: Five of the six are **mechanical** properties of the block, and the checks
+#: below enforce them: ``A`` and ``B`` are proved by converting the block in
+#: a copy of the tree, ``D`` and ``E`` are read off the AST, and ``F`` is the
+#: deferral map. ``C`` is the one **judgement** — it says the guard was
+#: written on purpose, and the measured price of every block is recorded so
+#: the judgement can be re-examined rather than taken on trust. The price
+#: does not separate the two classes by itself: ``paa.models`` is classed
+#: ``E`` and costs +15.1 ms to convert, more than four of the ten ``C``
+#: members cost. What separates them is the *intent* the guard records.
+TYPE_CHECKING_CLASSES: dict[str, str] = {
+    "paa.agents.base": "C",
+    "paa.agents.orchestrator": "C",
+    "paa.api.app": "B",
+    "paa.cli.main": "C",
+    "paa.coder.agent": "C",
+    "paa.coder.model_adapter": "E",
+    "paa.coder.runtime_tools": "C",
+    "paa.context.budget": "D",
+    "paa.daemon": "C",
+    "paa.improvement.reflection": "C",
+    "paa.memory.creator": "E",
+    "paa.memory.world_model": "D",
+    "paa.models": "E",
+    "paa.models.embeddings": "C",
+    "paa.models.registry": "E",
+    "paa.models.router": "C",
+    "paa.observability.logging": "E",
+    "paa.observability.runs": "F",
+    "paa.observability.tracing": "E",
+    "paa.runtime": "C",
+    "paa.skills.adapters.base": "E",
+    "paa.skills.adapters.claw_hub": "E",
+    "paa.skills.adapters.mcp": "E",
+    "paa.skills.adapters.native": "E",
+    "paa.skills.usa": "E",
+    "paa.storage.coldlake": "E",
+    "paa.storage.coldlake.cas": "A",
+    "paa.storage.graph": "E",
+    "paa.storage.relational.connection": "D",
+    "paa.storage.relational.postgres": "D",
+    "paa.storage.vector": "E",
+    "paa.storage.vector.numpy_backend": "E",
+    "paa.storage.vector.qdrant_backend": "E",
+}
+
+#: The classes a block can be in. A class with no member is a class the tree
+#: has outgrown, and the check below refuses one.
+TYPE_CHECKING_CLASS_KEYS: frozenset[str] = frozenset({"A", "B", "C", "D", "E", "F"})
+
+#: Why each block is in the class it is in — the heavy module it keeps out, the
+#: standard library it defers for nothing, the cycle it closes.
+#:
+#: The prices are **measured**: each block was converted to a runtime import
+#: in a *copy* of the tree, and the importing module's own import time was
+#: timed in a fresh interpreter, five times, with the minimum taken (minimum
+#: rather than mean, because a scheduler hiccup can only ever add). The
+#: measurement is from one host on 2026-10-22 and the numbers move with the
+#: machine; the *class* does not depend on the number, and a reader who
+#: disagrees with a class can re-run the measurement rather than argue with
+#: the table.
+TYPE_CHECKING_NOTES: dict[str, str] = {
+    "paa.agents.base": "names paa.ledger.store, which it does not otherwise import: +39.7 ms",
+    "paa.agents.orchestrator": (
+        "names paa.ledger.store, which the module already pulls in by another route: +1.1 ms"
+    ),
+    "paa.api.app": "names fastapi (the paa[api] extra) and paa.runtime: +176.9 ms",
+    "paa.cli.main": (
+        "names paa.runtime: +12.1 ms, and AGENTS.md forbids paa.runtime in a CLI that "
+        "prints its version"
+    ),
+    "paa.coder.agent": "names paa.runtime among others: +11.4 ms",
+    "paa.coder.model_adapter": "names paa.core.types and paa.models.router, both loaded: -1.8 ms",
+    "paa.coder.runtime_tools": "names paa.runtime: +13.4 ms",
+    "paa.context.budget": "names only collections.abc.Iterable",
+    "paa.daemon": "names paa.runtime: +128.8 ms, the largest price in the tree",
+    "paa.improvement.reflection": (
+        "names paa.ledger.store, which it does not otherwise import: +7.5 ms"
+    ),
+    "paa.memory.creator": (
+        "names paa.memory.contradiction, which it already imports at runtime: -0.5 ms"
+    ),
+    "paa.memory.world_model": "names only datetime.datetime",
+    "paa.models": "names paa.config and paa.ledger.store: +15.1 ms",
+    "paa.models.embeddings": "names paa.storage.vector.embeddings: +48.0 ms",
+    "paa.models.registry": "names paa.config.ModelSettings: +0.2 ms",
+    "paa.models.router": "names paa.ledger.store, which it does not otherwise import: +14.4 ms",
+    "paa.observability.logging": "names paa.config, already loaded: -0.1 ms",
+    "paa.observability.runs": (
+        "the eighth member of the contract's family; T-008 (wave 2) owns the file and "
+        "converts the block there"
+    ),
+    "paa.observability.tracing": "names paa.config and paa.observability.metrics: +0.9 ms",
+    "paa.runtime": "names paa.models.router, which it does not otherwise import: +32.7 ms",
+    "paa.skills.adapters.base": "names paa.sandbox.base, paa.skills.contracts and secrets: +2.5 ms",
+    "paa.skills.adapters.claw_hub": "names paa.sandbox.base and paa.skills.adapters.base: +0.7 ms",
+    "paa.skills.adapters.mcp": "names collections.abc and paa.sandbox.base: -0.5 ms",
+    "paa.skills.adapters.native": "names the sandbox, the adapters and the contracts: -0.4 ms",
+    "paa.skills.usa": "names the sandbox, the contracts, the registry and the secrets: +2.2 ms",
+    "paa.storage.coldlake": "names paa.config.StorageSettings, already loaded: -4.3 ms",
+    "paa.storage.coldlake.cas": (
+        "names paa.storage.coldlake.base.BlobStore, and base.py imports this module for "
+        "BlobRef at runtime, so a runtime import here closes the cycle"
+    ),
+    "paa.storage.graph": "names paa.config.StorageSettings, already loaded: -0.4 ms",
+    "paa.storage.relational.connection": "names only collections.abc.{Coroutine,Iterable,Sequence}",
+    "paa.storage.relational.postgres": "names only pathlib.Path",
+    "paa.storage.vector": "names paa.config, already loaded: -0.7 ms",
+    "paa.storage.vector.numpy_backend": "names paa.config, already loaded: +1.9 ms",
+    "paa.storage.vector.qdrant_backend": "names paa.config, already loaded: +0.1 ms",
+}
+
 #: Modules that cannot import in a minimal install because they need an
 #: optional extra, and the packages that extra provides.
 #:
@@ -135,6 +287,14 @@ OPTIONAL_EXTRA_MODULES: dict[str, frozenset[str]] = {
 
 #: How long one module may take to import before the check calls it hung.
 IMPORT_TIMEOUT_SECONDS = 120
+
+#: How long the whole package may take to import in one interpreter before the
+#: aggregate check calls it hung. Longer than :data:`IMPORT_TIMEOUT_SECONDS`
+#: because the aggregate imports *every* module, not one — and it is a
+#: separate constant because the two timeouts answer different questions: one
+#: is "this module hung", the other is "the package hung". A failure message
+#: that names the wrong one would send a reader to the wrong module.
+AGGREGATE_IMPORT_TIMEOUT_SECONDS = 300
 
 #: How many interpreters run at once. The probes are independent processes, so
 #: this is wall-clock, not concurrency of anything shared.
@@ -328,12 +488,23 @@ def _read_probe(module: str, completed: subprocess.CompletedProcess[str]) -> Pro
     )
 
 
-def _probe(module: str, *, extra_path: Path | None = None) -> Probe:
+def _probe(
+    module: str,
+    *,
+    extra_path: Path | None = None,
+    cwd: Path | None = None,
+) -> Probe:
     """Import one module in a fresh interpreter and report what happened.
 
     ``extra_path`` is prepended to ``PYTHONPATH`` for the child, which is how
     the cycle fixture below is made importable without the repository
     containing a deliberate cycle.
+
+    ``cwd`` is the child's working directory, and it exists for the same
+    reason: a child started in a directory that *contains* a ``paa`` package
+    would import that one instead of the copy on ``PYTHONPATH``, and the
+    copy is the thing under test. The default is the parent's, which is what
+    every other probe wants.
     """
     env: dict[str, str] | None = None
     if extra_path is not None:
@@ -348,6 +519,7 @@ def _probe(module: str, *, extra_path: Path | None = None) -> Probe:
             text=True,
             timeout=IMPORT_TIMEOUT_SECONDS,
             env=env,
+            cwd=None if cwd is None else str(cwd),
         )
     except subprocess.TimeoutExpired:
         return Probe(
@@ -361,19 +533,37 @@ def _probe(module: str, *, extra_path: Path | None = None) -> Probe:
     return _read_probe(module, completed)
 
 
-def _probe_without(module: str, packages: frozenset[str]) -> Probe:
+def _probe_without(
+    module: str,
+    packages: frozenset[str],
+    *,
+    extra_path: Path | None = None,
+    cwd: Path | None = None,
+) -> Probe:
     """Import one module with some top-level packages made unimportable.
 
     This is how the tolerance list is checked against the tree: the packages
     an entry names are blocked, and the module must then fail to import — or
     the entry is describing a constraint the module does not have.
+
+    ``extra_path`` and ``cwd`` have the same meaning as in :func:`_probe`:
+    they make the probe run against a *copy* of the package rather than the
+    one in the repository.
     """
+    env: dict[str, str] | None = None
+    if extra_path is not None:
+        env = dict(os.environ)
+        existing = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = str(extra_path) + (os.pathsep + existing if existing else "")
+
     try:
         completed = subprocess.run(
             [sys.executable, "-c", _BLOCKED_PROBE, module, ",".join(sorted(packages))],
             capture_output=True,
             text=True,
             timeout=IMPORT_TIMEOUT_SECONDS,
+            env=env,
+            cwd=None if cwd is None else str(cwd),
         )
     except subprocess.TimeoutExpired:
         return Probe(
@@ -607,6 +797,77 @@ def test_the_sweep_covers_every_module_under_the_package(
     )
 
 
+def _as_text(raw: bytes | str | None) -> str:
+    """A child's captured output as text, whichever form it arrives in.
+
+    ``subprocess.run`` re-raises ``TimeoutExpired`` with whatever the pipe
+    reader had collected — and on POSIX that is **bytes**, even when the call
+    asked for text, because the decoding happens in ``Popen.communicate`` and
+    the timeout path never gets there. So the form is checked rather than
+    assumed: a caller that assumed ``str`` would raise ``AttributeError``
+    inside the very handler that exists to report a hung child.
+    """
+    if raw is None:
+        return ""
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace")
+    return raw
+
+
+def _last_module_started(output: str) -> str:
+    """The last module the aggregate child said it was about to import.
+
+    The child announces each import before it makes it, so the last
+    announcement is the module that was in flight when the child died — which
+    is the only thing that makes a timeout actionable. "The aggregate import
+    timed out" names a symptom; "it hung on ``paa.storage.vector``" names a
+    module.
+    """
+    started = [
+        line.split("\t", 1)[1]
+        for line in output.splitlines()
+        if line.startswith("importing\t") and "\t" in line
+    ]
+    if not started:
+        return "none — the child announced nothing"
+    return started[-1]
+
+
+def _aggregate_import(script: str) -> str:
+    """Import the whole package in one interpreter and say what happened.
+
+    Returns an **empty string** when the package imported as a whole, and a
+    verdict otherwise.
+
+    A **hung** child is a verdict, not an error. The timeout exists to catch
+    a hang, and an uncaught ``TimeoutExpired`` reports the hang as a stack
+    trace with the reader left guessing which module hung. So the child
+    announces every import it starts, and this names the timeout, the module
+    it was on, and whatever the child had written to stderr.
+    """
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=AGGREGATE_IMPORT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as expired:
+        return (
+            f"the package did not import as a whole within "
+            f"{AGGREGATE_IMPORT_TIMEOUT_SECONDS}s; the last module it started was "
+            f"{_last_module_started(_as_text(expired.stdout))}. "
+            f"The child wrote: {_as_text(expired.stderr).strip()[-2000:]}"
+        )
+    if completed.returncode != 0:
+        return (
+            "the package does not import as a whole; the last module it started was "
+            f"{_last_module_started(completed.stdout)}:\n"
+            + completed.stderr.strip()[-4000:]
+        )
+    return ""
+
+
 def test_every_module_imports_together_in_one_interpreter(
     importable: list[str],
 ) -> None:
@@ -618,16 +879,35 @@ def test_every_module_imports_together_in_one_interpreter(
     order, because alphabetical order is the order a developer tends to try,
     and a cycle that only breaks in one of the two orders is still a cycle.
     """
-    script = "\n".join(f"import {name}" for name in importable)
-    completed = subprocess.run(
-        [sys.executable, "-c", script],
-        capture_output=True,
-        text=True,
-        timeout=300,
+    script = "\n".join(
+        f"print('importing\\t{name}', flush=True)\nimport {name}" for name in importable
     )
-    assert completed.returncode == 0, (
-        "the package does not import as a whole:\n" + completed.stderr.strip()[-4000:]
+    verdict = _aggregate_import(script)
+    assert verdict == "", verdict
+
+
+def test_a_hung_aggregate_import_is_a_verdict(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A hang is reported as a verdict, naming the timeout and the module.
+
+    The timeout exists to catch a hang. An uncaught ``TimeoutExpired`` reports
+    the hang as a stack trace with the reader left guessing which module hung
+    — so the timeout is shortened to a second here, a child that really does
+    sleep is handed to the aggregate, and the verdict has to name both the
+    timeout and the module it was on.
+
+    The child is a real hang, produced by a real ``sleep``, not a mock of the
+    probe: the thing being tested is what the parent does with a child that
+    stops answering, and a mock would test the mock.
+    """
+    monkeypatch.setattr(sys.modules[__name__], "AGGREGATE_IMPORT_TIMEOUT_SECONDS", 1)
+
+    verdict = _aggregate_import(
+        "print('importing\\tpaa.sleeper', flush=True)\nimport time\ntime.sleep(30)"
     )
+
+    assert verdict != "", "a hung child produced no verdict at all"
+    assert "1s" in verdict, f"the verdict does not name the timeout: {verdict}"
+    assert "paa.sleeper" in verdict, f"the verdict does not name the module: {verdict}"
 
 
 def test_the_probe_would_notice_a_cycle(tmp_path: Path) -> None:
@@ -825,4 +1105,292 @@ def test_every_tolerated_module_really_needs_its_extra() -> None:
             f"{module} is listed as needing {sorted(packages)}, but it imports "
             f"cleanly without them — the entry describes a constraint the module "
             "does not have, and has to go"
+        )
+
+
+# ---------------------------------------------------------------------------
+# The classification of the blocks that are left
+# ---------------------------------------------------------------------------
+
+
+def _type_checking_guards(tree: ast.Module) -> list[ast.If]:
+    """Every ``if TYPE_CHECKING:`` block in the module, at any depth.
+
+    The sweep is deliberately wider than "a module-level guard": a guard
+    nested inside a function or a class still defers an import, and a
+    classification table that only saw the module-level ones would be
+    incomplete against the tree it claims to describe.
+    """
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If) and _is_type_checking_guard(node)
+    ]
+
+
+def _modules_with_type_checking_guards() -> set[str]:
+    """The modules that still have a ``TYPE_CHECKING`` block.
+
+    This is the sweep the classification table was derived from, and the
+    check below compares the two, so the table is a fact about the tree
+    rather than a claim about it.
+    """
+    found: set[str] = set()
+    for name, path in _module_files():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        if _type_checking_guards(tree):
+            found.add(name)
+    return found
+
+
+def _is_stdlib(module: str) -> bool:
+    """Whether a dotted module path names the standard library."""
+    return module.split(".")[0] in sys.stdlib_module_names
+
+
+def _is_first_party(module: str) -> bool:
+    """Whether a dotted module path names this project's own code.
+
+    An empty path is a **relative** import — ``from . import x`` — which is
+    this project's code by definition, and the AST records it as an empty
+    module name.
+    """
+    return module == "" or module == PACKAGE_NAME or module.startswith(PACKAGE_NAME + ".")
+
+
+def _guarded_modules(module: str) -> set[str]:
+    """The modules a module's ``TYPE_CHECKING`` block imports."""
+    for name, path in _module_files():
+        if name != module:
+            continue
+        _, type_checking = _imports_of(path)
+        return {imported for imported, _ in type_checking}
+    return set()
+
+
+def _third_party_packages(module: str) -> frozenset[str]:
+    """The third-party packages a module's ``TYPE_CHECKING`` block names."""
+    return frozenset(
+        imported.split(".")[0]
+        for imported in _guarded_modules(module)
+        if not _is_stdlib(imported) and not _is_first_party(imported)
+    )
+
+
+def _relative_source_path(module: str) -> Path:
+    """Where a module's source file lives, relative to the package root."""
+    for name, path in _module_files():
+        if name == module:
+            return path.relative_to(PACKAGE_ROOT)
+    raise KeyError(module)
+
+
+def _shadow_package(root: Path, module: str) -> Path:
+    """A copy of the package, and the file in it that is about to be converted.
+
+    The copy is what the probe imports. A conversion that breaks an import
+    has to break it in a **copy**: the repository is not the thing under
+    test — the tree would be, and the tree must not change.
+    """
+    package = root / PACKAGE_NAME
+    shutil.copytree(PACKAGE_ROOT, package, ignore=shutil.ignore_patterns("__pycache__"))
+    return package / _relative_source_path(module)
+
+
+def _hoisted_source(source: str) -> str:
+    """The module's source with its module-level ``TYPE_CHECKING`` guard removed.
+
+    "Converting the block" means exactly this: the guarded imports become
+    ordinary runtime imports. The result is written to a copy of the
+    package, never to the repository — the point of the exercise is to watch
+    what the tree *would* do, not to change what it does.
+    """
+    tree = ast.parse(source)
+    body: list[ast.stmt] = []
+    for node in tree.body:
+        if isinstance(node, ast.If) and _is_type_checking_guard(node):
+            body.extend(node.body)
+        else:
+            body.append(node)
+    tree.body = body
+    return ast.unparse(tree)
+
+
+def test_every_type_checking_block_is_classified() -> None:
+    """The classification is a fact about the tree, not a claim about it.
+
+    The table used to live in a paragraph in a run-scoped report — a
+    directory the next run will not read. It lives here because it can be
+    **checked**, and this is the check: the same AST sweep the table was
+    derived from is run again, and the two sets have to be equal.
+
+    So a new ``if TYPE_CHECKING:`` block has to be classified before the
+    lock lets it through, and a block that is converted has to leave the
+    table. Both directions are the same assertion, and a table that drifts
+    from the tree in either direction is a failure with a message that
+    names the modules on both sides.
+    """
+    guarded = _modules_with_type_checking_guards()
+    classified = set(TYPE_CHECKING_CLASSES)
+
+    assert classified == guarded, (
+        "the classification and the tree disagree about which modules still have "
+        f"an `if TYPE_CHECKING:` block.\n"
+        f"  in the tree but not classified: {sorted(guarded - classified)}\n"
+        f"  classified but no longer in the tree: {sorted(classified - guarded)}"
+    )
+
+    assert set(TYPE_CHECKING_NOTES) == classified, (
+        "every classified block needs a note saying why it is in that class, and "
+        "no note may outlive its block.\n"
+        f"  without a note: {sorted(classified - set(TYPE_CHECKING_NOTES))}\n"
+        f"  without a block: {sorted(set(TYPE_CHECKING_NOTES) - classified)}"
+    )
+
+    used = set(TYPE_CHECKING_CLASSES.values())
+    unknown = sorted(used - TYPE_CHECKING_CLASS_KEYS)
+    assert not unknown, f"the tree is classified with unknown class(es): {unknown}"
+
+    empty = sorted(TYPE_CHECKING_CLASS_KEYS - used)
+    assert not empty, (
+        f"class(es) {empty} have no member left — the tree has outgrown them, so "
+        "the classification has to say so"
+    )
+
+
+def test_the_classification_says_what_it_claims() -> None:
+    """Each class is a property of the block it labels, and this enforces it.
+
+    Five of the six classes are **mechanical**: what the block names decides
+    the class, and the check reads the names off the AST. ``B`` is the block
+    that names a third-party package — an optional extra of this project —
+    and nothing else may name one. ``D`` is the block that names only the
+    standard library, and nothing else may do that. ``F`` is the family, and
+    the deferral map says which modules those are.
+
+    ``C`` is the one judgement, and it is checked only for being a *known*
+    class; what it asserts is the intent the guard records, and the measured
+    price of every block is in :data:`TYPE_CHECKING_NOTES` so the judgement
+    can be re-examined rather than taken on trust.
+    """
+    for name, _ in _module_files():
+        klass = TYPE_CHECKING_CLASSES.get(name)
+        if klass is None:
+            continue
+        guarded = _guarded_modules(name)
+        third_party = sorted(
+            imported
+            for imported in guarded
+            if not _is_stdlib(imported) and not _is_first_party(imported)
+        )
+        stdlib_only = bool(guarded) and all(_is_stdlib(imported) for imported in guarded)
+
+        if klass == "B":
+            assert third_party, (
+                f"{name} is classified B (an optional extra) but names no "
+                f"third-party package: {sorted(guarded)}"
+            )
+        else:
+            assert not third_party, (
+                f"{name} is classified {klass} but names the third-party "
+                f"package(s) {third_party} — that is what class B is for"
+            )
+
+        if klass == "D":
+            assert guarded, (
+                f"{name} is classified D but has no `if TYPE_CHECKING:` block any "
+                "more — the classification has to follow the tree"
+            )
+            assert stdlib_only, (
+                f"{name} is classified D (the guard buys nothing) but names "
+                f"{sorted(guarded)}, which is not the standard library"
+            )
+        else:
+            assert not stdlib_only, (
+                f"{name} is classified {klass} but names only the standard "
+                f"library {sorted(guarded)} — that is what class D is for"
+            )
+
+    family = {name for name, klass in TYPE_CHECKING_CLASSES.items() if klass == "F"}
+    assert family == set(DEFERRED), (
+        "the family class and the deferral map disagree about which modules are "
+        f"the family: {sorted(family)} vs {sorted(DEFERRED)}"
+    )
+
+
+def test_the_classified_cycle_is_still_a_cycle(tmp_path: Path) -> None:
+    """The one block that cannot be converted, proven rather than asserted.
+
+    A classification that says "this closes a cycle" is a claim until
+    somebody converts the block and watches the import break. So this does
+    exactly that, in a copy: the copy imports cleanly, the converted copy
+    does not, and the failure reads as a cycle rather than as a missing
+    module.
+
+    The class is **self-invalidating**: the day the cycle is broken the
+    import succeeds, this fails, and the table has to change — which is the
+    point. A conversion that leaves a stale ``A`` behind is a table that has
+    stopped describing the tree.
+    """
+    cycles = sorted(name for name, klass in TYPE_CHECKING_CLASSES.items() if klass == "A")
+    assert cycles, "no block is classified A, so the cycle proof would prove nothing"
+
+    for module in cycles:
+        root = tmp_path / module.replace(".", "_")
+        root.mkdir()
+        target = _shadow_package(root, module)
+
+        control = _probe(module, extra_path=root, cwd=root)
+        assert control.ok, (
+            f"the copy of the package does not import {module}, so converting the "
+            f"block below would prove nothing: {control.describe()}"
+        )
+
+        target.write_text(
+            _hoisted_source(target.read_text(encoding="utf-8")), encoding="utf-8"
+        )
+        converted = _probe(module, extra_path=root, cwd=root)
+        assert not converted.ok, (
+            f"{module} is classified A (a real import cycle) but it imports "
+            "cleanly with the block converted — the cycle is gone, so the "
+            "classification has to change"
+        )
+        assert any(marker in converted.error_message for marker in _CYCLE_MARKERS), (
+            f"{module} is classified A, but converting its block fails for another "
+            f"reason: {converted.describe()}"
+        )
+
+
+def test_the_classified_extra_still_needs_the_extra(tmp_path: Path) -> None:
+    """The block that keeps a module importable without the extra.
+
+    Converting it makes the module need the extra at module scope, so the
+    proof runs the other way round: with the extra blocked the module still
+    imports — that is what the guard is for — and with the block converted
+    and the extra blocked it does not.
+    """
+    extras = sorted(name for name, klass in TYPE_CHECKING_CLASSES.items() if klass == "B")
+    assert extras, "no block is classified B, so the extra proof would prove nothing"
+
+    for module in extras:
+        root = tmp_path / module.replace(".", "_")
+        root.mkdir()
+        target = _shadow_package(root, module)
+        packages = _third_party_packages(module)
+        assert packages, f"{module} is classified B but names no third-party package"
+
+        control = _probe_without(module, packages, extra_path=root, cwd=root)
+        assert control.ok, (
+            f"{module} is classified B (an optional extra) but it does not import "
+            f"without {sorted(packages)}: {control.describe()}"
+        )
+
+        target.write_text(
+            _hoisted_source(target.read_text(encoding="utf-8")), encoding="utf-8"
+        )
+        converted = _probe_without(module, packages, extra_path=root, cwd=root)
+        assert not converted.ok, (
+            f"{module} is classified B, but it imports without {sorted(packages)} "
+            "even with the block converted — the extra is not what the guard is "
+            "keeping out, so the classification has to change"
         )
