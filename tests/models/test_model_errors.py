@@ -105,14 +105,49 @@ def _schema_with(keyword: str, value: Any) -> dict[str, Any]:
     return {"type": "object", keyword: value}
 
 
+#: A payload that **reaches** the keyword, so the keyword's value is actually
+#: used.
+#:
+#: The distinction matters and was measured. On the unfixed source a malformed
+#: keyword was only a crash when the instance reached it — ``minLength: "2"``
+#: against a *dict* was silently accepted, and against a *string* it raised a
+#: raw ``TypeError``. The rule has to hold in both cases: a broken contract
+#: is broken whether or not this payload happens to walk into it.
+REACHING_PAYLOADS: dict[str, Any] = {
+    "type": "a string",
+    "enum": "a string",
+    "properties": {"a": 1},
+    "required": {"a": 1},
+    "additionalProperties": {"a": 1},
+    "items": [1],
+    "minItems": [1],
+    "maxItems": [1],
+    "minLength": "abc",
+    "maxLength": "abc",
+    "minimum": 5,
+    "maximum": 5,
+    "anyOf": "a string",
+    "oneOf": "a string",
+    "allOf": "a string",
+}
+
+#: Every malformed keyword, against a payload that does **not** reach it and
+#: against one that does.
+MALFORMED_CASES: tuple[tuple[str, Any, Any], ...] = tuple(
+    (keyword, value, payload)
+    for keyword, value in MALFORMED_KEYWORDS
+    for payload in ({"a": "x"}, REACHING_PAYLOADS[keyword])
+)
+
+
 # ---------------------------------------------------------------------------
 # F-2 — the model path
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(("keyword", "value"), MALFORMED_KEYWORDS)
+@pytest.mark.parametrize(("keyword", "value", "payload"), MALFORMED_CASES)
 def test_a_malformed_keyword_is_reported_and_never_raised_as_a_type_error(
-    keyword: str, value: Any
+    keyword: str, value: Any, payload: Any
 ) -> None:
     """Every keyword the validator reads is checked for shape.
 
@@ -121,12 +156,14 @@ def test_a_malformed_keyword_is_reported_and_never_raised_as_a_type_error(
     ``"not-a-mapping".items()`` is an ``AttributeError``, and
     ``int("2")`` in the minimal-instance builder is a ``ValueError``. None of
     them is a :class:`~paa.core.errors.PaaError`, so none of them was
-    recorded by the run that hit it.
+    recorded by the run that hit it. And when the payload did *not* reach the
+    keyword, the same defect was answered by silently accepting the instance
+    against a schema whose constraint had been dropped.
     """
     schema = _schema_with(keyword, value)
 
     with pytest.raises(MalformedSchemaError) as caught:
-        validate_against_schema({"a": "x"}, schema)
+        validate_against_schema(payload, schema)
 
     assert not isinstance(caught.value, TypeError)
     assert not isinstance(caught.value, AttributeError)
@@ -216,6 +253,10 @@ async def test_no_raw_type_error_escapes_complete_structured(
     a ``TypeError`` out of it is neither recorded by the ledger nor routable
     by the escalation policy. It is now a
     :class:`~paa.models.base.MalformedSchemaError`, which is both.
+
+    The refusal is on the **schema**, so it does not depend on the payload:
+    the provider is never asked, because no answer could satisfy a schema
+    whose constraint cannot be read.
     """
     provider = EchoProvider()
     request = CompletionRequest(messages=(Message.user("hello"),))

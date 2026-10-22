@@ -193,8 +193,45 @@ def _schema_with(keyword: str, value: Any) -> dict[str, Any]:
     return {"type": "object", keyword: value}
 
 
-@pytest.mark.parametrize(("keyword", "value"), MALFORMED_KEYWORDS)
-def test_a_malformed_keyword_is_reported_and_not_ignored(keyword: str, value: Any) -> None:
+#: A payload that **reaches** the keyword, so the keyword's value is actually
+#: used.
+#:
+#: The distinction matters and was measured. On the unfixed source a malformed
+#: keyword was only a crash when the instance reached it — ``minLength: "2"``
+#: against a *mapping* was silently accepted, and against a *string* the
+#: constraint was quietly dropped. The rule has to hold in both cases: a
+#: broken contract is broken whether or not this payload happens to walk into
+#: it.
+REACHING_PAYLOADS: dict[str, Any] = {
+    "type": "a string",
+    "enum": "a string",
+    "properties": {"a": 1},
+    "required": {"a": 1},
+    "additionalProperties": {"a": 1},
+    "items": [1],
+    "minItems": [1],
+    "maxItems": [1],
+    "minLength": "abc",
+    "maxLength": "abc",
+    "pattern": "abc",
+    "minimum": 5,
+    "maximum": 5,
+    "anyOf": "a string",
+}
+
+#: Every malformed keyword, against a payload that does **not** reach it and
+#: against one that does.
+MALFORMED_CASES: tuple[tuple[str, Any, Any], ...] = tuple(
+    (keyword, value, payload)
+    for keyword, value in MALFORMED_KEYWORDS
+    for payload in ({"a": "x"}, REACHING_PAYLOADS[keyword])
+)
+
+
+@pytest.mark.parametrize(("keyword", "value", "payload"), MALFORMED_CASES)
+def test_a_malformed_keyword_is_reported_and_not_ignored(
+    keyword: str, value: Any, payload: Any
+) -> None:
     """The instance is never judged against a schema whose constraint was dropped.
 
     Before the fix every one of these was *silently* ignored: the guards are
@@ -204,7 +241,7 @@ def test_a_malformed_keyword_is_reported_and_not_ignored(keyword: str, value: An
     refuses.
     """
     with pytest.raises(ValueError, match="keyword whose value cannot be used"):
-        schema_errors({"a": "x"}, _schema_with(keyword, value))
+        schema_errors(payload, _schema_with(keyword, value))
 
 
 def test_a_malformed_keyword_the_module_does_not_read_is_still_refused() -> None:
