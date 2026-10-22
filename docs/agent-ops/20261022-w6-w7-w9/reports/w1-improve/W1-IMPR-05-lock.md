@@ -2,10 +2,10 @@
 agent: W1-IMPR-05 | scope: R-W1-308 (the aggregate import probe's uncaught TimeoutExpired) + R-W1-309 (the durable, checkable classification of the remaining TYPE_CHECKING blocks) | status: DONE
 findings: FIXED 2 | REJECTED 0 (with evidence) | DEFERRED 0
 blockers_major_open: none
-code_commits: 6bf2343 | report_commit: (this commit)
+code_commits: 6bf2343, a379661 | report_commit: (this commit)
 tests_added_or_strengthened: 5
 ownership_violations: none
-confidence: high (every number re-derived with my own AST sweep and my own import measurements; 12 mutations run, 12 caught)
+confidence: high (every number re-derived with my own AST sweep and my own import measurements; 12 mutations run, 12 caught; **the independent-review subagent could NOT be run** — see §6.9)
 <!-- ORCH-DIGEST:END -->
 
 # Improvement report — W1-IMPR-05 (the import lock)
@@ -415,6 +415,35 @@ was restored after each):
    rather than editable (the copy is placed on `PYTHONPATH`, which precedes the
    install path, so the copy still wins — measured here, not on a wheel
    install).
+9. **The mandatory independent review could NOT be run.** [RAN] the spawn of a
+   `code-reviewer` subagent failed with *"Subagent depth limit reached (1)"* —
+   the same limit W1-IMPR-02 reported for the same reason. **The change is
+   therefore reviewed only by me**, with the evidence in §5: 12 mutations (9 on
+   the table, 3 on the tree) each caught by a named test, and the
+   `ast.unparse` round-trip check below. A delta reviewer should read this
+   change as *unreviewed by a second pair of eyes* and give it the review it
+   did not get. I substituted the checks a reviewer would have made:
+   - **`ast.unparse` cannot change the meaning of a file.** [RAN] every one of
+     the 137 files under `src/paa` was parsed, unparsed and re-parsed, and the
+     AST dumps compared: **0 files changed**. The rewrite the proofs perform on
+     a copy is therefore semantics-preserving, not approximately so.
+   - **The copy shadows the installed package.** The class-A and class-B proofs
+     would fail if it did not: the class-A proof's *converted* copy fails with
+     the cycle error, which only the converted copy can produce, and the
+     class-B proof's converted copy fails with the extra blocked, which only
+     the converted copy can produce. Both failures are observed.
+   - **The hang test cannot be flaky by racing the child's startup.** The child
+     announces each import *before* it makes it, so "no announcement" means
+     "the child never started" and is reported as such rather than blamed on a
+     module. The timeout was raised from 1 s to 2 s for that reason (`a379661`),
+     which is three orders of magnitude more than the interpreter's startup
+     cost on this host.
+   - **The completeness sweep cannot miss a block.** [RAN] the sweep was
+     checked against the tree's guard shapes: 0 guards with an `else` branch,
+     0 negated `not TYPE_CHECKING` guards, 0 guards whose body is not a bare
+     import, and the guard-set equals the type-checking-import-set (33 == 33).
+     The sweep uses `ast.walk` over the whole module, so a **nested** guard
+     would be found where a module-level-only sweep would miss it.
 
 ---
 
@@ -449,4 +478,22 @@ unclassified.
 | SHA | What |
 |---|---|
 | `6bf2343` | the code: `tests/conventions/test_import_conventions.py` (R-W1-308 + R-W1-309) |
+| `a379661` | the hardening: the hang test's startup assumption, and a `KeyError` that says which module it was looking for |
 | (this) | this report, docs-only |
+
+## 9. Addendum — what changed after the first report commit
+
+- **`a379661`** — the hang test's timeout went from 1 s to 2 s, and the
+  docstring now says what the assumption is: the verdict can only name the
+  module if the child *started*, so a child that never got that far is
+  reported as "the child announced nothing" rather than blamed on a module it
+  never reached. The reversal was re-measured after the change: with the
+  `TimeoutExpired` catch removed, `test_a_hung_aggregate_import_is_a_verdict`
+  still FAILS. [RAN]
+- **`ast.unparse` was checked for semantic fidelity** across the whole package:
+  137 files parsed, unparsed, re-parsed, AST dumps compared — **0 changed**.
+  The proofs rewrite a *copy* of a file with it, so this is the difference
+  between "the rewrite is faithful" and "the rewrite is probably faithful".
+- **The independent-review subagent could not be spawned** (depth limit, §6.9).
+  The checks a reviewer would have run are in §6.9 instead, and the change
+  should be read as unreviewed by a second pair of eyes.
