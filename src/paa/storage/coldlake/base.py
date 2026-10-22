@@ -192,8 +192,10 @@ class BlobStore(Protocol):
         substrate has to read the blob's bytes to answer and the bytes are
         damaged: the filesystem store learns the raw size from the frame,
         so a frame that is not a frame is corruption it finds. The S3 store
-        answers from the size recorded when the object was written and does
-        not read the blob, so it does not see the damage.
+        answers from the size recorded when the object was written, so it
+        usually does not read the blob at all — but an object written
+        **before** that record existed is re-read to count its bytes, and a
+        damaged one is found then, at O(size).
         """
         ...
 

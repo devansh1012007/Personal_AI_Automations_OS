@@ -103,6 +103,37 @@ class S3UploadFailedError(Exception):
     """
 
 
+class _StatusOnlyNotFound(Exception):
+    """A 404 that carries a status and **no code**.
+
+    botocore reports the status as the code for a bodyless response, so this
+    shape does not come from the driver itself; it is the shape a *server*
+    answers with when it answers a request without a body, and the store has
+    to classify it the way it classifies the code-as-status, because it says
+    the same thing: the addressed thing is not there, and which thing is not
+    said.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("not found")
+        self.response: dict[str, Any] = {"ResponseMetadata": {"HTTPStatusCode": 404}}
+
+
+class _WrappedNotFound(Exception):
+    """A wrapper whose **cause** carries a 404.
+
+    The shape boto3's transfer manager raises: the wrapper itself carries no
+    response, so a reader that looks at the wrapper sees no answer at all
+    while a reader that follows the cause sees a 404. Two readers of the
+    same failure that read different answers are the hole this class exists
+    to open.
+    """
+
+    def __init__(self, cause: Exception) -> None:
+        super().__init__("wrapped")
+        self.__cause__ = cause
+
+
 class _FailingBody(io.BytesIO):
     """A body whose read fails part-way through, like a dropped connection."""
 
@@ -749,6 +780,114 @@ def test_the_bucket_is_only_asked_about_when_something_is_missing(
     # The blob is gone: now the store has to ask.
     assert store.exists(ref.sha256) is False
     assert client.bucket_calls == 1
+
+
+def test_the_read_path_and_the_write_path_answer_alike_about_an_unqualified_404(
+    client: StubS3Client,
+) -> None:
+    """One 404, one answer — whichever path the caller took.
+
+    A 404 that carries no code says the addressed thing is not there and
+    stops there: it does not say whether the **blob** is gone or the
+    **bucket** is. The store resolves that by asking the server about the
+    bucket, and the answer has to be the same on both paths — otherwise a
+    caller that tests the ``namespace`` detail gets a different answer from
+    the same underlying failure depending on which method it called, and
+    the rule ADR-0032 states ("``namespace="bucket"`` is present if and
+    only if the substrate's namespace is what is missing") is not a rule at
+    all.
+
+    The two paths disagreed because two predicates decided what an
+    unqualified answer is: the read path accepted a status with no code, and
+    the write path wanted the code. The write path answered "blob not
+    found", carried no namespace, and never asked — while the read path
+    asked and answered "bucket not found".
+    """
+    client.bucket_missing = True
+    client.put_failure = _StatusOnlyNotFound()
+    store = S3BlobStore("paa-test", client=client, chunk_size=16)
+
+    answers: list[tuple[str, str | None]] = []
+    for name, call in (
+        ("put", lambda: store.put(b"payload")),
+        ("stat", lambda: store.stat("e" * 64)),
+    ):
+        with pytest.raises(NotFound) as excinfo:
+            call()
+        answers.append((name, excinfo.value.details.get("namespace")))
+
+    assert answers == [("put", "bucket"), ("stat", "bucket")], (
+        "the two paths answered the same 404 differently",
+        answers,
+    )
+
+
+def test_a_write_that_fails_with_an_unqualified_404_asks_about_the_bucket(
+    client: StubS3Client,
+) -> None:
+    """The write path pays for the probe **on the failure path only**.
+
+    A successful write never asks: the write's own response carries a body,
+    and a body says which of the two absences it is, so there is nothing to
+    ask about. A write that fails with an answer that carries no body is
+    the other case — the answer does not say which absence it is, and the
+    store asks.
+
+    So a write can cost one extra request, and only when it has already
+    failed. The record said the write path never asks; it does, and the
+    record now says so.
+    """
+    client.bucket_missing = True
+    client.put_failure = _StatusOnlyNotFound()
+    store = S3BlobStore("paa-test", client=client, chunk_size=16)
+
+    with pytest.raises(NotFound):
+        store.put(b"payload")
+
+    assert client.bucket_calls == 1, (
+        "the write asked about the bucket once, on the failure path",
+        client.bucket_calls,
+    )
+
+    # A *successful* write asks about nothing.
+    client.put_failure = None
+    client.bucket_missing = False
+    client.bucket_calls = 0
+    store.put(b"another payload")
+    assert client.bucket_calls == 0, "the hot path pays for nothing"
+
+
+def test_the_probe_and_the_translator_do_not_call_each_other(client: StubS3Client) -> None:
+    """A failure that is being resolved is not resolved again.
+
+    The probe asks the server about the bucket; the translator resolves an
+    unqualified absence by asking the probe. When the probe's **own**
+    failure carried a 404 that only the *cause* held, the probe did not
+    recognise it (it read the wrapper, which carries no answer), the
+    translator did (it follows the cause), and the two called each other
+    until the interpreter's recursion limit ended the story with a
+    ``RecursionError`` — 97 probes deep, and an exception that is not a
+    member of the vocabulary and misses every ``except PaaError`` at the
+    edge.
+
+    Two things are asserted, and they are different: the store answers with
+    a member of the vocabulary, and it asks the server **once**.
+    """
+    client.failure = _WrappedNotFound(ClientError("404", status=404))
+    store = S3BlobStore("paa-test", client=client, chunk_size=16)
+
+    with pytest.raises(NotFound) as excinfo:
+        store.put(b"payload")
+
+    assert excinfo.value.details.get("namespace") == "bucket", (
+        "the probe's own 404 says the bucket is not there, and that is the "
+        "answer the store owes the caller",
+        excinfo.value.details,
+    )
+    assert client.bucket_calls == 1, (
+        "the probe was asked once; the translator did not ask it again",
+        client.bucket_calls,
+    )
 
 
 @pytest.mark.skipif(boto3_available(), reason="the driver is installed, so it is supported")

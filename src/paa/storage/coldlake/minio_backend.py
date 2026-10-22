@@ -337,21 +337,81 @@ def _driver_cause(exc: BaseException) -> BaseException | None:
     return None
 
 
+def _driver_answer(exc: BaseException) -> tuple[BaseException, str | None, int | None]:
+    """What the driver said: the error itself, its **code** and its **status**.
+
+    The answer is read off the **unwrapped** error, for the same reason the
+    translation unwraps: boto3's transfer manager raises a wrapper around
+    the driver's error, and the wrapper carries no response of its own, so
+    reading the wrapper is reading *no* answer at all.
+
+    It is read in ONE place, and every reader of it uses this function, for
+    a reason that is not tidiness. The reader of the answer and the
+    translator of the answer have to read the **same** answer: when the
+    probe read the wrapper and the translator read the cause, the probe did
+    not recognise a 404 the translator could see, asked again, and the two
+    called each other until the recursion limit ended the story.
+    """
+    current = exc
+    for _ in range(_MAX_CAUSE_DEPTH):
+        cause = _driver_cause(current)
+        if cause is None:
+            break
+        current = cause
+    return current, _s3_error_code(current), _s3_status(current)
+
+
+def _does_not_say_which_absence(code: str | None, status: int | None) -> bool:
+    """Whether the driver's answer does not say **which** absence it is.
+
+    A response that carries a body names its condition: ``NoSuchKey`` for an
+    object, ``NoSuchBucket`` for the namespace. A response with **no body**
+    does not — it says the addressed thing is not there and stops there.
+    That is true of the code the driver synthesises for a bodyless answer
+    (the status reported as the code) and of a status with no code at all,
+    which is what a server that answers a request without a body carries.
+
+    Both are the same condition, so they are read by **one** predicate. Two
+    predicates are two answers: the read path resolved the first and not the
+    second, and a caller could not tell which answer it had been given.
+    """
+    if code is not None:
+        return code == _S3_STATUS_AS_CODE
+    return status == 404
+
+
 def _is_missing_object(exc: BaseException) -> bool:
     """Whether the driver's error says the addressed **object** is not there.
 
-    The bucket-level codes are excluded on purpose: a missing bucket is not a
-    missing object, and the store cannot answer the question at all.
+    The bucket-level codes are excluded on purpose: a missing bucket is not
+    a missing object, and the store cannot answer the question at all.
 
-    The ambiguous code — the status reported as the code, which is all a
+    The ambiguous answer — the status reported as the code, which is all a
     HEAD carries — counts as an object-level absence here, and the *caller*
     resolves the ambiguity: it asks the server about the bucket before it
     reports an absence (see :meth:`S3BlobStore._require_namespace`).
     """
-    code = _s3_error_code(exc)
+    _error, code, status = _driver_answer(exc)
     if code is not None:
         return code in _S3_OBJECT_MISSING_CODES
-    return _s3_status(exc) == 404
+    # No code of its own: the status is all the driver has, and a 404 is an
+    # absence that does not say which one.
+    return _does_not_say_which_absence(code, status)
+
+
+def _absence_qualification(details: dict[str, Any]) -> tuple[str | None, int | None]:
+    """The driver's code and status, as a translated error carries them.
+
+    The translation puts the driver's own answer in the details, so the
+    ambiguity of an answer can be read off a translated error without the
+    driver's exception being in hand.
+    """
+    code = details.get("s3_code")
+    status = details.get("http_status")
+    return (
+        code if isinstance(code, str) else None,
+        status if isinstance(status, int) else None,
+    )
 
 
 def _is_ambiguous_absence(translated: Exception) -> bool:
@@ -359,12 +419,18 @@ def _is_ambiguous_absence(translated: Exception) -> bool:
 
     The driver's code says which of the two absences it is — ``NoSuchKey``
     for an object, ``NoSuchBucket`` for the namespace — except when the
-    code is the status reported as the code, which is all a bodyless
-    response carries. That one is ambiguous, and the store resolves it.
+    answer carries no body, and then it says only that the addressed thing
+    is not there. That one is ambiguous, and the store resolves it.
+
+    The predicate is the shared one (:func:`_does_not_say_which_absence`),
+    so the write path and the read path agree about what an ambiguous
+    answer is.
     """
     if not isinstance(translated, NotFound):
         return False
-    return translated.details.get("s3_code") == _S3_STATUS_AS_CODE
+    code, status = _absence_qualification(translated.details)
+    return _does_not_say_which_absence(code, status)
+
 
 
 def _translate_s3_error(
@@ -393,15 +459,7 @@ def _translate_s3_error(
         # ``__context__`` may be anything.
         return exc
 
-    current = exc
-    for _ in range(_MAX_CAUSE_DEPTH):
-        cause = _driver_cause(current)
-        if cause is None:
-            break
-        current = cause
-
-    code = _s3_error_code(current)
-    status = _s3_status(current)
+    current, code, status = _driver_answer(exc)
     names = _s3_class_names(current)
 
     common: dict[str, Any] = {**details, "driver_error": type(current).__name__}
@@ -627,17 +685,23 @@ class S3BlobStore:
         store is broken" and "the blob is not there" must not be confused,
         and a caller that cannot tell them apart will act on the wrong one.
 
-        The answer is **not** cached. A cached "the bucket was there" is
-        exactly the answer that is wrong when the bucket is deleted under a
-        running daemon, which is the case this exists to catch; and a
-        cached "the bucket was not there" would be wrong the moment
-        somebody creates it.
+        The answer is **not** cached. A cached "the bucket was there" is exactly
+        the answer that is wrong when the bucket is deleted under a running
+        daemon, which is the case this exists to catch; and a cached "the
+        bucket was not there" would be wrong the moment somebody creates it.
+
+        The answer is read off the **unwrapped** error, exactly as the
+        translation reads it. That is not tidiness: when the probe read the
+        wrapper and the translator read the cause, a 404 the probe could not
+        see became a question the probe asked again, and the two called each
+        other until the recursion limit ended the story with a
+        ``RecursionError`` — which is not a member of the vocabulary and
+        tells a caller nothing.
         """
         try:
             self._client.head_bucket(Bucket=self._bucket)
         except Exception as exc:
-            code = _s3_error_code(exc)
-            status = _s3_status(exc)
+            _error, code, status = _driver_answer(exc)
             if code in _S3_BUCKET_MISSING_CODES:
                 return True
             if code is not None and code in _S3_REFUSED_CODES:
@@ -651,9 +715,10 @@ class S3BlobStore:
                 substrate=_SUBSTRATE,
                 bucket=self._bucket,
                 op="head_bucket",
-                translate=self._translate_failure,
+                translate=self._translate_probe_failure,
             )
         return False
+
 
     def _bucket_missing(self, details: dict[str, Any], *, substrate: str = _SUBSTRATE) -> NotFound:
         """The error for a bucket that is not there.
@@ -679,14 +744,17 @@ class S3BlobStore:
 
         The cost is one request, and it is paid only on the path that has
         already decided that something is missing. A hit costs nothing.
-        The write path does not ask: a write's own response carries the
-        code that says which of the two is missing, so it already knows.
         """
         if self._namespace_is_absent():
             raise self._bucket_missing({"sha256": digest, "op": op})
 
     def _translate_failure(
-        self, exc: BaseException, *, substrate: str = _SUBSTRATE, **details: Any
+        self,
+        exc: BaseException,
+        *,
+        substrate: str = _SUBSTRATE,
+        resolve_absence: bool = True,
+        **details: Any,
     ) -> Exception:
         """The S3 dialect's translation, with an ambiguous absence resolved.
 
@@ -698,12 +766,40 @@ class S3BlobStore:
         rather than as "the blob is not there".
 
         The resolution happens on the failure path only, so it costs
-        nothing when the store is working.
+        nothing when the store is working — and it is **bounded**: a
+        failure that is already being resolved is not resolved again (see
+        :meth:`_translate_probe_failure`).
+
+        The write path pays for it too. A write's own response usually
+        carries a body, and a body says which of the two absences it is —
+        so a *successful* write never asks. A write that fails with an
+        answer that carries no body asks, because that answer does not say
+        which absence it is, and a write can cost one extra request.
         """
         translated = _translate_s3_error(exc, substrate=substrate, **details)
-        if _is_ambiguous_absence(translated) and self._namespace_is_absent():
+        if resolve_absence and _is_ambiguous_absence(translated) and self._namespace_is_absent():
             return self._bucket_missing(details, substrate=substrate)
         return translated
+
+    def _translate_probe_failure(
+        self, exc: BaseException, *, substrate: str = _SUBSTRATE, **details: Any
+    ) -> Exception:
+        """The translation of the **probe's own** failure, which does not probe.
+
+        The probe asks the server about the bucket. When that request
+        fails, the failure is translated like any other — but the
+        translation must not ask the server about the bucket **again**: the
+        answer would come from the same broken request, and the two would
+        call each other until the interpreter's recursion limit ended the
+        story with a ``RecursionError``, which is not a member of the
+        vocabulary and misses every ``except PaaError`` at the edge.
+
+        So the probe is asked at most once per failure, and its own failure
+        is reported as what it is: the store could not find out.
+        """
+        return self._translate_failure(
+            exc, substrate=substrate, resolve_absence=False, **details
+        )
 
     def _ensure_bucket(self) -> None:  # pragma: no cover - needs a live server
         try:

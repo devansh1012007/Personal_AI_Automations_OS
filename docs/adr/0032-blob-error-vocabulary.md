@@ -307,12 +307,18 @@ amendment. Any other failure of the probe is a failure of the *store* and is
 raised, because "the store is broken" and "the blob is not there" must not be
 confused, and a caller that cannot tell them apart will act on the wrong one.
 
-**The write path does not ask.** A write's own response carries a body, and
-the body says which of the two is missing (`NoSuchBucket` against
-`NoSuchKey`), so the write path already knew. Asking again would have cost a
+**The write path does not ask on a successful write.** A write's own response
+carries a body, and the body says which of the two is missing (`NoSuchBucket`
+against `NoSuchKey`), so the write path already knew. Asking again would have cost a
 request on every first write of every blob — the hot path — to learn what the
 write was about to say anyway. The probe is paid only where the answer is
 load-bearing: on the path that has already decided that something is missing.
+
+**Amended 2026-10-22** — a write that **fails** with an answer that carries no body
+is the other case: that answer does not say which of the two absences it is, so the
+write path asks as well, on the failure path only. The second Amendment at the end
+of this record says which failures ask, and corrects the claim that the write path
+never asks.
 
 **The answer is not cached.** A cached "the bucket was there" is exactly the
 answer that is wrong when the bucket is deleted under a running daemon, which
@@ -367,11 +373,14 @@ there" is not one.
 
 ### What it costs
 
-* **One extra request on the miss path** of the read and metadata methods.
-  `exists()` / `stat()` / `delete()` have no production caller, and a read of
-  a blob that is not there is an error case, so the cost is a request in a
-  path that is already exceptional. A *hit* costs nothing, and the write path
-  is unchanged.
+* **One extra request on the miss path** of the read and metadata methods, and
+  on the **ambiguous write-failure** path. `exists()` / `stat()` / `delete()`
+  have no production caller, and a read of a blob that is not there is an
+  error case, so the cost is a request in a path that is already exceptional.
+  A *hit* costs nothing, and a **successful write** costs nothing. A write that
+  fails with an answer that carries no body costs one request, because that
+  answer does not say which of the two absences it is — the second Amendment
+  below says how that is now decided.
 * **One request whose answer may be refused.** `head_bucket` wants
   `s3:ListBucket`; a deployment that grants only object-level permissions gets
   a 403, and the store then reports an object-level absence — the behaviour
@@ -389,7 +398,117 @@ there" is not one.
   methods that answer "is it there?" still answer `False` / `None` / `False`
   for a blob that is not there.
 * **The write path was not restructured.** It reads the code in the response
-  body it already receives, and it does not probe.
+  body it already receives, and it does not probe — **except on the failure
+  path**, where an answer that carries no body says nothing about which
+  absence it is, and the same probe the read path uses resolves it. That is
+  the second Amendment's change, and it changes *when* the write path asks,
+  not how it writes.
 * **The live S3 suite is still the next wave's job.** It is the only way to
   know that the codes the servers answer with are the codes in the table, and
   it is where the bucket case must be asserted against both servers.
+
+---
+
+## Amendment — one answer for one absence, and a probe that is asked once
+
+*Amended 2026-10-22, by W1-IMPR-04 (the wave-1 delta review), after the delta
+review of the wave-1 improvements. Everything above still stands: one vocabulary,
+the translation at the boundary and it is idempotent, a domain error is not the
+substrate's to relabel, the driver is recognised structurally and is never
+imported, boto3's upload wrapper is unwrapped, the message names the concept
+and the driver's wording is the cause, and the contract declares its error
+behaviour. This amendment changes **how an unqualified absence is recognised**,
+and it corrects three claims the delta review found to be untrue. It adds nothing
+to the rest of the vocabulary.*
+
+### What was wrong
+
+**Two predicates decided what an unqualified answer is.** The read path
+accepted an answer that carried a **status** and no code; the write path wanted
+the **code**. So the same underlying failure — a 404 that says the addressed
+thing is not there and stops there — got two answers:
+
+| path | what it answered | the `namespace` detail | the probe |
+|---|---|---|---|
+| `stat` (read) | `NotFound("bucket not found")` | `namespace="bucket"` | asked |
+| `put` (write) | `NotFound("blob not found")` | *absent* | **not asked** |
+
+The write path named the **wrong** condition — the blob, when the bucket was
+gone — and carried no namespace detail at all, so a caller that tests the detail
+got a different answer from the same failure depending on which method it
+called. The rule this record states — `namespace="bucket"` is present **if and
+only if** the substrate's namespace is what is missing — was therefore not a rule
+on the write path.
+
+**The probe and the translator called each other with no bound.** The probe
+(`head_bucket`) and the failure translator each ask the other: the translator
+resolves an unqualified absence by asking the probe, and the probe translates
+its own failure with the same translator. When the probe's failure carried a 404
+that only the **cause** held — the shape boto3's upload wrapper has — the probe
+did not recognise it (it read the wrapper, which carries no answer of its own)
+and the translator did (it follows the cause), so the two called each other
+until the interpreter's recursion limit ended the story: `RecursionError`, 97
+probes deep, and an exception that is **not** a member of the vocabulary and
+misses every `except PaaError` at the edge.
+
+**Three records said the write path does not probe.** This record said it twice
+("**The write path does not ask.**" and "**The write path was not
+restructured.** … it does not probe."), and the improvement's own COMMS line
+said "never on a write". The code probed: a write whose failure carried an
+unqualified 404 was resolved by the same probe, so a write **could** cost one
+extra request. The records understated the mechanism, and a maintainer who
+believed them would not have thought to bound the probe or to keep the two
+paths answering alike.
+
+### What changed
+
+**One predicate, used by both paths.** "The answer does not say which absence
+it is" is now decided in one place: the code is the status reported as the
+code, **or** the status is a 404 and no qualified code is present. The read
+path's classifier and the write path's classifier are the same function, so
+the two paths cannot answer alike-and-differently about the same 404.
+
+**One reader of the driver's answer.** The code, the status and the error the
+answer came from are now read in one function, and the probe and the
+translator both use it. The probe used to read the **wrapper** and the
+translator the **cause**, which is what let the recursion start: the probe
+could not see a 404 the translator could see, so it asked again.
+
+**The probe is asked at most once per failure.** The probe's own failure is
+translated by a translator that does **not** resolve an absence, so a failure
+that is being resolved cannot be resolved again. The bound is the invariant
+that makes the recursion impossible even if the two readers of the answer ever
+drift apart again.
+
+**The write path's probe is stated, not denied.** A **successful** write never
+asks: its response carries a body, and a body says which absence it is. A write
+that **fails** with an answer that carries no body asks, on the failure path
+only, and the cost is one extra request on a path that has already failed.
+
+### What it costs
+
+* **One extra request on the ambiguous write-failure path.** Only on a write
+  that has already failed, and only when the failure's answer does not say
+  which absence it is. The success path is untouched.
+* **A predicate in one place instead of two.** The two call sites that decide
+  "is this answer unqualified" now call one function, and the test that says
+  the two paths answer alike is the test that would fail if they drifted.
+* **The probe's answer is read one level deeper.** The probe now reads the
+  cause of a wrapped failure, so a `head_bucket` that fails with a wrapped 404
+  is read as what it says — the bucket is not there — instead of as a failure
+  of the probe. That is a *better* answer, and it is the answer the same
+  request would have given unwrapped.
+
+### What was deliberately *not* changed
+
+* **The vocabulary did not grow.** The two absences are one judgement and one
+  class, and the detail says which.
+* **The probe was not cached and was not made optional.** A cached "the bucket
+  was there" is the answer that is wrong when the bucket is deleted under a
+  running daemon, and the probe's refusal (a 403) is the one case the store
+  cannot act on.
+* **The live S3 suite is still the next wave's job.** The status-only 404 the
+  two paths disagreed about is a shape botocore does not produce — it reports
+  the status as the code for a bodyless answer — so it is exercised through a
+  stub. Whether a real server answers a request with a status and no code is
+  `[UNKNOWN]` here, and the live suite is where that belongs.
