@@ -10,13 +10,29 @@ driver proves only that the classifier reads the shape it was written
 against. That is why six raw-exception escape sites and a ``put`` /
 ``put_stream`` divergence survived until wave 1 (ADR-0032).
 
-So this file runs the **same lifecycle** against **two independent
-implementations** of the protocol — SeaweedFS, which the deployment runs, and
-RustFS, which is a different program — and the point is not "does S3 work" but
-"does *this client* work against a server it was not written against". A
-difference between the two servers is a **finding**, and it is reported rather
-than papered over: the suite asserts the invariant that holds on both, and
-the ADR records the difference.
+So this file runs the **same lifecycle** against **two distinguishable
+servers** — SeaweedFS, which the deployment runs, and RustFS, which is a
+different program — and the point is not "does S3 work" but "does *this
+client* work against a server it was not written against". A difference
+between the two servers is a **finding**, and it is reported rather than
+papered over: the suite asserts the invariant that holds on both, and the
+ADR records the difference.
+
+**What "two servers" is worth, and what it is not.** This file used to call
+them "two independent implementations", and that was a claim it did not and
+cannot establish: nothing in the environment says which programs the two
+endpoints are, a server's identity is carried entirely by the **label** the
+operator typed, and two containers of one image — wired to the two labels —
+would have satisfied every assertion in this file.
+
+So the claim is narrowed to what the suite can actually guarantee — two
+servers that **answer differently** — and that narrower claim is now
+**checked**: `test_the_two_servers_are_distinguishable` reads what each
+server says about itself and fails if the two answers are the same. What the
+suite still cannot establish is *independence*: nothing in the protocol says
+what independence is, and two versions of one program are two programs. The
+labels name the implementations the operator pointed the suite at; the suite
+checks that the two are not the same one.
 
 The servers
 -----------
@@ -80,8 +96,10 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import socket
 import tempfile
+import uuid
 from typing import Any
 
 import pytest
@@ -266,6 +284,146 @@ def spooled_files(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
 
     monkeypatch.setattr(tempfile, "SpooledTemporaryFile", recorder)
     return created
+
+
+class _UploadsFailWith:
+    """A real client whose **uploads** fail with a given exception.
+
+    Every other call is forwarded, so the requests the store makes before
+    the upload really reach the server and the server's own answers come
+    back unchanged. Only the *upload's* error is substituted, because the
+    shape of the substrate's error is exactly what the boundary is about:
+    the vocabulary has to name the same condition whether the substrate
+    reports it raw or wrapped. The upload's **request** therefore does not
+    reach the server — what is under test is what the store does with the
+    error the server would have answered, and the error it is handed is
+    the one the driver produced against this server.
+
+    It is a **spy** in the same sense the rest of this file is: the
+    exception it raises is the driver's own, produced by the real driver
+    against the real server (see
+    :func:`_the_drivers_own_upload_errors`).
+    """
+
+    def __init__(self, client: Any, failure: BaseException) -> None:
+        self._client = client
+        self._failure = failure
+        self.upload_calls = 0
+        #: What the store handed the client for each upload, in order.
+        self.uploaded: list[Any] = []
+
+    def __getattr__(self, name: str) -> Any:
+        attribute = getattr(self._client, name)
+        if not callable(attribute):
+            return attribute
+
+        def call(*args: Any, **kwargs: Any) -> Any:
+            if name == "upload_fileobj":
+                self.upload_calls += 1
+                self.uploaded.append(args[0] if args else None)
+                raise self._failure
+            return attribute(*args, **kwargs)
+
+        return call
+
+
+def _the_error_the_driver_raised(call: Any) -> BaseException:
+    """The exception the driver's call raised.
+
+    A call that did **not** raise is a loud failure rather than a skipped
+    test: the whole point is the shape of the error, and a server that
+    accepted the request leaves nothing to assert on.
+    """
+    try:
+        call()
+    except Exception as exc:
+        return exc
+    raise AssertionError(
+        "the call succeeded, so there is no driver error to test the boundary against"
+    )
+
+
+def _the_drivers_own_upload_errors(s3_target: S3Target) -> tuple[BaseException, BaseException]:
+    """The two shapes the driver's error arrives in — both of them genuine.
+
+    The first is the driver's own ``ClientError``, with its response intact:
+    what ``upload_fileobj`` — the call ``put_stream`` makes — propagates.
+    The second is boto3's ``S3UploadFailedError``, the wrapper that
+    ``upload_file`` — the *filename* variant — raises: it carries no
+    response of its own and no ``__cause__``, and the driver's error is its
+    implicit ``__context__``.
+
+    Both are produced **by the real driver against the real server**, with
+    credentials the server refuses, so neither is a hand-written
+    approximation of the shape. The wrapper is the driver's own, so the
+    test below is asserting against the thing boto3 really raises.
+    """
+    boto3 = pytest.importorskip("boto3")
+    wrong = boto3.client(
+        "s3",
+        endpoint_url=s3_target.server.endpoint,
+        aws_access_key_id="not-the-access-key",
+        aws_secret_access_key="not-the-secret-key",
+        region_name="us-east-1",
+    )
+    try:
+        raw = _the_error_the_driver_raised(
+            lambda: wrong.upload_fileobj(
+                io.BytesIO(b"a payload the server will refuse"),
+                s3_target.bucket,
+                "some/key",
+            )
+        )
+        with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as handle:
+            handle.write(b"a payload the server will refuse")
+            path = handle.name
+        try:
+            wrapper = _the_error_the_driver_raised(
+                lambda: wrong.upload_file(path, s3_target.bucket, "some/key")
+            )
+        finally:
+            os.unlink(path)
+    finally:
+        wrong.close()
+    return raw, wrapper
+
+
+def _server_fingerprint(server: S3Server) -> tuple[str, ...]:
+    """The names of the HTTP headers this server answers with.
+
+    A header **name** is a property of the program that answered; a header
+    *value* is not — the request id and the date move on every call. The
+    names are stable across repeated requests (measured against both
+    servers), and two containers of one image answer with the same ones.
+
+    The request is a ``head_bucket`` on a bucket that is not there, which is
+    the request the store itself makes and the one every server answers
+    with an error, so the fingerprint does not depend on a permission the
+    suite does not already need. A HEAD creates no namespace — the store's
+    own bucket probe depends on exactly that, and it was measured on both
+    servers — so the probe leaves nothing behind and nothing has to be
+    cleaned up.
+    """
+    boto3 = pytest.importorskip("boto3")
+    client = boto3.client(
+        "s3",
+        endpoint_url=server.endpoint,
+        aws_access_key_id=server.access_key,
+        aws_secret_access_key=server.secret_key,
+        region_name="us-east-1",
+    )
+    probe = f"{server.bucket_base}-fingerprint-{uuid.uuid4().hex[:8]}"
+    try:
+        try:
+            client.head_bucket(Bucket=probe)
+        except Exception as exc:
+            response = getattr(exc, "response", None)
+            metadata = response.get("ResponseMetadata") if isinstance(response, dict) else None
+            headers = metadata.get("HTTPHeaders") if isinstance(metadata, dict) else None
+            return tuple(sorted(headers or {}))
+        return ()
+    finally:
+        client.close()
 
 
 # ---------------------------------------------------------------------------
@@ -714,16 +872,15 @@ def test_both_write_paths_agree_about_a_missing_bucket(s3_target: S3Target) -> N
 
     This is the divergence ADR-0032's decision 4 exists to close: ``put``
     writes through ``put_object`` and ``put_stream`` through
-    ``upload_fileobj``, and boto3's transfer manager wraps the second one's
-    failure in an ``S3UploadFailedError``. Before the fix the same condition
-    arrived as a raw ``ClientError`` from one path and a generic error from
-    the other, and **no caller could write a correct ``except`` clause at
-    all**.
+    ``upload_fileobj``, and the two write paths translated the same
+    condition differently. Before the fix the same condition arrived as a
+    raw ``ClientError`` from one path and a generic error from the other,
+    and **no caller could write a correct ``except`` clause at all**.
 
-    Only a real server can prove it. The wrapper is boto3's, the code under
-    it is the server's, and the stub the unit suite uses has no transfer
-    manager at all — so the unwrapping had never been exercised against the
-    thing it unwraps.
+    Only a real server can prove it. The error is the driver's, the code
+    under it is the server's, and the stub the unit suite uses cannot raise
+    either — so the classification had never been exercised against the
+    thing it classifies.
 
     Each write path meets a **missing bucket of its own**, because the first
     write on a server that creates buckets would leave the second one
@@ -734,6 +891,11 @@ def test_both_write_paths_agree_about_a_missing_bucket(s3_target: S3Target) -> N
     bucket a write names and RustFS refuses it — and that difference is a
     finding, not a reason to skip a branch. The assertion is that **both
     write paths give the same answer**, whatever that answer is.
+
+    This test is about the two **paths**; the two **shapes of the driver's
+    error** are a separate question, and
+    ``test_the_wrapping_upload_route_answers_alike`` is where that is
+    settled.
     """
     payload = b"a payload written into a bucket that was not there"
     absent_put = s3_target.absent_store()
@@ -776,3 +938,141 @@ def test_both_write_paths_agree_about_a_missing_bucket(s3_target: S3Target) -> N
         "the two write paths must answer alike about a missing bucket: "
         f"{outcomes[0]} against {outcomes[1]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# The two shapes of the substrate's error
+# ---------------------------------------------------------------------------
+
+
+def test_the_wrapping_upload_route_answers_alike(s3_target: S3Target) -> None:
+    """The two shapes the driver's error arrives in must answer alike.
+
+    boto3's ``upload_file`` — the *filename* variant — wraps the driver's
+    ``ClientError`` in an ``S3UploadFailedError`` and does so **without
+    chaining it**, so the driver's error is the wrapper's implicit
+    ``__context__``. ``upload_fileobj`` — the call ``put_stream`` makes —
+    does not wrap at all, so the driver's error arrives with its response
+    intact.
+
+    ADR-0032's decision 4 says the two shapes must answer alike, and until
+    now **nothing in the tree checked it**: the unit suite's stub has no
+    ``upload_file`` at all, and the live path never produces a wrapper — so
+    a driver that started wrapping would change nothing any suite could
+    see. This is that check, against a real server, with the driver's own
+    exceptions.
+
+    Both exceptions are the ones the real driver raised against this server
+    one call apart. What the test varies is the *shape of the substrate's
+    error*, which is exactly what the boundary is about.
+    """
+    raw, wrapper = _the_drivers_own_upload_errors(s3_target)
+
+    assert type(raw).__name__ != "S3UploadFailedError", (
+        "the driver's own error is already a wrapper, so the two shapes this "
+        "test compares are not the two the driver produces"
+    )
+    assert type(wrapper).__name__ == "S3UploadFailedError", (
+        f"boto3's upload_file raised {type(wrapper).__name__}, not the wrapper "
+        "ADR-0032's decision 4 describes; the record needs to be re-measured"
+    )
+    assert getattr(wrapper, "response", None) is None, (
+        "the wrapper carries a response of its own, so it is not the shape the "
+        "decision describes"
+    )
+    assert wrapper.__context__ is not None, (
+        "the wrapper does not carry the driver's error as its context, so the "
+        "translation has nothing to read and the boundary does not hold"
+    )
+
+    plain_client = _UploadsFailWith(s3_target.raw, raw)
+    wrapped_client = _UploadsFailWith(s3_target.raw, wrapper)
+    plain = S3BlobStore(s3_target.bucket, client=plain_client)
+    wrapped = S3BlobStore(s3_target.bucket, client=wrapped_client)
+
+    with pytest.raises(AccessDenied) as plain_error:
+        plain.put_stream(io.BytesIO(b"a payload the server will refuse"))
+    with pytest.raises(AccessDenied) as wrapped_error:
+        wrapped.put_stream(io.BytesIO(b"a payload the server will refuse"))
+
+    assert plain_client.upload_calls == 1, "the upload was never reached"
+    assert wrapped_client.upload_calls == 1, "the upload was never reached"
+    assert type(plain_error.value) is type(wrapped_error.value), (
+        f"the two shapes answered differently: {type(plain_error.value).__name__} "
+        f"against {type(wrapped_error.value).__name__}"
+    )
+    assert plain_error.value.details["s3_code"] == wrapped_error.value.details["s3_code"]
+    assert (
+        plain_error.value.details["http_status"]
+        == wrapped_error.value.details["http_status"]
+    )
+
+    # And the store hands the driver a **file object**, not a filename. The
+    # module's own docstring says it — "spools through a size-capped temp
+    # file and uploads a file object" — and it is what lets a payload under
+    # the cap stay in memory. A store that wrote the spool to disk and
+    # uploaded a path would break that, and nothing else in this file would
+    # notice: the round trip succeeds either way, and the spill assertion
+    # only looks at payloads that are *over* the cap.
+    assert hasattr(plain_client.uploaded[0], "read"), (
+        f"the store uploaded {type(plain_client.uploaded[0]).__name__}, not a file "
+        "object — the spool's in-memory phase is what that protects, and "
+        "nothing else in this suite would notice"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The two servers
+# ---------------------------------------------------------------------------
+
+
+def test_the_two_servers_are_distinguishable() -> None:
+    """The suite ran against two **different** servers, and it checks that.
+
+    The suite's whole value is that the same body runs against more than
+    one program. Nothing in the environment says so: a server's identity is
+    carried entirely by the **label** the operator typed, the test ids are
+    those labels, and two containers of one image — wired to the two labels
+    — would satisfy every other assertion in this file.
+
+    So the suite reads what each server says about itself and checks that
+    the two answers differ. A response's **header names** are a property of
+    the program that answered (the values move — request ids, dates — but
+    the names do not), and they are stable across repeated requests, which
+    was measured against both servers.
+
+    What this does **not** establish is that the two are *independent*
+    implementations: nothing in the protocol says what independence is, and
+    two versions of one program are two programs. It establishes the
+    narrower thing — the two do not answer identically — and the labels
+    name the implementations the operator pointed the suite at.
+    """
+    by_endpoint: dict[str, S3Server] = {}
+    for server in SERVERS:
+        by_endpoint.setdefault(server.endpoint, server)
+
+    if len(by_endpoint) < 2:
+        pytest.skip(
+            "fewer than two distinct servers are configured; there is nothing "
+            "to compare"
+        )
+
+    fingerprints = {
+        endpoint: _server_fingerprint(server) for endpoint, server in by_endpoint.items()
+    }
+
+    unreadable = sorted(endpoint for endpoint, names in fingerprints.items() if not names)
+    assert not unreadable, (
+        f"the servers {unreadable} answered without a readable header set, so "
+        "the suite cannot tell whether they are the same program"
+    )
+
+    distinct = set(fingerprints.values())
+    assert len(distinct) == len(fingerprints), (
+        "the configured servers answered with the same response headers, so the "
+        f"suite cannot tell them apart: {fingerprints}. They are very likely the "
+        "same program — two containers of one image — and the suite's value is "
+        "that the same body runs against two servers that answer differently: "
+        "point the two labels at two different implementations."
+    )
+

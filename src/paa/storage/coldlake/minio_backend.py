@@ -43,10 +43,14 @@ stating here, because they are the reason the translation reads the driver
   ``botocore`` to know which one happened.
 * **The same condition reports the same thing on every path.** ``put`` writes
   through ``put_object`` and ``put_stream`` through ``upload_fileobj``, and
-  boto3's transfer manager wraps the second one's error in an
-  ``S3UploadFailedError``. The translation unwraps that wrapper, so a missing
-  bucket is one answer from both, rather than a raw ``ClientError`` from one
-  and a generic error from the other.
+  **neither of them wraps**: the driver's error reaches the store with its
+  response intact. boto3's *other* upload entry point — ``upload_file``, the
+  filename variant — is the one that wraps the driver's error in an
+  ``S3UploadFailedError``, and it wraps it **without chaining it**, so the
+  driver's error is the wrapper's implicit ``__context__``. The translation
+  follows that ``__context__`` as well as any ``__cause__``, so a missing
+  bucket is one answer from every path, rather than a raw ``ClientError``
+  from one and a generic error from the other.
 """
 
 from __future__ import annotations
@@ -246,8 +250,10 @@ _S3_RETRYABLE_STATUSES: Final[frozenset[int]] = frozenset({500, 502, 503, 504})
 
 #: How many wrapped causes are unwrapped before giving up.
 #:
-#: boto3's transfer manager wraps the ``ClientError`` of a failed upload in an
-#: ``S3UploadFailedError``, and that wrapper is what the caller sees. Without
+#: boto3's ``upload_file`` — the *filename* variant — wraps the
+#: ``ClientError`` of a failed upload in an ``S3UploadFailedError``, and it
+#: does so **without chaining it**, so the driver's error is the wrapper's
+#: implicit ``__context__`` rather than its ``__cause__``. Without
 #: unwrapping it, every upload failure would arrive unclassified while the
 #: same condition on the ``put_object`` path arrived classified — the
 #: ``put``/``put_stream`` divergence, in its general form. The bound keeps
@@ -323,6 +329,15 @@ def _s3_class_names(exc: BaseException) -> set[str]:
 def _driver_cause(exc: BaseException) -> BaseException | None:
     """The driver's own error behind a wrapper, if there is one.
 
+    Both ``__cause__`` and ``__context__`` are followed, and the
+    ``__context__`` is not the lesser of the two: boto3's ``upload_file``
+    raises its ``S3UploadFailedError`` **inside** an ``except ClientError``
+    block and without a ``from``, so the driver's error is the wrapper's
+    implicit ``__context__`` and its ``__cause__`` is unset. A reader that
+    looked only at the ``__cause__`` would conclude that the wrapper carries
+    nothing, and would be right about the wrapper and wrong about the
+    translation — which is what reads the ``__context__``.
+
     The cause is only followed when it *looks* like a driver error — one
     that carries an S3 response, or one whose class names are botocore's —
     so an unrelated ``__context__`` is never mistaken for the real reason.
@@ -341,7 +356,7 @@ def _driver_answer(exc: BaseException) -> tuple[BaseException, str | None, int |
     """What the driver said: the error itself, its **code** and its **status**.
 
     The answer is read off the **unwrapped** error, for the same reason the
-    translation unwraps: boto3's transfer manager raises a wrapper around
+    translation unwraps: boto3's ``upload_file`` raises a wrapper around
     the driver's error, and the wrapper carries no response of its own, so
     reading the wrapper is reading *no* answer at all.
 
@@ -971,11 +986,14 @@ class S3BlobStore:
                 ExtraArgs={"Metadata": {_META_RAW_SIZE: str(raw_size), "sha256": sha256}},
             )
         except Exception as exc:
-            # boto3's transfer manager wraps the driver's own error in an
-            # ``S3UploadFailedError``, and the wrapper is what reaches here.
-            # The translation unwraps it, so a failed upload reports the same
-            # concept as the same failure on the ``put_object`` path — which
-            # is the whole of the put/put_stream divergence.
+            # ``upload_fileobj`` — this call — propagates the driver's own
+            # error with its response intact; boto3's *filename* variant
+            # (``upload_file``) is the one that wraps it in an
+            # ``S3UploadFailedError``, and it puts the driver's error in the
+            # wrapper's ``__context__`` rather than in its ``__cause__``. The
+            # translation follows that context, so a failed upload reports
+            # the same concept as the same failure on the ``put_object``
+            # path — which is the whole of the put/put_stream divergence.
             raise_blob_error(
                 exc,
                 substrate=_SUBSTRATE,

@@ -40,10 +40,9 @@ The lock has six halves, and each fails for a different reason:
   set of facts about the tree and not a set of claims about it;
 * the **classification** half says every ``if TYPE_CHECKING:`` block left in
   the package is **classified** — a cycle, an optional extra, deliberate
-  laziness, a guard that buys nothing, a cheap first-party import, or the
-  family — so a block that was left behind was left behind for a stated
-  reason, and the classification is checked against the tree rather than
-  claimed in prose.
+  laziness, a guard that buys nothing, or a cheap first-party import — so a
+  block that was left behind was left behind for a stated reason, and the
+  classification is checked against the tree rather than claimed in prose.
 
 The **sweep** half exists because the other halves cannot see a cycle. A
 module that is part of an import cycle imports fine inside a test session — the

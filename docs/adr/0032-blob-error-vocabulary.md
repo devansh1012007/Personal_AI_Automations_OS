@@ -23,11 +23,19 @@ streaming read.
 The consequence was not cosmetic. **The same condition produced two different
 exception types depending on which method the caller used.** A missing bucket
 reached the caller as a raw `botocore.exceptions.ClientError` from `put()` —
-which writes through `put_object` — and as a generic `StorageError` from
-`put_stream()`, which writes through `upload_fileobj` and is therefore handed
-boto3's `S3UploadFailedError` wrapper. A caller could not write a correct
-`except` clause at all, and a security-relevant judgement — *is this blob
-absent, or is the store refusing?* — was unanswerable.
+which writes through `put_object`, and re-raised the driver's own error
+rather than naming it — and as a generic `StorageError` from `put_stream()`,
+which writes through `upload_fileobj` and turned every failure into a
+free-text message. A caller could not write a correct `except` clause at
+all, and a security-relevant judgement — *is this blob absent, or is the
+store refusing?* — was unanswerable.
+
+*(Corrected 2026-10-22, by W2-IMPR-05: this paragraph used to say that
+`put_stream` "is therefore handed boto3's `S3UploadFailedError` wrapper".
+That was wrong about the mechanism — `upload_fileobj` does **not** wrap; the
+divergence came from the two write paths translating the same condition
+differently. The wrapper is boto3's `upload_file` wrapper, and decision 4
+below is about it. See the Amendment at the end of this record.)*
 
 The filesystem substrate had residue of its own: a raw `OSError` out of the
 streaming read, and a raw `zstandard.ZstdError` out of a corrupt frame.
@@ -138,14 +146,38 @@ modes without `boto3` installed at all.
 ### 4. boto3's upload wrapper is unwrapped, so the two write paths agree
 
 `put()` writes through `put_object` and `put_stream()` through
-`upload_fileobj`, and boto3's transfer manager catches the driver's
-`ClientError` and raises an `S3UploadFailedError` instead — without chaining
-it explicitly, so the original is the implicit `__context__`. The translation
-follows that wrapper (bounded, and only when the cause *looks* like a driver's
-error), so a missing bucket is one answer from both paths rather than a raw
-`ClientError` from one and a generic error from the other. The same unwrap
-makes every *other* code agree between the two paths, not just the missing
-bucket.
+`upload_fileobj`. **`upload_fileobj` does not wrap.** It propagates the
+driver's `ClientError` with its response intact, so the store reads the
+answer directly.
+
+The **other** upload entry point does wrap. boto3's `upload_file` — the
+*filename* variant — catches the driver's `ClientError` and raises an
+`S3UploadFailedError` instead, and it does so **without chaining it
+explicitly**: the wrapper's `__cause__` is unset, and the driver's error is
+the wrapper's implicit `__context__`.
+
+The translation follows that wrapper (bounded, and only when the cause
+*looks* like a driver's error), and it follows the `__context__` as well as
+the `__cause__`, because that is where the driver put it. So a missing
+bucket is one answer from every path rather than a raw `ClientError` from
+one and a generic error from the other. The same unwrap makes every *other*
+code agree between the two paths, not just the missing bucket.
+
+**The wrapper is not opaque.** It carries no response *of its own* and no
+`__cause__`, but the driver's error is its `__context__`, and the
+translation reads it there. A reader who took the wrapper for an empty box
+would delete the unwrapping — and the deletion would be invisible on the
+path the store takes today, because `upload_fileobj` never wraps, so the
+*other* path's answer would quietly become the unclassified failure. The
+live suite pins the answer under both shapes
+(`tests/storage/test_s3_live.py::test_the_wrapping_upload_route_answers_alike`),
+against a real server and with the driver's own exceptions.
+
+*(Corrected 2026-10-22, by W2-IMPR-05: this decision used to say that
+"boto3's transfer manager catches the driver's `ClientError` and raises an
+`S3UploadFailedError` instead", which is true of `upload_file` and false of
+the `upload_fileobj` the store actually calls. See the Amendment at the end
+of this record.)*
 
 ### 5. A missing bucket raises, from every method
 
@@ -512,3 +544,89 @@ only, and the cost is one extra request on a path that has already failed.
   the status as the code for a bodyless answer — so it is exercised through a
   stub. Whether a real server answers a request with a status and no code is
   `[UNKNOWN]` here, and the live suite is where that belongs.
+
+---
+
+## Amendment — the wrapper is not an empty box, and `upload_fileobj` does not wrap
+
+*Amended 2026-10-22, by W2-IMPR-05 (the wave-2 improve phase), after the
+wave-2 test review measured the wrapper's shape against two real servers.
+Everything above still stands: one vocabulary, the translation at the
+boundary and it is idempotent, a domain error is not the substrate's to
+relabel, the driver is recognised structurally and is never imported, boto3's
+upload wrapper is unwrapped, the message names the concept and the driver's
+wording is the cause, and the contract declares its error behaviour. This
+amendment changes **what decision 4 says the mechanism is** — and the
+Context above, which repeated the same error. It adds nothing to the
+vocabulary and it changes no behaviour: the code was already right.*
+
+### What was wrong
+
+Decision 4 said that "boto3's transfer manager catches the driver's
+`ClientError` and raises an `S3UploadFailedError` instead", and that the
+translation "follows that wrapper". The wave-2 implementation report that
+reviewed this decision went further and said the wrapper was **opaque** —
+"no response, no cause, and therefore nothing for the translation to read" —
+and concluded that the store's answer "degrades from `NotFound` to the
+unclassified `BlobFailure`" on the wrapping route.
+
+**Two of those three claims are false.**
+
+1. **`upload_fileobj` — the call `put_stream` makes — does not wrap.** It
+   propagates the driver's `ClientError` with its response intact. The
+   wrapping entry point is boto3's `upload_file`, the *filename* variant.
+2. **The wrapper is not empty.** It carries no response *of its own* and no
+   `__cause__` — but boto3 raises it **inside** an `except ClientError`
+   block and without a `from`, so the driver's error is the wrapper's
+   implicit `__context__`. The translation follows the `__context__` as well
+   as the `__cause__`, so it finds the answer.
+
+Measured against SeaweedFS and RustFS, on boto3 1.43.117:
+
+| call | raises | a response of its own | `__cause__` | `__context__` |
+|---|---|---|---|---|
+| `upload_fileobj` | the driver's `ClientError` | yes | unset | unset |
+| `upload_file` | `S3UploadFailedError` | **no** | unset | **the driver's `ClientError`** |
+
+And through the store, the wrapping route and the plain route give the **same
+answer**: `NotFound("bucket not found")` with `namespace="bucket"`,
+`s3_code="NoSuchBucket"` and `http_status=404` on both.
+
+### What changed
+
+* **Decision 4 now names `upload_file`** rather than "the transfer manager",
+  and says plainly that `upload_fileobj` does not wrap.
+* **Decision 4 now says the wrapper is not opaque**, and says where the
+  driver's error is: the implicit `__context__`.
+* **The Context no longer claims `put_stream` was handed a wrapper.** It
+  says what actually happened: `put()` re-raised the driver's own error and
+  `put_stream()` turned the same condition into a free-text `StorageError`.
+* **Three comments in `minio_backend.py`** that repeated the mechanism —
+  the module docstring, the `_MAX_CAUSE_DEPTH` note and the note in
+  `_upload_fileobj` — say the same true thing.
+
+### What it costs
+
+* **Nothing at runtime.** No behaviour changed: the boundary already held,
+  and the measurement says so.
+* **One live test that had to be written**, because nothing in the tree
+  pinned the claim decision 4 makes: the unit suite's stub has no
+  `upload_file` at all, and the live path never produces a wrapper. The
+  wave-2 report's own mutation battery **recorded** that mutation as
+  caught; measured, it **survives** every live test.
+* **A record that had to be corrected in three places** (this ADR, the code
+  comments, and the wave-2 report), because a record whose mechanism is
+  wrong is a record a maintainer will act on.
+
+### What was deliberately *not* changed
+
+* **The vocabulary did not grow** and **no error class was added**. The
+  boundary held; only the record about it was wrong.
+* **The unwrapping was not removed.** It is load-bearing — for the
+  connection-error chain, where the cause is the raw `ConnectionRefusedError`
+  — and it is now *pinned* rather than merely present.
+* **The store still writes through `upload_fileobj`.** The wrapping route is
+  not "better"; it is a different entry point with a different error shape,
+  and the store's answer is the same either way, which is the property the
+  new test checks.
+
