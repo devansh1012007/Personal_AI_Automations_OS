@@ -284,7 +284,7 @@ class TestHardStopEscalation:
     """
 
     def _escalating_orchestrator(
-        self, ledger: LedgerStore, builder: _FakeAgent
+        self, ledger: LedgerStore, builder: Agent
     ) -> ChiefOrchestrator:
         return _orchestrator(ledger, context_builder=builder)
 
@@ -391,6 +391,59 @@ class TestHardStopEscalation:
         await orch.clear_human_gate(cid, approved=True)
         await orch.run(cid)
         assert builder.call_count == 1, "the context builder was asked again after a human ruled"
+
+    async def test_an_unanswered_escalation_cannot_be_walked_past(
+        self, ledger: LedgerStore
+    ) -> None:
+        """A second run must not turn an open question into a pass.
+
+        The context builder's answer can change between two runs — the memory
+        store may have filled a slot, so the density rises and the directive
+        becomes ``PROCEED_TO_PLANNER``. If the builder were asked again while
+        the escalation was still unanswered, it would emit a fresh
+        ``CONTEXT_HYDRATED``, the projection would leave ``AWAITING_HUMAN``,
+        and the task would plan and commit **without anyone having been
+        asked**. The gate has to hold until a human answers it, whatever the
+        builder says in the meantime.
+        """
+
+        class _BuilderThatChangesItsMind(Agent):
+            """Escalates once; then claims everything is fine."""
+
+            def __init__(self) -> None:
+                super().__init__(name=AgentRole.CONTEXT_BUILDER_PLANNER.value)
+                self.role = AgentRole.CONTEXT_BUILDER_PLANNER
+                self.call_count = 0
+
+            async def handle(
+                self, message: AgentMessage, ctx: AgentContext
+            ) -> AgentResult[Any]:
+                self.call_count += 1
+                if self.call_count == 1:
+                    return AgentResult.success(
+                        {
+                            "routing_directive": "HARD_STOP_ESCALATE_TO_USER",
+                            "vacant_slots": ["slot_a"],
+                        }
+                    )
+                return AgentResult.success(
+                    {"routing_directive": "PROCEED_TO_PLANNER", "vacant_slots": []}
+                )
+
+        builder = _BuilderThatChangesItsMind()
+        orch = self._escalating_orchestrator(ledger, builder)
+        cid = await orch.submit(TaskRequest(goal="needs a human"))
+        await orch.run(cid)
+        assert (await project(ledger, cid)).phase is TaskPhase.AWAITING_HUMAN
+
+        again = await orch.run(cid)
+
+        assert again.phase is TaskPhase.AWAITING_HUMAN
+        assert builder.call_count == 1, "the builder was asked again while the gate was open"
+        events = await _events(ledger, cid)
+        assert EventType.CONTEXT_HYDRATED not in events
+        assert EventType.EXECUTION_STARTED not in events
+        assert EventType.MUTATION_COMMITTED not in events
 
     async def test_a_rejected_escalation_blocks_the_task(self, ledger: LedgerStore) -> None:
         """A human who says no ends the lineage — it does not resume."""

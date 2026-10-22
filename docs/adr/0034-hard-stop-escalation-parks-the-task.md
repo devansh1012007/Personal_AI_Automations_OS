@@ -86,17 +86,35 @@ the machinery that releases them.
 A rejected gate (`approved=False`) emits `HUMAN_GATE_REJECTED`, which the
 phase map lands in `BLOCKED` — a terminal phase, so the lineage ends.
 
-### 3. A human's answer is asked once
+### 3. The question is asked once, and it is asked only once
 
-The escalation is a *question*. If the context builder were asked again after
-the human had answered, it would raise the same directive and park the task
-again — the answer would be overwritten by the question it answered. So
-`_hydrate` skips the context builder when the lineage already carries a
-`HUMAN_GATE_CLEARED`:
+The escalation is a *question*. Two rules follow, and both are needed for the
+gate to actually be a gate:
+
+**(a) While the question is open, the builder is not asked again.** The
+context builder's answer can change between two runs — the memory store may
+have filled a slot since, so the density rises and the directive becomes
+`PROCEED_TO_PLANNER`. If the builder were asked again while the escalation
+was unanswered, it would emit a fresh `CONTEXT_HYDRATED`, the projection
+would leave `AWAITING_HUMAN`, and the task would plan and commit **without
+anyone having been asked**. The gate has to hold until a human answers it,
+whatever the builder says in the meantime.
+
+**(b) After the human has ruled, the builder is not asked again either.** The
+answer to "is the context sufficient?" is a judgement the human has already
+made; asking the question again would park the task a second time on the
+answer it just gave.
+
+Both are decided from the lineage's **gate history** — the last event among
+`AWAITING_HUMAN_ATTESTATION`, `HUMAN_GATE_CLEARED` and
+`HUMAN_GATE_REJECTED`:
 
 ```python
-if await self._human_ruled(ctx.correlation_id):
-    return state
+gate = await self._last_gate_event(ctx.correlation_id)
+if gate is EventType.HUMAN_GATE_CLEARED:
+    return state   # the human answered; carry on
+if gate is EventType.AWAITING_HUMAN_ATTESTATION:
+    return state   # the question is still open; stay parked
 ```
 
 The check reads the **lineage**, not the projection, because the projection
@@ -105,7 +123,7 @@ cleared and the phase is overwritten by whatever event comes next. The ledger
 is the truth; a projection is one view of it, and this question is about the
 past rather than about the present state.
 
-The consequence is that the resumed task plans from an *empty* context
+The consequence of (b) is that the resumed task plans from an *empty* context
 packet — the context was never hydrated, and there is no API for supplying
 it. That is the honest outcome: the human said "proceed", not "here is the
 context you were missing".
@@ -148,6 +166,18 @@ is excluded from the resumable phases, so a task parked by an escalation
   who never wired a human into the loop will see tasks stop at
   `AWAITING_HUMAN` instead of committing. That is the point, but it is a
   visible change: the escalation path is now a path that needs a person.
+  **The blast radius is bounded and worth stating precisely.** The real
+  gatherer computes the density as *filled required slots / declared required
+  slots* (`context/metrics.py::context_density`) and escalates below
+  `ContextSettings.density_hydrate` (0.40). A task that declares **no**
+  required slots has density 1.0 — the convention is deliberate — so it
+  never escalates. Only a task that *declared* slots and could not fill 40% of
+  them is affected, which is exactly the set of tasks whose plan was being
+  guessed at.
+* The release path already exists and is reachable: the HTTP API
+  (`api/app.py`), the TUI runner (`tui/runner.py`) and the CLI
+  (`cli/main.py`) all call `clear_human_gate`. A parked task is not a dead
+  task.
 * The resumed task plans with an empty context packet (§3). A plan produced
   that way is no worse than the plan the escalation was refusing to make
   without a human — but it is a plan made without the context.
@@ -169,11 +199,12 @@ is excluded from the resumable phases, so a task parked by an escalation
 **How to roll it back.**
 
 Revert the three changes in `src/paa/agents/orchestrator.py`: the phase check
-after `_hydrate`, the `_human_ruled` guard in `_hydrate`, and the
-`_human_ruled` helper. The `directive` payload key is additive and can stay.
-Nothing else in the tree depends on the new behaviour, and no stored data
-depends on it — an escalated task that is already parked stays parked, and
-re-running it after a revert takes the pre-change path.
+after `_hydrate`, the two gate-history branches in `_hydrate`, and the
+`_last_gate_event` helper (with its `_GATE_EVENTS` set). The `directive`
+payload key is additive and can stay. Nothing else in the tree depends on the
+new behaviour, and no stored data depends on it — an escalated task that is
+already parked stays parked, and re-running it after a revert takes the
+pre-change path.
 
 **What this ADR does not decide.** The policy gate's *resume* path has a
 related, pre-existing fragility: after a human clears a policy gate, the

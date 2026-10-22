@@ -49,6 +49,17 @@ __all__ = ["BackpressureLike", "ChiefOrchestrator", "TaskOutcome", "TaskRequest"
 
 log = structlog.get_logger(__name__)
 
+#: The events that make up a human gate's history. The *last* one of these in
+#: a lineage says whether a question is still open, has been answered, or has
+#: been refused — see :meth:`ChiefOrchestrator._last_gate_event`.
+_GATE_EVENTS: frozenset[EventType] = frozenset(
+    {
+        EventType.AWAITING_HUMAN_ATTESTATION,
+        EventType.HUMAN_GATE_CLEARED,
+        EventType.HUMAN_GATE_REJECTED,
+    }
+)
+
 
 class BackpressureLike(Protocol):
     """The one thing the orchestrator asks of a backpressure controller.
@@ -378,12 +389,27 @@ class ChiefOrchestrator:
     async def _hydrate(self, state: TaskProjection, ctx: AgentContext) -> TaskProjection:
         if state.context_packet is not None or self._context_builder is None:
             return state
-        if await self._human_ruled(ctx.correlation_id):
+
+        gate = await self._last_gate_event(ctx.correlation_id)
+        if gate is EventType.HUMAN_GATE_CLEARED:
             # A human has already released this lineage's gate. Asking the
             # context builder again would raise the same directive, and the
             # task would park a second time on the answer a human has
             # already given — the escalation is a question, and the human
             # answered it (ADR-0034).
+            return state
+        if gate is EventType.AWAITING_HUMAN_ATTESTATION:
+            # The question is still open: nobody has answered it. The task
+            # stays parked, and the builder is **not** asked again — a
+            # builder that answered differently this time (the memory store
+            # may have filled a slot since) would otherwise emit a fresh
+            # CONTEXT_HYDRATED and walk the task straight past a gate no
+            # human has released.
+            log.info(
+                "orchestrator.escalation_still_open",
+                correlation_id=str(ctx.correlation_id),
+                reason=state.awaiting_reason,
+            )
             return state
 
         await self._emit(
@@ -723,8 +749,14 @@ class ChiefOrchestrator:
 
     # -- human gates -------------------------------------------------------
 
-    async def _human_ruled(self, correlation_id: uuid.UUID) -> bool:
-        """Whether a human has already released this lineage's gate.
+    async def _last_gate_event(self, correlation_id: uuid.UUID) -> EventType | None:
+        """The lineage's most recent human-gate event, if there is one.
+
+        ``HUMAN_GATE_CLEARED`` means a human has answered the question and
+        the task may proceed; ``AWAITING_HUMAN_ATTESTATION`` means the
+        question is still open; ``HUMAN_GATE_REJECTED`` means the human said
+        no and the lineage is blocked (terminal, so it never reaches a
+        caller of this method).
 
         Read from the lineage rather than from the projection, because the
         projection cannot express the fact: ``apply_event`` clears
@@ -734,10 +766,13 @@ class ChiefOrchestrator:
         *past* (has someone ruled?) rather than about the present state.
 
         Nothing in the automated path calls ``clear_human_gate``, so the
-        answer can only be "yes" when a real caller did.
+        answer can only be "a human has ruled" when a real caller did.
         """
         events = await self._ledger.read_correlation(correlation_id)
-        return any(e.event_type is EventType.HUMAN_GATE_CLEARED for e in events)
+        for event in reversed(events):
+            if event.event_type in _GATE_EVENTS:
+                return event.event_type
+        return None
 
     async def clear_human_gate(
         self,
