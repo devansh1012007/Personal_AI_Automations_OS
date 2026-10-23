@@ -15,9 +15,9 @@ The `dev` extra carries `paa[api]`, so the documented setup installs FastAPI and
 suite **runs**. It did not used to: `tests/api/conftest.py` skips the whole directory when
 the extra is absent, so a developer following the documented setup was never exercising a
 single route, and it said so by *skipping* — the quietest way to not test something. The
-`dev` extra now resolves `paa[api]` itself (the same self-referential form `all` already
-used), so there is no environment in which the gate below can pass while the API is
-untested.
+`dev` extra now resolves `paa[api]` and `paa[s3]` itself (the same self-referential form
+`all` already used), so there is no environment in which the gate below can pass while the
+API or the S3 path is untested.
 
 Verify in this order before calling work done:
 
@@ -71,8 +71,8 @@ Verify in this order before calling work done:
 - The `requires_postgres` marker and the `PAA_TEST_POSTGRES_DSN` convention are described
   under *Testing conventions* below. The mypy count went 116 → 108 (the schema-migration
   change closed eight) → 0 (the section-by-section pass closed the rest).
-- There is no CI config, Makefile, or pre-commit hook in this repo. Nothing enforces the order above
-  but you.
+- There is **no Makefile and no pre-commit hook** in this repo; the gate is enforced by the CI
+  workflow (see *The rules this tree holds itself to*), and nothing enforces it locally.
 
 ## The one invariant: the ledger is the truth
 
@@ -320,16 +320,16 @@ a broken image.
 
 ## Known-stale references (don't chase these)
 
-- `docs/adr/README.md` indexes ADRs 0001–0015 and 0019–0026, 0028–0031 (0016–0018 are
-  unindexed, and 0027 is reserved for the tool-containment/MCP layer), but only `0008`,
-  `0010`, `0015`, `0019`–`0026` and `0028`–`0031` exist on disk. Source comments cite
-  `docs/adr/0001`–`0014`, `0016` and `0018` as rationale; the intent is documented
-  even though the file is absent.
+- `docs/adr/README.md` indexes ADRs 0001–0018 and 0019–0026, 0028–0035 (0027 is reserved
+  for the tool-containment/MCP layer), but only `0008`, `0010`, `0015`, `0019`–`0026` and
+  `0028`–`0035` exist on disk. The rest are **index-only**: the decision is recorded in
+  `README.md` and in the source's own `SPEC DEVIATION (docs/adr/NNNN)` citation, but the body
+  is still to be written (the ROADMAP's cross-cutting *Docs* item).
 - `README.md`'s Testing section still shows Windows paths, and its per-subsystem test counts in the
   build-status table are approximate — the total line is stale too, so reconcile neither against it.
 - `src/paa/agents/specialists/` is an empty package.
-- `tests/validation/` now has its own suite (`test_schema_validator.py`, 19 tests); it was an
-  empty package until the JSON Schema boolean fix gave it something to pin.
+- `tests/validation/` has a suite per module, and was an empty package until the JSON Schema
+  boolean fix gave it something to pin.
 
 ## The coder agent (`paa agent`)
 
@@ -377,6 +377,131 @@ Read `coder/__init__.py` before adding to that package — the pieces are delibe
   registry row sets `tier = FRONTIER`, so `leaves_machine` in any escalation record stays truthful.
   Without `--yes`, an ASK-ed (state-changing) call prompts; with no confirm callback the loop
   auto-*denies*.
+
+## The rules this tree holds itself to
+
+Five rules, each with the reason it exists. They are grouped at the end of the file
+rather than beside their topics for one reason: **the documentation quotes this file by
+line number**, so a rule inserted in the middle silently renumbers a dozen citations
+elsewhere, and the reader following `AGENTS.md:33` lands on the wrong line. Add to the
+end, and say so in the commit that adds the rule.
+
+### A contract is resolved the same way everywhere it is used
+
+`RelationalBackend` is the relational substrate's contract, and nine modules that one
+commit touched used to resolve it two different ways: a runtime import in one, an
+`if TYPE_CHECKING:` block in the other eight. The difference is invisible until
+something needs the *class* rather than the annotation — a runtime `isinstance`, a
+pydantic model resolving its annotations at class-creation time, a `get_type_hints`
+call — so it survived a review. **All nine now resolve it the one way, and there is no
+exception mechanism**: the deferral map that used to let a module stay behind
+`if TYPE_CHECKING:` is gone, because it held a single entry, and a deferral that is
+fulfilled is drift nobody is coming back to.
+
+The lock is `tests/conventions/test_import_conventions.py`, and it has six halves. The
+**source** half says the contract is not imported behind `if TYPE_CHECKING:` anywhere in
+`src/paa`. The **runtime** half says every module that *mentions* it — in any import
+form — binds it in its own namespace, to the same object, which is what "resolved at
+runtime" means as opposed to "annotated at runtime". The **annotation** half says the
+family, and the package that owns the contract, can have their hints read at runtime.
+The **sweep** half says every module under `src/paa` imports cleanly in an interpreter
+that has imported nothing, and it is a **subprocess** because a cycle breaks only in a
+fresh one — inside a test session `sys.modules` is already populated and the cycle's
+back edge takes the shortcut that hides it. The **extra** half says each module the
+sweep tolerates a failure for really needs the extra it is listed under, so the
+tolerance list is a set of facts about the tree and not a set of claims about it. The
+**classification** half says every `if TYPE_CHECKING:` block left in the package is
+classified.
+
+The classification is the tree's own, and it replaced the prose that used to carry it:
+a real cycle (proved by converting the block in a copy of the tree and watching the
+import fail), an optional extra, deliberate laziness (the measured price of every
+block is recorded, so the judgement can be re-examined rather than taken on trust), a
+guard that buys nothing, or a cheap first-party import. The table is
+`TYPE_CHECKING_CLASSES` in the lock's own file, and it is checked against the same AST
+sweep it was derived from — so a block that appears without a class fails the lock, and
+a block that is converted without being removed from the table fails it too. **A new
+`if TYPE_CHECKING:` block has to be classified in the same commit that adds it.**
+
+### The live S3 suite names a server, not a bucket
+
+The live S3 tests follow the PostgreSQL convention exactly, because it is the same
+convention: the environment names a **server**, and the fixture makes a resource of its
+own on it. `PAA_TEST_S3_ENDPOINT` / `PAA_TEST_S3_ACCESS_KEY` / `PAA_TEST_S3_SECRET_KEY`
+name one server; a **second** server is the same four names with a label in front of
+the last word (`PAA_TEST_S3_SEAWEEDFS_ENDPOINT`), so the unlabelled spelling is the
+single-server case of the rule rather than a second thing to remember.
+`PAA_TEST_S3_BUCKET` names the **base** of the test's bucket and the fixture appends
+the pid and a uuid, so a run can never write to a bucket the operator chose.
+
+The suite is marked `requires_s3` and needs a **server** as well as the driver: a
+missing driver is a missing dependency and a missing server is a missing server, and
+neither is a failure. ADR-0033 records the rule the suite exists to enforce — a stub
+shaped like the driver proves the **mechanism** and nothing about the **table**, and
+the codes a server actually answers with are the codes the error vocabulary has to
+name.
+
+### The gate is enforced on every push
+
+`.github/workflows/ci.yml` runs the repo's three gate commands on every push and pull
+request — `ruff check src tests`, `mypy src`, and the whole `pytest` suite with
+`--strict-markers --strict-config` — and it runs them over a **matrix of install
+shapes** (a minimal one, the documented `.[dev]` one, and `.[all]`), because "never
+import one at module scope in a core path" is a claim a minimal install has to be
+tested against rather than asserted. The developer shape installs `.[dev]`, **not**
+`.`: the `dev` extra is what carries `paa[api]` and `paa[s3]`, and without it the API
+suite and the live S3 suite skip themselves at import — the quietest way to not test
+something.
+
+Two things in it are landmines rather than choices:
+
+- **`python-is-python3` is installed on purpose.** The sandbox builds its child
+  environment's `PATH` as `/usr/local/bin:/usr/bin:/bin` — deliberately, because the
+  host's `PATH` leaks the developer's toolchain — so `actions/setup-python`'s
+  tool-cache interpreter is invisible to it. Without the package, six assertions fail
+  on the runner for a reason that has nothing to do with the code, and the fix is
+  never to widen the sandbox's `PATH`.
+- The install uses the **network-fragility convention** the Dockerfiles already
+  encode — `PIP_RETRIES`, `PIP_TIMEOUT`, and a retry loop around the install —
+  because a CI install that gives up on one dropped connection is a red build that
+  says nothing about the code.
+
+A **PostgreSQL service container** and the **S3 service containers** are declared with
+health checks, and the environment variables the suites read are exported with the
+names the suites read: `PAA_TEST_POSTGRES_DSN`, and the two servers' *labelled*
+`PAA_TEST_S3_*` spellings, because the label is what a failing test's id names. A
+green run therefore says something about the server-backed paths, and a run without
+the services says only that the suites skipped.
+
+### A `path:line` in the documentation is a promise
+
+`tests/conventions/test_docs_references.py` extracts every `path:line` reference from
+the markdown in its scope and asserts three things: the cited path names **exactly
+one** file, the cited line **exists**, and the cited line is **not blank**. A blank
+cited line is almost always a wrong reference, and a bare name that several files
+share — `base.py` is eight of them — names no file at all, so a reference has to be
+qualified. Two directories are excluded, each with its reason in the checker itself:
+`docs/agent-ops/` is the run trail, where a reference was true when it was written and
+is allowed to have rotted since, and `docs/plans/` is a dated proposal that discusses
+references as findings rather than citing them.
+
+**The lock cannot see a reference that is wrong without being broken** — the line
+exists, it is not blank, and it no longer holds what the sentence claims. That half is
+human work, and it is why a corrected reference has to be *read* and not merely
+re-numbered.
+
+### Two policy decisions are open, and they belong to the operator
+
+The policy agent's gate has two questions that were deliberately **not** answered in
+code, because each one is a judgement about what the policy should *say* rather than a
+defect to repair. The declared-permission half of `agents/policy.py::_check_lockdown`
+cannot fire — the permission check refuses first — and making it reachable changes
+*which* refusal the ledger records, for a plan class that is refused either way. And
+four pattern-semantics findings (`git push -f`, the `rm` flag spellings, `DELETE FROM
+public.users`, `TRUNCATE` without `TABLE`) each widen a security rule over prose. Do
+not "fix" either without the operator's word; both are carried, with their
+reproductions, in the run's work ledger
+(`docs/agent-ops/20261022-w6-w7-w9/01-work-ledger.md` §"Open items").
 
 ## Mandatory Engineering Workflow
 

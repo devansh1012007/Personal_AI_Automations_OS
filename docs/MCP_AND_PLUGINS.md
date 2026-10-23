@@ -1,9 +1,11 @@
 # MCP & Plugins — containment-first design plan
 
 **Status:** proposal. Decisions 1–7 are **taken** (see §7); the remaining questions are
-listed there. **Phase 0 is implemented and verified**, except for the three host steps
+listed there. **Phase 0 is implemented and verified**, including the three host steps
 that need `sudo` — registering `runsc` with the Docker daemon, restarting it, and
-measuring the cgroup ceiling under it. See the status note in §4.
+measuring the cgroup ceiling under it. See the status note in §4. The substrate track
+the MCP work sits on is **W3–W8** (§4); its own status lines say what each wave
+delivered and what is still open.
 **Scope:** give the runtime an open-ended tool surface (MCP servers + user plugins) where
 **every third-party tool execution happens inside a gVisor (runsc) container**, and the
 host is never the thing that runs it.
@@ -63,22 +65,22 @@ Everything else in this document is plumbing around those two.
 | Piece | State | Where |
 |---|---|---|
 | MCP protocol client (JSON-RPC 2.0 over stdio, both framings, robust to crash/timeout/bad JSON) | **works, tested** | `src/paa/skills/adapters/mcp.py` (501 lines) |
-| MCP server → `SkillContract` mapping | **works** | `mcp.py:359-397` |
-| MCP server process launch | **host process, unsandboxed, full env inherited** | `mcp.py:102-110` — `asyncio.create_subprocess_exec(*cmd, stdin=PIPE, stdout=PIPE, stderr=PIPE)`; no cwd, no env allowlist, no timeout, no memory cap, no network control |
-| The claim that this is contained | **false** | `mcp.py:408-412` — *"an MCP server is its own subprocess and provides its own isolation boundary, so there is nothing to mount here."* A host subprocess provides no boundary at all. |
-| Sandbox contract | **one-shot only** | `src/paa/sandbox/base.py:389-435` — `Sandbox.run(spec) -> SandboxResult` |
+| MCP server → `SkillContract` mapping | **works** | `src/paa/skills/adapters/mcp.py:359-397` |
+| MCP server process launch | **host process, unsandboxed, full env inherited** | `src/paa/skills/adapters/mcp.py:102-110` — `asyncio.create_subprocess_exec(*cmd, stdin=PIPE, stdout=PIPE, stderr=PIPE)`; no cwd, no env allowlist, no timeout, no memory cap, no network control |
+| The claim that this is contained | **false** | `src/paa/skills/adapters/mcp.py:410-411` — *"an MCP server is its own subprocess and provides its own isolation boundary, so there is nothing to mount here."* A host subprocess provides no boundary at all. |
+| Sandbox contract | **one-shot only** | `src/paa/sandbox/base.py:606-632` — `Sandbox.run(spec) -> SandboxResult` |
 | Docker + gVisor backend | **implemented, honest** | `src/paa/sandbox/docker_backend.py` — adds `--runtime runsc` only when the daemon reports it; reports `IsolationLevel.VM` only then, else `NAMESPACE` |
 | gVisor container hardening | **already good** | `--read-only`, `--tmpfs /tmp`, `--memory`+`--memory-swap`, `--cpus`, `--pids-limit`, `--cap-drop ALL`, `--security-opt no-new-privileges`, `--network none` |
 | `runsc` on this host | **installed, NOT registered** | `~/.local/bin/runsc` → `runsc version release-20261012.0` (official release, checksum-verified). The daemon does not know about it: it is not at `/usr/local/bin/runsc` and `/etc/docker/daemon.json` does not name it, so the daemon reports only `runc`. Registering it needs `sudo` — one of the three root-gated steps at the end of §4. |
 | Docker daemon | **works, `runc` only** | `docker info` → runtimes: `io.containerd.runc.v2`, `runc` |
-| The worker image `paa/base_worker:v4.1` | **built in Phase 0** | `deploy/worker/Dockerfile` — the image `DockerSandbox` launches for a plan step. It never existed before: it was a *string* in `docker_backend.py:59`, `ledger/events.py:166` and the two SQL schemas, with no Dockerfile behind it. |
+| The worker image `paa/base_worker:v4.1` | **built in Phase 0** | `deploy/worker/Dockerfile` — the image `DockerSandbox` launches for a plan step. It never existed before: it was a *string* in `src/paa/sandbox/docker_backend.py:90`, `src/paa/ledger/events.py:166` and the two SQL schemas, with no Dockerfile behind it. |
 | The toolbox image `paa/toolbox:v1` | **built in Phase 0** | `deploy/toolbox/Dockerfile` — the image MCP servers and plugin commands run in. Carries Node 24, because most published MCP servers are npm packages started with `npx`. |
 | The `paa` daemon image | **can launch containers as of Phase 0** | the Docker client is installed (Docker's official static build, pinned by SHA-256), `/var/run/docker.sock` is mounted, and the socket's GID is added to the container user via `group_add` + `DOCKER_GID`. |
 | Skill registry (DB-backed, reliability, permissions) | **implemented but never constructed** | `src/paa/skills/{registry,usa}.py` — no call site outside `src/paa/skills/` |
 | Coder tool protocol (`name`/`description`/`schema()`/`run(args) -> str`) | **works, live, tested** | `src/paa/coder/loop.py:85-97` |
 | Tool permission policy (allow/deny/ask globs, PLAN refuses mutating) | **works** | `src/paa/coder/permissions.py` |
 | `AgentLoop` gate order (hook → permission → confirm → execute → hook) | **works** | `src/paa/coder/loop.py:200-255` |
-| Runtime tool catalogue (9 tools) | **works** | `src/paa/coder/runtime_tools.py:85-107` |
+| Runtime tool catalogue (9 tools) | **works** | `src/paa/coder/runtime_tools.py:84-106` |
 | Ledger / replay / recovery | **works** | `src/paa/ledger/` |
 
 ### The three findings that shape everything
@@ -89,7 +91,7 @@ Everything else in this document is plumbing around those two.
    "build the *host boundary* MCP needs, then wire it".
 2. **The `Sandbox` ABC cannot express a conversation.** `run()` returns a *total* outcome
    (`SandboxResult`) and closes stdin (`stdin=asyncio.subprocess.DEVNULL` in the Docker
-   backend, `docker_backend.py:316`). An MCP stdio server is a duplex pipe held open for the
+   backend, `src/paa/sandbox/docker_backend.py:1369`). An MCP stdio server is a duplex pipe held open for the
    life of a session. **This is the single hardest blocker and the reason the plan leads
    with a sandbox refactor rather than with a tool registry.**
 3. **gVisor is not actually deployed here.** `runsc` is installed but not
@@ -147,9 +149,11 @@ Requires: `runsc` installed **and registered with the Docker daemon**
 `systemctl restart docker`), and the daemon must *report* it
 (`docker info --format '{{json .Runtimes}}'` must list `runsc`).
 
-`DockerSandbox` already does exactly this and already reports honestly
-(`docker_backend.py:99-109`, `:166-211`). **No code change needed for L1** — it needs a host
-that is actually configured.
+`DockerSandbox` already does exactly this and already reports honestly: the runtime it
+requests comes from the configuration
+(`src/paa/sandbox/docker_backend.py:238-244`), and the isolation level it reports is
+`VM` only when that runtime is confirmed present (`src/paa/sandbox/docker_backend.py:381-392`).
+**No code change needed for L1** — it needs a host that is actually configured.
 
 ### L2 — Namespace + cgroup hardening (already in `DockerSandbox._build_args`)
 
@@ -200,7 +204,7 @@ between the runtime and the tool.
 
 ### L5 — Environment & secrets
 
-`build_child_env` (`sandbox/base.py:337-386`) builds the child env **from empty**. The host
+`build_child_env` (`src/paa/sandbox/base.py:550-604`) builds the child env **from empty**. The host
 env is never inherited. The plugin manifest declares env vars **by name**
 (`token_env = "ACME_API_KEY"`); the host resolves the *value* at spawn time from
 `os.environ` / `config.dotenv_value` and passes only the named ones.
@@ -213,18 +217,18 @@ through the existing `SecretBroker` (`src/paa/skills/secrets.py`), which checks
 ### L6 — Capability gate (host, before the container is created)
 
 The manifest declares, per plugin and per tool, the `Permission` set it needs
-(`core/types.py:149-166`). Those must be a subset of the active mode's grants
+(`src/paa/core/types.py:204-221`). Those must be a subset of the active mode's grants
 (`core/types.PermissionMode.granted`). Under `LOCKDOWN` (which grants only
 `PERM_SANDBOX_RUN`), a plugin declaring `PERM_NET_EGRESS` is refused **before** a container
 is created — no side effect, no container, no ledger mutation.
 
-This mirrors the existing USA step 3 (`skills/usa.py:178-190`): *authorization precedes
+This mirrors the existing USA step 3 (`src/paa/skills/usa.py:178-190`): *authorization precedes
 execution*.
 
 ### L7 — Interaction gate (host, per call)
 
 The existing `ToolPermissionPolicy` (`coder/permissions.py`) decides allow / deny / ask per
-call, and `AgentLoop._handle_call` runs it before `tool.run()` (`coder/loop.py:223-234`).
+call, and `AgentLoop._handle_call` runs it before `tool.run()` (`src/paa/coder/loop.py:223-238`).
 PLAN mode refuses mutating tools; an explicit deny beats everything including `bypass`.
 
 **One change is needed here:** mutability is currently inferred from *name globs*
@@ -885,7 +889,7 @@ The current `MCPClient` is stdio-only. Streamable HTTP needs:
   stream**.
 * A **session id** header (`Mcp-Session-Id`) for correlation.
 * **Server-initiated requests** (`sampling/createMessage`, `roots/list`) must be serviceable.
-  The current client explicitly ignores them (`mcp.py:196-200`). Under stdio that is
+  The current client explicitly ignores them (`src/paa/skills/adapters/mcp.py:196-200`). Under stdio that is
   survivable; under HTTP a server that asks for sampling and gets silence behaves badly.
   → *Open question in §7: implement the server-request side, or declare the runtime a
   "no server-initiated requests" client and refuse servers that need them?*
@@ -1361,44 +1365,95 @@ not fit in a quarter of a second; **ADR-0031**; the plan is
 
 #### W6 — The suites that would have caught the above
 
-**Status: not started. This is the item that keeps the others from being regressions.**
+**Status: done. This is the item that keeps the others from being regressions.**
 
 Each defect in W3–W5 was invisible to the suite, and each was invisible for the same
 reason: the suite ran one substrate, one deployment path, and one image set. The
 suites that make them visible:
 
-* a **cross-engine parity suite** — the same inputs through SQLite and PostgreSQL,
-  compared row for row, on the paths where the two are supposed to agree.
-* a **PostgreSQL contract suite** — `requires_postgres`-marked, gated on a DSN that
-  names a *server*, with the tests making and dropping their own database so a run
-  can never touch the database a deployment is using. This is now in place for the
-  migration and error-vocabulary contracts; the parity half is W3's job.
-* a **parametrised S3 lifecycle and failure-mode suite** — against SeaweedFS and
-  RustFS, not against a mock.
-* a **fetch-images ↔ compose parity test** — the script and the compose file cannot
-  disagree, and the test says so.
+* a **cross-engine parity suite** — **done, by W3.** The same inputs through SQLite
+  and PostgreSQL, compared row for row, on the paths where the two are supposed to
+  agree: `tests/storage/test_entity_parity.py`, 129 cases against a live PostgreSQL,
+  with the SQLite half running everywhere.
+* a **PostgreSQL contract suite** — **done.** `tests/storage/test_postgres_contract.py`
+  and `tests/storage/test_postgres_migrations.py`, `requires_postgres`-marked and gated
+  on a DSN that names a *server*, with the tests making and dropping their own
+  database so a run can never touch the database a deployment is using.
+* a **parametrised S3 lifecycle and failure-mode suite** — **done.** Against SeaweedFS
+  and RustFS, not against a mock: `tests/storage/test_s3_live.py`, twenty-two test
+  bodies, twenty-one of them parametrised over every server the environment names and
+  one asserting that the two servers answer differently. The suite names a **server**
+  and makes a bucket of its own on it, so a run cannot write to the bucket a
+  deployment is using; it is marked `requires_s3`, the environment convention is
+  `PAA_TEST_S3_*`, and `paa[s3]` is in the `dev` extra — **ADR-0033**.
+* a **fetch-images ↔ compose parity test** — **done**, and closed rather than left
+  half-done. `tests/deployment/test_fetch_images.py` compares the script's `--list`
+  against an independent reader over the **real** compose file; the script now takes
+  compose files **merged in the order they are given** (`--compose <path>`, repeatable),
+  so the gVisor override is visible to the script and to the test — the merge is
+  Compose's own, and the test drives the merged stack — the service set is derived
+  from the file rather than hard-coded, and every pulled image is asserted to be
+  digest-pinned. **ADR-0030**.
 
 #### W7 — The cleanup that the review found
 
-**Status: not started.** The `BlobStore` protocol and the cold lake's own store
-disagree; the S3 error path is not neutral, which breaks the contract W2 established
-for the relational substrates; `TYPE_CHECKING` stubs are left over from a change that
-made the imports runtime ones; and there are stale comments and stale documentation —
+**Status: three of the four done; the documentation half is the last one open.**
+
+The `BlobStore` protocol and the cold lake's own store disagreed; the S3 error path
+was not neutral, which broke the contract W2 established for the relational
+substrates; `TYPE_CHECKING` stubs were left over from a change that made the imports
+runtime ones; and there were stale comments and stale documentation —
 `docs/deployment/docker.md`, `ADR-0019`, the README, `.env.example`, and the
 configuration reference.
 
+* **The blob substrate's error vocabulary — done. ADR-0032.** W2 established the rule
+  for the relational substrates: the translation happens at the substrate boundary,
+  once, and the repository layer catches a *concept* rather than a driver's exception.
+  The blob substrate never got one — `src/paa/storage/coldlake/errors.py` now names
+  the failures (`NotFound`, `AccessDenied`, `Unreachable`, `Corrupt`, `NotSupported`,
+  `MalformedRequest`, and the unclassified `BlobFailure`), every member a
+  `paa.core.errors.StorageError` carrying the substrate that produced it. The
+  translation is **idempotent** — an error that is already ours comes back unchanged
+  — and it does not swallow a `PaaError` that is not ours. The six sites where a raw
+  botocore exception escaped are closed, the `put` / `put_stream` divergence on a
+  missing bucket is resolved to **one** answer, and the `BlobStore` protocol now
+  states what each method raises — a contract that is silent about failure is what
+  made the divergence invisible. The CAS's residue is closed too: a raw `OSError` from
+  `get_stream` and a raw `zstandard.ZstdError` from a corrupt frame.
+* **The protocol's own signatures — already matched, and the record says so.** The
+  plan's sentence that "the `BlobStore` protocol and the cold lake's own store
+  disagree" was **stale**: the signature mismatch was fixed before this run. What
+  remained was behavioural, and it is the item above.
+* **The `TYPE_CHECKING` leftovers — done, and the deferral is gone.** Commit
+  `1c9ffa3` made `memory/creator.py` a runtime import of `RelationalBackend` and left
+  **eight** siblings expressing the same dependency two different ways; all eight are
+  converted — seven in wave 1, the eighth in wave 2 — so the nine modules that commit
+  touched now resolve the contract the one way. The facility that allowed a deferral
+  is **removed**: it held a single entry, and a deferral that is fulfilled is drift
+  nobody is coming back to. The blocks that remain are **classified** in the tree
+  itself (`TYPE_CHECKING_CLASSES` in `tests/conventions/test_import_conventions.py`)
+  — a real cycle, an optional extra, deliberate laziness, a guard that buys nothing,
+  a cheap first-party import — and the classification is checked against the same AST
+  sweep it was derived from, so a block that appears without a class fails the lock.
+* **The stale comments and documentation — still open.** The **MinIO half is clean**:
+  every `minio` occurrence left in a tracked file is a deliberate alias, a historical
+  reference, or the deliberately un-renamed filename. The line-number rot is not: the
+  sweep and the checker that stops it returning are the last item of this track, and
+  the documentation they name — `docs/deployment/docker.md`, `ADR-0019`, the README,
+  `.env.example`, the configuration reference — is the documentation still to be
+  swept.
+
 #### W8 — The gate, the review, and the split
 
-**Status: not started.** The full gate (`ruff` at 69 findings, `mypy` at 108 — eight
-*below* HEAD's 116 — and a pytest failure set byte-identical to the baseline), one
-final independent review of the whole diff, and then the commits. **The gate itself is
-now zero** — a section-by-section pass cleared all 69 ruff findings and all 108 mypy
-errors by changing the code rather than by silencing the checker, and the fixes
-surfaced real defects on the way (a `false` JSON schema that accepted every payload, an
-`await` inside a generator expression, a property shadowing `str.title`, a `BlobStore`
-protocol neither implementation satisfied, a Windows-only branch the type checker could
-not see). What W8 still owes is the *final independent review of the whole diff* and the
-split commits — and the remaining W3–W7 work itself. The split is by
+**Status: done.** The full gate (`ruff` at 69 findings, `mypy` at 108 — eight
+*below* HEAD's 116 — and a pytest failure set byte-identical to the baseline) was the
+work; the final independent review of the whole diff happened, and the commits split.
+**The gate itself is now zero** — a section-by-section pass cleared all 69 ruff findings
+and all 108 mypy errors by changing the code rather than by silencing the checker, and
+the fixes surfaced real defects on the way (a `false` JSON schema that accepted every
+payload, an `await` inside a generator expression, a property shadowing `str.title`, a
+`BlobStore` protocol neither implementation satisfied, a Windows-only branch the type
+checker could not see). The split is by
 concern, not by file, because several files carry hunks from more than one change set:
 the substrate contract and its vocabulary; the translation at the boundary; the
 migration machinery and the schema lexer; the live-server suites; the S3 rename; and
@@ -1406,7 +1461,10 @@ the container work. The container work and the S3 rename are *not* part of W1–
 must not ride along in a substrate commit.
 
 **After W8:** the ROADMAP's own Phase 0 (`docs/ROADMAP.md` 0.1–0.5 — validation,
-agents, models, observability, CI), which is a separate list and is not started.
+agents, models, observability, CI), which is a separate list. **It is the work that
+followed this track** — items 0.1 to 0.4 are done and item 0.5 (CI) is the CI
+workflow; `docs/ROADMAP.md` §"Phase 0" says what now covers each clause and what
+does not.
 
 ### Phase 1 — `SandboxSession` primitive
 

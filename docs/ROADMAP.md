@@ -5,19 +5,36 @@ effort and the reasoning behind the sequence.
 
 ## The one fact that shapes everything
 
-The spine is strong and tested (ledger, storage, context, sandbox, memory:
-**755 tests**). But:
+The spine is strong and tested (ledger, storage, context, sandbox, memory). The suite
+**collected 3,145 tests** when this file was last written — the ROADMAP's own "755
+tests" figure predates the substrate track and Phase 0.
 
-- the orchestrator is **never instantiated** outside its own module,
-- there is **no composition root** that wires the pieces together,
-- there is **no entry point** — you cannot start the system or feed it a task,
-- four written subsystems (agents, validation, models, observability) have
-  **zero test coverage**.
+**What is true now:**
 
-So the honest status is: *a well-engineered collection of parts that has never
-run as a whole.* The roadmap is ordered to fix that first, because every
-aspirational feature in the brief is worthless until one real task can flow from
-request to commit.
+- the four subsystems that used to have **zero test coverage** — agents, validation,
+  models, observability — have suites, and the security properties they carry are
+  asserted rather than promised (§"Phase 0");
+- the orchestrator **is** instantiated outside its own module, and one real task
+  flows from request to commit: `tests/integration/test_end_to_end.py` drives it
+  through the composition root, survives a stall mid-execution, and holds the token
+  ceiling;
+- the composition root is `Runtime.build` (`src/paa/runtime.py`) and the entry point
+  is the `paa` CLI (`src/paa/cli/main.py`) — `submit`, `status`, `ledger`, `gate`,
+  `recover`, `doctor` — with the FastAPI ingestion app beside it.
+
+**What is still not true:**
+
+- the whole run happens against an **injected** model. A frontier provider has never
+  driven a task here, so "the thing works" is a fact about the wiring and not about
+  the models;
+- the optional substrates are exercised by the suite — a live PostgreSQL, two live
+  S3 servers — but a deployment that wires every substrate together and drives a
+  task through it is still a thing an operator does, not a thing the suite asserts.
+
+So the honest status is: *a well-engineered collection of parts that now runs as a
+whole against an injected model.* The roadmap is still ordered to fix the rest
+first, because every aspirational feature in the brief is worthless until one real
+task can flow from request to commit.
 
 Effort key: **S** ≈ hours · **M** ≈ 1–2 days · **L** ≈ 3–5 days · **XL** ≈ 1–2+ weeks.
 (Solo-developer estimates; halve with parallel agents when the network cooperates.)
@@ -31,15 +48,37 @@ This is first because the untested modules carry the system's **security
 properties**, and shipping security asserted only in prose is worse than not
 shipping it.
 
-| # | Task | Effort | Why it matters |
-|---|------|--------|----------------|
-| 0.1 | Test `validation/` — AST scanner catches each forbidden construct; unparseable source is *rejected* not skipped; patch apply+rollback restores exact bytes; path-traversal patches refused; workspace manifest is deterministic | **M** | This is the layer that stops agent-authored code from touching the host. Untested, it is decoration. |
-| 0.2 | Test `agents/` — orchestrator emits the exact ledger event sequence end-to-end; delegation refuses a real 3-node cycle; policy gates (LOCKDOWN blocks egress, SAFE blocks deletion, anti-goal at 0.82); **critic's deterministic FAIL cannot be overridden by an LLM PASS** | **L** | The critic-override rule and the cycle guard are the two properties most likely to regress silently. |
-| 0.3 | Test `models/` — LOCKDOWN never escalates (spy provider, assert zero frontier calls); escalation writes exactly one `MODEL_ESCALATED` event; semaphore caps concurrency; no API key ever appears in logs or exceptions | **M** | The escalation boundary is the privacy promise. Assert it, don't hope. |
-| 0.4 | Test `observability/` — metric percentiles against hand-computed values; run repository round-trips; a failing exporter never breaks the traced operation | **S** | Cheap; unblocks trusting telemetry in the integration test. |
-| 0.5 | Wire CI (GitHub Actions) — run the full suite + `ruff` + `mypy --strict` on every push, matrix over the optional extras | **S** | Makes "755 passing" a fact enforced on every commit, not a snapshot. |
+**State: done, and the exit criterion is met for four of the five items.** The
+clauses below were the ROADMAP's own trust clause, and each one now has a suite that
+fails if the behaviour it names regresses. That is not the same as total coverage,
+and the second table names, per item, what covers the clause and **what is still
+open** — the parts that are a policy decision, a known defect, or a substrate that
+needs a live server.
+
+| # | Task | Effort | State | Why it matters |
+|---|------|--------|-------|----------------|
+| 0.1 | Test `validation/` — AST scanner catches each forbidden construct; unparseable source is *rejected* not skipped; patch apply+rollback restores exact bytes; path-traversal patches refused; workspace manifest is deterministic | **M** | **done** | This is the layer that stops agent-authored code from touching the host. Untested, it is decoration. |
+| 0.2 | Test `agents/` — orchestrator emits the exact ledger event sequence end-to-end; delegation refuses a real 3-node cycle; policy gates (LOCKDOWN blocks egress, SAFE blocks deletion, anti-goal at 0.82); **critic's deterministic FAIL cannot be overridden by an LLM PASS** | **L** | **done** | The critic-override rule and the cycle guard are the two properties most likely to regress silently. |
+| 0.3 | Test `models/` — LOCKDOWN never escalates (spy provider, assert zero frontier calls); escalation writes exactly one `MODEL_ESCALATED` event; semaphore caps concurrency; no API key ever appears in logs or exceptions | **M** | **done** | The escalation boundary is the privacy promise. Assert it, don't hope. |
+| 0.4 | Test `observability/` — metric percentiles against hand-computed values; run repository round-trips; a failing exporter never breaks the traced operation | **S** | **done** | Cheap; unblocks trusting telemetry in the integration test. |
+| 0.5 | Wire CI (GitHub Actions) — run the full suite + `ruff` + `mypy --strict` on every push, matrix over the optional extras | **S** | **done** | Makes the gate a fact enforced on every commit, not a snapshot somebody remembers to run. |
+
+### What covers each clause, and what does not
+
+| # | Clause | What covers it now | What is **not** covered |
+|---|---|---|---|
+| 0.1 | the scanner, the patch, the workspace | `tests/validation/test_ast_scanner.py` derives the rule inventory **from the scanner's own source** and checks it against all **19** rule names, each with a case; the default policy's **42** denied modules (in both spellings), **38** denied attributes and **7** denied builtins are each refused. `unparseable_source` is one of the 19, so "rejected, never skipped" is asserted. `test_patch.py` refuses traversal, absolute paths, control characters and the two symlink escapes a string-only check misses, and `test_apply_then_rollback_restores_the_exact_bytes` pins the rollback. `test_workspace.py` exercises the **real** `WorkspaceSnapshot` — the manifest does not depend on the write order or on the root, paths use `/`, CRLF and LF hash differently, a symlink is skipped and not followed. `test_engine.py` pins the gate's order and its short-circuits; `test_test_runner.py` pins that a run never reports a false pass. | Three behaviours are **xfail** — asserted to fail, each naming the file and the fix: the scanner's *walk* escapes a 2000-deep parse as `RecursionError` (`ast_scanner.py`); an artifact with nothing to check is reported as PASS (`engine.py`); a created file gains a trailing newline it was never given (`patch.py`). `paa.validation` is at **94%** line coverage (`pytest tests/validation --cov=paa.validation`). |
+| 0.2 | the orchestrator, the cycle guard, the policy gates | `tests/agents/test_orchestrator.py` asserts the **exact** ordered event list for six paths — happy, failure, block, anti-goal block, gate, released gate — and `tests/integration/test_end_to_end.py` asserts the same through the real wiring. `tests/agents/test_delegation.py` refuses a **mediated** three-node cycle and pins that the *cycle guard* fires, not the depth ceiling: at the default modality the depth ceiling fires first, so a test written at the default would pass even if the guard were deleted. `tests/agents/test_policy.py` refuses network egress under LOCKDOWN, refuses deletion under SAFE, and asserts the anti-goal cosine path on **both** sides of 0.82 with an injected embedder. The nine irreversible patterns each have a case that fails when that pattern is removed, and the inventory is derived from the module's own source. `tests/integration/test_end_to_end.py::test_model_pass_cannot_override_a_deterministic_fail` pins the critic's rule. | **Two operator decisions are open** and are not this phase's to close: the **declared-permission half** of `_check_lockdown` cannot fire, and making it reachable changes *which* refusal the ledger records — a judgement about what the policy should say, not a defect; and four **pattern-semantics** findings (`git push -f`, the `rm` flag spellings, `DELETE FROM public.users`, `TRUNCATE` without `TABLE`) each widen a security rule over prose, so each is a policy decision. Both are named in `AGENTS.md` §"The rules this tree holds itself to", and carried with their reproductions in the run's work ledger. `paa.agents` is at **89%** line coverage; `context_agents.py` is the thinnest at **70%**. |
+| 0.3 | the escalation boundary | `tests/models/test_router_lockdown.py` uses a spy provider and asserts **zero** frontier calls and exactly one local call, and that `force_escalate=True` does not bypass LOCKDOWN. `tests/models/test_escalation_audit.py` asserts exactly one `MODEL_ESCALATED` per escalation, and `tests/models/test_router_concurrency.py` asserts that two routers under one correlation write **two** records, because the audit's identity is the event's own id. The same file asserts `max_in_flight == cap` — `==`, not `<=`, because a semaphore that serialised everything would pass `<=`. `tests/models/test_key_secrecy.py` asserts the key reaches no log line, no ledger payload, no exception message, no details **and no exception chain**; the router's errors carry no chain at all. | The no-key guarantee is a guarantee about **the router's** errors: a provider that raises an error carrying its own key still has that key in that error, and the test file says so. `paa.models` is at **85%**; the provider *transports* are the thin part — `anthropic_provider.py` at **43%** and `ollama_provider.py` at **44%** — because they need a live endpoint. |
+| 0.4 | the telemetry | `tests/observability/test_metrics.py` asserts hand-computed percentiles (p95 of 1..5 is 4.8), pins the rank formula with a property, and refuses a quantile outside the unit interval. `tests/observability/test_runs.py` round-trips the repository — the row that comes back is the row that was written, a run is in flight until it is finished, a non-zero exit code is an error, and an unfinished run is excluded from an aggregate rather than counted as a failure. `tests/observability/test_tracing.py` asserts a failing exporter never breaks the traced operation, and pins the `BaseException` asymmetry: an *interruption* propagates while the span is still finished and retained. `logging.py`, which had **zero** coverage, now has `tests/observability/test_logging.py`. | `paa.observability` is at **90%** line coverage; `tracing.py` is at **84%** and `metrics.py` at **85%**. |
+| 0.5 | CI | `.github/workflows/ci.yml` runs `ruff check src tests`, `mypy src` (which is `strict = true` in the project's own config) and the whole `pytest` suite with `--strict-markers --strict-config` on every push and pull request. The matrix is over **install shapes** — a minimal one, the documented `.[dev]` one and `.[all]` — because "never import one at module scope in a core path" is a claim a minimal install has to be tested against. The developer shape installs `.[dev]`, which carries `paa[api]` and `paa[s3]`; without them the API suite and the live S3 suite skip themselves at import. A **PostgreSQL service container** and two **S3 service containers** (SeaweedFS and RustFS) are declared with health checks, and the suites' own variable names are exported: `PAA_TEST_POSTGRES_DSN` and the *labelled* `PAA_TEST_S3_*` spellings. The workflow installs **`python-is-python3`**, because the sandbox builds its child `PATH` as `/usr/local/bin:/usr/bin:/bin` and `actions/setup-python`'s tool-cache interpreter is not on it; without that line six assertions fail on the runner for a reason that has nothing to do with the code. The install uses the retry convention the Dockerfiles already encode. | **The workflow has never run** — there is no GitHub here, so it was parsed and its steps were executed locally as far as they could be, and the run itself is UNVERIFIED. The `requires_postgres` suite only *runs* in the `.[all]` shape (`paa[postgres]` is not in `dev`), so in the other two shapes it skips even though the server is there. A green run without the services says only that the suites skipped. |
 
 **Exit:** every module has coverage; CI is green; the draft PR can leave draft.
+**Read that as it stands:** the four subsystems have coverage, and it is *not*
+total — the coverage column above is the honest figure, and the named gaps are the
+known defects rather than the unmeasured remainder. The exit criterion's own words
+("every module has coverage") were not met in the strict sense and are not claimed
+here; what is met is that the four subsystems' headline clauses are asserted.
 
 ---
 
@@ -139,7 +178,9 @@ The through-line: **you cannot improve what you cannot run, and you should not
 run what you cannot trust.** Phase 0 buys trust, Phase 1 buys a running system,
 and only then does building features stop being building on sand.
 
-If you want the single highest-leverage next step: **Phase 0.2 + Phase 1.1 +
-1.2** — test the agents, write the composition root, and prove one task
-end-to-end. That converts "755 unit tests" into "the thing works," which is the
-claim everything else rests on.
+If you want the single highest-leverage next step: **the rest of Phase 1.** Phase 0
+is done — the agents, validation, models and observability are asserted rather than
+promised — and the composition root, the `paa` CLI and the end-to-end test are
+already in the tree, so what remains of Phase 1 is the part that has never run
+against anything but an injected model. That is what converts "3,107 collected
+tests" into "the thing works," which is the claim everything else rests on.

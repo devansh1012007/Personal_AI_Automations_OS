@@ -6,13 +6,14 @@ deviations**. If the code does something the RFC did not ask for, there is an
 ADR explaining why, and the source cites it inline as
 `SPEC DEVIATION (docs/adr/NNNN)`.
 
-Deviations fall into three classes:
+The records fall into four classes:
 
 | Class | Meaning |
 |---|---|
 | **Hardware/platform** | The RFC assumed a workstation with CUDA and Docker. The target is a Windows laptop with a 2 GB AMD iGPU, ~3.5 GB free RAM, and no Docker. |
 | **Correctness** | The RFC's specification, taken literally, does not work — a constraint that deadlocks, a formula with wrong dimensions, an index that grows without bound. |
 | **Direction** | The user explicitly asked for something different from the RFC. |
+| **Honesty** | The record states a limit — what the architecture cannot buy — rather than a departure from the RFC. |
 
 ## Index
 
@@ -33,6 +34,9 @@ Deviations fall into three classes:
 | [0013](0013-hybrid-retrieval-decay.md) | Temporal decay applies to the whole retrieval score | **Correctness** |
 | [0014](0014-memory-domains-consolidated.md) | 18 memory domains map to 6 mechanisms | Direction |
 | [0015](0015-capability-ceiling.md) | On matching Claude Code: what architecture can and cannot buy | **Honesty** |
+| [0016](0016-friction-score-denominator.md) | The friction score's denominator cannot be zero | **Correctness** |
+| [0017](0017-meta-learning-what-is-real.md) | On meta-learning: what is real here and what is not | **Honesty** |
+| [0018](0018-mediated-delegation.md) | Agents can call each other without deadlocking | Direction |
 | [0019](0019-docker-server-deployment.md) | Dual embedded/server topology for the Docker deployment | Direction |
 | [0020](0020-provider-keys-from-dotenv.md) | Provider API keys resolve from `.env`, not only the environment | **Correctness** |
 | [0021](0021-transport-retry.md) | Transport retry for transient model-endpoint failures | **Correctness** |
@@ -49,6 +53,15 @@ Deviations fall into three classes:
 | [0033](0033-s3-live-server-suite.md) | The S3 substrate is tested against two S3 servers, not against a mock | **Correctness** |
 | [0034](0034-hard-stop-escalation-parks-the-task.md) | A hard stop parks the task until a human rules | **Correctness** |
 | [0035](0035-unqualified-delete-rule-and-the-plan-s-position.md) | The unqualified-delete rule's answer must not depend on where the step sits | **Correctness** |
+
+**Which of these records have a body.** The files on disk are 0008, 0010, 0015,
+0019–0026 and 0028–0035. The other rows are **index-only**: the decision was taken
+and is recorded — in `README.md`'s account of the RFC's departures, and, for 0001–0014,
+0016 and 0018, in the source's own `SPEC DEVIATION (docs/adr/NNNN)` citation — but the
+record itself is still to be written, which the ROADMAP's cross-cutting *Docs* item
+asks for. A row in this index is a claim that **a decision was taken**, not that a
+document exists; the number is spoken for either way, because a source comment cites
+it, and writing the body changes the row and not the number.
 
 > ADR 0027 is reserved for the tool-containment and MCP client layer
 > (`docs/MCP_AND_PLUGINS.md`). It is not indexed here because it does not
