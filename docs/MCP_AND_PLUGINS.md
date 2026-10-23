@@ -1397,7 +1397,7 @@ suites that make them visible:
 
 #### W7 — The cleanup that the review found
 
-**Status: three of the four done; the documentation half is the last one open.**
+**Status: all four done.** The documentation half closed by T-010 in the `20261022-w6-w7-w9` run (`tests/conventions/test_docs_references.py` is the lock); every line-number reference it swept now points at an existing non-blank line.
 
 The `BlobStore` protocol and the cold lake's own store disagreed; the S3 error path
 was not neutral, which broke the contract W2 established for the relational
