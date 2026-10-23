@@ -1,0 +1,433 @@
+# =====================================================================
+# The gate, on every push.
+#
+# There was no CI in this repository until now: no `.github/`, no
+# Makefile, no tox, no pre-commit. Nothing enforced `ruff`, `mypy` or
+# the suite on a push, so a red build was something a human had to
+# notice rather than something the repository refused. This file is
+# that refusal.
+#
+# Four things in here are load-bearing, and three of them are not
+# obvious:
+#
+#   * `.[dev]`, not `.`. The `dev` extra resolves `paa[api]` and
+#     `paa[s3]` itself, and without them `tests/api/conftest.py`
+#     skips the whole directory at import ("needs the api extra") and
+#     `tests/storage/test_s3_live.py` skips itself. A suite that
+#     skips is a suite that says nothing about the thing it was
+#     written for, and it says it quietly — which is the quietest
+#     way to not test something.
+#
+#   * `python-is-python3`. The sandbox builds its child environment
+#     from scratch with `PATH=/usr/local/bin:/usr/bin:/bin`
+#     (`src/paa/sandbox/base.py::build_child_env`) — deliberately not
+#     the host's `PATH`, because the host's `PATH` leaks the
+#     developer's toolchain and can put an attacker-writable
+#     directory ahead of the system ones. `actions/setup-python`'s
+#     interpreter lives in the runner's tool cache and is not on that
+#     PATH, and neither is the runner's own `python3` under the name
+#     `python`. A plan step runs `python -c ...` by default
+#     (`src/paa/agents/reasoning.py::WorkerCell`), so with no
+#     `/usr/bin/python` the step exits 127, the worker fails, the
+#     task never reaches `MUTATION_COMMITTED`, and the six assertions
+#     that expect COMMITTED fail for a reason that has nothing to do
+#     with the code. The package installs `/usr/bin/python`; the
+#     sandbox's PATH finds it. **Never widen the sandbox's PATH to
+#     work around this** — that is the security property.
+#
+#   * the network-fragility convention. A build that dies because one
+#     connection dropped says nothing about the code, so every
+#     network operation retries: pip's own budget (`PIP_RETRIES`,
+#     `PIP_TIMEOUT`) plus the outer loop the Dockerfiles already
+#     encode. Same convention, same reason.
+#
+#   * the DSN and the endpoints name a SERVER, never a resource. The
+#     PostgreSQL fixture creates a database of its own on the server
+#     and drops it afterwards; the S3 fixture creates a bucket of its
+#     own and drops it afterwards. So a run can never write to
+#     whatever a deployment is using, whatever the endpoint points at.
+#
+# The matrix is over INSTALL SHAPES, not over Python versions. A
+# minimal install — the core dependencies and nothing else — has to
+# pass as well, because the rule the tree is built on is that no
+# optional heavy dependency is imported at module scope in a core
+# path: if a minimal install stopped importing, the extras would not
+# be optional any more. The extras-gated suites SKIP rather than fail
+# when their extra is absent, which is what makes the minimal shape a
+# checkable one.
+# =====================================================================
+
+name: ci
+
+# `"on":` and not `on:`. YAML 1.1 reads a bare `on` as the boolean TRUE,
+# so every tool that parses this file with a YAML 1.1 parser (PyYAML among
+# them) sees a key called `True` instead of a key called `on`. GitHub's own
+# parser does not have that quirk, and quoting costs nothing there.
+"on":
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# The gate reads the repository and runs things. It needs nothing else.
+permissions:
+  contents: read
+
+# One run per ref. A new push cancels the run it supersedes: the gate
+# answers "is this commit good", and the older commit's answer is
+# already known.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: gate (${{ matrix.install }})
+    runs-on: ubuntu-latest
+    # The `all` shape installs torch, which is a large download on a
+    # network that may be slow. The bound is generous on purpose: a
+    # timeout that fires during an install is a red build that says
+    # nothing about the code.
+    timeout-minutes: 45
+    strategy:
+      # One shape failing does not hide the others' verdicts. The whole
+      # point of a matrix is that each shape's answer is its own.
+      fail-fast: false
+      matrix:
+        include:
+          # The core dependencies only. Proves that nothing in a core
+          # path needs an optional extra at import time.
+          #
+          # The mypy exclusion is the ONE place where this shape checks
+          # less than the others, and the reason is in the step itself.
+          - install: minimal
+            extras: ""
+            mypy_exclude: "src/paa/api"
+          # The documented developer install: the tooling, plus `paa[api]`
+          # and `paa[s3]`. This is the shape the live S3 suite runs in.
+          - install: dev
+            extras: "[dev]"
+            mypy_exclude: ""
+          # Every extra, including the heavyweight ones (torch via
+          # `paa[embeddings]`). This is the shape the live PostgreSQL
+          # suite runs in, because `paa[postgres]` is not in `dev`.
+          - install: all
+            extras: "[all]"
+            mypy_exclude: ""
+
+    services:
+      # ------------------------------------------------------------------
+      # PostgreSQL. The DSN names the SERVER; the fixture creates a
+      # database of its own on it (`paa_storage_test_<pid>_<uuid8>`) and
+      # drops it afterwards, so the run can never touch a deployment's
+      # database whatever the DSN points at. The dbname below is the
+      # server's ADMIN database — the one the fixture connects to in
+      # order to issue CREATE DATABASE — and it is never dropped.
+      # ------------------------------------------------------------------
+      postgres:
+        image: postgres:16@sha256:ca0bd484cb98bf4b24eb1010e73fb3fcbd6714d240fbc1a10eea5b7dbecb641d
+        env:
+          # The server's own credentials. Not a secret: this server
+          # exists only for the length of this job and is reachable only
+          # from it.
+          POSTGRES_USER: paa
+          POSTGRES_PASSWORD: paa
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U paa -d postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 20s
+
+      # ------------------------------------------------------------------
+      # SeaweedFS — the deployment's own object store, and the first of
+      # the two implementations the live S3 suite runs the same test
+      # bodies against. The other is RustFS, below.
+      #
+      # The health check asks the MASTER (9333), not the S3 gateway
+      # (8333). An unauthenticated request to the S3 root answers 403 —
+      # the gateway is up and refusing an unsigned request — which is a
+      # good liveness signal and a failing health check.
+      #
+      # The image's own default command is used, and that is a
+      # constraint rather than a preference: a `services:` entry has no
+      # `command:` key (GitHub's schema allows only `image`, `env`,
+      # `ports`, `volumes`, `options` and `credentials`), so the
+      # deployment's `server -s3 -dir=/data -ip=0.0.0.0` cannot be
+      # spelled here. The image's default — `weed mini -dir=/data` —
+      # is the same program, the same version, and the same S3 gateway
+      # on 8333 with the same master on 9333; measured against it, the
+      # live S3 suite passes unchanged.
+      # ------------------------------------------------------------------
+      seaweedfs:
+        image: chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d
+        env:
+          # The same credential the job below exports. The two must
+          # agree: this is the server's credential, and that is the
+          # client's. A mismatch is an `AccessDenied` in every S3 test
+          # and nothing else.
+          AWS_ACCESS_KEY_ID: paa-ci-key
+          AWS_SECRET_ACCESS_KEY: paa-ci-secret
+        ports:
+          - 8333:8333
+        options: >-
+          --health-cmd "curl -fsS http://localhost:9333/cluster/status || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 20s
+
+      # ------------------------------------------------------------------
+      # RustFS — a DIFFERENT program speaking the same protocol. One
+      # server cannot answer "does this client work against a server it
+      # was not written against", because a client and a server written
+      # by the same mind agree about everything that matters, including
+      # the things that are wrong. The suite checks that the two answer
+      # differently (`test_the_two_servers_are_distinguishable`), so
+      # two containers of one image would not satisfy it.
+      # ------------------------------------------------------------------
+      rustfs:
+        image: rustfs/rustfs:latest@sha256:9ca9559533b537d10482fe923288b676ad08f92a7069d9a17327fbae3cab688b
+        env:
+          # The same credential the job below exports. The two must
+          # agree; see the SeaweedFS service above.
+          RUSTFS_ACCESS_KEY: paa-ci-key
+          RUSTFS_SECRET_KEY: paa-ci-secret
+          RUSTFS_VOLUMES: /data
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "curl -fsS http://localhost:9000/minio/health/live || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 20s
+
+    env:
+      # pip's own retry budget, before the outer loop below decides a
+      # failure is real. A slow index gets a long timeout and many
+      # attempts, so a marginal network is given every chance.
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_NO_CACHE_DIR: "1"
+      PIP_RETRIES: "10"
+      PIP_TIMEOUT: "120"
+
+      # ------------------------------------------------------------------
+      # What the suites read. Every one of these names a SERVER, and each
+      # suite makes a resource of its own on it — so a run can never
+      # write to a bucket or a database a deployment is using.
+      #
+      # The S3 endpoints are the LABELLED spelling. The unlabelled
+      # `PAA_TEST_S3_ENDPOINT` is the same convention with no label, and
+      # it is the right spelling for ONE server; this job runs TWO, and
+      # the label is what a failing test's id names — which is the whole
+      # reason for running the same body twice.
+      # ------------------------------------------------------------------
+      PAA_TEST_POSTGRES_DSN: postgresql://paa:paa@127.0.0.1:5432/postgres
+      PAA_TEST_S3_SEAWEEDFS_ENDPOINT: http://127.0.0.1:8333
+      PAA_TEST_S3_SEAWEEDFS_ACCESS_KEY: paa-ci-key
+      PAA_TEST_S3_SEAWEEDFS_SECRET_KEY: paa-ci-secret
+      PAA_TEST_S3_RUSTFS_ENDPOINT: http://127.0.0.1:9000
+      PAA_TEST_S3_RUSTFS_ACCESS_KEY: paa-ci-key
+      PAA_TEST_S3_RUSTFS_SECRET_KEY: paa-ci-secret
+
+    steps:
+      - name: check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The gate builds and runs the code; it does not need the
+          # history.
+          fetch-depth: 1
+
+      - name: set up python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          # The same cache the Dockerfiles' wheelhouse buys, for the same
+          # reason: the network is not the thing under test, and a
+          # dropped connection should not cost a build.
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # ------------------------------------------------------------------
+      # The landmine. Read the header of this file before touching it.
+      #
+      # `python-is-python3` is what puts `/usr/bin/python` on the
+      # system — the one directory the sandbox's minimal PATH can see.
+      # Without it, six assertions fail on the runner for a reason that
+      # has nothing to do with the code.
+      #
+      # The apt retry flags are the repo's convention, for the repo's
+      # reason: the network fails for reasons nobody in this repository
+      # controls, and a build that dies on a dropped connection is
+      # indistinguishable from a build that died on a real error.
+      # ------------------------------------------------------------------
+      - name: install python-is-python3
+        run: |
+          set -eu
+          retry() {
+            attempt=0;
+            until "$@"; do
+              attempt=$((attempt + 1));
+              if [ "$attempt" -ge 5 ]; then
+                echo "giving up after $attempt attempts: $*" >&2;
+                return 1;
+              fi;
+              echo "attempt $attempt failed: $* — retrying in $((attempt * 10))s" >&2;
+              sleep $((attempt * 10));
+            done;
+          }
+          retry sudo apt-get -o Acquire::Retries=10 update
+          retry sudo apt-get -o Acquire::Retries=10 install -y --no-install-recommends python-is-python3
+          # The claim, checked rather than asserted. `command -v python`
+          # would find the runner's own tool-cache interpreter and prove
+          # nothing: what matters is the interpreter the SANDBOX can find,
+          # and the sandbox's PATH is /usr/local/bin:/usr/bin:/bin.
+          test -x /usr/bin/python
+          ls -l /usr/bin/python
+          /usr/bin/python -c "import sys; print('the interpreter the sandbox will find:', sys.executable)"
+
+      - name: create the virtualenv
+        run: |
+          set -eu
+          # The repo's own layout: the gate commands below address
+          # `.venv/bin/python`, so the venv is at the repo's root and
+          # the paths in this file are the paths the gate uses.
+          #
+          # `python -m venv` seeds pip from the interpreter's bundled
+          # `ensurepip`. A python built WITHOUT it — a Debian split
+          # package whose `python3-venv` is not installed — fails at
+          # exactly that step and leaves a venv with no pip in it, and
+          # a venv with no pip in it is a venv the gate cannot install
+          # into. The fallback creates the venv without pip and puts
+          # pip into it from the interpreter that has one.
+          if ! python -m venv .venv; then
+            rm -rf .venv
+            python -m venv --without-pip .venv
+            # `--python` is a pip GLOBAL option: it has to come before the
+            # subcommand, or pip refuses it ("The --python option must be
+            # placed before the pip subcommand name").
+            python -m pip --python .venv/bin/python install pip
+          fi
+          .venv/bin/python -m pip --version
+          .venv/bin/python -m pip install --upgrade pip
+
+      # ------------------------------------------------------------------
+      # The install, in the shape the matrix names.
+      #
+      # `pip install -e ".${{ matrix.extras }}"` — for the minimal shape
+      # that is `pip install -e "."`, which installs the CORE
+      # dependencies and no extra. It is a real check, not a formality:
+      # it fails at import if anything in a core path needs an optional
+      # heavy dependency.
+      # ------------------------------------------------------------------
+      - name: install the package (${{ matrix.install }})
+        env:
+          # The extras this job's shape names, as the matrix spells them.
+          # The shape is read from the environment rather than interpolated
+          # into the shell text, so the script below is the same text in
+          # every job and there is one place the shape is decided.
+          PAA_CI_EXTRAS: ${{ matrix.extras }}
+        run: |
+          set -eu
+          retry() {
+            attempt=0;
+            until "$@"; do
+              attempt=$((attempt + 1));
+              if [ "$attempt" -ge 5 ]; then
+                echo "giving up after $attempt attempts: $*" >&2;
+                return 1;
+              fi;
+              echo "attempt $attempt failed: $* — retrying in $((attempt * 10))s" >&2;
+              sleep $((attempt * 10));
+            done;
+          }
+          echo "install shape: .${PAA_CI_EXTRAS}"
+          retry .venv/bin/python -m pip install -e ".${PAA_CI_EXTRAS}"
+
+      # ------------------------------------------------------------------
+      # The gate's own tooling.
+      #
+      # It comes out of the project's OWN metadata, not out of a list
+      # written here: the `dev` extra is the one place that declares
+      # which versions of pytest, ruff, mypy and hypothesis the gate
+      # runs, and a second copy of that list is a second place to
+      # forget to update it. The self-referential entries (`paa[api]`,
+      # `paa[s3]`) are skipped — those are the PACKAGE's extras, and the
+      # install shape above is what decides which of those this job has.
+      # ------------------------------------------------------------------
+      - name: install the gate tooling
+        run: |
+          set -eu
+          retry() {
+            attempt=0;
+            until "$@"; do
+              attempt=$((attempt + 1));
+              if [ "$attempt" -ge 5 ]; then
+                echo "giving up after $attempt attempts: $*" >&2;
+                return 1;
+              fi;
+              echo "attempt $attempt failed: $* — retrying in $((attempt * 10))s" >&2;
+              sleep $((attempt * 10));
+            done;
+          }
+          TOOLING_FILE=$(mktemp)
+          .venv/bin/python -c "import pathlib, tomllib; meta = tomllib.loads(pathlib.Path('pyproject.toml').read_text(encoding='utf-8')); dev = meta['project']['optional-dependencies']['dev']; print('\n'.join(d for d in dev if not d.startswith('paa[')))" > "$TOOLING_FILE"
+          echo "gate tooling:"
+          cat "$TOOLING_FILE"
+          retry .venv/bin/python -m pip install -r "$TOOLING_FILE"
+
+      # ==================================================================
+      # The gate. These three commands are the repo's three gate
+      # commands, in this order, with these flags:
+      #
+      #     .venv/bin/python -m ruff check src tests
+      #     .venv/bin/python -m mypy src
+      #     .venv/bin/python -m pytest tests/ -o addopts="--strict-markers --strict-config" -q
+      #
+      # No `-k`, no `--ignore`, no marker exclusion: the gate is the
+      # whole suite. The `--strict-markers --strict-config` is spelled
+      # out because the `-o addopts=` overrides the project's own
+      # `addopts` (`pyproject.toml` sets `-q --strict-markers
+      # --strict-config`), and the strictness is the part that must
+      # survive the override.
+      # ==================================================================
+
+      - name: lint (ruff)
+        run: .venv/bin/python -m ruff check src tests
+
+      - name: typecheck (mypy)
+        env:
+          # The paths this shape cannot type-check. Empty in the `dev`
+          # and the `all` shapes, where every module's dependencies are
+          # installed and the whole of `src` is checked.
+          MYPY_EXCLUDE: ${{ matrix.mypy_exclude }}
+        run: |
+          # `src/paa/api/` imports FastAPI at module scope, so without
+          # the `api` extra mypy sees `FastAPI` as `Any` and reports
+          # EIGHT errors that are artefacts of the missing dependency
+          # rather than defects: every route decorator is "untyped", and
+          # one handler returns `Any`. Measured, on a minimal install:
+          #
+          #     mypy src                      -> 8 errors in 1 file
+          #     mypy src --exclude src/paa/api -> Success, 135 files
+          #
+          # The file IS type-checked, in full, by the `dev` and the `all`
+          # jobs, where the dependency is present.
+          #
+          # The list is written out rather than derived, and that is
+          # deliberate. A derived list would silently check LESS the day
+          # a module changed, and a silent exclusion is the one failure
+          # mode a gate must not have. Written out, a new module that
+          # needs an extra makes THIS job red — which is the loud
+          # direction, and the one that asks a human to look.
+          if [ -n "$MYPY_EXCLUDE" ]; then
+            .venv/bin/python -m mypy src --exclude "$MYPY_EXCLUDE"
+          else
+            .venv/bin/python -m mypy src
+          fi
+
+      - name: test (pytest)
+        run: .venv/bin/python -m pytest tests/ -o addopts="--strict-markers --strict-config" -q
