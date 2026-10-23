@@ -80,7 +80,7 @@ Manifest capture + drift detection (`hash_file`).
 ## Runtime behavior
 
 - Lazy import in `runtime.py` (`try/except`) — validation unavailable degrades
-  gracefully (`runtime.py:436`).
+  gracefully (`runtime.py:495`).
 - Tests run last and only inside a sandbox (`engine.py:233`).
 - `ok` requires positive evidence; absence of failure ≠ pass (`test_runner.py:81`).
 

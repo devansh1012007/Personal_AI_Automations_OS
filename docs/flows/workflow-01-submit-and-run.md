@@ -7,7 +7,7 @@ to `MUTATION_COMMITTED`. All paths verified against `src/paa/agents/orchestrator
 
 | Trigger | Entry | File |
 |---|---|---|
-| CLI | `paa submit "fix the login bug"` | `cli/main.py:61` → `Runtime.submit()` |
+| CLI | `paa submit "fix the login bug"` | `cli/main.py:73` → `Runtime.submit()` |
 | API | `POST /tasks?run=true` | `api/app.py:85` → `Runtime.submit()` + `Runtime.run()` |
 | Programmatic | `rt.submit_and_run("...")` | `runtime.py:213` |
 
@@ -16,12 +16,12 @@ to `MUTATION_COMMITTED`. All paths verified against `src/paa/agents/orchestrator
 ### 1. Submit — durable intake
 
 `ChiefOrchestrator.submit()` (`orchestrator.py:188`):
-1. Mint `CorrelationId` (`new_correlation_id()`, `core/types.py:48`).
+1. Mint `CorrelationId` (`new_correlation_id()`, `core/types.py:50`).
 2. Classify modality (`_classify()`, `orchestrator.py:247`) — heuristic: keywords
    (`refactor`, `implement`, `build`, `debug`, `fix`) → `COMPLEX`; `migrate`/`redesign`
    → `MAX`; target agent + short goal → `SIMPLE`; else `STANDARD`.
-3. Emit `TASK_REQUESTED` (`_emit()`, `orchestrator.py:160`) → `LedgerStore.append()`
-   (`store.py:113`) → row in `system_state_ledger`, head projection upserted.
+3. Emit `TASK_REQUESTED` (`_emit()`, `orchestrator.py:263`) → `LedgerStore.append()`
+   (`ledger/store.py:116`) → row in `system_state_ledger`, head projection upserted.
 4. Apply backpressure (`_apply_backpressure()` — may degrade modality if queue
    deep, `orchestrator.py:264`; `backpressure.py:77`).
 5. Emit `TASK_QUEUED`.
@@ -41,7 +41,7 @@ is durable before any work (`orchestrator.py` docstring).
 
 ### 3. Hydrate — build context packet
 
-`_hydrate()` (`orchestrator.py:353`):
+`_hydrate()` (`orchestrator.py:467`):
 1. Skip if `context_packet` already present (resume).
 2. Emit `CONTEXT_HYDRATION_REQUESTED`.
 3. `PlannerContextBuilder.run(message, ctx)` (`context_agents.py:241`):
@@ -53,11 +53,11 @@ is durable before any work (`orchestrator.py` docstring).
    - `BoundedContextGatherer.compile()` packs within `token_ceiling` (1500).
 4. If `routing_directive == HARD_STOP_ESCALATE_TO_USER` → emit
    `AWAITING_HUMAN_ATTESTATION` (parks; `:379`), return.
-5. Emit `CONTEXT_HYDRATED` with `context_packet` (`:393`).
+5. Emit `CONTEXT_HYDRATED` with `context_packet` (`orchestrator.py:534`).
 
 ### 4. Plan — compile execution steps
 
-`_plan()` (`orchestrator.py:403`):
+`_plan()` (`orchestrator.py:542`):
 1. Skip if `plan_steps` already present (resume).
 2. SIMPLE: emit `PLAN_COMPILED` with one step (`{action: goal, agent: worker}`,
    `bypassed_planner: true`) (`:408`).
@@ -81,9 +81,9 @@ is durable before any work (`orchestrator.py` docstring).
      anti-goals (cosine ≥ 0.82 or phrase match, `:262`).
    - Risk score [0,1]; `_needs_gate()` decides human-gate need by mode (`:318`).
 3. Blocked → `POLICY_BLOCKED` (or `SECURITY_VIOLATION` on anti-goal) → phase
-   `BLOCKED` (terminal) (`:474`).
-4. Human gate required → `AWAITING_HUMAN_ATTESTATION` → phase parks (`:494`).
-5. Cleared → `POLICY_CLEARED` + `risk_score` → phase `EXECUTING` (`:505`).
+   `BLOCKED` (terminal) (`orchestrator.py:673`).
+4. Human gate required → `AWAITING_HUMAN_ATTESTATION` → phase parks (`orchestrator.py:909`).
+5. Cleared → `POLICY_CLEARED` + `risk_score` → phase `EXECUTING` (`orchestrator.py:709`).
 
 ### 6. Execute steps — per step in sandbox
 

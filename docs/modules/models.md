@@ -14,7 +14,7 @@
 
 Provider-agnostic and local-first with explicit, ledger-logged escalation
 (ADR-0007/0015). Swapping the model is a config change, not a rewrite
-(`base.py:13`). The model seam is `ModelLike.complete_structured(prompt,
+(`models/base.py:13`). The model seam is `ModelLike.complete_structured(prompt,
 schema)`; `RouterModelAdapter` (`runtime.py:108`) and `RouterToolCallingModel`
 (`coder/model_adapter.py:123`) are the only two places that know about
 `EscalatingModelRouter`.
@@ -24,20 +24,20 @@ the provider classes are, and they need only httpx (`AGENTS.md:85`).
 
 ## Internal implementation
 
-### `base.py` — contract
+### `models/base.py` — contract
 - `CompletionRequest`/`CompletionResponse`/`Message` wire types; temperature
-  defaults 0.0 for replay determinism (`base.py:202`).
+  defaults 0.0 for replay determinism (`models/base.py:463`).
 - `ModelProvider` ABC: `complete()`, `healthcheck()` (must never raise,
-  `:600`), `complete_structured()` with validate-and-repair up to `max_retries`
-  then `StructuredOutputError` (`:609`).
+  `models/base.py:897`), `complete_structured()` with validate-and-repair up to `max_retries`
+  then `StructuredOutputError` (`models/base.py:969`).
 - `validate_against_schema()` — pure-Python JSON Schema subset; unsupported
-  keywords ignored, never guessed (`:320`).
+  keywords ignored, never guessed (`models/base.py:567`).
 - `redact()` — scrubs `sk-`, Bearer, `api_key=` patterns from errors/logs
-  (`:139`).
+  (`models/base.py:256`).
 - `extract_json_object()` — pulls JSON from fenced/markdown-wrapped responses
-  (`:514`).
+  (`models/base.py:811`).
 - `minimal_instance_for_schema()` — EchoProvider's offline schema honouring
-  (`:445`).
+  (`models/base.py:720`).
 
 ### `registry.py` — provider registry
 `KNOWN_PROVIDERS`: 29 `ProviderSpec` rows (OpenAI family + ollama/anthropic/
@@ -45,7 +45,7 @@ gemini/echo). Each: `name`, `kind`, `default_model`, `default_base_url`,
 `api_key_env` (tuple), `default_tier` (LOCAL/FRONTIER), `is_local`.
 `build_provider()` constructs with lazy imports; `build_local_inference()` for
 localhost backends. `resolved_api_key()`: env first, then `.env` via
-`dotenv_value` — never `os.environ` (`registry.py:104`).
+`dotenv_value` — never `os.environ` (`models/registry.py:104`).
 
 ### `router.py` — EscalatingModelRouter
 Policy, in order (`router.py:13`):
@@ -59,7 +59,7 @@ per-router sequence number as the event's `discriminator`, so two escalations
 in one lineage are two events rather than one suppressed duplicate. Escalation
 without a ledger store logs a warning (unaudited, `router.py:628`).
 
-**Configuration resolution** (`router.py:90`, `resolve_model_settings`): the
+**Configuration resolution** (`router.py:91`, `resolve_model_settings`): the
 router and `get_model_router` accept either a full `Settings` or its `models`
 half, told apart by `isinstance` rather than by a `getattr(settings, "models",
 settings)` fallback — the fallback cannot be type-checked, because the `models`
@@ -103,15 +103,15 @@ resolution; the undocumented tolerance that fallback carried (a
 |---|---|---|---|
 | `RouterModelAdapter` → `EscalatingModelRouter` | `complete_structured()` | Bridge agents' ModelLike to router | `runtime.py:131` |
 | `Reasoning agents` → `ModelLike` | `complete_structured()` | Model seam | `reasoning.py:26` |
-| `Router` → local/frontier `ModelProvider` | `complete/complete_structured` | Inference + escalation | `router.py:341`, `:376` |
+| `Router` → local/frontier `ModelProvider` | `complete/complete_structured` | Inference + escalation | `router.py:401`, `:436` |
 | `Router` → `LedgerStore` | `append(MODEL_ESCALATED)` | Audit escalation | `router.py:654` |
 | `Context builders` → embedder | `embed()` | Vector search | `context_agents.py:247` |
-| `Registry` → `dotenv_value` | read provider API key | Credentials without os.environ | `registry.py:104` |
+| `Registry` → `dotenv_value` | read provider API key | Credentials without os.environ | `models/registry.py:104` |
 
 ## Runtime behavior
 
 - `temperature=0.0` default — sampling variance would break replay
-  determinism (`base.py:202`).
+  determinism (`models/base.py:463`).
 - `max_concurrent_streams=2` — prevents swap on 3.5 GB machines
   (`router.py:29`).
 - Escalation only when policy permits; local failure under LOCKDOWN raises
@@ -120,33 +120,33 @@ resolution; the undocumented tolerance that fallback carried (a
 ## Failure behavior
 
 - `ModelUnavailableError` — provider could not serve (routable; triggers
-  escalation consideration) (`base.py:69`).
+  escalation consideration) (`models/base.py:107`).
 - `StructuredOutputError` — answered but not schema-conformant (carries
-  `schema_errors`, redacted excerpt) (`base.py:86`).
-- Healthcheck failures return `False`, never raise (`base.py:600`).
+  `schema_errors`, redacted excerpt) (`models/base.py:140`).
+- Healthcheck failures return `False`, never raise (`models/base.py:897`).
 - Provider absent → `UnknownProviderError` lists valid names
-  (`registry.py:59`).
+  (`models/registry.py:59`).
 - A `settings` argument that is neither a `Settings` nor a `ModelSettings` →
-  `TypeError` at the boundary (`router.py:90`). Deliberate: the alternative
+  `TypeError` at the boundary (`router.py:120`). Deliberate: the alternative
   was the defaults, and the defaults carry the *escalation policy*.
 
 ## Modification impact
 
 - Adding a provider = add a `ProviderSpec` row to `registry.py:_SPECS` (+ a
-  provider class if new `kind`) — data, not code (`registry.py:148`).
+  provider class if new `kind`) — data, not code (`models/registry.py:148`).
 - Changing `escalate_at_or_above` changes when escalation occurs
   (`config.py:491`).
 - Changing `canonical_json`/schema validation affects model output parsing
   (`base.py`).
 - Changing how the model configuration is *resolved* (which object counts as
-  the configuration) touches `router.py:90` and every call site that passes
+  the configuration) touches `router.py:91` and every call site that passes
   one — the resolution is deliberately a refusal, not a fallback.
 - Tests: `tests/models/` (135 tests).
 
 ## Known gaps
 
 - `ModelTurn.tokens` is always 0 on `complete_structured` path — `max_tokens`
-  budget never trips; `max_steps` bounds runs instead (`AGENTS.md:322`).
+  budget never trips; `max_steps` bounds runs instead (`coder/loop.py:128`).
 - EchoProvider cannot drive a plan (minimal-schema output isn't a plan)
   (`AGENTS.md:191`).
 - A `Settings` whose `models` field was *reassigned* to a non-`ModelSettings`

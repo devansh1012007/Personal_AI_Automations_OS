@@ -12,7 +12,7 @@ ingestion bridges (Telegram/email/Slack) yet (`README.md:169`).
 `src/paa/models/base.py` — `ModelProvider` ABC: `complete(request) ->
 CompletionResponse`, `healthcheck() -> bool` (must never raise), and
 `complete_structured(request, schema)` with validate-and-repair. Providers are
-concurrent-safe and hold no per-request state (`base.py:564`).
+concurrent-safe and hold no per-request state (`models/base.py:855`).
 
 ### Provider registry
 `src/paa/models/registry.py` — `KNOWN_PROVIDERS` holds ~20 `ProviderSpec` rows:
@@ -27,7 +27,7 @@ Each row: `name`, `kind`, `default_model`, `default_base_url`, `api_key_env`
 OpenAI-family quirks (chat_path, auth_header, api_version, ...).
 
 ### API key sourcing
-`ProviderSpec.resolved_api_key()` (`registry.py:104`): environment first, then
+`ProviderSpec.resolved_api_key()` (`models/registry.py:104`): environment first, then
 `.env` via `config.dotenv_value(name)` — **without** writing to `os.environ`.
 Provider keys are **not** `Settings` fields; they are named per registry row
 (`AGENTS.md:68`). Secret *names* (never values) are stored in config, e.g.
@@ -55,12 +55,12 @@ Default routing: `ModelSettings.local_provider="ollama"`, `local_model=
 ### Structured output
 Every structured call is validated via `validate_against_schema` (pure-Python
 JSON Schema subset) before the caller sees it; up to `max_retries` repair
-attempts, then `StructuredOutputError` (`base.py:609`). `ModelTurn.tokens` is
+attempts, then `StructuredOutputError` (`models/base.py:969`). `ModelTurn.tokens` is
 always 0 on the `complete_structured` path (`AGENTS.md:160`).
 
 ### Providers not used at module scope
 No provider is imported at module scope in a core path; `build_provider` does
-lazy imports (`registry.py:334`). A minimal install boots without any provider
+lazy imports (`models/registry.py:336`). A minimal install boots without any provider
 package.
 
 ## 2. Optional external substrates
@@ -95,12 +95,12 @@ escalated, confidence). Agents communicate via typed messages, not prose
 `Agent.run()`. The orchestrator owns the `DelegationGraph` per correlation and
 enforces depth/cycle/node bounds before the callee runs (`delegation.py:87`).
 Non-blocking at the topology level: the wait graph is a DAG
-(`base.py:20`).
+(`agents/base.py:25`).
 
 ### Orchestrator → agents
 The orchestrator sends `CONTEXT_REQUEST`, `PLAN_PROPOSAL`, `POLICY_CHECK`,
 `EXECUTION_REQUEST`, `REVIEW_RESULT` messages and reads `AgentResult`
-(`orchestrator.py:353`–`:607`).
+(`orchestrator.py:467`–`:811`).
 
 ## 4. Synchronous vs asynchronous communication
 
@@ -120,10 +120,10 @@ uvicorn over the FastAPI app plus the daemon loops over one shared runtime
 ## 5. Timeouts, retries, idempotency
 
 - Model: `request_timeout_seconds=120`, `max_retries=2` (`config.py:326`).
-- Structured output: `max_retries` repair attempts per provider (`base.py:567`).
+- Structured output: `max_retries` repair attempts per provider (`models/base.py:906`).
 - Task step: `max_step_retries=2` per step (`orchestrator.py:108`); `EXECUTION_STARTED`
   uses `attempt` + `discriminator="step-N"` for idempotency.
-- Queue: `max_delivery_attempts=3`, `visibility_timeout_seconds=300` (`config.py:349`).
+- Queue: `max_delivery_attempts=3`, `visibility_timeout_seconds=300` (`config.py:550`).
 - Ledger: idempotency key suppresses duplicate redelivery; `attempt` permits
   genuine retries (`events.py:68`).
 

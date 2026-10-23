@@ -20,11 +20,11 @@ degrade, never raise (`AGENTS.md:59`).
 
 ## Internal implementation
 
-### `relational/database.py` — Database
+### `storage/relational/database.py` — Database
 Async SQLite access layer: single write connection (`asyncio.Lock`, `BEGIN
 IMMEDIATE`), pooled read-only connections (size 4), WAL mode, applies
 `schema_sqlite.sql` on `connect()`, `close()` checkpoints WAL (TRUNCATE) so a
-file copy is a complete backup (`:132`). Helpers `fetch_all/fetch_one/
+file copy is a complete backup (`storage/relational/database.py:224`). Helpers `fetch_all/fetch_one/
 fetch_value/execute/execute_many`, `utc_now/to_iso/from_iso`, `dumps/loads`.
 
 ### Schemas (26 business tables + `schema_migrations`)
@@ -69,21 +69,21 @@ DEGRADED/SHEDDING; 11 `StreamName`s; `ORCHESTRATOR_CORE` is control plane.
 
 | Component | Relationship | Why | Source |
 |---|---|---|---|
-| `LedgerStore` → `Database` | SQL INSERT/SELECT | Ledger persistence | `store.py:31` |
+| `LedgerStore` → `Database` | SQL INSERT/SELECT | Ledger persistence | `ledger/store.py:30` |
 | `RecoveryEngine` → `Database` | recovery marks SQL | Workspace checkpoints | `recovery.py:37` |
 | `PolicyRiskAgent` → `Database` | policy rules SQL | Operator rules | `policy.py:255` |
-| `Context builders` → `Database` | facts SQL | Context candidates | `context_agents.py:147` |
-| `Memory/*` → `Database` | entities/facts SQL | Memory persistence | `facts.py:52` |
-| `SignalRepository` → `Database` + `CAS` | signal row + blob | Signal intake | `signals.py:111` |
+| `Context builders` → `Database` | facts SQL | Context candidates | `context_agents.py:141` |
+| `Memory/*` → `Database` | entities/facts SQL | Memory persistence | `memory/facts.py:342` |
+| `SignalRepository` → `Database` + `CAS` | signal row + blob | Signal intake | `storage/coldlake/signals.py:114` |
 | `Observability runs` → `Database` | run rows | Execution traces | `runs.py` |
-| `Skills registry` → `Database` | skill rows | Skill catalog | `registry.py:38` |
-| `Marketplace installer` → `Database` | package rows | Package registry | `installer.py:40` |
+| `Skills registry` → `Database` | skill rows | Skill catalog | `skills/registry.py:95` |
+| `Marketplace installer` → `Database` | package rows | Package registry | `marketplace/installer.py:75` |
 
 ## Runtime behavior
 
 - Optional backends constructed in `Runtime._try_vector/_try_graph/_try_queue`
-  — catch `Exception`, return `None`/fallback, log warning (`runtime.py:349`).
-- `_acquire_sandbox` 5s probe → subprocess fallback (`runtime.py:382`).
+  — catch `Exception`, return `None`/fallback, log warning (`runtime.py:387`).
+- `_acquire_sandbox` 5s probe → subprocess fallback (`runtime.py:420`).
 - `Database` is single-writer; WAL allows concurrent readers.
 
 ## Failure behavior
@@ -94,14 +94,14 @@ DEGRADED/SHEDDING; 11 `StreamName`s; `ORCHESTRATOR_CORE` is control plane.
   (`relational/__init__.py`).
 - `queue_messages` SQLite backend requires connected `Database`
   (`StorageError` if `db is None`).
-- Hash mismatch on CAS read → `StorageError` (`cas.py:311`).
+- Hash mismatch on CAS read → `StorageError` (`storage/coldlake/cas.py:396`).
 
 ## Modification impact
 
 - Adding a column: add to both `schema_sqlite.sql` and `schema_postgres.sql`
   (`AGENTS.md:54`); parity test enforces.
 - Changing `StreamName` set affects orchestrator/daemon/recovery/API
-  (`queue/base.py:48`).
+  (`storage/queue/base.py:48`).
 - Tests: `tests/storage/` (255 + 5 skipped per README).
 
 ## Known gaps

@@ -63,14 +63,14 @@ never decide whether an action is safe** — that decision is deterministic Pyth
 | NAMESPACE (2) | WSL, Docker | Yes (process-level) | Plus filesystem visibility, (with `--network=none`) network |
 | VM (3) | Docker + runsc/gVisor | Yes (syscall boundary) | Syscall interception — **not available on target hardware** |
 
-`is_real_containment` is true only at `NAMESPACE` and above (`base.py:93`).
+`is_real_containment` is true only at `NAMESPACE` and above (`sandbox/base.py:97`).
 The subprocess backend runs as the **same OS user** with the same network stack;
-it is "a guard against a confused agent, not a hostile one" (`base.py:26`).
+it is "a guard against a confused agent, not a hostile one" (`sandbox/base.py:26`).
 
 ### 6. Workspace jail
 
 `resolve_workspace` / `assert_inside_workspace` resolve paths (collapse `..`,
-follow symlinks) and confine writes to one directory (`sandbox/base.py:282`,
+follow symlinks) and confine writes to one directory (`sandbox/base.py:495`,
 `:305`). Comparison on resolved paths defeats `..`/symlink escapes.
 
 ### 7. Environment allowlist (no ambient secret leakage)
@@ -79,7 +79,7 @@ follow symlinks) and confine writes to one directory (`sandbox/base.py:282`,
 `os.environ` by copy-and-delete. Only minimal OS bootstrap keys (`PATH`,
 `SystemRoot`, ...) plus the caller's explicit `spec.env` allowlist
 (`sandbox/base.py:337`). `SandboxSpec._reject_ambient_env_smell` trips on
-`env=dict(os.environ)` (`base.py:170`).
+`env=dict(os.environ)` (`sandbox/base.py:337`).
 
 ### 8. AST pre-scan (deny-by-default)
 
@@ -117,20 +117,20 @@ short-circuits on CRITICAL or structural failure; never acts on "mostly valid"
 - Anti-goals: cosine similarity ≥ 0.82 (vector) or phrase match (fallback)
   blocks the task (`policy.py:262`).
 - Risk score [0,1] decides human-gate need; `always_gate_risk_profile=0.90`
-  (`config.py:224`).
+  (`config.py:271`).
 
 ### 11. Delegation safety
 
 `DelegationGraph` per correlation enforces depth, cycle, and node bounds before
 the callee runs (`agents/delegation.py:87`). The wait graph is a DAG — no cycle
-of waiters (`agents/base.py:20`). `DelegationRegistry` discards finished
+of waiters (`agents/base.py:25`). `DelegationRegistry` discards finished
 correlations (`delegation.py:167`).
 
 ### 12. Secret hygiene
 
 - Model provider errors and exceptions redact secrets via `redact()`
-  (`models/base.py:139`, patterns for `sk-`, Bearer, `api_key=`).
-- `CompletionResponse.to_payload()` excludes generated text (`base.py:283`).
+  (`models/base.py:256`, patterns for `sk-`, Bearer, `api_key=`).
+- `CompletionResponse.to_payload()` excludes generated text (`models/base.py:530`).
 - Skills never receive secrets; they emit a `get_secret` system call resolved by
   the host `SecretBroker` after checking `PERM_SECRET_READ`
   (`skills/secrets.py:304`). Plaintext exists only in the host process for one
@@ -150,7 +150,7 @@ backend.py` `_read_capped`).
 
 `AWAITING_HUMAN_ATTESTATION` parks a task; recovery explicitly never clears it
 (`replay.py:62`, `recovery.py:274`). Only an external caller
-(`clear_human_gate`, `orchestrator.py:688`) can approve/reject.
+(`clear_human_gate`, `orchestrator.py:1015`) can approve/reject.
 
 ## Trust boundaries
 
@@ -187,7 +187,7 @@ backend.py` `_read_capped`).
   by the user (`config.py:460`).
 - **`EvalProvider`/`EchoProvider` cannot drive a plan** — its minimal-schema
   output isn't a plan; this is a correctness property, not a security control
-  (`AGENTS.md:111`).
+  (`AGENTS.md:215`).
 
 ## Unverified / inference areas
 

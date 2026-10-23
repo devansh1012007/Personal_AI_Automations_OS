@@ -30,7 +30,7 @@ section cited. Pydantic-settings `Settings` with prefix `PAA_`, nested delimiter
 `.env` file > defaults (`config.py:7`).
 
 **Consumers:** `Runtime.build()` (`runtime.py:256`), `PolicyRiskAgent`
-(`policy.py:134`), `BackpressureController` (`backpressure.py:86`), model router
+(`policy.py:132`), `BackpressureController` (`backpressure.py:86`), model router
 (`router.py:143`), and essentially every subsystem.
 
 **Failure behavior:** Settings validation errors (`ValueError` from pydantic)
@@ -54,15 +54,15 @@ event digest binding each event to its predecessor, `GENESIS_HASH`.
 **Responsibility:** `LedgerStore.append()` — inside one transaction:
 suppress duplicates by idempotency key, assign next per-correlation
 `state_version`, link into the hash chain, insert the row, update the head
-projection. Atomic (`store.py:12`).
+projection. Atomic (`ledger/store.py:12`).
 
 **Public interface:** `LedgerStore.append/append_many/read_correlation/latest_event/
 head/open_correlations/events_since/count/verify_chain/verify_all_chains/
 save_snapshot/load_snapshot`; `CorrelationHead`.
 
 **Failure behavior:** Duplicate idempotency key returns the *existing* event
-rather than raising (`store.py:122`). Concurrent-writer race re-reads and
-returns whatever landed (`store.py:143`).
+rather than raising (`ledger/store.py:144`). Concurrent-writer race re-reads and
+returns whatever landed (`ledger/store.py:174`).
 
 ### `replay.py` — deterministic projection
 **Responsibility:** Folds events into a `TaskProjection`. Pure and total: never
@@ -84,7 +84,7 @@ restores drift, re-queues resumable tasks, parks human-gated tasks.
 `WorkspaceSnapshotter`/`Requeuer` protocols.
 
 **Failure behavior:** One bad lineage does not abort the sweep
-(`recovery.py:246`). Recovery is idempotent — running twice yields the same end
+(`ledger/recovery.py:250`). Recovery is idempotent — running twice yields the same end
 state (`recovery.py:17`).
 
 ## 3. Agents — `agents/`
@@ -101,9 +101,9 @@ orchestrator's `DelegationRegistry` (never peer-to-peer).
 `MessageType`, `RiskLevel`.
 
 **Failure behavior:** Missing permissions → `AgentResult.failure` with
-`PermissionDeniedError` (`base.py:305`). Unexpected exceptions are caught and
-returned as structured failures (`base.py:329`). Token overspend raises
-`BudgetExceededError` (`base.py:243`).
+`PermissionDeniedError` (`agents/base.py:333`). Unexpected exceptions are caught and
+returned as structured failures (`agents/base.py:355`). Token overspend raises
+`BudgetExceededError` (`agents/base.py:245`).
 
 ### `orchestrator.py` — Chief Orchestrator
 **Responsibility:** Owns the task lifecycle. Emits ledger events before every
@@ -204,8 +204,8 @@ mark_quarantined/release`.
 
 **Failure behavior:** Hash mismatch on `get` → `StorageError` (`cas.py:311`).
 Non-JSON/non-UTF-8 payload → `StorageError` before INSERT
-(`signals.py:388`). Idempotency race on `record()` re-fetches incumbent
-(`signals.py:124`).
+(`storage/coldlake/signals.py:410`). Idempotency race on `record()` re-fetches incumbent
+(`storage/coldlake/signals.py:142`).
 
 ### `storage/vector/` — vector recall
 **Responsibility:** `get_vector_store(settings)` selects Qdrant (embedded or
@@ -213,7 +213,7 @@ server) or brute-force numpy. `"auto"` degrades to numpy with a warning.
 
 **Public interface:** `get_vector_store`, `get_embedder`, `VectorStore` protocol.
 
-**Failure behavior:** Never raises in `auto` mode (`vector/__init__.py:95`).
+**Failure behavior:** Never raises in `auto` mode (`storage/vector/__init__.py:141`).
 O(n) per query in numpy fallback; fine to ~100k points.
 
 ### `storage/graph/` — graph store
@@ -223,7 +223,7 @@ recursive-CTE fallback.
 **Public interface:** `get_graph_store`, `GraphStore` protocol.
 
 **Failure behavior:** `"auto"` falls back to SQLite if kuzu unavailable; explicit
-`"kuzu"` raises `ImportError` if absent (`graph/__init__.py:63`).
+`"kuzu"` raises `ImportError` if absent (`storage/graph/__init__.py:99`).
 
 ### `storage/queue/` — durable queue + locks
 **Responsibility:** `get_queue`/`get_lock` — SQLite default, Redis optional.
@@ -308,7 +308,7 @@ grams (`facts.py:135`, refused at `facts.py:508`), because the count proxy's
 `CASE` sum would otherwise hit SQLite's expression-depth limit and be refused
 as "expression tree is too large" — which is not a `QueryRejected` and would
 escape the ladder.
-`supersede` refuses cycles (`facts.py:850`).
+`supersede` refuses cycles (`memory/facts.py:881`).
 
 **Known bound:** the parity is exact for ASCII and **bounded** outside it.
 The candidate query folds the *column* with the engine's `lower()`
@@ -322,7 +322,7 @@ Python-computed normalisation to close
 ([**ADR-0029**](../adr/0029-entity-resolution-parity.md)).
 
 ### `memory/creator.py`, `curator.py`, `contradiction.py`, `world_model.py`
-- `MemoryCreator.run_batch()` — ingests signals into facts (`daemon.py:167`).
+- `MemoryCreator.run_batch()` — ingests signals into facts (`daemon.py:148`).
 - `MemoryCurator` — nightly consolidation.
 - `contradiction.py` — quarantines conflicting facts above threshold; demands
   human tie-break (never auto-resolves).
@@ -340,9 +340,9 @@ subset); `redact` (secret scrubbing); `extract_json_object`; `minimal_instance_f
 **Public interface:** `ModelProvider`, `CompletionRequest`, `Message`,
 `ModelTier`, `validate_against_schema`, `redact`.
 
-**Failure behavior:** `healthcheck()` must never raise (`base.py:600`).
+**Failure behavior:** `healthcheck()` must never raise (`models/base.py:897`).
 `complete_structured` retries up to `max_retries`, then raises
-`StructuredOutputError` with schema errors (`base.py:660`).
+`StructuredOutputError` with schema errors (`models/base.py:969`).
 
 ### `models/registry.py` — Provider registry
 **Responsibility:** `ProviderSpec` rows for ~20 providers (OpenAI family +
@@ -355,7 +355,7 @@ via `resolved_api_key()` (env first, then `.env` via `dotenv_value`, never
 `KNOWN_PROVIDERS`, `provider_names`.
 
 **Failure behavior:** `UnknownProviderError` lists valid names on typo
-(`registry.py:67`).
+(`models/registry.py:67`).
 
 ### `models/router.py` — EscalatingModelRouter
 **Responsibility:** Local-first, escalates to frontier on failure when policy
@@ -381,8 +381,8 @@ ABC, `resolve_workspace`/`assert_inside_workspace` (workspace jail).
 **Public interface:** `SandboxSpec`, `SandboxResult`, `IsolationLevel`, `Sandbox`.
 
 **Failure behavior:** `resolve_workspace` raises `SandboxError` if the directory
-doesn't exist (`base.py:298`). `SandboxSpec._reject_ambient_env_smell` trips on
-`env=dict(os.environ)` (`base.py:170`).
+doesn't exist (`sandbox/base.py:512`). `SandboxSpec._reject_ambient_env_smell` trips on
+`env=dict(os.environ)` (`sandbox/base.py:337`).
 
 ### `sandbox/subprocess_backend.py` — SubprocessSandbox
 **Responsibility:** PROCESS isolation. Windows Job Object memory caps +
@@ -470,11 +470,11 @@ passed>0).
 
 | Failure type | Where handled | Behavior |
 |---|---|---|
-| Duplicate ledger event | `store.py:122` | Return existing event (idempotent) |
+| Duplicate ledger event | `ledger/store.py:144` | Return existing event (idempotent) |
 | Model unavailability | `router.py:335` | Escalate if permitted; else `ModelUnavailableError` |
 | Structured output invalid | `router.py:333` | Escalate trigger; `StructuredOutputError` after retries |
 | Policy violation | `policy.py:153` | `STATUS_BLOCKED` verdict → `POLICY_BLOCKED`/`SECURITY_VIOLATION` event |
-| Missing permission | `base.py:305` | `AgentResult.failure` (`PermissionDeniedError`) |
+| Missing permission | `agents/base.py:333` | `AgentResult.failure` (`PermissionDeniedError`) |
 | Sandbox step failure | `orchestrator.py:556` | `VALIDATION_FAILED`; retry up to `max_step_retries` |
 | Validation failure | `validation/engine.py:236` | Binary FAIL; critic can only downgrade |
 | Sandbox memory breach | `watchdog.py` | Kill; `killed_reason="memory"` |

@@ -8,11 +8,11 @@ where a meaning is inferred rather than verified, it is labelled.
 
 - **CorrelationId** — A UUID (`NewType` over `uuid.UUID`) that is the lineage key
   for one task from request through commit. Every ledger event of a task shares
-  this value. `src/paa/core/types.py:43`.
+  this value. `src/paa/core/types.py:45`.
 - **SessionId** — A UUID isolation boundary for one workspace/session.
-  `src/paa/core/types.py:44`.
+  `src/paa/core/types.py:46`.
 - **TaskId** — A UUID per agent invocation/task within a lineage.
-  `src/paa/core/types.py:45`.
+  `src/paa/core/types.py:47`.
 - **Causation id** — The `event_id` of the event that directly caused another
   event; enables walking the causal chain backwards ("explain why it did that").
   `src/paa/ledger/events.py:159`.
@@ -81,7 +81,7 @@ Branches: `POLICY_BLOCKED / SECURITY_VIOLATION` (terminal blocked),
 
 - **ComplexityModality** — `SIMPLE`, `STANDARD`, `COMPLEX`, `MAX`. Bounds graph
   hops, recursion ceiling, token ceiling, memory, CPU, timeout, branch factor via
-  `MODALITY_PROFILES`. `src/paa/core/types.py:223`.
+  `MODALITY_PROFILES`. `src/paa/core/types.py:375`.
 - **ModalityProfile** — Hard resource envelope per modality; nothing in it is
   advisory. `src/paa/core/types.py:232`.
 - **Escalation** — Local model first, frontier model on failure (only when
@@ -110,7 +110,7 @@ Branches: `POLICY_BLOCKED / SECURITY_VIOLATION` (terminal blocked),
   containment". `src/paa/sandbox/base.py:54`.
 - **Workspace jail** — `resolve_workspace` / `assert_inside_workspace` resolve
   paths (collapse `..`, follow symlinks) and confine writes to one directory.
-  `src/paa/sandbox/base.py:282`.
+  `src/paa/sandbox/base.py:495`.
 - **AST pre-scan** — Static rejection of dangerous Python before execution;
   unparseable source is rejected, never skipped. `src/paa/validation/ast_scanner.py`.
 
@@ -151,7 +151,7 @@ Branches: `POLICY_BLOCKED / SECURITY_VIOLATION` (terminal blocked),
   modality) / SHEDDING (refuse discretionary ingestion, HTTP 429). Control-plane
   streams always accepted. `src/paa/storage/queue/backpressure.py:77`.
 - **Daemon** — Dispatch, ingestion, and maintenance loops over one shared runtime;
-  boot recovery runs first. `src/paa/daemon.py:40`.
+  boot recovery runs first. `src/paa/daemon.py:42`.
 - **Recovery / boot sweep** — Replays open lineages from the ledger (never the
   queue), reconciles the workspace against a checksum manifest, restores drift,
   re-queues resumable tasks, parks human-gated tasks. `src/paa/ledger/recovery.py`.

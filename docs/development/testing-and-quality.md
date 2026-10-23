@@ -61,7 +61,7 @@ Extend these rather than writing example-based tests for them (`AGENTS.md:92`).
 ## Crash/chaos tests
 
 Simulate power loss by closing the DB mid-lineage and reopening — committed
-transactions survive, uncommitted vanish (`AGENTS.md:94`). `pytest -m chaos`.
+transactions survive, uncommitted vanish (`AGENTS.md:192`). `pytest -m chaos`.
 
 ## Build status (from README, ~line 208)
 

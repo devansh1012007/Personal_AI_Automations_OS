@@ -24,8 +24,8 @@ local ledger only — no egress, `config.py:370`), `log_level`, `log_json`,
 - `tracing.py`: tracing.
 - `runs.py`: execution runs over `Database` (`hot_serving_execution_runs`).
 
-Every module logs via `structlog.get_logger(__name__)` (e.g. `runtime.py:52`,
-`orchestrator.py:50`, `store.py:35`, `recovery.py:47`).
+Every module logs via `structlog.get_logger(__name__)` (e.g. `runtime.py:53`,
+`orchestrator.py:50`, `ledger/store.py:37`, `ledger/recovery.py:48`).
 
 ## Dependencies and connections
 

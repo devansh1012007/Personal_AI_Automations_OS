@@ -12,7 +12,7 @@ should have absorbed.
 idempotency" heading of `docs/interfaces/integrations-and-communication.md`
 next to `request_timeout_seconds`, which reads as transport protection. It is
 not. The value is consumed only by `ModelProvider.complete_structured`
-(`base.py:631-666`), the validate-and-repair loop that re-asks after a
+(`models/base.py:906-975`), the validate-and-repair loop that re-asks after a
 *malformed structured answer* — and it can never fire on a transport failure,
 because there is no answer to validate in the first place.
 

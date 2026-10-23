@@ -82,7 +82,7 @@ Runtime.build()
   └─ ChiefOrchestrator
 ```
 
-`src/paa/runtime.py:231`.
+`src/paa/runtime.py:251`.
 
 ### 2. Optional backends degrade; they never raise
 
@@ -158,7 +158,7 @@ Orchestrator phases (`src/paa/agents/orchestrator.py:292`):
    `max_step_retries`).
 6. `_commit` — `MUTATION_COMMITTED` (terminal).
 
-`src/paa/agents/orchestrator.py:353`–`:627`.
+`src/paa/agents/orchestrator.py:467`–`:811`.
 
 ## Delegation safety
 
@@ -168,8 +168,8 @@ bounds before the callee runs. The wait graph is a DAG, so no cycle of
 waiters can exist — the RFC's safety property is preserved by construction,
 not by prohibiting peer calls.
 
-`src/paa/agents/base.py:20`, `src/paa/agents/delegation.py:20`,
-`src/paa/agents/orchestrator.py:631`.
+`src/paa/agents/base.py:22`, `src/paa/agents/delegation.py:48`,
+`src/paa/agents/orchestrator.py:833`.
 
 ## Configuration philosophy
 
@@ -192,19 +192,19 @@ These are deliberate, documented, and cited in source:
 
 | Deviation | Where | Rationale |
 |---|---|---|
-| Embedded SQLite/Qdrant/Kuzu instead of Postgres/Redis/S3 | ADR-0001–0005, `config.py:55` | Target machine has ~3.5 GB free RAM, no Docker |
-| gVisor unavailable; pluggable sandbox | ADR-0006, `config.py:231` | Windows target, no runsc |
-| Provider-agnostic models; explicit escalation | ADR-0007/0015, `config.py:280` | vLLM needs CUDA + 8.5 GB VRAM |
+| Embedded SQLite/Qdrant/Kuzu instead of Postgres/Redis/S3 | ADR-0001–0005, `config.py:58` | Target machine has ~3.5 GB free RAM, no Docker |
+| gVisor unavailable; pluggable sandbox | ADR-0006, `config.py:281` | Windows target, no runsc |
+| Provider-agnostic models; explicit escalation | ADR-0007/0015, `config.py:476` | vLLM needs CUDA + 8.5 GB VRAM |
 | Idempotency key includes `attempt` + `discriminator` | ADR-0008, `events.py:68` | Retries must be possible |
-| Head projection replaces partial recovery index | ADR-0010, `store.py:45` | Partial index never shrinks |
-| `EXECUTION_COMPLETED` is per-step, not terminal | ADR-0010, `types.py:132` | Treating it as terminal skips remaining steps |
+| Head projection replaces partial recovery index | ADR-0010, `ledger/store.py:48` | Partial index never shrinks |
+| `EXECUTION_COMPLETED` is per-step, not terminal | ADR-0010, `core/types.py:187` | Treating it as terminal skips remaining steps |
 | Optional router; bypassed when a target agent is named | ADR-0011, `reasoning.py:303` | Explicit user direction |
-| Peak RSS, not ∫Memory·dt | ADR-0009, `config.py:258` | The RFC's rule is dimensionally wrong |
+| Peak RSS, not ∫Memory·dt | ADR-0009, `config.py:338` | The RFC's rule is dimensionally wrong |
 | 18 memory domains over 6 mechanisms | ADR-0014, `memory/domains.py:78` | Most RFC rows differ only by label |
 
 Full ADR list that exists on disk: `0008`, `0010`, `0015`, `0019`, `0020`.
 `docs/adr/README.md` claims 0001–0020 but those files are absent
-(`AGENTS.md:140`).
+(`AGENTS.md:323`).
 
 ## Module boundary summary (dependency direction)
 

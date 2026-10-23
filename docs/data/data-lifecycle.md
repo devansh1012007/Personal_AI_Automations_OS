@@ -33,22 +33,22 @@ Each phase of `_hydrate` → `_plan` → `_check_policy` → `_execute_steps` �
 Every event is persisted by `LedgerStore.append` into `system_state_ledger`
 (one transaction). The head projection (`system_state_correlation_head`) is
 updated in the same transaction. `state_version` is per-correlation and dense;
-`sequence_id` is global and may gap on rollback (`store.py:13`).
+`sequence_id` is global and may gap on rollback (`ledger/store.py:12`).
 
 ### Retrieval
 `LedgerStore.read_correlation()` returns all events for a lineage ordered by
-`state_version` (`store.py:244`). `project()` (`replay.py:322`) folds them into
+`state_version` (`ledger/store.py:149`). `project()` (`replay.py:322`) folds them into
 a `TaskProjection`. `LedgerStore.head()` reads the head projection for status
-(`store.py:271`).
+(`ledger/store.py:341`).
 
 ### Mutation
 Tasks are not mutated in place. New information is a new event; the lineage is
 append-only. The only "mutation" of the head row is the upsert in
-`_update_head` (`store.py:45`).
+`_update_head` (`ledger/store.py:292`).
 
 ### Invalidation / deletion
 - Terminal events close a lineage (`TERMINAL_EVENTS`, `types.py:132`); recovery
-  skips `is_terminal = 1` rows (`store.py:287`).
+  skips `is_terminal = 1` rows (`ledger/store.py:357`).
 - `STATE_ROLLBACK_TRIGGERED` restores a workspace to a checkpoint manifest and
   resets `completed_steps` to steps before `restored_step_index`
   (`replay.py:266`).
@@ -68,7 +68,7 @@ append-only. The only "mutation" of the head row is the upsert in
 
 ### Can a retry cause duplication?
 Idempotency keys (`SHA-256(correlation_id|event_type|attempt|discriminator)`)
-make redelivery of the same attempt a no-op (`store.py:122`), while a genuine
+make redelivery of the same attempt a no-op (`ledger/store.py:144`), while a genuine
 retry bumps `attempt` (`events.py:68`). ADR-0008 fixed the RFC's original
 scheme (which made retries impossible under a UNIQUE constraint).
 
@@ -77,12 +77,12 @@ scheme (which made retries impossible under a UNIQUE constraint).
 ### Creation
 `MemoryCreator.run_batch()` (`memory/creator.py`) claims unprocessed signals
 (`SignalRepository.claim_unprocessed`, `signals.py:212`) and writes entities
-and facts via `FactRepository.upsert_entity` / `add_fact` (`facts.py:337`,
-`:779`) into `hot_serving_entity_index` and `hot_serving_active_facts`.
+and facts via `FactRepository.upsert_entity` / `add_fact` (`memory/facts.py:347`,
+`:789`) into `hot_serving_entity_index` and `hot_serving_active_facts`.
 
 Facts are **never overwritten**: `add_fact` appends a new version; `supersede`
-links `old → new` (`facts.py:850`, refuses cycles). `supersession_chain`
-walks back with a visited-set guard (`facts.py:882`).
+links `old → new` (`memory/facts.py:860`, refuses cycles). `supersession_chain`
+walks back with a visited-set guard (`memory/facts.py:892`).
 
 Confidence stored is `initial_confidence` (C₀); the effective confidence
 `C(t) = C₀·e⁻ˡᵃᵐᵇᵈᵃ·t` is computed lazily at read time
@@ -126,7 +126,7 @@ Confidence stored is `initial_confidence` (C₀); the effective confidence
   (OFFSET would skip — documented bug fix, `README.md:87`).
 - `ContradictionError`: conflicts above `contradiction_threshold` (0.75)
   quarantine both records at `contradiction_degraded_confidence` (0.20) and
-  demand human tie-break; never auto-resolved (`errors.py:279`, `memory/
+  demand human tie-break; never auto-resolved (`core/errors.py:279`, `memory/
   contradiction.py`).
 - `touch`/`touch_many` reset `last_queried_at` and increment `use_count`
   (`decay.py`).
@@ -211,7 +211,7 @@ Daemon ingestion loop (`daemon.py:139`) → `MemoryCreator.run_batch()` claims
 ### Retention
 No explicit TTL or archival policy for signals found in code. `sync_status`
 tracks `unprocessed`/`processing`/`processed`/`malformed`/`quarantined`
-(`signals.py:61`).
+(`storage/coldlake/signals.py:62`).
 
 ## 6. Queue message lifecycle
 

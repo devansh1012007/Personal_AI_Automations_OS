@@ -9,7 +9,7 @@ Traces a task parked on `AWAITING_HUMAN_ATTESTATION` and later cleared via
 
 Two gate points in `ChiefOrchestrator.run()`:
 
-1. **Context hydration** (`orchestrator.py:353`): if the planner context packet's
+1. **Context hydration** (`orchestrator.py:467`): if the planner context packet's
    `routing_directive` is `HARD_STOP_ESCALATE_TO_USER` (density < 0.40), emit
    `AWAITING_HUMAN_ATTESTATION` with `{reason: "insufficient context density",
    vacant_slots: [...]}` and return (`:379`).
@@ -17,7 +17,7 @@ Two gate points in `ChiefOrchestrator.run()`:
 2. **Policy check** (`orchestrator.py:461`): if `PolicyRiskAgent` returns
    `requires_human_gate` (e.g. SUPERVISED mode + mutating step, risk ≥ 0.5 in
    ASK, `always_gate_risk_profile ≥ 0.90`, `policy.py:318`), emit
-   `AWAITING_HUMAN_ATTESTATION` with `{reason, ...}` and return (`:494`).
+   `AWAITING_HUMAN_ATTESTATION` with `{reason, ...}` and return (`orchestrator.py:909`).
 
 3. **Post-execution** (`orchestrator.py:515`): after `_execute_steps`, if
    `state.phase is AWAITING_HUMAN`, return (`:507`).
@@ -37,7 +37,7 @@ The `TaskProjection.phase` becomes `AWAITING_HUMAN`; `is_resumable` is
 ## Clearing the gate (external only)
 
 `ChiefOrchestrator.clear_human_gate(cid, approved, resume_phase=EXECUTING,
-note=None)` (`orchestrator.py:688`):
+note=None)` (`orchestrator.py:1015`):
 1. `project()`; raises `PaaError` if phase is not `AWAITING_HUMAN` (`:703`).
 2. Emit `HUMAN_GATE_CLEARED` (approved) or `HUMAN_GATE_REJECTED` (rejected)
    with `{resume_phase, note}` (`:712`).

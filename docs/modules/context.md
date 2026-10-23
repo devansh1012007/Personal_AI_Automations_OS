@@ -58,7 +58,7 @@ reproducibility (`context_agents.py` module docstring).
 
 | Component | Relationship | Why | Source |
 |---|---|---|---|
-| `PlannerContextBuilder` → `BoundedContextGatherer` | `compile()` | Pack planner packet | `context_agents.py:250` |
+| `PlannerContextBuilder` → `BoundedContextGatherer` | `compile()` | Pack planner packet | `context_agents.py:309` |
 | `WorkerContextBuilder` → `BoundedContextGatherer` | `compile_worker_packet()` | Pack worker packet | `context_agents.py:296` |
 | `Gatherer` → `TokenBudget` | `try_consume` | Enforce ceiling | `gatherer.py` |
 | `ChiefOrchestrator` → context builders | `handle()` | Hydrate phase | `orchestrator.py:374` |

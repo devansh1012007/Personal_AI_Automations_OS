@@ -83,27 +83,27 @@ flowchart TD
 
 | Component | Responsibility | Entry point | Key dependencies | Consumers | State / side effects |
 |---|---|---|---|---|---|
-| `Runtime` (`runtime.py:140`) | Composition root; builds and closes the whole runtime; drives tasks | `Runtime.build()` (`runtime.py:231`) | `Database`, `LedgerStore`, agents, model router, storage substrates, recovery engine | CLI, API, daemon, coder agent | Opens DB; creates directories; runs boot recovery |
-| `ChiefOrchestrator` (`agents/orchestrator.py:84`) | Task lifecycle: hydrate → plan → policy → execute → commit; owns delegation graph and backpressure | `ChiefOrchestrator.run()` (`orchestrator.py:292`) | `LedgerStore`, all agents, queue, backpressure, recovery | `Runtime`, API (`/tasks`), daemon dispatch loop | Writes ledger events; enqueues tasks |
-| `LedgerStore` (`ledger/store.py:105`) | Append-only event log; idempotency, state_version, hash chain, head projection | `LedgerStore.append()` (`store.py:113`) | `Database` | Orchestrator, recovery, replay, API (`/ledger/{id}`), CLI (`paa ledger`) | Appends rows to `system_state_ledger`; updates `system_state_correlation_head` |
-| `Database` (`storage/relational/database.py:60`) | Async SQLite access layer; single writer + read pool; WAL | `Database.connect()` (`database.py:107`) | `aiosqlite`, `sqlite3` | Nearly every storage-writing/reading module | Creates/mutates `paa.db`; applies schema on connect |
+| `Runtime` (`runtime.py:151`) | Composition root; builds and closes the whole runtime; drives tasks | `Runtime.build()` (`runtime.py:251`) | `Database`, `LedgerStore`, agents, model router, storage substrates, recovery engine | CLI, API, daemon, coder agent | Opens DB; creates directories; runs boot recovery |
+| `ChiefOrchestrator` (`agents/orchestrator.py:188`) | Task lifecycle: hydrate → plan → policy → execute → commit; owns delegation graph and backpressure | `ChiefOrchestrator.run()` (`orchestrator.py:396`) | `LedgerStore`, all agents, queue, backpressure, recovery | `Runtime`, API (`/tasks`), daemon dispatch loop | Writes ledger events; enqueues tasks |
+| `LedgerStore` (`ledger/store.py:108`) | Append-only event log; idempotency, state_version, hash chain, head projection | `LedgerStore.append()` (`ledger/store.py:116`) | `Database` | Orchestrator, recovery, replay, API (`/ledger/{id}`), CLI (`paa ledger`) | Appends rows to `system_state_ledger`; updates `system_state_correlation_head` |
+| `Database` (`storage/relational/database.py:110`) | Async SQLite access layer; single writer + read pool; WAL | `Database.connect()` (`storage/relational/database.py:168`) | `aiosqlite`, `sqlite3` | Nearly every storage-writing/reading module | Creates/mutates `paa.db`; applies schema on connect |
 | `StrategicPlanner` (`agents/reasoning.py:62`) | Compiles a goal + context into ordered execution steps | `StrategicPlanner.handle()` (`reasoning.py:78`) | `ModelLike` (model adapter); `MODALITY_PROFILES` | Orchestrator (`_plan`) | Emits no events directly; returns plan dict |
-| `PolicyRiskAgent` (`agents/policy.py:113`) | Deterministic risk gate; no model consulted | `PolicyRiskAgent.handle()` (`policy.py:139`) | `Database` (policy rules), vector store + embedder (anti-goals), `PolicySettings` | Orchestrator (`_check_policy`) | Reads `hot_serving_policy_rules`; returns verdict dict |
+| `PolicyRiskAgent` (`agents/policy.py:132`) | Deterministic risk gate; no model consulted | `PolicyRiskAgent.handle()` (`policy.py:158`) | `Database` (policy rules), vector store + embedder (anti-goals), `PolicySettings` | Orchestrator (`_check_policy`) | Reads `hot_serving_policy_rules`; returns verdict dict |
 | `CriticReviewer` (`agents/reasoning.py:194`) | Reviews worker output; deterministic validation first, model second | `CriticReviewer.handle()` (`reasoning.py:221`) | `ModelLike`, `DeterministicValidationEngine` | Orchestrator (`_critique`) | Returns verdict (`PASS`/`FAIL_REJECT_RETRY`/`FAIL_ESCALATE`) |
 | `WorkerCell` (`agents/reasoning.py:413`) | Executes one plan step inside a sandbox | `WorkerCell.handle()` (`reasoning.py:431`) | `Sandbox` backend, `SandboxSpec` | Orchestrator (`_execute_steps`) | Runs sandboxed process; returns patch/stdout |
-| `PlannerContextBuilder` / `WorkerContextBuilder` (`agents/context_agents.py:236`) | Build context packets (planner: all domains; worker: narrative blocked) | `.handle()` | `Database`, vector, graph, embedder, `BoundedContextGatherer` | Orchestrator (`_hydrate`) | Read-only fetches; no writes |
+| `PlannerContextBuilder` / `WorkerContextBuilder` (`agents/context_agents.py:295`) | Build context packets (planner: all domains; worker: narrative blocked) | `.handle()` | `Database`, vector, graph, embedder, `BoundedContextGatherer` | Orchestrator (`_hydrate`) | Read-only fetches; no writes |
 | `BoundedContextGatherer` (`context/gatherer.py`) | Enforces hard token ceiling on context packet | `compile()` | `TokenBudget`, `CharEstimator` | Context builders | Pure computation; no persistence |
-| `EscalatingModelRouter` (`models/router.py:123`) | Local-first routing with explicit, logged escalation to frontier | `complete()` / `complete_structured()` | Local provider, optional frontier provider, `LedgerStore` | `RouterModelAdapter` (via agents) | Writes `MODEL_ESCALATED` ledger event before frontier call |
-| `RouterModelAdapter` (`runtime.py:98`) | Bridges agents' `ModelLike` protocol to the escalation router | `complete_structured()` (`runtime.py:121`) | `EscalatingModelRouter` | All reasoning agents | No persistence (router logs escalations) |
-| `RecoveryEngine` (`ledger/recovery.py:139`) | Post-crash boot sweep: replay, reconcile workspace, re-queue | `RecoveryEngine.boot_sweep()` (`recovery.py:222`) | `LedgerStore`, `Database`, optional `WorkspaceSnapshotter`, optional queue requeuer | `ChiefOrchestrator.boot()` (`orchestrator.py:737`) | Writes `RECOVERY_REPLAY_COMPLETED`/`STATE_ROLLBACK_TRIGGERED`/`TASK_ABANDONED` events; restores workspace |
-| `Daemon` (`daemon.py:40`) | Background loops: dispatch, ingestion, maintenance | `Daemon.start()` (`daemon.py:59`) | `Runtime`, `MemoryCreator`, `DecaySweeper` | `paa serve` (`cli/main.py:248`) | Claims queue messages; runs decay sweep; ingests signals |
+| `EscalatingModelRouter` (`models/router.py:165`) | Local-first routing with explicit, logged escalation to frontier | `complete()` / `complete_structured()` | Local provider, optional frontier provider, `LedgerStore` | `RouterModelAdapter` (via agents) | Writes `MODEL_ESCALATED` ledger event before frontier call |
+| `RouterModelAdapter` (`runtime.py:108`) | Bridges agents' `ModelLike` protocol to the escalation router | `complete_structured()` (`runtime.py:131`) | `EscalatingModelRouter` | All reasoning agents | No persistence (router logs escalations) |
+| `RecoveryEngine` (`ledger/recovery.py:140`) | Post-crash boot sweep: replay, reconcile workspace, re-queue | `RecoveryEngine.boot_sweep()` (`recovery.py:226`) | `LedgerStore`, `Database`, optional `WorkspaceSnapshotter`, optional queue requeuer | `ChiefOrchestrator.boot()` (`orchestrator.py:1104`) | Writes `RECOVERY_REPLAY_COMPLETED`/`STATE_ROLLBACK_TRIGGERED`/`TASK_ABANDONED` events; restores workspace |
+| `Daemon` (`daemon.py:42`) | Background loops: dispatch, ingestion, maintenance | `Daemon.start()` (`daemon.py:62`) | `Runtime`, `MemoryCreator`, `DecaySweeper` | `paa serve` (`cli/main.py:289`) | Claims queue messages; runs decay sweep; ingests signals |
 | `MemoryCreator` (`memory/creator.py`) | Ingests unprocessed signals into hot-serving facts | `MemoryCreator.run_batch()` | `Database`, `FactRepository` | Daemon ingestion loop | Writes entities/facts |
 | `DecaySweeper` (`memory/decay.py`) | Evicts stale facts via `C(t)=C₀·e⁻ˡᵃᵐᵇᵈᵃ·t` | `DecaySweeper.sweep()` | `Database`, `DomainPolicy` | Daemon maintenance loop | Deletes/archives stale fact rows |
-| `DeterministicValidationEngine` (`validation/engine.py:185`) | Binary PASS/FAIL: schema → AST → patch → drift → tests | `validate()` (`engine.py:208`) | `AstSecurityScanner`, `SchemaValidator`, `UnifiedDiffValidator`, `WorkspaceSnapshot`, optional `PytestRunner`/`Sandbox` | `CriticValidatorAdapter` (`runtime.py:65`) | Runs tests in sandbox (only check that executes code) |
-| `CoderAgent` (`coder/agent.py:68`) | Tool-using loop over the runtime | `CoderAgent.build()` (`coder/agent.py:101`) | `Runtime`, `AgentLoop`, `RouterToolCallingModel`, `ToolPermissionPolicy`, `HookRegistry`, `Session` | `paa agent` CLI (`cli/coder.py`) | Submits/runs tasks via runtime tools; writes session transcripts |
+| `DeterministicValidationEngine` (`validation/engine.py:185`) | Binary PASS/FAIL: schema → AST → patch → drift → tests | `validate()` (`engine.py:208`) | `AstSecurityScanner`, `SchemaValidator`, `UnifiedDiffValidator`, `WorkspaceSnapshot`, optional `PytestRunner`/`Sandbox` | `CriticValidatorAdapter` (`runtime.py:75`) | Runs tests in sandbox (only check that executes code) |
+| `CoderAgent` (`coder/agent.py:71`) | Tool-using loop over the runtime | `CoderAgent.build()` (`coder/agent.py:105`) | `Runtime`, `AgentLoop`, `RouterToolCallingModel`, `ToolPermissionPolicy`, `HookRegistry`, `Session` | `paa agent` CLI (`cli/coder.py`) | Submits/runs tasks via runtime tools; writes session transcripts |
 | `AgentLoop` (`coder/loop.py:116`) | think → act → observe under permissions & hooks | `AgentLoop.run()` (`loop.py:142`) | `ToolCallingModel`, `ToolPermissionPolicy`, `HookRegistry`, `Session` | `CoderAgent.ask()` | Records turns; calls tools; mutates session transcript |
-| `SignalRepository` (`storage/coldlake/signals.py:99`) | Raw signal intake; idempotent on (channel, external_id); CAS offload | `SignalRepository.record()` (`signals.py:124`) | `Database`, `ContentAddressedStore` | API (`/signals`), daemon ingestion | Writes `cold_lake_signals`; offloads blobs to CAS |
-| `ContentAddressedStore` (`storage/coldlake/cas.py:122`) | Content-addressed, zstd-compressed blob store | `put()` / `get()` | `zstandard`, filesystem | `SignalRepository`, `copy_file_into` | Writes blobs under `cold_lake/blobs/<sha2>/<sha>.zst` |
+| `SignalRepository` (`storage/coldlake/signals.py:102`) | Raw signal intake; idempotent on (channel, external_id); CAS offload | `SignalRepository.record()` (`signals.py:127`) | `Database`, `ContentAddressedStore` | API (`/signals`), daemon ingestion | Writes `cold_lake_signals`; offloads blobs to CAS |
+| `ContentAddressedStore` (`storage/coldlake/cas.py:147`) | Content-addressed, zstd-compressed blob store | `put()` / `get()` | `zstandard`, filesystem | `SignalRepository`, `copy_file_into` | Writes blobs under `cold_lake/blobs/<sha2>/<sha>.zst` |
 
 ## 3. Verified call chains
 
@@ -212,37 +212,37 @@ paa agent "prompt" (cli/coder.py:44)
 
 - **Ledger before side effect:** Every orchestrator phase writes its event
   (`_emit`) before calling the agent or doing the work
-  (`orchestrator.py:353`–`:627`).
+  (`orchestrator.py:467`–`:811`).
 - **No model in control path:** `PolicyRiskAgent` has no provider dependency
   (`policy.py:7`); routing/gating are pure Python.
 - **Orchestrator mediates all delegation:** Agents call `self.delegate()` which
-  routes through `ChiefOrchestrator.mediate_delegation` (`base.py:347`,
-  `orchestrator.py:631`); the `DelegationGraph` enforces depth/cycle/node
+  routes through `ChiefOrchestrator.mediate_delegation` (`agents/base.py:373`,
+  `orchestrator.py:833`); the `DelegationGraph` enforces depth/cycle/node
   bounds (`delegation.py:87`).
 - **Storage substrates degrade, never raise:** `_try_vector/_try_graph/_try_queue`
-  catch all exceptions and return `None` with a warning (`runtime.py:349`).
+  catch all exceptions and return `None` with a warning (`runtime.py:387`).
 - **Sandbox probe is bounded at 5s:** `_acquire_sandbox` uses
   `asyncio.wait_for(..., timeout=5.0)` then falls back to subprocess
-  (`runtime.py:382`).
+  (`runtime.py:420`).
 - **API is an edge layer only:** `create_app` parses/validates and delegates to
   `Runtime`; it holds no application state and makes no model calls
-  (`api/app.py:8`).
+  (`api/app.py:52`).
 - **Everything is injected:** `Runtime.build` accepts `model_adapter`,
   `model_router` overrides; agents take their collaborators in constructors
-  (`runtime.py:231`).
+  (`runtime.py:251`).
 
 ## 6. What would break if changed or removed
 
 | Change | Likely blast radius |
 |---|---|
-| Change `EventType` vocabulary | Must also touch `replay.py::_PHASE_MAP`, `store.py` (`TERMINAL_EVENTS` in `_update_head`), and `orchestrator.py` emitters (`AGENTS.md:41`) |
+| Change `EventType` vocabulary | Must also touch `replay.py::_PHASE_MAP`, `store.py` (`TERMINAL_EVENTS` in `_update_head`), and `orchestrator.py` emitters (`AGENTS.md:88`) |
 | Remove `LedgerStore.append` idempotency | Retries would duplicate events; breaks at-least-once → effectively-once (`events.py:68`) |
 | Change `canonical_json` serialization | Breaks the hash chain; all existing `event_hash` values invalid (data migration) (`events.py:40`) |
-| Remove `Database` single write lock | Concurrent appends could collide on `uq_ledger_version` (`store.py:12`) |
+| Remove `Database` single write lock | Concurrent appends could collide on `uq_ledger_version` (`ledger/store.py:12`) |
 | Make policy model-driven | Violates the "no model in control path / security loop" guarantee (`policy.py:7`) |
 | Remove sandbox from WorkerCell | Worker would execute on host; loses containment (`reasoning.py:441`) |
-| Delete `system_state_correlation_head` | Recovery would have to scan the full ledger instead of open lineages (`store.py:278`) |
-| Change `TERMINAL_EVENTS` | Recovery sweep would either re-process finished tasks or abandon in-flight ones (`types.py:132`) |
+| Delete `system_state_correlation_head` | Recovery would have to scan the full ledger instead of open lineages (`ledger/store.py:348`) |
+| Change `TERMINAL_EVENTS` | Recovery sweep would either re-process finished tasks or abandon in-flight ones (`core/types.py:187`) |
 
 ## 7. Related documents
 

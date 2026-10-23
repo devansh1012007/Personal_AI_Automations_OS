@@ -114,18 +114,18 @@ responsibility and the files it contains. All paths are repository-relative.
 
 | Entry point | File | Function |
 |---|---|---|
-| `paa` CLI | `src/paa/cli/main.py:32` | `app = typer.Typer(...)`; `__main__` at line 330 |
-| `paa submit` | `src/paa/cli/main.py:61` | `submit` |
-| `paa serve` | `src/paa/cli/main.py:248` | `serve` |
-| `paa doctor` | `src/paa/cli/main.py:208` | `doctor` |
-| `paa recover` | `src/paa/cli/main.py:190` | `recover` |
-| `paa ledger` | `src/paa/cli/main.py:134` | `ledger` |
-| `paa gate` | `src/paa/cli/main.py:164` | `gate` |
-| `paa agent` | `src/paa/cli/coder.py:44` | `register_agent` → `agent` |
-| `paa tui` | `src/paa/cli/main.py:307` | `tui` |
-| Programmatic runtime | `src/paa/runtime.py:231` | `Runtime.build()` |
-| API factory | `src/paa/api/app.py:50` | `create_app(runtime)` |
-| Daemon | `src/paa/daemon.py:40` | `Daemon(runtime)` |
+| `paa` CLI | `src/paa/cli/main.py:38` | `app = typer.Typer(...)`; `__main__` at line 467 |
+| `paa submit` | `src/paa/cli/main.py:73` | `submit` |
+| `paa serve` | `src/paa/cli/main.py:289` | `serve` |
+| `paa doctor` | `src/paa/cli/main.py:224` | `doctor` |
+| `paa recover` | `src/paa/cli/main.py:206` | `recover` |
+| `paa ledger` | `src/paa/cli/main.py:144` | `ledger` |
+| `paa gate` | `src/paa/cli/main.py:179` | `gate` |
+| `paa agent` | `src/paa/cli/coder.py:53` | `register_agent` → `agent` |
+| `paa tui` | `src/paa/cli/main.py:352` | `tui` |
+| Programmatic runtime | `src/paa/runtime.py:251` | `Runtime.build()` |
+| API factory | `src/paa/api/app.py:52` | `create_app(runtime)` |
+| Daemon | `src/paa/daemon.py:42` | `Daemon(runtime)` |
 
 ## tests/
 

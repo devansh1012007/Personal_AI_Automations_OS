@@ -9,7 +9,7 @@ Verified against `src/paa/ledger/recovery.py`, `src/paa/ledger/store.py`,
 | Trigger | Entry | File |
 |---|---|---|
 | CLI | `paa recover` | `cli/main.py:190` → `Runtime.boot_recovery()` |
-| Service start | `paa serve` → `Daemon.start()` | `daemon.py:61` |
+| Service start | `paa serve` → `Daemon.start()` | `daemon.py:64` |
 | Runtime build | `Runtime.build(run_recovery=True)` (default) | `runtime.py:331` |
 
 All lead to `ChiefOrchestrator.boot()` → `RecoveryEngine.boot_sweep()`.
@@ -20,14 +20,14 @@ All lead to `ChiefOrchestrator.boot()` → `RecoveryEngine.boot_sweep()`.
 
 ### 1. Verify hash chains
 
-`verify_all_chains()` (`store.py:349`): for every lineage, `verify_chain()` checks
+`verify_all_chains()` (`ledger/store.py:435`): for every lineage, `verify_chain()` checks
 each event's digest recomputes, `prev_hash` links to predecessor, versions dense.
 Problems are **reported, never auto-repaired** (`recovery.py:231`) — silently
 fixing tampered history defeats auditability.
 
 ### 2. Enumerate open lineages
 
-`open_correlations()` (`store.py:278`) reads `WHERE is_terminal = 0
+`open_correlations()` (`ledger/store.py:348`) reads `WHERE is_terminal = 0
 ORDER BY updated_at ASC` from the **head projection** — deliberately **not**
 the queue (`recovery.py:11`), because the queue is volatile and may have lost
 messages; the ledger is not.
@@ -36,7 +36,7 @@ messages; the ledger is not.
 
 For each head:
 
-a. `project(store, cid)` → `TaskProjection` (replay from ledger, `:266`).
+a. `project(store, cid)` → `TaskProjection` (replay from ledger, `ledger/replay.py:322`).
 b. If `projection.is_terminal` → head projection lagged (crash between ledger
    insert and head upsert); `_mark_head_terminal()`; outcome `ALREADY_TERMINAL`
    (`:270`).
@@ -54,7 +54,7 @@ e. `_reconcile_workspace(projection)` (`:350`):
 f. `_requeue(projection)` (`:437`): enqueue to `StreamName.ORCHESTRATOR_CORE`
    with `{correlation_id, session_id, resume_phase, resume_step_index,
    recovered: true}`. Enqueue failure logged, non-fatal — ledger already
-   records the task as open, so a later sweep retries (`:440`).
+   records the task as open, so a later sweep retries (`recovery.py:444`).
 g. `_record_sweep()` (`:306`): append `RECOVERY_REPLAY_COMPLETED` audit event,
    suppressed if the latest event is already one (keeps repeated sweeps
    no-op; ADR-0010 idempotency fix) (`:329`).
@@ -71,7 +71,7 @@ g. `_record_sweep()` (`:306`): append `RECOVERY_REPLAY_COMPLETED` audit event,
 | `ALREADY_TERMINAL` | Head projection lagged; task actually finished | No |
 
 `RecoveryReport` aggregates `started_at`, `finished_at`, `scanned`,
-`recoveries[]`, `chain_problems` (`recovery.py:113`).
+`recoveries[]`, `chain_problems` (`recovery.py:115`).
 
 ## Idempotency
 
@@ -144,7 +144,7 @@ runs each via `Runtime.run(cid)`, which re-projects and resumes at
 | Failure | Handling |
 |---|---|
 | Hash-chain problem | Reported in `RecoveryReport.chain_problems`, never repaired (`recovery.py:231`) |
-| Single lineage throws | Logged as `UNRECOVERABLE`; sweep continues (`recovery.py:246`) |
+| Single lineage throws | Logged as `UNRECOVERABLE`; sweep continues (`recovery.py:250`) |
 | Requeue fails | Logged non-fatal; ledger already open; next sweep retries (`recovery.py:444`) |
 | Workspace missing | Logged warning, no drift recorded (`recovery.py:371`) |
 | No checkpoint taken | Nothing can have drifted (`recovery.py:366`) |

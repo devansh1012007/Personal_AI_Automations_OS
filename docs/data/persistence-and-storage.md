@@ -73,7 +73,7 @@ Write-once intake for raw external events:
 - Oversized payloads (> `DEFAULT_INLINE_THRESHOLD_BYTES = 65536`) offloaded to
   CAS with a `cas://` stub in `raw_payload`.
 - `record()` validates UTF-8/JSON before INSERT (`StorageError` on invalid;
-  `signals.py:388`).
+  `storage/coldlake/signals.py:410`).
 - `claim_unprocessed(limit)` atomically claims + flips status to `processing`
   (`signals.py:209`).
 - Status transitions: `mark_processed`, `mark_malformed`, `mark_quarantined`,
@@ -84,7 +84,7 @@ Consumers: API `POST /signals` (`api/app.py:166`), daemon ingestion loop
 
 ## 3. Vector — `src/paa/storage/vector/`
 
-`get_vector_store(settings)` (`vector/__init__.py:95`):
+`get_vector_store(settings)` (`storage/vector/__init__.py:96`):
 - `"auto"`: Qdrant if `qdrant-client` importable, else `NumpyVectorStore` with
   a warning. Never raises in auto mode.
 - Explicit `"qdrant_server"` without `qdrant_url` → `StorageError`.
@@ -104,7 +104,7 @@ new facts, `creator.py:654`), context gatherer semantic search
 
 ## 4. Graph — `src/paa/storage/graph/`
 
-`get_graph_store(settings, db)` (`graph/__init__.py:63`):
+`get_graph_store(settings, db)` (`storage/graph/__init__.py:63`):
 - `"auto"`: Kuzu if importable, else `SqliteGraphStore(db)` with a log line.
 - Explicit `"kuzu"`: raises `ImportError` if kuzu absent.
 - `"sqlite"`: always succeeds (recursive CTE traversal).
@@ -115,11 +115,11 @@ profile).
 
 ## 5. Queue — `src/paa/storage/queue/`
 
-`get_queue(settings, db)` / `get_lock(settings, db)` (`queue/__init__.py:58`):
+`get_queue(settings, db)` / `get_lock(settings, db)` (`storage/queue/__init__.py:58`):
 - `"redis"`: Redis-backed queue/lock; otherwise `SqliteMessageQueue` /
   `SqliteDistributedLock` sharing the ledger DB (db required).
 - At-least-once delivery; exactly-once processing via ledger idempotency keys.
-- `StreamName` defines 11 streams (`queue/base.py:48`); `ORCHESTRATOR_CORE` is
+- `StreamName` defines 11 streams (`storage/queue/base.py:48`); `ORCHESTRATOR_CORE` is
   the control-plane stream.
 
 Configuration: `StorageSettings.backend_queue`, `StorageSettings.redis_url`
@@ -131,7 +131,7 @@ Configuration: `StorageSettings.backend_queue`, `StorageSettings.redis_url`
 SHEDDING decision on queue depth; control-plane streams always accepted.
 
 Consumers: `Runtime` (`runtime.py:373`), `ChiefOrchestrator.submit` enqueues
-(`orchestrator.py:233`), daemon dispatch claims (`daemon.py:125`),
+(`orchestrator.py:233`), daemon dispatch claims (`daemon.py:129`),
 recovery requeue (`recovery.py:437`), API backpressure gate
 (`api/app.py:198`).
 
@@ -139,7 +139,7 @@ recovery requeue (`recovery.py:437`), API backpressure gate
 
 - **Ledger writes** are the spine: `LedgerStore.append` is one SQLite
   transaction assigning `state_version`, linking `prev_hash`, inserting, and
-  updating the head projection atomically (`store.py:12`).
+  updating the head projection atomically (`ledger/store.py:12`).
 - **Database transactions**: `Database.transaction()` uses `BEGIN IMMEDIATE`
   (single writer). WAL allows concurrent readers.
 - **Snapshot durability**: `close()` checkpoints WAL (TRUNCATE), making a file
@@ -151,14 +151,14 @@ recovery requeue (`recovery.py:437`), API backpressure gate
 Every optional-backend factory (`_try_vector`, `_try_graph`, `_try_queue`,
 `get_blob_store`) catches `Exception` and returns `None`/fallback with a logged
 warning — never raises for a missing optional backend in `auto` mode
-(`runtime.py:349`–`:379`). The runtime must boot on a laptop with only core
+(`runtime.py:381`–`:387`). The runtime must boot on a laptop with only core
 dependencies installed (`AGENTS.md:60`).
 
 Degradation impact:
 - No vector → context gatherer semantic search returns `[]` (`context_agents.py:183`).
 - No graph → graph neighbours returns `[]` (`context_agents.py:214`).
-- No queue → orchestrator submit skips enqueue (`orchestrator.py:230`); daemon dispatch sleeps (`daemon.py:118`).
-- No S3 → cold lake uses local CAS (`coldlake/__init__.py:66`).
+- No queue → orchestrator submit skips enqueue (`orchestrator.py:230`); daemon dispatch sleeps (`daemon.py:123`).
+- No S3 → cold lake uses local CAS (`storage/coldlake/__init__.py:68`).
 
 ## 8. Consistency and parity
 

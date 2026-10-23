@@ -219,7 +219,7 @@ Provider `api_key_env` tuples are defined per row in `registry.py:_SPECS`
 1. `uv venv --python 3.12 && uv pip install -e ".[dev]"` (`AGENTS.md:8`).
 2. Optionally `cp .env.example .env` and set provider keys.
 3. `.venv/bin/python -m pytest tests/ -q` (`AGENTS.md:11`).
-4. `paa doctor` to confirm which backends are actually live (`cli/main.py:208`).
+4. `paa doctor` to confirm which backends are actually live (`cli/main.py:224`).
 
 ## Deployment vs development
 
@@ -233,7 +233,7 @@ Provider `api_key_env` tuples are defined per row in `registry.py:_SPECS`
 
 ## Validation
 
-- `SettingsConfigDict(validate_default=True)` (`config.py:390`) — defaults are
+- `SettingsConfigDict(validate_default=True)` (`config.py:585`) — defaults are
   validated too.
 - `extra="ignore"` — unknown `PAA_*` fields are ignored, not errors
   (`config.py:389`).

@@ -9,18 +9,18 @@ default (Redis optional), and the ledger is authoritative over the queue
 
 ## 1. The Daemon
 
-`Daemon(runtime)` (`daemon.py:40`) runs three cooperating, independently
+`Daemon(runtime)` (`daemon.py:42`) runs three cooperating, independently
 supervised loops plus a one-time boot recovery:
 
 | Loop | Interval | What it does |
 |---|---|---|
-| Boot recovery | once at `start()` | `runtime.boot_recovery()` — replay open lineages, reconcile workspaces, re-queue (`daemon.py:61`) |
+| Boot recovery | once at `start()` | `runtime.boot_recovery()` — replay open lineages, reconcile workspaces, re-queue (`daemon.py:64`) |
 | Dispatch | 0.5s | Claims queued tasks from `StreamName.ORCHESTRATOR_CORE` and runs each through `runtime.run(cid)`; `ack` on success, `nack` on failure (`daemon.py:116`) |
 | Ingestion | 1.0s | Drains unprocessed signals into hot serving via `MemoryCreator.run_batch(limit=25)`; isolates one poison signal from the batch (`daemon.py:139`) |
 | Maintenance | 6h | `DecaySweeper(db).sweep()` — evicts stale facts per domain decay policy (`daemon.py:151`) |
 
 ### Supervision
-Each loop is wrapped in `_supervise()` (`daemon.py:91`): an unexpected error is
+Each loop is wrapped in `_supervise()` (`daemon.py:94`): an unexpected error is
 logged and the loop restarts after 1s — one failing loop cannot take down the
 others. `asyncio.CancelledError` propagates on shutdown.
 
@@ -37,18 +37,18 @@ to `max_delivery_attempts` (`daemon.py:134`).
 
 ### Queue dependency
 If `runtime.queue is None` (no queue backend), the dispatch loop sleeps out its
-interval and drains nothing (`daemon.py:118`).
+interval and drains nothing (`daemon.py:121`).
 
 ## 2. Recovery boot sweep
 
 `RecoveryEngine.boot_sweep()` (`recovery.py:222`), invoked by
 `ChiefOrchestrator.boot()` (`orchestrator.py:737`) and by `Runtime.build()`
-(`runtime.py:331`) and `Daemon.start()` (`daemon.py:61`):
+(`runtime.py:331`) and `Daemon.start()` (`daemon.py:64`):
 
 1. `verify_all_chains()` — hash-chain integrity across all lineages; problems
    are **reported, never auto-repaired** (`recovery.py:231`).
 2. `open_correlations()` — reads open lineages from the **head projection**
-   (`is_terminal = 0`), never from the queue (`store.py:278`).
+   (`is_terminal = 0`), never from the queue (`ledger/store.py:357`).
 3. For each head: `project()` → `TaskProjection`:
    - terminal → `ALREADY_TERMINAL` (repair head projection) (`recovery.py:268`).
    - `AWAITING_HUMAN` → `PARKED_HUMAN`; a crash is never interpreted as consent
@@ -65,7 +65,7 @@ interval and drains nothing (`daemon.py:118`).
      `recovery.py:306`).
 
 `RecoveryOutcome`: `RESUMED`, `ROLLED_BACK`, `PARKED_HUMAN`, `ABANDONED`,
-`UNRECOVERABLE`, `ALREADY_TERMINAL` (`recovery.py:79`).
+`UNRECOVERABLE`, `ALREADY_TERMINAL` (`recovery.py:80`).
 
 Idempotent by design — running the sweep twice yields the same end state
 (`recovery.py:17`).
@@ -99,14 +99,14 @@ lineages. The event vocabulary (`src/paa/core/types.py:67`):
 - Per-step retry budget `max_step_retries` (default 2) in
   `ChiefOrchestrator._execute_steps` (`orchestrator.py:523`).
 - Queue `max_delivery_attempts` (default 3) governs message redelivery
-  (`config.py:349`).
+  (`config.py:550`).
 - Recovery `max_attempts` (default 3, from `QueueSettings.max_delivery_attempts`)
   governs re-queue retries; beyond it → `TASK_ABANDONED` (`recovery.py:285`).
 
 ## 5. Concurrency controls
 
 - Daemon `claim_batch=4` (`daemon.py:49`).
-- Model router semaphore: `max_concurrent_streams=2` (`router.py:150`) — memory
+- Model router semaphore: `max_concurrent_streams=2` (`models/router.py:226`) — memory
   bound on constrained hardware.
 - Delegation graph: `max_depth` (modality `recursion_ceiling`), `max_nodes`
   (`max_plan_nodes()`), cycle detection (`delegation.py:48`).
@@ -121,7 +121,7 @@ lineages. The event vocabulary (`src/paa/core/types.py:67`):
 | Task run exception | Logged, message nacked (redelivery) (`daemon.py:134`) |
 | Orchestrator `PaaError` | `EXECUTION_FAILED` event, re-project, return error (`orchestrator.py:310`) |
 | Sandbox step failure | `VALIDATION_FAILED`; retry up to budget (`orchestrator.py:556`) |
-| Recovery single lineage failure | Logged as `UNRECOVERABLE`; sweep continues (`recovery.py:246`) |
+| Recovery single lineage failure | Logged as `UNRECOVERABLE`; sweep continues (`recovery.py:250`) |
 | Hash-chain problem | Reported in `RecoveryReport.chain_problems`, never repaired (`recovery.py:231`) |
 | Queue enqueue failure in recovery | Logged, non-fatal; ledger already records the task as open (`recovery.py:444`) |
 

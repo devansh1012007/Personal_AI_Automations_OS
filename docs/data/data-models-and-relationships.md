@@ -50,15 +50,15 @@ This is the only append-only table. Every state transition is a row. Columns
 | `recorded_at` | TEXT | TIMESTAMPTZ | UTC timestamp |
 
 The hash chain (`prev_hash` → `event_hash`) makes silent history edits
-detectable; verified by `LedgerStore.verify_chain` (`store.py:315`).
+detectable; verified by `LedgerStore.verify_chain` (`ledger/store.py:385`).
 
-`LedgerStore.append` performs, inside one transaction (`store.py:123`):
+`LedgerStore.append` performs, inside one transaction (`ledger/store.py:116`):
 1. Idempotency suppression by `idempotency_key` — returns the existing event on
-   duplicate (`store.py:125`).
+   duplicate (`ledger/store.py:144`).
 2. Assign next per-correlation `state_version` and `prev_hash` from the chain
-   tip (`store.py:134`).
-3. Insert the row (`store.py:142`).
-4. Update the head projection (`store.py:158`).
+   tip (`ledger/store.py:146`).
+3. Insert the row (`ledger/store.py:158`).
+4. Update the head projection (`ledger/store.py:192`).
 
 ### `system_state_correlation_head` — one row per lineage
 
@@ -75,7 +75,7 @@ detectable; verified by `LedgerStore.verify_chain` (`store.py:315`).
 | `opened_at` | TEXT / TIMESTAMPTZ | |
 | `updated_at` | TEXT / TIMESTAMPTZ | |
 
-Recovery scans `WHERE is_terminal = 0 ORDER BY updated_at ASC` (`store.py:278`).
+Recovery scans `WHERE is_terminal = 0 ORDER BY updated_at ASC` (`ledger/store.py:357`).
 This replaces the RFC's partial-index recovery (which never sheds rows) per
 ADR-0010.
 
@@ -135,7 +135,7 @@ be fully established.
 `HEARTBEAT_PING`, `RETRY_FAILED`, `DEAD_LETTER_POISON`.
 
 `ORCHESTRATOR_CORE` is the control-plane stream the orchestrator and daemon use
-(`orchestrator.py:233`, `daemon.py:125`).
+(`orchestrator.py:233`, `daemon.py:129`).
 
 ## 4. Marketplace tables
 
@@ -191,7 +191,7 @@ The derived read model of a lineage. Fields include `phase`, `modality`,
 `tokens_consumed`, `user_corrections`, `errors`, `awaiting_reason`,
 `created_at`, `updated_at`, `unknown_events`.
 
-### `Fact` / `Entity` (`memory/facts.py:129`, `:103`)
+### `Fact` / `Entity` (`memory/facts.py:278`, `:252`)
 `Fact`: id, entity_id, predicate, object_value, domain, scope,
 `initial_confidence` (C₀), `confidence` (decayed at read time), importance,
 use_count, source_signal_id, provenance, embedding_status, created_at,

@@ -56,12 +56,12 @@ Pre-existing documents retained and linked: `coder-agent.md`, `EXTENSIBILITY_PIP
 
 These were traced against actual source (file:line cited in the documents):
 
-1. **CLI/API → Runtime → ChiefOrchestrator → LedgerStore** (`cli/main.py:61` → `runtime.py:189` → `orchestrator.py:188` → `store.py:113`).
+1. **CLI/API → Runtime → ChiefOrchestrator → LedgerStore** (`cli/main.py:73` → `runtime.py:208` → `orchestrator.py:188` → `ledger/store.py:116`).
 2. **Orchestrator phases** hydrate→plan→policy→execute→commit (`orchestrator.py:301`–`:309`), each emitting its ledger event before the side effect.
-3. **Model call with escalation** (`reasoning.py:95` → `runtime.py:121` → `router.py:274` → `MODEL_ESCALATED` before frontier call at `router.py:417`).
-4. **Signal ingestion → memory creation** (`api/app.py:166` → `signals.py:124` → `daemon.py:139` → `creator.py` → `facts.py:429`).
-5. **Crash recovery** (`daemon.py:61` → `orchestrator.py:737` → `recovery.py:222` → `replay.py:322` → workspace reconcile `recovery.py:350`).
-6. **Coder agent tool loop** (`cli/coder.py:44` → `agent.py:101` → `loop.py:142` → `model_adapter.py:161` → `runtime_tools.py` tools).
+3. **Model call with escalation** (`reasoning.py:95` → `runtime.py:131` → `router.py:737` → `MODEL_ESCALATED` before frontier call at `router.py:401`).
+4. **Signal ingestion → memory creation** (`api/app.py:166` → `signals.py:127` → `daemon.py:142` → `creator.py` → `facts.py:429`).
+5. **Crash recovery** (`daemon.py:64` → `orchestrator.py:1104` → `recovery.py:226` → `replay.py:322` → workspace reconcile `recovery.py:354`).
+6. **Coder agent tool loop** (`cli/coder.py:53` → `coder/agent.py:105` → `loop.py:142` → `model_adapter.py:161` → `runtime_tools.py` tools).
 7. **Validation pipeline** schema→AST→patch→drift→tests (`validation/engine.py:208`, `validation/patch.py:270`).
 8. **Delegation safety** depth/cycle/node bounds (`delegation.py:87`, `orchestrator.py:631`).
 9. **Sandbox degradation** 5s probe → subprocess fallback (`runtime.py:382`).

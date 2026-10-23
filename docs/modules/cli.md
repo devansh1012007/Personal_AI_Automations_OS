@@ -7,7 +7,7 @@
 - **Main responsibility:** The `paa` Typer command line — the primary human entry point; every command except `serve` is one-shot (build Runtime, do one thing, print, close).
 - **Architectural layer:** Edge
 - **Entrypoints:** `cli/main.py:app` (Typer), `cli/coder.py:register_agent` (`paa agent`)
-- **Public interfaces:** `app` (`main.py:32`), `register_agent` (`coder.py:44`)
+- **Public interfaces:** `app` (`cli/main.py:38`), `register_agent` (`cli/coder.py:53`)
 - **Other modules that depend on it:** `runtime.py` (all commands build `Runtime`), `coder/agent.py` (`paa agent`)
 
 ## Purpose and responsibilities
@@ -15,47 +15,47 @@
 One-shot commands are cheap and always succeed at submission so the request is
 durable before any work (`cli/main.py` module docstring). `paa ledger` is the
 "explain why it did that" command — walks a task's event chain. `paa doctor`
-never overstates backends or isolation (`cli/main.py:16`).
+never overstates backends or isolation (`cli/main.py:13`).
 
 ## Commands (`main.py`)
 
 | Command | Line | Behavior |
 |---|---|---|
-| `version` | 55 | Print `paa {__version__}` |
-| `submit` | 61 | Build Runtime; submit; optionally run to completion; print phase/outcome |
-| `run` | 89 | Drive a queued task to terminal |
-| `status` | 104 | Show replayed `TaskProjection` (phase, steps, attempts, tokens, awaiting/policy reason) |
-| `ledger` | 134 | Walk event chain; print chain integrity (verify_chain) |
-| `gate` | 164 | Clear a human gate (`--approve/--reject`) |
-| `recover` | 190 | Boot sweep; print JSON summary |
-| `doctor` | 208 | Report live backends + sandbox isolation level |
-| `serve` | 248 | Build Runtime + Daemon + FastAPI app; uvicorn on `api_host:api_port` |
-| `mode` | 291 | Show `PAA_POLICY__MODE=<value>` to set |
-| `tui` | 307 | Run `run_tui()` |
+| `version` | 67 | Print `paa {__version__}` |
+| `submit` | 73 | Build Runtime; submit; optionally run to completion; print phase/outcome |
+| `run` | 102 | Drive a queued task to terminal |
+| `status` | 118 | Show replayed `TaskProjection` (phase, steps, attempts, tokens, awaiting/policy reason) |
+| `ledger` | 144 | Walk event chain; print chain integrity (verify_chain) |
+| `gate` | 179 | Clear a human gate (`--approve/--reject`) |
+| `recover` | 206 | Boot sweep; print JSON summary |
+| `doctor` | 224 | Report live backends + sandbox isolation level |
+| `serve` | 289 | Build Runtime + Daemon + FastAPI app; uvicorn on `api_host:api_port` |
+| `mode` | 336 | Show `PAA_POLICY__MODE=<value>` to set |
+| `tui` | 352 | Run `run_tui()` |
 
-All one-shot commands use `_build_runtime(run_recovery=False)` (`:45`) —
-recovery is opt-in per command (an operator decision, `coder/agent.py:126`);
-`serve` also does not run recovery at build (daemon does it at start, `daemon.py:61`).
+All one-shot commands use `_build_runtime(run_recovery=False)` (`cli/main.py:51`) —
+recovery is opt-in per command (an operator decision, `coder/agent.py:124`);
+`serve` also does not run recovery at build (daemon does it at start, `daemon.py:64`).
 
 ### `paa agent` (`coder.py`)
 `--mode ask|plan|accept_edits|bypass`, `--yes` (auto-approve), `--max-steps`,
 `--allow`/`--deny`, `--resume`, `--list-tools`. Confirm callback: `always_yes`
 under `--yes`, else `prompt_yes` (blocks on `input`; EOF → deny)
-(`cli/coder.py:44`–`:172`).
+(`cli/coder.py:53`–`:172`).
 
 ## Runtime behavior
 
 - `submit` default `run=True` (`:64`).
 - `serve` binds loopback only; `api_host` validator enforced at `Settings`
-  construction (`config.py:409`).
-- Every command closes the `Runtime` in `finally` (`main.py:83`, `:99`, etc.).
+  construction (`config.py:628`).
+- Every command closes the `Runtime` in `finally` (`cli/main.py:95`, `:111`, etc.).
 
 ## Failure behavior
 
-- Invalid correlation id → `typer.Exit(1)` (`main.py:114`, `:142`, `:319`).
+- Invalid correlation id → `typer.Exit(1)` (`cli/main.py:372`).
 - Task not awaiting gate → `PaaError` → printed red, exit 1 (`:180`).
-- `paa agent` `PaaError` → `[red]error:[/red]`, exit 1 (`cli/coder.py:132`).
-- Unknown mode → printed red, exit 1 (`main.py:299`, `cli/coder.py:83`).
+- `paa agent` `PaaError` → `[red]error:[/red]`, exit 1 (`cli/coder.py:194`).
+- Unknown mode → printed red, exit 1 (`cli/main.py:343`, `cli/coder.py:100`).
 
 ## Modification impact
 

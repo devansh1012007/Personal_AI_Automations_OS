@@ -14,7 +14,7 @@
 
 Agents exchange typed messages rather than prose (RFC §13). The base class owns
 cross-cutting concerns — permission checks, budget accounting, timing, ledger
-emission — so no agent can skip them (`base.py:270`).
+emission — so no agent can skip them (`agents/base.py:296`).
 
 The Chief Orchestrator owns the task lifecycle: hydrate → plan → policy →
 execute → commit, writing a ledger event before every side effect
@@ -28,24 +28,24 @@ model (`orchestrator.py:9`, `policy.py:7`).
 ### `base.py` — foundation
 - `Agent` ABC: `handle(message, ctx)` abstract; `run()` applies permission
   checks, expiry, timing, budget, exception→structured-failure conversion
-  (`base.py:299`).
+  (`agents/base.py:325`).
 - `AgentContext`: correlation/session/task ids, modality, permission mode,
   recursion depth, token budget; `spend()` raises `BudgetExceededError` on
-  overspend (`base.py:243`); `child()` halves token budget per depth
-  (`base.py:246`).
+  overspend (`agents/base.py:245`); `child()` halves token budget per depth
+  (`agents/base.py:247`).
 - `AgentMessage`: frozen typed envelope with `MessageType` intent
-  (`base.py:109`).
+  (`agents/base.py:110`).
 - `AgentResult`: ok, value, error, tokens_consumed, latency_ms, model_used,
-  escalated, confidence (`base.py:174`).
+  escalated, confidence (`agents/base.py:175`).
 - `Agent.delegate(target, intent, payload, ctx)` routes through the
-  orchestrator's `DelegationRegistry` — never peer-to-peer (`base.py:347`).
+  orchestrator's `DelegationRegistry` — never peer-to-peer (`agents/base.py:373`).
 
 ### `orchestrator.py` — Chief Orchestrator
 `run(cid)` projects the lineage; if terminal, returns immediately
 (`orchestrator.py:295`). Phases:
-- `_hydrate` (`:353`) — context builder; parks on `AWAITING_HUMAN_ATTESTATION`
+- `_hydrate` (`:467`) — context builder; parks on `AWAITING_HUMAN_ATTESTATION`
   if density insufficient (`:379`).
-- `_plan` (`:403`) — planner; SIMPLE bypasses model (`:408`); validates
+- `_plan` (`:542`) — planner; SIMPLE bypasses model (`:408`); validates
   `max_plan_nodes()` (`:441`).
 - `_check_policy` (`:461`) — policy agent; blocked → `POLICY_BLOCKED`/
   `SECURITY_VIOLATION`; human gate → `AWAITING_HUMAN_ATTESTATION`; else
@@ -107,11 +107,11 @@ from DB (`:234`), anti-goals (cosine ≥0.82 or phrase match, `:262`). Risk scor
 | Component | Relationship | Why | Source |
 |---|---|---|---|
 | `ChiefOrchestrator` → all agents | calls `agent.run(message, ctx)` | Drive lifecycle phases | `orchestrator.py:374`, `:434`, `:471`, `:538`, `:594` |
-| `Agent` → `DelegationRegistry` | `delegate()` | Orchestrator owns delegation graph | `base.py:367`, `orchestrator.py:631` |
+| `Agent` → `DelegationRegistry` | `delegate()` | Orchestrator owns delegation graph | `agents/base.py:373`, `orchestrator.py:833` |
 | `Reasoning agents` → `ModelLike` | `complete_structured()` | Model seam | `reasoning.py:95`, `:246`, `:353` |
 | `RouterModelAdapter` | wraps `EscalatingModelRouter` | Bridge `ModelLike` → router | `runtime.py:98` |
 | `PolicyRiskAgent` → `Database` | `fetch_all(hot_serving_policy_rules)` | Operator rules | `policy.py:255` |
-| `Context builders` → `Database`/vector/graph | fetch facts/semantic/graph | Build context packet | `context_agents.py:147`, `:182`, `:205` |
+| `Context builders` → `Database`/vector/graph | fetch facts/semantic/graph | Build context packet | `context_agents.py:141`, `:241`, `:264` |
 | `Runtime.build` | constructs all agents | Composition root | `runtime.py:407` |
 
 ## Runtime behavior
@@ -124,8 +124,8 @@ from DB (`:234`), anti-goals (cosine ≥0.82 or phrase match, `:262`). Risk scor
 ## Failure behavior
 
 - Missing permissions → `AgentResult.failure` (`PermissionDeniedError`)
-  (`base.py:305`).
-- Unexpected exception → structured failure (`base.py:329`).
+  (`agents/base.py:333`).
+- Unexpected exception → structured failure (`agents/base.py:355`).
 - Planner schema failure → retries once, then gives up (`reasoning.py:93`).
 - Critic deterministic failure → short-circuits, no model call
   (`reasoning.py:226`).
@@ -136,11 +136,11 @@ from DB (`:234`), anti-goals (cosine ≥0.82 or phrase match, `:262`). Risk scor
 ## Modification impact
 
 - Changing an agent's `handle()` signature breaks the `Agent` ABC contract
-  (`base.py:296`).
+  (`agents/base.py:296`).
 - Adding a delegation requires `can_delegate = True` and orchestrator
-  registration (`base.py:282`, `orchestrator.py:119`).
-- Changing `TERMINAL_EVENTS` affects recovery scanning (`types.py:132`,
-  `store.py:287`).
+  registration (`agents/base.py:308`, `orchestrator.py:247`).
+- Changing `TERMINAL_EVENTS` affects recovery scanning (`core/types.py:187`,
+  `ledger/store.py:304`).
 - Tests: `tests/agents/` (70 tests per README).
 
 ## Known gaps

@@ -13,15 +13,15 @@
 ## Purpose and responsibilities
 
 Containment with honesty: `IsolationLevel` (NONE/PROCESS/NAMESPACE/VM) is
-declared per-backend, never aspirational (`base.py:58`). gVisor (`runsc`, VM)
+declared per-backend, never aspirational (`sandbox/base.py:58`). gVisor (`runsc`, VM)
 is unavailable on the target Windows machine, so containment is pluggable and
-callers can branch on `isolation_level.is_real_containment` (`base.py:97`).
+callers can branch on `isolation_level.is_real_containment` (`sandbox/base.py:97`).
 The sandbox is "a guard against a confused agent, not a hostile one" for the
-subprocess backend (`base.py:26`).
+subprocess backend (`sandbox/base.py:26`).
 
 ## Internal implementation
 
-### `base.py` — contract
+### `sandbox/base.py` — contract
 - `SandboxSpec`: command (tuple, never a shell string), workspace_path,
   read_only_mounts, env (explicit allowlist), memory_mb, cpu_cores,
   timeout_seconds, allow_network (default False), recursion_depth,
@@ -105,7 +105,7 @@ subprocess backend (`base.py:26`).
 - `DryRunSandbox` — NONE; records what would run, executes nothing (planning
   mode + tests).
 
-### `__init__.py` — factory
+### `sandbox/__init__.py` — factory
 `get_sandbox(settings)`: explicit backend returned without healthcheck
 (operator wants loud failure); `"auto"` walks order (docker, wsl, subprocess)
 and takes first healthy; unreachable fallback raises `RuntimeError`
@@ -156,7 +156,7 @@ enforcement (ADR-0009); heartbeat liveness with miss tolerance
 
 - Backend selected at runtime build; worker reuses the same sandbox instance.
 - `timeout_seconds=None` means "wait forever" (MAX modality, human-attested)
-  (`base.py:227`).
+  (`sandbox/base.py:227`).
 - `allow_network=False` on subprocess is not enforced (logged gap); enforced by
   policy + AST scanner.
 - The **start** and the **work** are separate budgets, and only the container
@@ -203,7 +203,7 @@ enforcement (ADR-0009); heartbeat liveness with miss tolerance
 ## Known gaps
 
 - Subprocess sandbox cannot enforce `allow_network` or filesystem confinement
-  beyond the cwd jail (`base.py:70`, `base.py:518`).
+  beyond the cwd jail (`sandbox/base.py:70`, `sandbox/base.py:518`).
 - Windows Job Object assignment races `CreateProcess` (sub-millisecond window,
   documented).
 - Six pre-existing test failures: sandbox runs `python` where only `python3`

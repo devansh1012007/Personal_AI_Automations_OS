@@ -26,7 +26,7 @@ live-server run still needs a pass (parity + backend verification pending).
 
 ## Runtime startup
 
-Programmatic: `Runtime.build()` (`src/paa/runtime.py:231`):
+Programmatic: `Runtime.build()` (`src/paa/runtime.py:251`):
 1. `Settings()` → `ensure_directories()` creates all state dirs
    (`config.py:450`).
 2. `Database` connects + applies `schema_sqlite.sql`.
@@ -34,7 +34,7 @@ Programmatic: `Runtime.build()` (`src/paa/runtime.py:231`):
 4. Model router built (or a `model_adapter` injected); `RouterModelAdapter`
    wraps it.
 5. Optional backends: `_try_vector`, `_try_graph`, `_try_queue` — degrade, never
-   raise (`runtime.py:349`–`:379`).
+   raise (`runtime.py:381`–`:387`).
 6. `_build_agents()` constructs planner, policy, worker, critic, context
    builders, router (`runtime.py:407`).
 7. `_acquire_sandbox()` — 5s probe, falls back to subprocess (`runtime.py:382`).
@@ -43,20 +43,20 @@ Programmatic: `Runtime.build()` (`src/paa/runtime.py:231`):
    (`runtime.py:331`).
 
 CLI one-shot commands build a `Runtime`, do one thing, print, and close
-(`cli/main.py:45`). `paa serve` builds one `Runtime`, starts the `Daemon` and
+(`cli/main.py:51`). `paa serve` builds one `Runtime`, starts the `Daemon` and
 FastAPI app over it (`cli/main.py:254`).
 
 ## Daemon loops
 
-`Daemon(runtime)` (`src/paa/daemon.py:40`):
-- Boot recovery first, before any new work is accepted (`daemon.py:61`).
+`Daemon(runtime)` (`src/paa/daemon.py:42`):
+- Boot recovery first, before any new work is accepted (`daemon.py:64`).
 - Dispatch loop (0.5s): claims `StreamName.ORCHESTRATOR_CORE` messages, runs via
   `runtime.run(cid)`, `ack`/`nack` (`daemon.py:116`).
 - Ingestion loop (1.0s): `MemoryCreator.run_batch(limit=25)` drains signals
   into hot serving (`daemon.py:139`).
 - Maintenance loop (6h): `DecaySweeper(db).sweep()` evicts stale facts
   (`daemon.py:151`).
-- Supervised: one loop crashing doesn't stop others (`daemon.py:91`).
+- Supervised: one loop crashing doesn't stop others (`daemon.py:94`).
 - Cooperative shutdown via `asyncio.Event` (`daemon.py:70`).
 
 ## Process model
@@ -67,7 +67,7 @@ FastAPI app over it (`cli/main.py:254`).
 - No thread pool for CPU-bound work; sandbox subprocesses are awaited via
   `asyncio.create_subprocess_exec`-style patterns.
 - The model router semaphore (`max_concurrent_streams=2`) bounds concurrent
-  model memory (`router.py:150`).
+  model memory (`models/router.py:226`).
 
 ## State location
 
@@ -83,7 +83,7 @@ All state under `PAA_HOME` (default `~/.paa`, outside the repo):
 ## Health / observability
 
 - `paa doctor` reports live backends and sandbox isolation level
-  (`cli/main.py:208`).
+  (`cli/main.py:224`).
 - `GET /health` returns backend type names and open task count
   (`api/app.py:67`).
 - `src/paa/observability/` (logging, metrics, tracing, runs) is built but

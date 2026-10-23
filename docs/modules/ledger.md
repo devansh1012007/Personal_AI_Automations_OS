@@ -52,27 +52,27 @@ made retries impossible under a UNIQUE constraint.
 (`core/types.py:132`).
 
 ### `store.py` — append-only store
-`LedgerStore.append()` (`store.py:113`) inside one transaction:
-1. Suppress duplicates by idempotency key → return existing event (`store.py:122`).
+`LedgerStore.append()` (`ledger/store.py:116`) inside one transaction:
+1. Suppress duplicates by idempotency key → return existing event (`ledger/store.py:144`).
 2. Read chain tip (highest `state_version` + its `event_hash`) → `state_version
-   + 1`, `prev_hash` (`store.py:134`).
-3. `event.sealed()` then `INSERT` (`store.py:142`).
+   + 1`, `prev_hash` (`ledger/store.py:146`).
+3. `event.sealed()` then `INSERT` (`ledger/store.py:147`).
 4. On `sqlite3.IntegrityError` (concurrent writer in another process), re-read
-   by key and return whatever landed (`store.py:147`).
+   by key and return whatever landed (`ledger/store.py:174`).
 5. `sequence_id = cursor.lastrowid`; `_update_head()` upserts
-   `system_state_correlation_head` (`store.py:158`).
+   `system_state_correlation_head` (`ledger/store.py:192`).
 
 `read_correlation()` orders by `state_version` (dense), not `sequence_id`
-(which can gap on rollback) (`store.py:254`).
+(which can gap on rollback) (`ledger/store.py:326`).
 
-`open_correlations()` (`store.py:278`) reads `WHERE is_terminal = 0` from the
+`open_correlations()` (`ledger/store.py:348`) reads `WHERE is_terminal = 0` from the
 head projection — the recovery sweep's entry point; replaces the RFC's partial
 index (ADR-0010).
 
-`verify_chain()` (`store.py:315`): per event, checks digest recomputes,
+`verify_chain()` (`ledger/store.py:385`): per event, checks digest recomputes,
 `prev_hash` matches predecessor, versions dense/monotonic.
 
-Snapshots: `save_snapshot`/`load_snapshot` (`store.py:364`) checkpoint a
+Snapshots: `save_snapshot`/`load_snapshot` (`ledger/store.py:450`) checkpoint a
 `TaskProjection` as a replay optimisation; safe to delete.
 
 ### `replay.py` — deterministic projection
@@ -108,7 +108,7 @@ from that version.
    latest event is already one (idempotent sweeps; `recovery.py:306`).
 
 `RecoveryOutcome`: `RESUMED`, `ROLLED_BACK`, `PARKED_HUMAN`, `ABANDONED`,
-`UNRECOVERABLE`, `ALREADY_TERMINAL` (`recovery.py:79`).
+`UNRECOVERABLE`, `ALREADY_TERMINAL` (`recovery.py:80`).
 
 ## Inputs and outputs
 
@@ -124,13 +124,13 @@ from that version.
 
 | Component | Relationship | Why it connects | Source |
 |---|---|---|---|
-| `ChiefOrchestrator` | calls `LedgerStore.append` | Emits every state transition | `orchestrator.py:160` |
-| `Runtime.build` | constructs `LedgerStore`, `RecoveryEngine` | Composition root | `runtime.py:264`, `:294` |
-| `RecoveryEngine` | uses `LedgerStore`, `Database` | Replay and reconcile | `recovery.py:142` |
+| `ChiefOrchestrator` | calls `LedgerStore.append` | Emits every state transition | `orchestrator.py:276` |
+| `Runtime.build` | constructs `LedgerStore`, `RecoveryEngine` | Composition root | `runtime.py:288`, `:326` |
+| `RecoveryEngine` | uses `LedgerStore`, `Database` | Replay and reconcile | `recovery.py:140` |
 | `replay.project` | reads `LedgerStore.read_correlation` | Build TaskProjection | `replay.py:347` |
 | `API /ledger/{id}` | calls `read_correlation` | Explainability endpoint | `api/app.py:149` |
 | `CLI paa ledger` | calls `read_correlation` + `verify_chain` | Terminal explainability | `cli/main.py:140` |
-| `Database` | used by `LedgerStore` | SQLite persistence | `store.py:31` |
+| `Database` | used by `LedgerStore` | SQLite persistence | `storage/relational/database.py:110` |
 
 ## Runtime behavior
 
@@ -142,12 +142,12 @@ from that version.
 ## Failure behavior
 
 - Duplicate idempotency key → returns existing event (not an error)
-  (`store.py:122`).
+  (`ledger/store.py:144`).
 - Concurrent writer race → re-read by key, return what landed
-  (`store.py:147`).
+  (`ledger/store.py:174`).
 - Chain verification failure → reported, not repaired (`recovery.py:231`).
 - One bad lineage in recovery → logged as `UNRECOVERABLE`, sweep continues
-  (`recovery.py:246`).
+  (`recovery.py:250`).
 
 ## Modification impact
 

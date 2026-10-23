@@ -8,7 +8,7 @@ outcome through the backend. It reflects the actual execution order in
 
 | Trigger | File | Function |
 |---|---|---|
-| `paa submit "goal"` | `cli/main.py:61` | `submit` → `Runtime.submit()` |
+| `paa submit "goal"` | `cli/main.py:73` | `submit` → `Runtime.submit()` |
 | `paa run <id>` | `cli/main.py:89` | `run` → `Runtime.run()` |
 | API `POST /tasks` (`?run=true`) | `api/app.py:85` | `submit_task` → `Runtime.submit()` then `Runtime.run()` |
 | API `POST /tasks` (`?run=false`) | `api/app.py:85` | Submit + queue only; daemon drains later |
@@ -20,26 +20,26 @@ All converge on `ChiefOrchestrator.run()` (`orchestrator.py:292`).
 ## Phase 1 — Project existing state
 
 `run(correlation_id)` calls `project(self._ledger, correlation_id)`
-(`orchestrator.py:294`). If the projection is terminal, it returns immediately
+(`orchestrator.py:396`). If the projection is terminal, it returns immediately
 (`orchestrator.py:295`). Otherwise it builds an `AgentContext` from the
 modality profile (`_context_for`, `orchestrator.py:327`).
 
 ## Phase 2 — Hydrate context
 
-`_hydrate()` (`orchestrator.py:353`):
+`_hydrate()` (`orchestrator.py:467`):
 - If a context packet already exists, skip.
 - Emits `CONTEXT_HYDRATION_REQUESTED` (`orchestrator.py:357`).
 - Sends `CONTEXT_REQUEST` to the planner context builder
   (`context_agents.py:241`).
 - If the result is `HARD_STOP_ESCALATE_TO_USER` (insufficient density), emits
   `AWAITING_HUMAN_ATTESTATION` and returns (`orchestrator.py:379`).
-- Otherwise emits `CONTEXT_HYDRATED` with the packet (`orchestrator.py:393`).
+- Otherwise emits `CONTEXT_HYDRATED` with the packet (`orchestrator.py:499`).
 
 Every emit re-projects (`project()`) so the next phase reads current state.
 
 ## Phase 3 — Plan
 
-`_plan()` (`orchestrator.py:403`):
+`_plan()` (`orchestrator.py:542`):
 - If steps already exist or no planner, skip.
 - SIMPLE modality bypasses the model: emits `PLAN_COMPILED` with a single
   step (`execution_steps: [{action: goal, agent: worker}]`) and

@@ -6,7 +6,7 @@ holds no application state, makes no model calls, and writes directly to neither
 operational tables nor the ledger; a request becomes either a ledger event (via
 the orchestrator) or a cold-lake row (via the signal repository) (`api/app.py:8`).
 
-The app is built by `create_app(runtime)` (`src/paa/api/app.py:50`) and imported
+The app is built by `create_app(runtime)` (`src/paa/api/app.py:52`) and imported
 lazily (FastAPI is imported inside the function) so the package imports on a
 minimal install.
 
@@ -98,7 +98,7 @@ for the projection. Invalid UUID → 400.
 updated task status.
 
 Only an external caller reaches this; nothing in the automated path can clear
-its own gate (`orchestrator.py:688`).
+its own gate (`orchestrator.py:1015`).
 
 ### `POST /tasks/{correlation_id}/correction`
 **Handler:** `api/app.py:139`

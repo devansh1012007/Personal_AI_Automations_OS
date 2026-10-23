@@ -25,20 +25,20 @@ execution. The Unified Skill Adapter (`usa.py`) dispatch pipeline:
 ## Internal implementation
 
 ### `contracts.py` — SkillContract
-Frozen pydantic v2 (corrected from RFC's v1 `regex=`/`@validator`, `:492`):
+Frozen pydantic v2 (corrected from RFC's v1 `regex=`/`@validator`, `skills/contracts.py:439`):
 `skill_name` (pattern), `provider` (claw_hub/mcp_server/native/marketplace),
 `version` (semver), `description`, `input_schema`/`output_schema`,
 `risk_profile` [0,1], `required_permissions`, `reliability_weight`, `invocation`,
 `source_uri`, `source_checksum`, `signature`. `key = f"{name}@{version}"`
-(`:420`). `parse()` wraps Pydantic errors into `SkillContractError` without
-echoing input data (`:449`).
+(`skills/contracts.py:510`). `parse()` wraps Pydantic errors into `SkillContractError` without
+echoing input data (`skills/contracts.py:565`).
 
-### `registry.py` — SkillRegistry
+### `skills/registry.py` — SkillRegistry
 CRUD over `hot_serving_skill_registry`; idempotent on `(skill_name, version)`
 (UNIQUE on `skill_name`; same version = no-op, different = in-place upgrade).
 `search()`: semantic if vector store supplied, else trigram/`LIKE` + bounded
-Jaccard re-rank; corrupt rows tolerated (logged, returned None) (`:234`,
-`:356`).
+Jaccard re-rank; corrupt rows tolerated (logged, returned None) (`skills/registry.py:233`,
+`:413`).
 
 ### `usa.py` — UnifiedSkillAdapter
 `dispatch(skill_name, arguments, mode, sandbox, secret_broker, ...)` →
@@ -50,13 +50,13 @@ and nudges reliability (`:235`).
 
 ### `secrets.py` — SecretBroker
 Host-side secret broker. Skills emit `get_secret` system call; host resolves
-after `PERM_SECRET_READ` check (`:450`). Plaintext only in host process one
-call; `SecretValue.__str__`/`__repr__`/`__format__` return `"***"` (`:106`).
+after `PERM_SECRET_READ` check (`skills/secrets.py:495`). Plaintext only in host process one
+call; `SecretValue.__str__`/`__repr__`/`__format__` return `"***"` (`skills/secrets.py:129`).
 Encryption: Fernet (AES-128-CBC + HMAC-SHA256, PBKDF2 200k) if `cryptography`
-installed, else XOR dev fallback loudly warned (`:205`/`:231`). `lease()`
-invalidates handle on exit (`:503`). Audit log of accesses/denials (`:588`).
+installed, else XOR dev fallback loudly warned (`skills/secrets.py:268`/`skills/secrets.py:305`). `lease()`
+invalidates handle on exit (`skills/secrets.py:522`). Audit log of accesses/denials (`skills/secrets.py:580`).
 
-### `adapters/`
+### `skills/adapters/`
 - `base.py`: `SkillAdapter` ABC (`discover`/`invoke`), `SecretProvider` protocol,
   adapter `SkillResult`.
 - `native.py`: in-process callables (sync offloaded to thread; `get_secret`
@@ -65,7 +65,7 @@ invalidates handle on exit (`:503`). Audit log of accesses/denials (`:588`).
   `McpServerAdapter` runs start→initialize→work→close per operation.
 - `claw_hub.py`: OpenClaw skill directories (`SKILL.md` + Python scripts);
   runs entrypoints under sandbox with skill dir mounted read-only; args via
-  JSON file in argv (`--paa-args`), never env (`:406`).
+  JSON file in argv (`--paa-args`), never env (`skills/adapters/claw_hub.py:78`).
 
 ## Inputs and outputs
 
@@ -98,7 +98,7 @@ invalidates handle on exit (`:503`). Audit log of accesses/denials (`:588`).
 
 - Unknown/inactive skill or no adapter → `SkillContractError` (`usa.py:142`).
 - Missing permissions → `PermissionDeniedError` (`usa.py:142`).
-- Corrupt registry row → logged, returned as None (`registry.py:356`).
+- Corrupt registry row → logged, returned as None (`skills/registry.py:413`).
 - Adapter invoke exceptions → `ok=False` in `SkillResult` (samples for
   optimiser, `usa.py` docstring).
 

@@ -23,15 +23,15 @@ a data change, not a new subsystem.
 ### `domains.py` — 18 domains, 6 mechanisms
 `MemoryDomain` (18 members: working, long_term_distilled, episodic, semantic,
 procedural, task, session, temporal, narrative, reflection, strategic, skill,
-tool, relationship, identity, operational, environmental, workspace — `:78`).
+tool, relationship, identity, operational, environmental, workspace — `memory/domains.py:75`).
 `MemoryMechanism`: VOLATILE, RELATIONAL, IMMUTABLE_LOG, VECTOR, GRAPH, DOCUMENT
-(`:43`). `DomainPolicy`: decay_lambda, prune_floor, immutable, narrative
-(`:98`). `DOMAINS` matrix (`:137`); `domain_policy()` lookup (`:250`);
-`narrative_domains()` = {narrative, reflection, strategic, identity} (`:260`).
+(`memory/domains.py:43`). `DomainPolicy`: decay_lambda, prune_floor, immutable, narrative
+(`memory/domains.py:99`). `DOMAINS` matrix (`memory/domains.py:137`); `domain_policy()` lookup (`memory/domains.py:250`);
+`narrative_domains()` = {narrative, reflection, strategic, identity} (`memory/domains.py:260`).
 
 ### `decay.py` — DecaySweeper
 `effective_confidence(initial_confidence, last_queried_at, domain)` =
-`C₀·e⁻ˡᵃᵐᵇᵈᵃ·t` (`decay.py:57`). `DecaySweeper.sweep()` evicts facts below
+`C₀·e⁻ˡᵃᵐᵇᵈᵃ·t` (`memory/decay.py:54`). `DecaySweeper.sweep()` evicts facts below
 `prune_floor` using keyset pagination (`WHERE id > ?` — correct under
 deletion; OFFSET would skip rows, a documented fix). Doomed facts archived
 to cold lake then deleted. Unknown domain → logged warning, row left
@@ -39,17 +39,17 @@ untouched (a typo cannot silently destroy memory).
 
 ### `facts.py` — FactRepository
 `upsert_entity` (idempotent on canonical_name; aliases unioned; importance max)
-(`:337`). `add_fact` appends a new version, never overwrites; `supersede`
-links versions (refuses cycles) (`:779`, `:850`). `supersession_chain` walks
-back with visited-set guard (`:882`). `query_facts` filters decayed confidence
+(`memory/facts.py:347`). `add_fact` appends a new version, never overwrites; `supersede`
+links versions (refuses cycles) (`memory/facts.py:789`, `:860`). `supersession_chain` walks
+back with visited-set guard (`memory/facts.py:892`). `query_facts` filters decayed confidence
 in Python (derived, can't push to SQL), bounded `max_scan=10_000`
-(`:904`).
+(`memory/facts.py:914`).
 
-`resolve_entity` (`:456`) is a three-rung ladder — exact → alias → fuzzy —
+`resolve_entity` (`memory/facts.py:466`) is a three-rung ladder — exact → alias → fuzzy —
 and the **gate is the authority**: a Python character-trigram Jaccard
-similarity (`trigram_similarity`, `:150`) decides, and the database only
+similarity (`trigram_similarity`, `memory/facts.py:157`) decides, and the database only
 decides *which rows the gate gets to look at*. The gate's gram model is
-FTS5's — the 3-grams of the raw, case-folded text (`:203`), no padding and
+FTS5's — the 3-grams of the raw, case-folded text (`memory/facts.py:213`), no padding and
 no whitespace-run collapsing — so a pair the gate accepts is a pair the
 index can hold.
 
@@ -69,33 +69,33 @@ corpora; outside ASCII the parity is **bounded**, and the three mechanisms
 that bound it are named in the Known gaps below and in ADR-0029.
 
 A term carrying a NUL is refused before any statement is issued, on both
-substrates (`:482`); so is a term with more than `_MAX_TERM_GRAMS` grams
-(`:135`, `:508`), because the count proxy's `CASE` sum would otherwise hit
+substrates (`memory/facts.py:492`); so is a term with more than `_MAX_TERM_GRAMS` grams
+(`memory/facts.py:135`, `:518`), because the count proxy's `CASE` sum would otherwise hit
 SQLite's expression-depth limit and be refused as "expression tree is too
 large" — which is not a `QueryRejected` and would escape the fail-closed
 ladder. Recorded in
 [**ADR-0029**](../adr/0029-entity-resolution-parity.md); the case fold lives
-in the seam (`dialect.py::fold_case`, `:121`) and the seam returns the
+in the seam (`dialect.py::fold_case`, `storage/relational/dialect.py:121`) and the seam returns the
 candidate query together with the parameters it takes, which amends
 ADR-0025.
 
 ### `creator.py` — MemoryCreator
 Ingests unprocessed signals into hot-serving facts/entities. Called by daemon
-ingestion loop (`daemon.py:167`).
+ingestion loop (`daemon.py:148`).
 
 ### `curator.py` — MemoryCurator
-Nightly consolidation (decay sweep interval 6h, `config.py:202`).
+Nightly consolidation (decay sweep interval 6h, `config.py:249`).
 
 ### `contradiction.py`
 Conflicts above `contradiction_threshold` (0.75) quarantine both records at
 `contradiction_degraded_confidence` (0.20), demand human tie-break; never
-auto-resolved (`errors.py:279`).
+auto-resolved (`core/errors.py:279`).
 
 ### `world_model.py` — WorldModel
 Marker-fenced vault documents (`current_foods.md`… actually `current_focus.md`,
 `strategic_risks.md`, `active_constraints.md`, `operating_themes.md`).
 Rewrites only the managed `<!-- paa:managed:BEGIN/END -->` section, preserving
-human text; atomic writes (temp + `os.replace`) (`world_model.py:95`).
+human text; atomic writes (temp + `os.replace`) (`memory/world_model.py:185`).
 
 `BeliefDocument` is a `str`-mixin enum, so its inherited string API is part of
 its contract: `doc.title` is `str.title` (a *method*) and must stay callable.
@@ -120,15 +120,15 @@ callable`.
 |---|---|---|---|
 | `FactRepository` → `Database` | SQL INSERT/SELECT | Persist entities/facts | `facts.py` |
 | `DecaySweeper` → `Database`, `domains` | decay policy + SQL DELETE | Evict stale facts | `decay.py` |
-| `MemoryCreator` → `SignalRepository`, `FactRepository` | claim signals → facts | Ingest signals | `creator.py`, `daemon.py:167` |
-| `Context builders` → `Database` | hand-rolled `LIKE` over the fact tables | Read context | `context_agents.py:189` |
-| `PolicyRiskAgent` → anti-goals (vault) | read `anti_goals.md` | Semantic block | `runtime.py:463`, `policy.py:262` |
+| `MemoryCreator` → `SignalRepository`, `FactRepository` | claim signals → facts | Ingest signals | `creator.py`, `daemon.py:148` |
+| `Context builders` → `Database` | hand-rolled `LIKE` over the fact tables | Read context | `context_agents.py:187` |
+| `PolicyRiskAgent` → anti-goals (vault) | read `anti_goals.md` | Semantic block | `runtime.py:474`, `policy.py:280` |
 
 ## Runtime behavior
 
-- Decay sweep runs on the daemon's 6h maintenance interval (`daemon.py:151`).
+- Decay sweep runs on the daemon's 6h maintenance interval (`daemon.py:154`).
 - Confidence computed lazily at read time (not stored) — a two-year-old fact is
-  not treated as freshly verified (`context_agents.py:162`).
+  not treated as freshly verified (`context_agents.py:221`).
 - Facts are immutable: supersede links versions; chain walkable backwards.
 
 ## Failure behavior
@@ -139,15 +139,15 @@ callable`.
   barrier, so a term carrying `"`, `*`, `AND`, `OR`, `NEAR`, `(` or `)` is
   *answered* as text — it matches nothing and raises nothing.
 - A term carrying a NUL → no match, and **no statement is issued at all**
-  (`facts.py:482`); the two substrates refuse a NUL in different places, so
+  (`memory/facts.py:492`); the two substrates refuse a NUL in different places, so
   the refusal has to be in one place.
 - Unknown memory domain → `KeyError`; never silently defaults to decaying
-  (`domains.py:250`, `facts.py::_to_fact`).
+  (`memory/domains.py:250`, `facts.py::_to_fact`).
 - Decay archive failure → logged at error, doesn't block eviction.
 
 ## Modification impact
 
-- Adding a domain = add to `DOMAINS` dict (`domains.py:137`) — data change.
+- Adding a domain = add to `DOMAINS` dict (`memory/domains.py:137`) — data change.
 - Changing `decay_lambda` values affects eviction; source of truth is
   `domains.py` (not `MemorySettings.decay_lambda` — potential drift).
 - Tests: `tests/memory/` (37 tests decay/domains/contradiction; 76

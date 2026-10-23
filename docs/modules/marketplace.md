@@ -49,7 +49,7 @@ Gates run in order (content hash → contract → signature → sandbox scan →
 | `installer` → `signing.py` | `verify` / `signing_is_secure` | Gate 3: signature authentication | `installer.py` |
 | `installer` → `validation/` | AST scan + schema | Gates 4–5: sandbox scan + validation | `installer.py` |
 | `installer` → `skills/registry.py` | `SkillRegistry.register` | Register skill after all gates | `installer.py` |
-| `cryptography` | lazy import in `signing.py` | Ed25519 vs HMAC fallback | `signing.py:205` |
+| `cryptography` | lazy import in `signing.py` | Ed25519 vs HMAC fallback | `marketplace/signing.py:50` |
 
 ## Runtime behavior
 

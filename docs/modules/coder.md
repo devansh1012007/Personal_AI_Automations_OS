@@ -35,7 +35,7 @@ tool names in an enum (`model_adapter.py`).
 
 ### `agent.py` — CoderAgent
 `CoderAgent.build()` composes `Runtime.build()` + `RouterToolCallingModel` +
-`AgentLoop` + `ToolPermissionPolicy` + `HookRegistry` + `Session` (`:101`).
+`AgentLoop` + `ToolPermissionPolicy` + `HookRegistry` + `Session` (`coder/agent.py:105`).
 `MUTATING_RUNTIME_TOOLS = ("submit_task", "run_task")` — these don't match
 `DEFAULT_MUTATING_TOOLS` globs, so they're added explicitly to keep `--mode plan`
 read-only (`:64`, ADR-0011 context).
@@ -93,13 +93,13 @@ Custom commands from `.md` files with `$ARGUMENTS`/`$1`..`$9` substitution.
 
 | Component | Relationship | Why | Source |
 |---|---|---|---|
-| `CoderAgent` → `Runtime.build()` | construct | Real runtime to drive | `agent.py:152` |
+| `CoderAgent` → `Runtime.build()` | construct | Real runtime to drive | `coder/agent.py:155` |
 | `CoderAgent` → `RouterToolCallingModel` | `propose()` | Model seam | `agent.py:174` |
 | `RouterToolCallingModel` → `EscalatingModelRouter` | `complete_structured()` | Inference + escalation | `model_adapter.py:176` |
 | `AgentLoop` → `ToolPermissionPolicy` | `evaluate()` | Gate every call | `loop.py:224` |
 | `AgentLoop` → `HookRegistry` | `fire()` | Hooks pre/post tool | `loop.py:217`, `:246` |
 | `AgentLoop` → `Session` | record turns | Transcript persistence | `loop.py:144` |
-| runtime tools → `Runtime.submit/run` | drive tasks | Ledger writes | `runtime_tools.py:220`, `:259` |
+| runtime tools → `Runtime.submit/run` | drive tasks | Ledger writes | `coder/runtime_tools.py:222`, `:269` |
 | `cli/coder.py` → `CoderAgent.build` | compose | `paa agent` CLI | `cli/coder.py:103` |
 
 ## Runtime behavior
