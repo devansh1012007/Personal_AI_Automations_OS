@@ -29,6 +29,9 @@ from rich.table import Table
 from paa import __version__
 from paa.cli.coder import register_agent
 from paa.core.types import ComplexityModality, PermissionMode
+from paa.memory.creator import MemoryCreator
+from paa.memory.facts import FactRepository
+from paa.memory.world_model import BeliefDocument, WorldModel
 from paa.sandbox.base import collect_sandbox_facts, sandbox_report_rows
 
 if TYPE_CHECKING:
@@ -42,6 +45,11 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
+
+memory_app = typer.Typer(
+    name="memory",
+    help="Read and query the memory subsystem (facts, search, signals, drain, world-model).",
+)
 
 
 def _run(coro: Any) -> Any:
@@ -356,6 +364,216 @@ def tui() -> None:
     asyncio.run(run_tui())
 
 
+# ---------------------------------------------------------------------------
+# paa memory — read/query the memory subsystem
+# ---------------------------------------------------------------------------
+
+
+@memory_app.command("facts")
+def facts(
+    entity: str = typer.Argument(..., help="Entity name to list live facts for."),
+) -> None:
+    """List live facts for an entity, resolved by name then queried by id."""
+
+    async def _do() -> None:
+        rt = await _build_runtime()
+        try:
+            repo = FactRepository(rt.db)
+            resolved = await repo.resolve_entity(entity)
+            if resolved is None:
+                console.print("[dim]no facts[/dim]")
+                return
+            rows = await repo.query_facts(entity_id=resolved.id)
+            if not rows:
+                console.print("[dim]no facts[/dim]")
+                return
+            table = Table(
+                "entity",
+                "predicate",
+                "object",
+                "confidence",
+                "importance",
+                "domain",
+                title=f"facts for {entity}",
+            )
+            for f in rows:
+                table.add_row(
+                    f.entity_name or f.entity_id,
+                    f.predicate,
+                    f.object_value,
+                    f"{f.confidence:.2f}",
+                    f"{f.importance:.2f}",
+                    f.domain,
+                )
+            console.print(table)
+        finally:
+            await rt.close()
+
+    _run(_do())
+
+
+@memory_app.command("search")
+def search(
+    text: str = typer.Argument(
+        ..., help="Text to match against fact predicates and object values."
+    ),
+) -> None:
+    """Keyword search over fact predicates and object values."""
+
+    async def _do() -> None:
+        rt = await _build_runtime()
+        try:
+            repo = FactRepository(rt.db)
+            try:
+                rows = await repo.search_facts_by_text(text)
+            except ValueError as exc:
+                console.print(f"[red]invalid search text:[/red] {exc}")
+                raise typer.Exit(1) from exc
+            if not rows:
+                console.print("[dim]no matches[/dim]")
+                return
+            table = Table(
+                "entity",
+                "predicate",
+                "object",
+                "confidence",
+                "importance",
+                "domain",
+                title=f"search: {text}",
+            )
+            for f in rows:
+                table.add_row(
+                    f.entity_name or f.entity_id,
+                    f.predicate,
+                    f.object_value,
+                    f"{f.confidence:.2f}",
+                    f"{f.importance:.2f}",
+                    f.domain,
+                )
+            console.print(table)
+        finally:
+            await rt.close()
+
+    _run(_do())
+
+
+@memory_app.command("signals")
+def signals(
+    status: list[str] = typer.Option(
+        None, "--status", "-s", help="Filter by sync_status (repeatable)."
+    ),
+) -> None:
+    """List cold-lake signals and their processing status."""
+
+    async def _do() -> None:
+        rt = await _build_runtime()
+        try:
+            clauses: list[str] = []
+            params: list[Any] = []
+            if status:
+                clauses.append("sync_status IN (" + ", ".join("?" for _ in status) + ")")
+                params.extend(status)
+            where = "WHERE " + " AND ".join(clauses) if clauses else ""
+            rows = await rt.db.fetch_all(
+                "SELECT id, channel, external_id, sync_status, received_at, processed_at "
+                "FROM cold_lake_signals "
+                + where
+                + " ORDER BY received_at DESC, id DESC LIMIT 50",
+                params,
+            )
+            if not rows:
+                console.print("[dim]no signals[/dim]")
+                return
+            table = Table(
+                "id",
+                "channel",
+                "external_id",
+                "status",
+                "received_at",
+                "processed_at",
+                title="cold-lake signals",
+            )
+            for r in rows:
+                table.add_row(
+                    str(r["id"])[:8],
+                    str(r["channel"]),
+                    str(r["external_id"] or "-"),
+                    str(r["sync_status"]),
+                    str(r["received_at"]),
+                    str(r["processed_at"] or "-"),
+                )
+            console.print(table)
+        finally:
+            await rt.close()
+
+    _run(_do())
+
+
+@memory_app.command("drain")
+def drain(
+    limit: int = typer.Option(
+        25, "--limit", help="Max signals to claim in this batch."
+    ),
+) -> None:
+    """Run one MemoryCreator batch over unprocessed cold-lake signals."""
+
+    async def _do() -> None:
+        rt = await _build_runtime()
+        try:
+            creator = MemoryCreator(rt.db)
+            report = await creator.run_batch(limit=limit)
+            summary = report.summary()
+            table = Table(
+                "claimed",
+                "processed",
+                "ignored",
+                "malformed",
+                "quarantined",
+                "errors",
+                "facts_written",
+                title="drain batch report",
+            )
+            table.add_row(
+                str(summary["claimed"]),
+                str(summary["processed"]),
+                str(summary["ignored"]),
+                str(summary["malformed"]),
+                str(summary["quarantined"]),
+                str(summary["errors"]),
+                str(summary["facts_written"]),
+            )
+            console.print(table)
+        finally:
+            await rt.close()
+
+    _run(_do())
+
+
+@memory_app.command("world-model")
+def world_model(
+    doc: str = typer.Argument(
+        ..., help="Belief document filename (e.g. current_focus.md)."
+    ),
+) -> None:
+    """Print the managed section of a belief document."""
+
+    async def _do() -> None:
+        rt = await _build_runtime()
+        try:
+            try:
+                belief_doc = BeliefDocument(doc)
+            except ValueError:
+                console.print(f"[red]no such belief document: {doc}[/red]")
+                raise typer.Exit(1) from None
+            wm = WorldModel(rt.settings.storage.vault_path)
+            text = wm.read_managed(belief_doc)
+            console.print(text or "[dim]no managed section[/dim]")
+        finally:
+            await rt.close()
+
+    _run(_do())
+
+
 def correlation_id_uuid(value: str) -> uuid.UUID:
     """The canonical UUID for a task id, or a clean refusal.
 
@@ -461,6 +679,7 @@ def _resolve_bind_host(host: str | None, settings: Settings) -> str:
 #: ``paa agent`` lives in its own module because it is the one command that
 #: assembles :mod:`paa.coder` into something runnable; registering it here keeps
 #: the composition in ``coder/`` and the CLI surface here.
+app.add_typer(memory_app, name="memory")
 register_agent(app)
 
 
