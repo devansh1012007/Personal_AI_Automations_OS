@@ -29,15 +29,20 @@ import structlog
 
 from paa import __version__
 from paa.api.schemas import (
+    BatchReportView,
+    FactView,
     GateRequest,
     HealthResponse,
     LedgerEventView,
     SignalRequest,
     SignalResponse,
+    SignalView,
     TaskRequestBody,
     TaskStatusResponse,
     TaskSubmitResponse,
 )
+from paa.memory.creator import MemoryCreator
+from paa.memory.facts import FactRepository
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -194,6 +199,96 @@ def create_app(runtime: Runtime) -> FastAPI:
             channel=signal.channel,
             duplicate=pre_existing is not None,
         )
+
+    # -- memory recall ----------------------------------------------------
+    @app.get("/memory/facts", response_model=list[FactView])
+    async def list_facts(entity: str | None = None) -> list[FactView]:
+        """Live facts for an entity, ranked by effective confidence."""
+        if not await _admit(runtime, essential=False):
+            raise HTTPException(status_code=429, detail="memory under backpressure")
+        facts = await FactRepository(runtime.db).query_facts(entity_id=entity)
+        return [
+            FactView(
+                id=f.id,
+                entity_id=f.entity_id,
+                predicate=f.predicate,
+                object_value=f.object_value,
+                confidence=f.confidence,
+                domain=f.domain,
+                source_signal_id=f.source_signal_id,
+            )
+            for f in facts
+        ]
+
+    @app.get("/memory/search", response_model=list[FactView])
+    async def search_facts(q: str) -> list[FactView]:
+        """Keyword fallback over fact predicates and object values."""
+        if not await _admit(runtime, essential=False):
+            raise HTTPException(status_code=429, detail="memory under backpressure")
+        try:
+            facts = await FactRepository(runtime.db).search_facts_by_text(query=q)
+        except ValueError as exc:
+            # A NUL byte would truncate a LIKE pattern to `%` and match every
+            # row; refuse it instead of degrading the scan (facts.py:1016-1017).
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return [
+            FactView(
+                id=f.id,
+                entity_id=f.entity_id,
+                predicate=f.predicate,
+                object_value=f.object_value,
+                confidence=f.confidence,
+                domain=f.domain,
+                source_signal_id=f.source_signal_id,
+            )
+            for f in facts
+        ]
+
+    @app.get("/memory/signals", response_model=list[SignalView])
+    async def list_signals(status: str | None = None) -> list[SignalView]:
+        """Cold-lake signals, optionally filtered by sync_status.
+
+        SignalRepository exposes no list-all-by-status method
+        (signals.py:296-359), so this is a bounded read-only query over
+        ``cold_lake_signals`` — the same kind of direct read the health
+        endpoint already performs against the ledger (app.py:70).
+        """
+        if not await _admit(runtime, essential=False):
+            raise HTTPException(status_code=429, detail="memory under backpressure")
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status is not None:
+            clauses.append("sync_status = ?")
+            params.append(status)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = await runtime.db.fetch_all(
+            "SELECT id, channel, external_id, sync_status, received_at, "  # noqa: S608
+            "processed_at, error_detail FROM cold_lake_signals "
+            f"{where} "
+            "ORDER BY received_at DESC, id DESC LIMIT 100",
+            tuple(params),
+        )
+        return [
+            SignalView(
+                id=row["id"],
+                channel=row["channel"],
+                external_id=row["external_id"],
+                sync_status=row["sync_status"],
+                received_at=row["received_at"],
+                processed_at=row["processed_at"],
+                error_detail=row["error_detail"],
+            )
+            for row in rows
+        ]
+
+    @app.post("/memory/drain", response_model=BatchReportView, status_code=202)
+    async def drain_memory(limit: int = 50) -> BatchReportView:
+        """Claim and process one batch of unprocessed cold-lake signals."""
+        if not await _admit(runtime, essential=False):
+            raise HTTPException(status_code=429, detail="memory under backpressure")
+        creator = MemoryCreator(runtime.db)
+        report = await creator.run_batch(limit=limit)
+        return BatchReportView(**report.summary())
 
     log.info("api.app_created", version=__version__)
     return app

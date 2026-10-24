@@ -14,11 +14,14 @@ from pydantic import BaseModel, Field
 from paa.core.types import ComplexityModality
 
 __all__ = [
+    "BatchReportView",
+    "FactView",
     "GateRequest",
     "HealthResponse",
     "LedgerEventView",
     "SignalRequest",
     "SignalResponse",
+    "SignalView",
     "TaskRequestBody",
     "TaskStatusResponse",
     "TaskSubmitResponse",
@@ -80,6 +83,42 @@ class SignalResponse(BaseModel):
     signal_id: str
     channel: str
     duplicate: bool
+
+
+class FactView(BaseModel):
+    """A queryable hot-serving fact, for the /memory/facts and /memory/search edges."""
+
+    id: str
+    entity_id: str
+    predicate: str
+    object_value: str
+    confidence: float
+    domain: str
+    source_signal_id: str | None = None
+
+
+class SignalView(BaseModel):
+    """One cold-lake signal, for the /memory/signals edge."""
+
+    id: str
+    channel: str
+    external_id: str | None = None
+    sync_status: str
+    received_at: str
+    processed_at: str | None = None
+    error_detail: str | None = None
+
+
+class BatchReportView(BaseModel):
+    """One MemoryCreator.run_batch pass, for the /memory/drain edge."""
+
+    claimed: int
+    processed: int
+    ignored: int
+    malformed: int
+    quarantined: int
+    errors: int
+    facts_written: int
 
 
 class LedgerEventView(BaseModel):
