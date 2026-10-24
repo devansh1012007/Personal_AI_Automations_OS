@@ -201,7 +201,7 @@ Add a `paa memory` CLI command group and four memory API routes (`GET /memory/fa
 | No vector store attached | `creator.py:644` (`VectorEmbeddingSink`) | Facts stay `pending`; recall degrades, never dies | existing |
 | Memory command with no DB | `cli/main.py` | Clean refusal via `_settings_or_refuse` | C01 |
 | Concurrent drain + daemon drain | `creator.py:832-860` (`_claim`) | Atomic claim; second caller gets none | existing |
-| LLM summarizer raises | `compaction.py:189-220` | Falls back to deterministic path | C06 |
+| LLM summarizer raises | `world_model.py:210-220` | Falls back to deterministic path | C06 |
 
 ---
 
