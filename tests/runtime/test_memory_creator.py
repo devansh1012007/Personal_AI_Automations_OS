@@ -65,7 +65,7 @@ class TestBuildMemoryCreatorRuleBasedDefault:
         assert isinstance(creator, MemoryCreator)
         assert isinstance(creator._extractor, RuleBasedExtractor)
 
-    async def test_none_extraction_model_uses_rule_based(self) -> None:
+    async def test_empty_string_extraction_model_uses_rule_based(self) -> None:
         settings = _settings(extraction_model="")
         db = _FakeDB()
         model_adapter = _FakeModel()
@@ -170,11 +170,13 @@ class TestBuildMemoryCreatorDegradation:
 
         creator_mod.LLMFactExtractor = _BrokenExtractor  # type: ignore[assignment]
 
-        captured: list[str] = []
+        captured_events: list[str] = []
+        captured_kwargs: list[dict[str, Any]] = []
         original_warning = runtime_mod.log.warning
 
         def _capture_warning(event: str, **kw: Any) -> None:
-            captured.append(event)
+            captured_events.append(event)
+            captured_kwargs.append(kw)
 
         monkeypatch.setattr(runtime_mod.log, "warning", _capture_warning)
         try:
@@ -186,12 +188,12 @@ class TestBuildMemoryCreatorDegradation:
         from paa.memory.creator import RuleBasedExtractor
 
         assert isinstance(creator._extractor, RuleBasedExtractor)
-        # The warning was emitted; the redacted message must not leak the key.
-        assert "runtime.llm_extractor_unavailable" in captured
-        # Verify redaction happened: check the warning's error kwarg was redacted.
-        # We can't easily inspect kwargs from the capture above, so instead
-        # confirm the degradation path ran (extractor is rule-based) and no
-        # crash occurred — the redaction itself is covered by creator.py tests.
+        # The warning was emitted.
+        assert "runtime.llm_extractor_unavailable" in captured_events
+        # The secret must be redacted in the logged kwargs.
+        assert captured_kwargs, "no warning kwargs captured"
+        logged_error = captured_kwargs[-1].get("error", "")
+        assert "sk-or-v1" not in logged_error, f"secret leaked into log: {logged_error!r}"
 
 
 class TestBuildMemoryCreatorReturnsMemoryCreator:

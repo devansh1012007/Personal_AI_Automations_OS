@@ -250,7 +250,10 @@ def create_app(runtime: Runtime) -> FastAPI:
         repo = _signal_repo(runtime)
         if repo is None:
             raise HTTPException(status_code=503, detail="cold lake not configured")
-        signals = await repo.list(status=status, limit=50)
+        try:
+            signals = await repo.list(status=status, limit=50)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return [
             SignalView(
                 id=s.id,
@@ -258,6 +261,8 @@ def create_app(runtime: Runtime) -> FastAPI:
                 external_id=s.external_id or "-",
                 sync_status=s.sync_status,
                 received_at=s.received_at.isoformat(),
+                processed_at=s.processed_at.isoformat() if s.processed_at else None,
+                error_detail=s.error_detail,
             )
             for s in signals
         ]

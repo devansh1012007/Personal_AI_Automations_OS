@@ -137,8 +137,8 @@ class Daemon:
                     await self._rt.run(cid)
                 await self._rt.queue.ack(msg.id)
             except Exception as exc:
-                log.error("daemon.task_failed", correlation_id=cid, error=str(exc))
-                await self._rt.queue.nack(msg.id, str(exc))
+                log.error("daemon.task_failed", correlation_id=cid, error=redact(str(exc)))
+                await self._rt.queue.nack(msg.id, redact(str(exc)))
         return len(messages)
 
     async def _ingestion_loop(self) -> None:
@@ -164,7 +164,7 @@ class Daemon:
 
                 await DecaySweeper(self._rt.db).sweep()
             except Exception as exc:
-                log.error("daemon.maintenance_failed", error=str(exc))
+                log.error("daemon.maintenance_failed", error=redact(str(exc)))
             await self._sleep(self._maintenance_interval)
 
     # -- collaborators -----------------------------------------------------
