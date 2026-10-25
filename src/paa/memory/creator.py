@@ -55,6 +55,7 @@ from paa.core.errors import PaaError
 from paa.ledger.events import canonical_json
 from paa.memory.domains import MemoryDomain
 from paa.memory.facts import Fact, FactRepository, trigram_similarity
+from paa.models.base import ModelUnavailableError, redact
 from paa.storage.relational.base import RelationalBackend
 from paa.storage.relational.errors import SerializationFailure
 
@@ -659,8 +660,20 @@ class LLMFactExtractor:
     extraction when the class or the model is unavailable.
     """
 
-    def __init__(self, *, model: Any) -> None:
+    def __init__(
+        self,
+        *,
+        model: Any,
+        max_retries: int = 0,
+        timeout: float | None = None,
+        retry_backoff_base: float = 0.5,
+        retry_backoff_cap: float = 5.0,
+    ) -> None:
         self._model = model
+        self._max_retries = max(0, int(max_retries))
+        self._timeout = timeout
+        self._retry_backoff_base = max(0.0, retry_backoff_base)
+        self._retry_backoff_cap = max(0.0, retry_backoff_cap)
 
     async def extract(self, envelope: SignalEnvelope) -> list[CandidateFact]:
         """Triples the model asserts for this signal, or an empty list.
@@ -684,10 +697,10 @@ class LLMFactExtractor:
             f"{envelope.raw}"
         )
         try:
-            response = await self._model.complete_structured(prompt, _FACT_TRIPLE_SCHEMA)
+            response = await self._complete_structured_with_retry(prompt)
         except Exception as exc:  # model failure quarantines the signal
             raise MalformedSignalError(
-                f"LLM fact extraction failed: {exc}", signal_id=envelope.id
+                f"LLM fact extraction failed: {redact(str(exc))}", signal_id=envelope.id
             ) from exc
 
         facts = response.get("facts")
@@ -733,6 +746,43 @@ class LLMFactExtractor:
                 ceiling=MAX_CANDIDATES,
             )
         return candidates
+
+    def _is_transient(self, exc: BaseException) -> bool:
+        """Whether ``exc`` is a transient failure worth retrying."""
+        if isinstance(exc, TimeoutError):
+            return True
+        if isinstance(exc, ModelUnavailableError):
+            status = exc.details.get("status_code")
+            if isinstance(status, int):
+                return status in (408, 429) or status >= 500
+        return False
+
+    async def _complete_structured_with_retry(self, prompt: str) -> dict[str, Any]:
+        """Call ``complete_structured`` with a per-call timeout and bounded retries.
+
+        Transient failures (timeouts, HTTP 408/429/5xx) are retried with capped
+        exponential backoff up to ``self._max_retries`` additional attempts;
+        anything else is raised on the first attempt. On exhaustion the last
+        exception is re-raised so :meth:`extract` quarantines the signal with a
+        redacted message instead of crashing the batch.
+        """
+        for attempt in range(self._max_retries + 1):
+            try:
+                call = self._model.complete_structured(prompt, _FACT_TRIPLE_SCHEMA)
+                response: dict[str, Any]
+                if self._timeout is not None:
+                    response = await asyncio.wait_for(call, timeout=self._timeout)
+                else:
+                    response = await call
+                return response
+            except Exception as exc:
+                if attempt == self._max_retries or not self._is_transient(exc):
+                    raise
+                delay = min(
+                    self._retry_backoff_base * (2.0**attempt), self._retry_backoff_cap
+                )
+                await asyncio.sleep(delay)
+        raise AssertionError("unreachable: the retry loop always returns or raises")
 
 
 _RESERVED_KEYS = frozenset(

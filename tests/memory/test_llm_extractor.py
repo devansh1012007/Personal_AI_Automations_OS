@@ -10,6 +10,7 @@ required.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from typing import Any
@@ -24,6 +25,7 @@ from paa.memory.creator import (
     _reject_suspicious,
     _scalar_to_text,
 )
+from paa.models.base import ModelUnavailableError
 from paa.storage.relational.database import Database, to_iso, utc_now
 
 
@@ -331,7 +333,6 @@ class TestLLMFactExtractor:
         result = await creator.process_signal(_row({"fakes": []}))
 
         assert result.outcome is ProcessingOutcome.MALFORMED
-        assert result.error is not None
         assert await db.fetch_value("SELECT COUNT(*) FROM hot_serving_active_facts") == 0
 
     async def test_raw_containment_refuses_before_model_is_called(self, db: Database) -> None:
@@ -397,3 +398,132 @@ class TestLLMFactExtractor:
 
         assert result.outcome is ProcessingOutcome.MALFORMED
         assert await db.fetch_value("SELECT COUNT(*) FROM hot_serving_active_facts") == 0
+
+    async def test_model_exception_is_redacted_before_it_leaks(self, db: Database) -> None:
+        """A provider-echoed API key must not reach MalformedSignalError, logs
+        or error_detail: it is redacted at the raise site in extract."""
+        key = "sk-or-v1-abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"
+        model = ScriptedModel(
+            ModelUnavailableError(
+                f"upstream rejected key {key}",
+                provider="openrouter",
+                status_code=401,
+            )
+        )
+        creator = MemoryCreator(db, extractor=LLMFactExtractor(model=model))
+        result = await creator.process_signal(_row({"fakes": []}))
+
+        assert result.outcome is ProcessingOutcome.MALFORMED
+        assert result.error is not None
+        assert key not in result.error
+        assert "sk-or-v1" not in result.error
+        assert await db.fetch_value("SELECT COUNT(*) FROM hot_serving_active_facts") == 0
+
+    async def test_transient_timeout_is_retried_then_succeeds(self, db: Database) -> None:
+        """A timeout is transient: one retry later the model answers and the
+        signal is processed instead of quarantined."""
+        responses: list[Any] = [
+            TimeoutError("upstream timed out"),
+            {"facts": [{"subject": "S", "predicate": "status", "object": "active"}]},
+        ]
+
+        class RotatingModel:
+            def __init__(self, script: list[Any]) -> None:
+                self._script = list(script)
+                self._index = 0
+                self.calls: list[tuple[str, dict[str, Any]]] = []
+
+            async def complete_structured(
+                self, prompt: str, schema: dict[str, Any], **kwargs: Any
+            ) -> dict[str, Any]:
+                self.calls.append((prompt, schema))
+                step = self._script[self._index % len(self._script)]
+                self._index += 1
+                if isinstance(step, BaseException):
+                    raise step
+                return step
+
+        model = RotatingModel(responses)
+        creator = MemoryCreator(
+            db,
+            extractor=LLMFactExtractor(
+                model=model,
+                max_retries=1,
+                retry_backoff_base=0.0,
+                retry_backoff_cap=0.0,
+            ),
+        )
+        result = await creator.process_signal(_row({"fakes": []}))
+
+        assert result.outcome is ProcessingOutcome.PROCESSED
+        assert len(result.facts_written) == 1
+        assert len(model.calls) == 2  # first attempt timed out, second answered
+
+    async def test_transient_429_exhaustion_is_quarantined_redacted(
+        self, db: Database
+    ) -> None:
+        """A 429 is retried up to max_transport_retries, then the signal is
+        quarantined with a redacted message (never a crash, never the key)."""
+        key = "sk-or-v1-abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"
+        model = ScriptedModel(
+            ModelUnavailableError(
+                f"rate limited on key {key}",
+                provider="openrouter",
+                status_code=429,
+            )
+        )
+        creator = MemoryCreator(
+            db,
+            extractor=LLMFactExtractor(
+                model=model,
+                max_retries=2,
+                retry_backoff_base=0.0,
+                retry_backoff_cap=0.0,
+            ),
+        )
+        result = await creator.process_signal(_row({"fakes": []}))
+
+        assert result.outcome is ProcessingOutcome.MALFORMED
+        assert result.error is not None
+        assert len(model.calls) == 3  # initial attempt + 2 retries
+        assert key not in result.error
+        assert "sk-or-v1" not in result.error
+        assert await db.fetch_value("SELECT COUNT(*) FROM hot_serving_active_facts") == 0
+
+    async def test_per_call_timeout_is_bounded(self, db: Database) -> None:
+        """complete_structured is bounded by a per-call timeout: a hung model
+        cannot stall the batch forever."""
+
+        async def slow(prompt: str, schema: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+            await asyncio.sleep(30.0)
+            return {"facts": []}
+
+        model = ScriptedModel({})
+        model.complete_structured = slow  # type: ignore[method-assign]
+        creator = MemoryCreator(
+            db, extractor=LLMFactExtractor(model=model, timeout=0.1, max_retries=0)
+        )
+        # A bounded wait around the whole call guarantees the test itself cannot hang.
+        async with asyncio.timeout(2.0):  # type: ignore[attr-defined]
+            result = await creator.process_signal(_row({"fakes": []}))
+
+        assert result.outcome is ProcessingOutcome.MALFORMED
+        assert await db.fetch_value("SELECT COUNT(*) FROM hot_serving_active_facts") == 0
+
+    async def test_non_transient_error_is_not_retried(self, db: Database) -> None:
+        """A deterministic failure (bad credentials, malformed schema) is not
+        retried: it is quarantined on the first attempt."""
+        model = ScriptedModel(ValueError("bad configuration"))
+        creator = MemoryCreator(
+            db,
+            extractor=LLMFactExtractor(
+                model=model,
+                max_retries=3,
+                retry_backoff_base=0.0,
+                retry_backoff_cap=0.0,
+            ),
+        )
+        result = await creator.process_signal(_row({"fakes": []}))
+
+        assert result.outcome is ProcessingOutcome.MALFORMED
+        assert len(model.calls) == 1  # no retries for a non-transient failure

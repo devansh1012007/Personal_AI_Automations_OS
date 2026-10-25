@@ -40,6 +40,7 @@ from paa.config import Settings, get_settings
 from paa.core.types import ComplexityModality, CorrelationId, PermissionMode
 from paa.ledger.recovery import RecoveryEngine
 from paa.ledger.store import LedgerStore
+from paa.models.base import redact
 from paa.storage.relational import get_database
 from paa.storage.relational.base import RelationalBackend
 
@@ -448,9 +449,13 @@ def _build_memory_creator(
         try:
             extractor_cls = getattr(_creator_mod, "LLMFactExtractor", None)
             if extractor_cls is not None:
-                extractor = extractor_cls(model=model_adapter)
+                extractor = extractor_cls(
+                    model=model_adapter,
+                    max_retries=settings.models.max_transport_retries,
+                    timeout=settings.models.request_timeout_seconds,
+                )
         except Exception as exc:  # degradation path: never crash boot on a model
-            log.warning("runtime.llm_extractor_unavailable", error=str(exc))
+            log.warning("runtime.llm_extractor_unavailable", error=redact(str(exc)))
     return MemoryCreator(db, extractor=extractor)
 
 
