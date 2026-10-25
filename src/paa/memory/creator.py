@@ -65,6 +65,7 @@ __all__ = [
     "CandidateFact",
     "EmbeddingSink",
     "FactExtractor",
+    "LLMFactExtractor",
     "MalformedSignalError",
     "MemoryCreator",
     "ProcessingOutcome",
@@ -614,6 +615,124 @@ class RuleBasedExtractor:
             raise MalformedSignalError(
                 f"payload declares unknown memory domain {declared!r}", signal_id=env.id
             ) from exc
+
+
+#: JSON schema the model must return: a single ``facts`` array of
+#: ``{"subject", "predicate", "object"}`` triples, nothing else.
+_FACT_TRIPLE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["facts"],
+    "additionalProperties": False,
+    "properties": {
+        "facts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["subject", "predicate", "object"],
+                "additionalProperties": False,
+                "properties": {
+                    "subject": {"type": "string"},
+                    "predicate": {"type": "string"},
+                    "object": {"type": "string"},
+                },
+            },
+        },
+    },
+}
+
+#: Confidence for LLM-extracted triples. Below every rule-based confidence
+#: (_CONFIDENCE_TRIPLE = 0.95 is the highest): a model guess is less reliable
+#: than a payload that states its own structure, and the contradiction scorer
+#: ranks on confidence, so a shaky extraction must lose to an attested one.
+_LLM_CONFIDENCE = 0.70
+
+
+class LLMFactExtractor:
+    """Model-backed :class:`FactExtractor`.
+
+    Sends the signal's raw payload to ``model.complete_structured`` with the
+    structured-output schema above, then validates each triple with the same
+    containment bounds the rule-based extractor enforces. The rule-based
+    default is never touched: this class is used only when
+    ``settings.memory.extraction_model`` is non-empty, and
+    :func:`paa.runtime._build_memory_creator` degrades to rule-based
+    extraction when the class or the model is unavailable.
+    """
+
+    def __init__(self, *, model: Any) -> None:
+        self._model = model
+
+    async def extract(self, envelope: SignalEnvelope) -> list[CandidateFact]:
+        """Triples the model asserts for this signal, or an empty list.
+
+        The raw payload is containment-checked *before* the model is consulted
+        (C0 controls including NUL, ANSI escapes, managed-block markers), so a
+        hostile signal never reaches inference. A failed model call raises
+        :class:`MalformedSignalError` and the signal is quarantined with zero
+        facts written; a clean response with no facts yields an empty list and
+        the signal is ignored, not errored.
+        """
+        _reject_suspicious(envelope.raw, signal_id=envelope.id)
+
+        prompt = (
+            "Extract subject-predicate-object facts from the signal below.\n"
+            "Return exactly one JSON object whose ``facts`` key holds an array "
+            "of triples with keys ``subject``, ``predicate`` and ``object``. "
+            "Assert only what the text states; never invent facts. With no "
+            "facts, return ``{\"facts\": []}``.\n\n"
+            "Signal:\n"
+            f"{envelope.raw}"
+        )
+        try:
+            response = await self._model.complete_structured(prompt, _FACT_TRIPLE_SCHEMA)
+        except Exception as exc:  # model failure quarantines the signal
+            raise MalformedSignalError(
+                f"LLM fact extraction failed: {exc}", signal_id=envelope.id
+            ) from exc
+
+        facts = response.get("facts")
+        if not isinstance(facts, list):
+            return []
+
+        candidates: list[CandidateFact] = []
+        for entry in facts:
+            if not isinstance(entry, Mapping):
+                continue
+            subject = entry.get("subject")
+            predicate = entry.get("predicate")
+            obj = entry.get("object")
+            if not isinstance(subject, str) or not subject.strip():
+                continue
+            if not isinstance(predicate, str) or not predicate.strip():
+                continue
+            if obj is None:
+                continue
+            value = _scalar_to_text(obj, signal_id=envelope.id)
+            if value is None:
+                continue
+            candidates.append(
+                CandidateFact(
+                    entity_name=" ".join(subject.split()),
+                    predicate=" ".join(predicate.split()),
+                    object_value=value,
+                    confidence=_LLM_CONFIDENCE,
+                    provenance={
+                        "extractor": "llm",
+                        "rule": "triple",
+                        "channel": envelope.channel,
+                        "signal_id": envelope.id,
+                    },
+                )
+            )
+
+        if len(candidates) > MAX_CANDIDATES:
+            raise MalformedSignalError(
+                "LLM extraction fans out past the candidate ceiling",
+                signal_id=envelope.id,
+                candidates=len(candidates),
+                ceiling=MAX_CANDIDATES,
+            )
+        return candidates
 
 
 _RESERVED_KEYS = frozenset(

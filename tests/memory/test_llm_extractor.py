@@ -16,6 +16,7 @@ from typing import Any
 
 from paa.memory.creator import (
     CandidateFact,
+    LLMFactExtractor,
     MalformedSignalError,
     MemoryCreator,
     ProcessingOutcome,
@@ -235,3 +236,164 @@ class TestLLMBatchIsolation:
         assert report.errors == 1
         # Only the good signal contributed facts; the crashing signal wrote none.
         assert await db.fetch_value("SELECT COUNT(*) FROM hot_serving_active_facts") == 1
+
+
+class ScriptedModel:
+    """A minimal ``complete_structured(prompt, schema, **kwargs) -> dict`` adapter.
+
+    Returns a scripted dict or raises a scripted exception, recording every
+    call so tests can assert the model was (or was not) consulted.
+    """
+
+    def __init__(self, response: dict[str, Any] | BaseException) -> None:
+        self._response = response
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def complete_structured(
+        self, prompt: str, schema: dict[str, Any], **kwargs: Any
+    ) -> dict[str, Any]:
+        self.calls.append((prompt, schema))
+        if isinstance(self._response, BaseException):
+            raise self._response
+        return self._response
+
+
+class TestLLMFactExtractor:
+    async def test_structured_triples_become_facts(self, db: Database) -> None:
+        model = ScriptedModel(
+            {
+                "facts": [
+                    {"subject": "Project Alpha", "predicate": "status", "object": "active"},
+                    {"subject": "Project Alpha", "predicate": "owner", "object": "Ada"},
+                ]
+            }
+        )
+        creator = MemoryCreator(db, extractor=LLMFactExtractor(model=model))
+        result = await creator.process_signal(_row({"fakes": []}))
+
+        assert result.outcome is ProcessingOutcome.PROCESSED
+        assert len(result.facts_written) == 2
+        assert len(model.calls) == 1
+        assert await db.fetch_value("SELECT COUNT(*) FROM hot_serving_active_facts") == 2
+
+    async def test_confidence_and_provenance_are_llm(self, db: Database) -> None:
+        model = ScriptedModel(
+            {"facts": [{"subject": "Nebula", "predicate": "status", "object": "live"}]}
+        )
+        extractor = LLMFactExtractor(model=model)
+        envelope = SignalEnvelope(
+            id=str(uuid.uuid4()),
+            channel="test",
+            payload="text",
+            raw="Nebula status live",
+            external_id=None,
+            received_at=None,
+            persisted=False,
+        )
+        candidates = await extractor.extract(envelope)
+
+        assert len(candidates) == 1
+        c = candidates[0]
+        assert c.entity_name == "Nebula"
+        assert c.predicate == "status"
+        assert c.object_value == "live"
+        assert c.confidence == 0.70
+        assert c.provenance["extractor"] == "llm"
+        assert c.provenance["rule"] == "triple"
+
+    async def test_empty_facts_array_is_ignored_not_errored(self, db: Database) -> None:
+        model = ScriptedModel({"facts": []})
+        creator = MemoryCreator(db, extractor=LLMFactExtractor(model=model))
+        result = await creator.process_signal(_row({"fakes": []}))
+
+        assert result.outcome is ProcessingOutcome.IGNORED
+        assert await db.fetch_value("SELECT COUNT(*) FROM hot_serving_active_facts") == 0
+
+    async def test_missing_facts_key_is_ignored_not_errored(self, db: Database) -> None:
+        model = ScriptedModel({"assertions": []})
+        creator = MemoryCreator(db, extractor=LLMFactExtractor(model=model))
+        result = await creator.process_signal(_row({"fakes": []}))
+
+        assert result.outcome is ProcessingOutcome.IGNORED
+        assert await db.fetch_value("SELECT COUNT(*) FROM hot_serving_active_facts") == 0
+
+    async def test_non_list_facts_is_ignored_not_errored(self, db: Database) -> None:
+        model = ScriptedModel({"facts": "not an array"})
+        creator = MemoryCreator(db, extractor=LLMFactExtractor(model=model))
+        result = await creator.process_signal(_row({"fakes": []}))
+
+        assert result.outcome is ProcessingOutcome.IGNORED
+        assert await db.fetch_value("SELECT COUNT(*) FROM hot_serving_active_facts") == 0
+
+    async def test_model_failure_is_malformed_with_zero_facts(self, db: Database) -> None:
+        model = ScriptedModel(RuntimeError("inference worker died"))
+        creator = MemoryCreator(db, extractor=LLMFactExtractor(model=model))
+        result = await creator.process_signal(_row({"fakes": []}))
+
+        assert result.outcome is ProcessingOutcome.MALFORMED
+        assert result.error is not None
+        assert await db.fetch_value("SELECT COUNT(*) FROM hot_serving_active_facts") == 0
+
+    async def test_raw_containment_refuses_before_model_is_called(self, db: Database) -> None:
+        model = ScriptedModel(
+            {"facts": [{"subject": "X", "predicate": "status", "object": "active"}]}
+        )
+        envelope = SignalEnvelope(
+            id=str(uuid.uuid4()),
+            channel="test",
+            payload="text",
+            raw="note <!-- paa:managed: block -->",
+            external_id=None,
+            received_at=None,
+            persisted=False,
+        )
+        creator = MemoryCreator(db, extractor=LLMFactExtractor(model=model))
+        result = await creator.process_signal(envelope)
+
+        assert result.outcome is ProcessingOutcome.MALFORMED
+        assert model.calls == []  # containment refused the payload before inference
+        assert await db.fetch_value("SELECT COUNT(*) FROM hot_serving_active_facts") == 0
+
+    async def test_oversized_object_value_is_refused_not_truncated(
+        self, db: Database
+    ) -> None:
+        model = ScriptedModel(
+            {"facts": [{"subject": "X", "predicate": "status", "object": "x" * 9000}]}
+        )
+        creator = MemoryCreator(db, extractor=LLMFactExtractor(model=model))
+        result = await creator.process_signal(_row({"fakes": []}))
+
+        assert result.outcome is ProcessingOutcome.MALFORMED
+        assert await db.fetch_value("SELECT COUNT(*) FROM hot_serving_active_facts") == 0
+
+    async def test_bad_triples_are_skipped_not_fatal(self, db: Database) -> None:
+        model = ScriptedModel(
+            {
+                "facts": [
+                    {"subject": "Good", "predicate": "status", "object": "active"},
+                    {"subject": "", "predicate": "status", "object": "bad subject"},
+                    {"subject": "AlsoBad", "predicate": "", "object": "bad predicate"},
+                    {"subject": "NoObject", "predicate": "status", "object": None},
+                    "not a triple",
+                    {"subject": "Fine", "predicate": "ok", "object": "live"},
+                ]
+            }
+        )
+        creator = MemoryCreator(db, extractor=LLMFactExtractor(model=model))
+        result = await creator.process_signal(_row({"fakes": []}))
+
+        assert result.outcome is ProcessingOutcome.PROCESSED
+        assert len(result.facts_written) == 2
+        assert await db.fetch_value("SELECT COUNT(*) FROM hot_serving_active_facts") == 2
+
+    async def test_candidate_ceiling_is_malformed(self, db: Database) -> None:
+        triples = [
+            {"subject": f"S{i}", "predicate": "status", "object": "ok"}
+            for i in range(201)
+        ]
+        model = ScriptedModel({"facts": triples})
+        creator = MemoryCreator(db, extractor=LLMFactExtractor(model=model))
+        result = await creator.process_signal(_row({"fakes": []}))
+
+        assert result.outcome is ProcessingOutcome.MALFORMED
+        assert await db.fetch_value("SELECT COUNT(*) FROM hot_serving_active_facts") == 0
