@@ -178,6 +178,14 @@ class Runtime:
     to ask it what containment it would actually deliver. The tool layer
     needs the same instance for the same reason.
     """
+    memory_creator: Any = None
+    """Memory Creator (RFC §2.1 agent 8): cold lake -> hot serving, in real time.
+
+    Built in :meth:`build` with its extractor wired from
+    ``settings.memory.extraction_model`` / ``extraction_model_provider``:
+    an LLM-backed extractor when the flag is non-empty (supplied by T-003's
+    ``LLMFactExtractor``), else the rule-based default.
+    """
     _boot_report: Any = None
 
     # -- lifecycle ---------------------------------------------------------
@@ -322,6 +330,7 @@ class Runtime:
             embedder=embedder,
             sandbox=sandbox,
         )
+        memory_creator = _build_memory_creator(settings, db, model_adapter)
 
         recovery = RecoveryEngine(
             ledger,
@@ -363,6 +372,7 @@ class Runtime:
             queue=queue,
             agents=agents,
             sandbox=sandbox,
+            memory_creator=memory_creator,
         )
 
         if run_recovery:
@@ -415,6 +425,33 @@ def _try_queue(settings: Settings, db: RelationalBackend) -> Any:
     except Exception as exc:
         log.warning("runtime.queue_unavailable", error=str(exc))
         return None
+
+
+def _build_memory_creator(
+    settings: Settings,
+    db: RelationalBackend,
+    model_adapter: Any,
+) -> Any:
+    """Build the Memory Creator with its extractor wired from configuration.
+
+    Extraction is rule-based by default (``settings.memory.extraction_model``
+    empty, unchanged behavior). When the flag is non-empty the LLM-backed
+    extractor (``LLMFactExtractor``, supplied by T-003) is used; it is resolved
+    lazily so a configured-but-not-yet-implemented extractor degrades to the
+    rule-based default rather than crashing boot.
+    """
+    import paa.memory.creator as _creator_mod
+
+    MemoryCreator = _creator_mod.MemoryCreator
+    extractor: Any = None
+    if settings.memory.extraction_model:
+        try:
+            extractor_cls = getattr(_creator_mod, "LLMFactExtractor", None)
+            if extractor_cls is not None:
+                extractor = extractor_cls(model=model_adapter)
+        except Exception as exc:  # degradation path: never crash boot on a model
+            log.warning("runtime.llm_extractor_unavailable", error=str(exc))
+    return MemoryCreator(db, extractor=extractor)
 
 
 async def _acquire_sandbox(settings: Settings) -> Any:
