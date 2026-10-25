@@ -29,7 +29,7 @@ section cited. Pydantic-settings `Settings` with prefix `PAA_`, nested delimiter
 **Configuration precedence:** explicit kwargs > environment (`PAA_*`) >
 `.env` file > defaults (`config.py:7`).
 
-**Consumers:** `Runtime.build()` (`runtime.py:256`), `PolicyRiskAgent`
+**Consumers:** `Runtime.build()` (`runtime.py:265`), `PolicyRiskAgent`
 (`policy.py:132`), `BackpressureController` (`backpressure.py:86`), model router
 (`router.py:143`), and essentially every subsystem.
 

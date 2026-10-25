@@ -92,8 +92,8 @@ Add a `paa memory` CLI command group and four memory API routes (`GET /memory/fa
 *Before (signal ingestion → fact):*
 1. Operator POSTs to `/signals` → row in `cold_lake_signals` `[api/app.py:172]`.
 2. Daemon `_ingestion_loop` claims row → `MemoryCreator.run_batch` `[daemon.py:142]`.
-3. `RuleBasedExtractor` produces candidates (no model) `[creator.py:355]`.
-4. Entity resolution + contradiction check + one-transaction commit `[creator.py:864-1010]`.
+3. `RuleBasedExtractor` produces candidates (no model) `[creator.py:356]`.
+4. Entity resolution + contradiction check + one-transaction commit `[creator.py:1092-1180]`.
 5. Fact visible via direct DB query only — no CLI, no API.
 
 *After:*
@@ -211,7 +211,7 @@ Add a `paa memory` CLI command group and four memory API routes (`GET /memory/fa
 
 **Backward compatibility:** Fully backward compatible — all changes additive; rule-based extractor remains default; no config fields change meaning; no CLI commands removed.
 
-**Concurrency and error-handling:** Daemon ingestion loop already isolates one poison signal per batch `[daemon.py:142-152]`; LLM extractor runs inside the same one-transaction-per-signal boundary `[creator.py:1042-1130]`.
+**Concurrency and error-handling:** Daemon ingestion loop already isolates one poison signal per batch `[daemon.py:142-152]`; LLM extractor runs inside the same one-transaction-per-signal boundary `[creator.py:1092-1180]`.
 
 **Performance and cost:** LLM extraction is opt-in; default path unchanged (zero cost, zero latency addition). LLM context ranking bounded by existing token budget.
 
@@ -227,7 +227,7 @@ Add a `paa memory` CLI command group and four memory API routes (`GET /memory/fa
 
 **Rollback:** Remove the `memory` command block from `cli/main.py`, remove the four routes from `api/app.py`, revert `creator.py`/`config.py`/`runtime.py`/`compaction.py`/`gatherer.py` to pre-change state. All changes are additive and independently removable.
 
-**Observability:** `memory.signal_processed` / `memory.signal_quarantined` / `memory.signal_malformed` structlog events already exist `[creator.py:895, 879, 1166]`. New: log LLM extraction usage and cost-relevant tokens.
+**Observability:** `memory.signal_processed` / `memory.signal_quarantined` / `memory.signal_malformed` structlog events already exist `[creator.py:945, 929, 1316]`. New: log LLM extraction usage and cost-relevant tokens.
 
 ---
 

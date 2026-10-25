@@ -20,7 +20,7 @@ the CLI and API are both thin edges over the same `Runtime` object
 | `paa serve [host] [port]` | `src/paa/cli/main.py:248` | Starts FastAPI API + background daemon over one shared runtime |
 | `paa agent "prompt"` | `src/paa/cli/coder.py:44` | Tool-using coder loop over the runtime |
 | `paa tui` | `src/paa/cli/main.py:307` | Interactive dashboard |
-| `Runtime.build()` | `src/paa/runtime.py:251` | Programmatic composition root (used by all edges) |
+| `Runtime.build()` | `src/paa/runtime.py:260` | Programmatic composition root (used by all edges) |
 
 ## Backend module responsibilities
 

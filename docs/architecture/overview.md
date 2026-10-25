@@ -82,7 +82,7 @@ Runtime.build()
   └─ ChiefOrchestrator
 ```
 
-`src/paa/runtime.py:251`.
+`src/paa/runtime.py:260`.
 
 ### 2. Optional backends degrade; they never raise
 
@@ -93,7 +93,7 @@ Each is attempted inside `_try_vector` / `_try_graph` / `_try_queue` /
 in-process fallback with a logged warning. The runtime must boot on a laptop
 with only core dependencies installed.
 
-`src/paa/runtime.py:358`, `:371`, `:382`, `:392`.
+`src/paa/runtime.py:359`, `:372`, `:383`, `:393`.
 
 ### 3. No generative reasoning in the control path
 

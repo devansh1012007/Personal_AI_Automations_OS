@@ -123,7 +123,7 @@ responsibility and the files it contains. All paths are repository-relative.
 | `paa gate` | `src/paa/cli/main.py:179` | `gate` |
 | `paa agent` | `src/paa/cli/coder.py:53` | `register_agent` → `agent` |
 | `paa tui` | `src/paa/cli/main.py:352` | `tui` |
-| Programmatic runtime | `src/paa/runtime.py:251` | `Runtime.build()` |
+| Programmatic runtime | `src/paa/runtime.py:260` | `Runtime.build()` |
 | API factory | `src/paa/api/app.py:52` | `create_app(runtime)` |
 | Daemon | `src/paa/daemon.py:42` | `Daemon(runtime)` |
 

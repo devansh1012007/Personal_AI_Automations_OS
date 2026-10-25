@@ -151,7 +151,7 @@ recovery requeue (`recovery.py:437`), API backpressure gate
 Every optional-backend factory (`_try_vector`, `_try_graph`, `_try_queue`,
 `get_blob_store`) catches `Exception` and returns `None`/fallback with a logged
 warning — never raises for a missing optional backend in `auto` mode
-(`runtime.py:381`–`:387`). The runtime must boot on a laptop with only core
+(`runtime.py:392`–`:398`). The runtime must boot on a laptop with only core
 dependencies installed (`AGENTS.md:60`).
 
 Degradation impact:

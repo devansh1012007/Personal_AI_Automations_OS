@@ -26,7 +26,7 @@ live-server run still needs a pass (parity + backend verification pending).
 
 ## Runtime startup
 
-Programmatic: `Runtime.build()` (`src/paa/runtime.py:251`):
+Programmatic: `Runtime.build()` (`src/paa/runtime.py:260`):
 1. `Settings()` → `ensure_directories()` creates all state dirs
    (`config.py:450`).
 2. `Database` connects + applies `schema_sqlite.sql`.
@@ -34,7 +34,7 @@ Programmatic: `Runtime.build()` (`src/paa/runtime.py:251`):
 4. Model router built (or a `model_adapter` injected); `RouterModelAdapter`
    wraps it.
 5. Optional backends: `_try_vector`, `_try_graph`, `_try_queue` — degrade, never
-   raise (`runtime.py:381`–`:387`).
+   raise (`runtime.py:392`–`:398`).
 6. `_build_agents()` constructs planner, policy, worker, critic, context
    builders, router (`runtime.py:407`).
 7. `_acquire_sandbox()` — 5s probe, falls back to subprocess (`runtime.py:382`).

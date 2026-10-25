@@ -178,7 +178,7 @@ enters the sandbox.
 the `patch` in the step output (`reasoning.py:469`).
 
 ### Validation
-`CriticValidatorAdapter` (`runtime.py:65`) adapts `DeterministicValidationEngine`
+`CriticValidatorAdapter` (`runtime.py:66`) adapts `DeterministicValidationEngine`
 (`validation/engine.py:208`) to the critic's call shape. Checks in order:
 schema → AST security scan → patch dry-run (`UnifiedDiffValidator.dry_run`,
 `validation/patch.py:467`) → workspace drift → tests (runs last, only inside
