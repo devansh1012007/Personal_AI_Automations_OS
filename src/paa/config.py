@@ -252,6 +252,17 @@ class MemorySettings(BaseModel):
     curation_window_start_hour: int = Field(default=2, ge=0, le=23)
     curation_max_runtime_hours: float = Field(default=2.0, gt=0)
 
+    #: LLM-backed fact extractor model. Empty means the rule-based extractor
+    #: is used (deterministic, zero cost, no network); set to a registry name
+    #: (e.g. an OpenRouter model) to opt in to LLM fact extraction. The
+    #: provider is :attr:`extraction_model_provider`. No vendor is hardcoded.
+    extraction_model: str = ""
+
+    #: Provider for :attr:`extraction_model`. Empty means the rule-based
+    #: extractor. Accepts any :mod:`paa.models.registry` name (``openrouter``,
+    #: ``ollama`` ...); empty preserves the rule-based default.
+    extraction_model_provider: str = ""
+
 
 class PolicySettings(BaseModel):
     """Risk gating. RFC §9, §2.1 agent 4."""
