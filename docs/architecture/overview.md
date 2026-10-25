@@ -93,7 +93,7 @@ Each is attempted inside `_try_vector` / `_try_graph` / `_try_queue` /
 in-process fallback with a logged warning. The runtime must boot on a laptop
 with only core dependencies installed.
 
-`src/paa/runtime.py:349`, `:362`, `:372`, `:382`.
+`src/paa/runtime.py:358`, `:371`, `:382`, `:392`.
 
 ### 3. No generative reasoning in the control path
 

@@ -117,7 +117,7 @@ short-circuits on CRITICAL or structural failure; never acts on "mostly valid"
 - Anti-goals: cosine similarity ≥ 0.82 (vector) or phrase match (fallback)
   blocks the task (`policy.py:262`).
 - Risk score [0,1] decides human-gate need; `always_gate_risk_profile=0.90`
-  (`config.py:271`).
+  (`config.py:282`).
 
 ### 11. Delegation safety
 

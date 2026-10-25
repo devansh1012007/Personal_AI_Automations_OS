@@ -99,7 +99,7 @@ lineages. The event vocabulary (`src/paa/core/types.py:67`):
 - Per-step retry budget `max_step_retries` (default 2) in
   `ChiefOrchestrator._execute_steps` (`orchestrator.py:523`).
 - Queue `max_delivery_attempts` (default 3) governs message redelivery
-  (`config.py:550`).
+  (`config.py:561`).
 - Recovery `max_attempts` (default 3, from `QueueSettings.max_delivery_attempts`)
   governs re-queue retries; beyond it → `TASK_ABANDONED` (`recovery.py:285`).
 

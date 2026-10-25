@@ -14,7 +14,7 @@
 
 RFC §10 tracing and metrics. `ObservabilitySettings.enabled` (default `True`),
 `service_name` ("paa-runtime"), `otlp_endpoint` (when None, traces recorded to
-local ledger only — no egress, `config.py:370`), `log_level`, `log_json`,
+local ledger only — no egress, `config.py:581`), `log_level`, `log_json`,
 `trace_retention_days` (30).
 
 ## Internal implementation
@@ -39,7 +39,7 @@ Every module logs via `structlog.get_logger(__name__)` (e.g. `runtime.py:53`,
 
 - Logging is the primary observability surface; no metrics export confirmed.
 - `otlp_endpoint=None` means no egress — traces stay in the local ledger
-  (`config.py:370`).
+  (`config.py:581`).
 
 ## Failure behavior
 
