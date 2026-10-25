@@ -627,7 +627,7 @@ def drain(
         try:
             from paa.memory.creator import MemoryCreator
 
-            creator = MemoryCreator(rt.db)
+            creator = rt.memory_creator or MemoryCreator(rt.db)
             report = await creator.run_batch(limit=limit)
             summary = report.summary()
             table = Table(

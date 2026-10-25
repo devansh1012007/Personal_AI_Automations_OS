@@ -160,3 +160,76 @@ async def test_drain_requires_daemon_loop(runtime: Runtime) -> None:
 
     assert await _status(runtime, signal_id) == "unprocessed"
     assert await _fact_count_for_signal(runtime, signal_id) == 0
+
+
+async def test_drain_uses_llm_creator_when_extraction_model_set(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The daemon ingestion loop consumes self._rt.memory_creator when
+    extraction_model is set, writing llm-provenance facts (confidence 0.70).
+
+    Reversal: reverting _memory_creator to MemoryCreator(self._rt.db) yields the
+    rule-based extractor (confidence 0.95) and zero facts for a payload with no
+    rule-extractable triples, so this test fails without the fix.
+    """
+    home = tmp_path / "paa_home"
+    home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("PAA_HOME", str(home))
+    monkeypatch.setenv("PAA_MEMORY__EXTRACTION_MODEL", "echo-llm")
+    monkeypatch.setenv("PAA_MODELS__LOCAL_PROVIDER", "echo")
+    monkeypatch.setenv("PAA_MODELS__ESCALATION_PROVIDER", "none")
+    monkeypatch.setenv("PAA_POLICY__MODE", "AUTO")
+    monkeypatch.setenv("PAA_SANDBOX__BACKEND", "subprocess")
+    reset_settings_cache()
+
+    class TripleModel:
+        async def complete_structured(
+            self, prompt: str, schema: dict[str, Any], **kw: Any
+        ) -> dict[str, Any]:
+            if "facts" in schema.get("properties", {}):
+                return {
+                    "facts": [
+                        {
+                            "subject": "Alpha",
+                            "predicate": "status",
+                            "object": "live",
+                        }
+                    ]
+                }
+            return {}
+
+    settings = Settings(home=home)
+    settings.policy.mode = PermissionMode.AUTO
+    settings.sandbox.backend = "subprocess"
+    rt = await Runtime.build(
+        settings,
+        model_adapter=TripleModel(),
+        run_recovery=False,
+        enable_optional_backends=False,
+    )
+    try:
+        signal_id = await _seed_signal(rt)
+
+        daemon = Daemon(rt, dispatch_interval=10.0, ingestion_interval=0.02)
+        await daemon.start()
+        try:
+            async def drained() -> bool:
+                return (
+                    await _status(rt, signal_id) == "processed"
+                    and await _fact_count_for_signal(rt, signal_id) >= 1
+                )
+
+            await _wait_for(drained, timeout_seconds=5.0)
+
+            rows = await rt.db.fetch_all(
+                "SELECT initial_confidence FROM hot_serving_active_facts "
+                "WHERE source_signal_id = ? AND object_value = 'live'",
+                (signal_id,),
+            )
+            assert rows, "no facts written — LLM creator not consulted"
+            assert all(r["initial_confidence"] == 0.70 for r in rows), rows
+        finally:
+            await daemon.stop()
+    finally:
+        await rt.close()
+        reset_settings_cache()

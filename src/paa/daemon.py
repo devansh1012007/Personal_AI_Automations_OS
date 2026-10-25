@@ -176,7 +176,7 @@ class Daemon:
         try:
             from paa.memory.creator import MemoryCreator
 
-            return MemoryCreator(self._rt.db)
+            return self._rt.memory_creator or MemoryCreator(self._rt.db)
         except Exception as exc:
             log.warning("daemon.memory_creator_unavailable", error=str(exc))
             return None

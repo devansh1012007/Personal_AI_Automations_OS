@@ -277,7 +277,7 @@ def create_app(runtime: Runtime) -> FastAPI:
         """Run one MemoryCreator batch over unprocessed cold-lake signals."""
         if not await _admit(runtime, essential=False):
             raise HTTPException(status_code=429, detail="memory under backpressure")
-        creator = MemoryCreator(runtime.db)
+        creator = runtime.memory_creator or MemoryCreator(runtime.db)
         report = await creator.run_batch(limit=limit)
         return BatchReportView(**report.summary())
 

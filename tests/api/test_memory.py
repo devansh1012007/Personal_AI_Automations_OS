@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from hashlib import sha256
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -246,6 +247,90 @@ class TestDrain:
         assert set(body) == REPORT_FIELDS
         assert body["claimed"] == 0
         assert body["facts_written"] == 0
+
+    async def test_drain_uses_llm_creator_when_extraction_model_set(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """POST /memory/drain consumes runtime.memory_creator when extraction_model
+        is set, so the LLM extractor writes llm-provenance facts (confidence 0.70).
+
+        Reversal: reverting the route to MemoryCreator(runtime.db) yields the
+        rule-based extractor (confidence 0.95) and zero facts for a payload with
+        no rule-extractable triples, so this test fails without the fix.
+        """
+        from fastapi.testclient import TestClient
+
+        from paa.api import create_app
+        from paa.config import PermissionMode, Settings, reset_settings_cache
+        from paa.runtime import Runtime
+
+        home = tmp_path / "paa_home"
+        home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("PAA_HOME", str(home))
+        monkeypatch.setenv("PAA_MEMORY__EXTRACTION_MODEL", "echo-llm")
+        monkeypatch.setenv("PAA_MODELS__LOCAL_PROVIDER", "echo")
+        monkeypatch.setenv("PAA_MODELS__ESCALATION_PROVIDER", "none")
+        monkeypatch.setenv("PAA_POLICY__MODE", "AUTO")
+        monkeypatch.setenv("PAA_SANDBOX__BACKEND", "subprocess")
+        reset_settings_cache()
+
+        class TripleModel:
+            async def complete_structured(
+                self, prompt: str, schema: dict[str, Any], **kw: Any
+            ) -> dict[str, Any]:
+                if "facts" in schema.get("properties", {}):
+                    return {
+                        "facts": [
+                            {
+                                "subject": "Alpha",
+                                "predicate": "status",
+                                "object": "live",
+                            }
+                        ]
+                    }
+                return {}
+
+        settings = Settings(home=home)
+        settings.policy.mode = PermissionMode.AUTO
+        settings.sandbox.backend = "subprocess"
+        rt = await Runtime.build(
+            settings,
+            model_adapter=TripleModel(),
+            run_recovery=False,
+            enable_optional_backends=False,
+        )
+        try:
+            await rt.db.execute(
+                "INSERT INTO cold_lake_signals "
+                "(id, received_at, channel, external_id, raw_payload, content_hash, "
+                "blob_uri, sync_status, processed_at, error_detail) "
+                "VALUES (?, ?, ?, ?, ?, ?, NULL, 'unprocessed', NULL, NULL)",
+                (
+                    str(uuid4()),
+                    _iso(),
+                    "test",
+                    None,
+                    json.dumps({"k": "v"}),
+                    sha256(b"{}").hexdigest(),
+                ),
+            )
+
+            client = TestClient(create_app(rt))
+            resp = client.post("/memory/drain")
+            assert resp.status_code == 202, resp.text
+            body = resp.json()
+            assert body["claimed"] >= 1
+            assert body["facts_written"] >= 1
+
+            rows = await rt.db.fetch_all(
+                "SELECT initial_confidence FROM hot_serving_active_facts "
+                "WHERE object_value = 'live'"
+            )
+            assert rows, "no facts written — LLM creator not consulted"
+            assert all(r["initial_confidence"] == 0.70 for r in rows), rows
+        finally:
+            await rt.close()
+            reset_settings_cache()
 
 
 class TestBackpressure:

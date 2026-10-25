@@ -10,13 +10,15 @@ from __future__ import annotations
 import asyncio
 import uuid
 from pathlib import Path
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
 
 from paa.cli.main import app
-from paa.config import get_settings, reset_settings_cache
+from paa.config import PermissionMode, Settings, get_settings, reset_settings_cache
 from paa.memory.facts import FactRepository
+from paa.runtime import Runtime
 from paa.storage.relational.database import Database, dumps, to_iso, utc_now
 
 runner = CliRunner()
@@ -178,6 +180,73 @@ class TestDrain:
         assert result.exit_code == 0, result.output
         assert "processed" in result.stdout
         assert "facts_written" in result.stdout
+
+    def test_drain_uses_llm_creator_when_extraction_model_set(
+        self, paa_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """paa memory drain consumes rt.memory_creator when extraction_model is
+        set, so the LLM extractor writes llm-provenance facts (confidence 0.70).
+
+        Reversal: reverting the command to MemoryCreator(rt.db) yields the
+        rule-based extractor (confidence 0.95) and zero facts for a payload with
+        no rule-extractable triples, so this test fails without the fix.
+        """
+        monkeypatch.setenv("PAA_MEMORY__EXTRACTION_MODEL", "echo-llm")
+        reset_settings_cache()
+
+        class TripleModel:
+            async def complete_structured(
+                self, prompt: str, schema: dict[str, Any], **kw: Any
+            ) -> dict[str, Any]:
+                if "facts" in schema.get("properties", {}):
+                    return {
+                        "facts": [
+                            {
+                                "subject": "Alpha",
+                                "predicate": "status",
+                                "object": "live",
+                            }
+                        ]
+                    }
+                return {}
+
+        async def _setup() -> None:
+            async def fake_build_runtime(
+                *, run_recovery: bool = False
+            ) -> Runtime:
+                settings = Settings(home=paa_home)
+                settings.policy.mode = PermissionMode.AUTO
+                settings.sandbox.backend = "subprocess"
+                return await Runtime.build(
+                    settings,
+                    model_adapter=TripleModel(),
+                    run_recovery=False,
+                    enable_optional_backends=False,
+                )
+
+            monkeypatch.setattr("paa.cli.main._build_runtime", fake_build_runtime)
+            await _seed_signal(paa_home, {"k": "v"})
+
+        asyncio.run(_setup())
+
+        result = _invoke(["drain", "--limit", "25"])
+        assert result.exit_code == 0, result.output
+
+        async def _query() -> list[Any]:
+            db = await _connect_db(paa_home)
+            try:
+                return await db.fetch_all(
+                    "SELECT initial_confidence FROM hot_serving_active_facts "
+                    "WHERE object_value = 'live'"
+                )
+            finally:
+                await db.close()
+
+        rows = asyncio.run(_query())
+        assert rows, "no facts written — LLM creator not consulted"
+        assert all(r["initial_confidence"] == 0.70 for r in rows), rows
+
+        reset_settings_cache()
 
 
 class TestSignals:
