@@ -28,6 +28,8 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from paa.models.base import redact
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -148,7 +150,7 @@ class Daemon:
                     report = await creator.run_batch(limit=25)
                     processed = report.claimed
                 except Exception as exc:
-                    log.error("daemon.ingestion_failed", error=str(exc))
+                    log.error("daemon.ingestion_failed", error=redact(str(exc)))
             await self._sleep(0 if processed else self._ingestion_interval)
 
     async def _maintenance_loop(self) -> None:
@@ -178,5 +180,5 @@ class Daemon:
 
             return self._rt.memory_creator or MemoryCreator(self._rt.db)
         except Exception as exc:
-            log.warning("daemon.memory_creator_unavailable", error=str(exc))
+            log.warning("daemon.memory_creator_unavailable", error=redact(str(exc)))
             return None

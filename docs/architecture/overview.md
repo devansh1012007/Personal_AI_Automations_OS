@@ -184,7 +184,7 @@ not by prohibiting peer calls.
   `reset_settings_cache()`.
 - `api_host` is enforced loopback unless `PAA_ALLOW_NON_LOOPBACK=1`.
 
-`src/paa/config.py:1`, `:381`, `:460`, `:489`.
+`src/paa/config.py:1`, `:381`, `:460`, `:490`.
 
 ## Known deviations from the RFC (selected)
 

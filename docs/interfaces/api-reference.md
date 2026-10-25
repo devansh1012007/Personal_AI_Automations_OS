@@ -6,7 +6,7 @@ holds no application state, makes no model calls, and writes directly to neither
 operational tables nor the ledger; a request becomes either a ledger event (via
 the orchestrator) or a cold-lake row (via the signal repository) (`api/app.py:8`).
 
-The app is built by `create_app(runtime)` (`src/paa/api/app.py:52`) and imported
+The app is built by `create_app(runtime)` (`src/paa/api/app.py:53`) and imported
 lazily (FastAPI is imported inside the function) so the package imports on a
 minimal install.
 
@@ -17,12 +17,12 @@ minimal install.
 | Bind host | `Settings.api_host` / `--host` flag | `127.0.0.1` (loopback enforced by validator unless `PAA_ALLOW_NON_LOOPBACK=1`) |
 | Bind port | `Settings.api_port` / `--port` flag | `8787` |
 
-`api_host` validator: `config.py:409` (`_enforce_loopback`).
+`api_host` validator: `config.py:410` (`_enforce_loopback`).
 
 ## Endpoints
 
 ### `GET /health`
-**Handler:** `api/app.py:67`
+**Handler:** `api/app.py:68`
 **Response:** `HealthResponse` (`api/schemas.py:96`)
 ```json
 {
@@ -107,7 +107,7 @@ its own gate (`orchestrator.py:1015`).
 `USER_CORRECTION` event. Returns 202 `{"status": "recorded"}`.
 
 ### `GET /ledger/{correlation_id}`
-**Handler:** `api/app.py:146`
+**Handler:** `api/app.py:147`
 **Response:** list of `LedgerEventView` (`api/schemas.py:85`)
 ```json
 [
@@ -164,12 +164,12 @@ FastAPI):
 
 Backpressure: essential control-plane traffic is always admitted; only
 discretionary ingestion (`/tasks` without `run`? actually all task submission and signals)
-is shed when depth ≥ `shed_load_depth` (`api/app.py:198`, `backpressure.py:115`).
+is shed when depth ≥ `shed_load_depth` (`api/app.py:199`, `backpressure.py:115`).
 
 ## Authentication / authorization
 
 None. The API is single-user, loopback-only. Access control is enforced by
-`Settings.api_host` loopback validation (`config.py:409`) and the network
+`Settings.api_host` loopback validation (`config.py:410`) and the network
 topology (Docker publishes no host ports; only the ingestion API on
 `127.0.0.1:8787`, `AGENTS.md:132`).
 

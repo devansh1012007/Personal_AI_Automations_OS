@@ -527,3 +527,28 @@ class TestLLMFactExtractor:
 
         assert result.outcome is ProcessingOutcome.MALFORMED
         assert len(model.calls) == 1  # no retries for a non-transient failure
+
+    async def test_nul_byte_containment_refuses_before_model_is_called(
+        self, db: Database
+    ) -> None:
+        """LLMFactExtractor must refuse a NUL byte in the raw payload *before*
+        consulting the model — containment applies to the production extractor,
+        not just the test double. Zero facts, model never called."""
+        model = ScriptedModel(
+            {"facts": [{"subject": "X", "predicate": "status", "object": "active"}]}
+        )
+        envelope = SignalEnvelope(
+            id=str(uuid.uuid4()),
+            channel="test",
+            payload="text",
+            raw="triple \x00 injection",
+            external_id=None,
+            received_at=None,
+            persisted=False,
+        )
+        creator = MemoryCreator(db, extractor=LLMFactExtractor(model=model))
+        result = await creator.process_signal(envelope)
+
+        assert result.outcome is ProcessingOutcome.MALFORMED
+        assert model.calls == []  # containment refused the payload before inference
+        assert await db.fetch_value("SELECT COUNT(*) FROM hot_serving_active_facts") == 0

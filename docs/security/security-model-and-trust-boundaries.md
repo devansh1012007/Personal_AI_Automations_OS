@@ -28,7 +28,7 @@ never decide whether an action is safe** — that decision is deterministic Pyth
 
 ### 2. Loopback-only ingestion
 
-- `Settings.api_host` validator (`_enforce_loopback`, `config.py:409`) refuses
+- `Settings.api_host` validator (`_enforce_loopback`, `config.py:410`) refuses
   non-loopback binds unless `PAA_ALLOW_NON_LOOPBACK=1`. This is a **startup
   check**, not a deployment note (`api/app.py:11`).
 - Docker publishes no host ports for Postgres/Redis/Qdrant/the object store; only the
@@ -159,7 +159,7 @@ backend.py` `_read_capped`).
 | Host ↔ sandbox | Workspace jail, env allowlist, AST scan, memory/timeout caps | Yes (sandbox/) |
 | Agent ↔ model | `ModelLike` protocol; router mediates escalation | Yes (models/) |
 | Runtime ↔ external network | Default-deny network (`allow_network=False`); LOCKDOWN severance | Partially (subprocess cannot enforce network; policy + AST scan cover it) |
-| User ↔ API | Loopback bind enforced at startup | Yes (config.py:409) |
+| User ↔ API | Loopback bind enforced at startup | Yes (config.py:410) |
 | Ledger ↔ tampering | Hash chain, verify_chain | Yes (ledger/) |
 | Skill ↔ secrets | Bound SecretProxy; PERM_SECRET_READ check | Yes (skills/secrets.py) |
 | Operator ↔ policy rules | Regex rules in DB; malformed rules skipped | Yes (policy.py:234) |

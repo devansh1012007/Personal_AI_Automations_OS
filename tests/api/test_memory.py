@@ -227,7 +227,7 @@ class TestDrain:
         )
 
         resp = client.post("/memory/drain")
-        assert resp.status_code == 202
+        assert resp.status_code == 200
         body = resp.json()
         assert set(body) == REPORT_FIELDS
         assert body["claimed"] >= 1
@@ -242,7 +242,7 @@ class TestDrain:
 
     async def test_drain_no_unprocessed_returns_zeros(self, client: TestClient) -> None:
         resp = client.post("/memory/drain")
-        assert resp.status_code == 202
+        assert resp.status_code == 200
         body = resp.json()
         assert set(body) == REPORT_FIELDS
         assert body["claimed"] == 0
@@ -317,7 +317,7 @@ class TestDrain:
 
             client = TestClient(create_app(rt))
             resp = client.post("/memory/drain")
-            assert resp.status_code == 202, resp.text
+            assert resp.status_code == 200, resp.text
             body = resp.json()
             assert body["claimed"] >= 1
             assert body["facts_written"] >= 1

@@ -21,7 +21,7 @@ section cited. Pydantic-settings `Settings` with prefix `PAA_`, nested delimiter
   API keys are named per registry row, not stored as settings fields
   (`config.py:460`).
 - `_enforce_loopback` refuses non-loopback `api_host` unless
-  `PAA_ALLOW_NON_LOOPBACK=1` (`config.py:409`).
+  `PAA_ALLOW_NON_LOOPBACK=1` (`config.py:410`).
 - `_propagate_home` re-roots storage paths when `home` is overridden directly
   (`config.py:425`).
 - `ensure_directories()` creates every directory the runtime needs (`config.py:450`).

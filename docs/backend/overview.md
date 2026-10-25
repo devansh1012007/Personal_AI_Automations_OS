@@ -43,7 +43,7 @@ the CLI and API are both thin edges over the same `Runtime` object
 The backend is **single-process, single-user, single-machine**. There is no
 authentication, no multi-tenancy, no distributed consensus. `api_host` is
 enforced loopback unless `PAA_ALLOW_NON_LOOPBACK=1`
-(`config.py:409`).
+(`config.py:410`).
 
 ## Request flow into the backend
 

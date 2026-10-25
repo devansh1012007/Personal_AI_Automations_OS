@@ -51,6 +51,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import structlog
 
+from paa.agents.reasoning import ModelLike
 from paa.core.errors import PaaError
 from paa.ledger.events import canonical_json
 from paa.memory.domains import MemoryDomain
@@ -663,7 +664,7 @@ class LLMFactExtractor:
     def __init__(
         self,
         *,
-        model: Any,
+        model: ModelLike,
         max_retries: int = 0,
         timeout: float | None = None,
         retry_backoff_base: float = 0.5,

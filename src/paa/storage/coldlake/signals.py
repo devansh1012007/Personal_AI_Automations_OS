@@ -344,6 +344,32 @@ class SignalRepository:
         for row in await self._db.fetch_all(sql, params):
             yield _signal_from_row(row)
 
+    async def list(
+        self,
+        *,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[Signal]:
+        """List signals, newest first, optionally filtered by sync_status.
+
+        The total order (``received_at DESC, id DESC``) makes the ``LIMIT`` cut
+        reproducible — see AGENTS.md's LIMIT-cut rule.
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status is not None:
+            if status not in _VALID_STATUSES:
+                raise ValueError(f"unknown sync_status {status!r}")
+            clauses.append("sync_status = ?")
+            params.append(status)
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        sql = (
+            f"SELECT {_COLUMNS} FROM cold_lake_signals {where} "
+            f"ORDER BY received_at DESC, id DESC LIMIT ?"
+        )
+        params.append(limit)
+        return [_signal_from_row(row) for row in await self._db.fetch_all(sql, params)]
+
     async def count_by_status(self, channel: str | None = None) -> dict[str, int]:
         """Queue-depth snapshot, for the backpressure checks in RFC §6."""
         if channel is None:

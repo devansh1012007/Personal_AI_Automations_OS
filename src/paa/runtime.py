@@ -183,7 +183,7 @@ class Runtime:
     """Memory Creator (RFC §2.1 agent 8): cold lake -> hot serving, in real time.
 
     Built in :meth:`build` with its extractor wired from
-    ``settings.memory.extraction_model`` / ``extraction_model_provider``:
+    ``settings.memory.extraction_model``:
     an LLM-backed extractor when the flag is non-empty (supplied by T-003's
     ``LLMFactExtractor``), else the rule-based default.
     """

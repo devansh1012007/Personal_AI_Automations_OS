@@ -169,8 +169,10 @@ async def test_drain_uses_llm_creator_when_extraction_model_set(
     extraction_model is set, writing llm-provenance facts (confidence 0.70).
 
     Reversal: reverting _memory_creator to MemoryCreator(self._rt.db) yields the
-    rule-based extractor (confidence 0.95) and zero facts for a payload with no
-    rule-extractable triples, so this test fails without the fix.
+    rule-based extractor (confidence 0.95). The test payload contains a
+    rule-extractable triple, so rule-based extraction writes one fact at 0.95,
+    and the `initial_confidence == 0.70` assertion fails — still a valid
+    reversal.
     """
     home = tmp_path / "paa_home"
     home.mkdir(parents=True, exist_ok=True)

@@ -38,6 +38,7 @@ from paa.api.schemas import (
     TaskStatusResponse,
     TaskSubmitResponse,
 )
+from paa.models.base import redact
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -246,33 +247,22 @@ def create_app(runtime: Runtime) -> FastAPI:
         """Cold-lake signals, optionally filtered by sync_status."""
         if not await _admit(runtime, essential=False):
             raise HTTPException(status_code=429, detail="memory under backpressure")
-        clauses: list[str] = []
-        params: list[Any] = []
-        if status:
-            clauses.append("sync_status = ?")
-            params.append(status)
-        where = "WHERE " + " AND ".join(clauses) if clauses else ""
-        rows = await runtime.db.fetch_all(
-            "SELECT id, channel, external_id, sync_status, received_at "
-            "FROM cold_lake_signals "
-            + where
-            + " ORDER BY received_at DESC, id DESC LIMIT 50",
-            params,
-        )
-        if not rows:
-            return []
+        repo = _signal_repo(runtime)
+        if repo is None:
+            raise HTTPException(status_code=503, detail="cold lake not configured")
+        signals = await repo.list(status=status, limit=50)
         return [
             SignalView(
-                id=str(r["id"]),
-                channel=str(r["channel"]),
-                external_id=str(r["external_id"] or "-"),
-                sync_status=str(r["sync_status"]),
-                received_at=str(r["received_at"]),
+                id=s.id,
+                channel=s.channel,
+                external_id=s.external_id or "-",
+                sync_status=s.sync_status,
+                received_at=s.received_at.isoformat(),
             )
-            for r in rows
+            for s in signals
         ]
 
-    @app.post("/memory/drain", response_model=BatchReportView, status_code=202)
+    @app.post("/memory/drain", response_model=BatchReportView, status_code=200)
     async def drain_memory(limit: int = 25) -> BatchReportView:
         """Run one MemoryCreator batch over unprocessed cold-lake signals."""
         if not await _admit(runtime, essential=False):
@@ -327,7 +317,7 @@ def _signal_repo(runtime: Runtime) -> Any:
         cas = get_blob_store(runtime.settings.storage)
         return SignalRepository(runtime.db, cas)
     except Exception as exc:
-        log.warning("api.signal_repo_unavailable", error=str(exc))
+        log.warning("api.signal_repo_unavailable", error=redact(str(exc)))
         return None
 
 

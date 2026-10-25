@@ -233,7 +233,7 @@ provided by ledger idempotency, not the queue.
 
 ## 7. Configuration data lifecycle
 
-`Settings` is built once (`get_settings()`, `lru_cache`d, `config.py:489`).
+`Settings` is built once (`get_settings()`, `lru_cache`d, `config.py:490`).
 `.env` is read from CWD at construction; provider API keys resolved via
 `dotenv_value` without touching `os.environ` (`config.py:460`). `PAA_HOME`
 changes require `reset_settings_cache()`. `ensure_directories()` creates all

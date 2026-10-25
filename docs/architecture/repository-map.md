@@ -124,8 +124,8 @@ responsibility and the files it contains. All paths are repository-relative.
 | `paa agent` | `src/paa/cli/coder.py:53` | `register_agent` → `agent` |
 | `paa tui` | `src/paa/cli/main.py:352` | `tui` |
 | Programmatic runtime | `src/paa/runtime.py:260` | `Runtime.build()` |
-| API factory | `src/paa/api/app.py:52` | `create_app(runtime)` |
-| Daemon | `src/paa/daemon.py:42` | `Daemon(runtime)` |
+| API factory | `src/paa/api/app.py:53` | `create_app(runtime)` |
+| Daemon | `src/paa/daemon.py:44` | `Daemon(runtime)` |
 
 ## tests/
 

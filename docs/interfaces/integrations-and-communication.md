@@ -123,7 +123,7 @@ uvicorn over the FastAPI app plus the daemon loops over one shared runtime
 - Structured output: `max_retries` repair attempts per provider (`models/base.py:906`).
 - Task step: `max_step_retries=2` per step (`orchestrator.py:108`); `EXECUTION_STARTED`
   uses `attempt` + `discriminator="step-N"` for idempotency.
-- Queue: `max_delivery_attempts=3`, `visibility_timeout_seconds=300` (`config.py:561`).
+- Queue: `max_delivery_attempts=3`, `visibility_timeout_seconds=300` (`config.py:562`).
 - Ledger: idempotency key suppresses duplicate redelivery; `attempt` permits
   genuine retries (`events.py:68`).
 

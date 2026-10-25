@@ -254,14 +254,10 @@ class MemorySettings(BaseModel):
 
     #: LLM-backed fact extractor model. Empty means the rule-based extractor
     #: is used (deterministic, zero cost, no network); set to a registry name
-    #: (e.g. an OpenRouter model) to opt in to LLM fact extraction. The
-    #: provider is :attr:`extraction_model_provider`. No vendor is hardcoded.
+    #: (e.g. an OpenRouter model) to opt in to LLM fact extraction. The model
+    #: is resolved through the router's ``model_adapter``; no vendor is
+    #: hardcoded.
     extraction_model: str = ""
-
-    #: Provider for :attr:`extraction_model`. Empty means the rule-based
-    #: extractor. Accepts any :mod:`paa.models.registry` name (``openrouter``,
-    #: ``ollama`` ...); empty preserves the rule-based default.
-    extraction_model_provider: str = ""
 
 
 class PolicySettings(BaseModel):

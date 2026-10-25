@@ -48,7 +48,7 @@ FastAPI app over it (`cli/main.py:254`).
 
 ## Daemon loops
 
-`Daemon(runtime)` (`src/paa/daemon.py:42`):
+`Daemon(runtime)` (`src/paa/daemon.py:44`):
 - Boot recovery first, before any new work is accepted (`daemon.py:64`).
 - Dispatch loop (0.5s): claims `StreamName.ORCHESTRATOR_CORE` messages, runs via
   `runtime.run(cid)`, `ack`/`nack` (`daemon.py:116`).
@@ -85,7 +85,7 @@ All state under `PAA_HOME` (default `~/.paa`, outside the repo):
 - `paa doctor` reports live backends and sandbox isolation level
   (`cli/main.py:224`).
 - `GET /health` returns backend type names and open task count
-  (`api/app.py:67`).
+  (`api/app.py:68`).
 - `src/paa/observability/` (logging, metrics, tracing, runs) is built but
   **untested** — exercised nowhere (`AGENTS.md:97`).
 

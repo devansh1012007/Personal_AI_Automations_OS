@@ -9,7 +9,7 @@ default (Redis optional), and the ledger is authoritative over the queue
 
 ## 1. The Daemon
 
-`Daemon(runtime)` (`daemon.py:42`) runs three cooperating, independently
+`Daemon(runtime)` (`daemon.py:44`) runs three cooperating, independently
 supervised loops plus a one-time boot recovery:
 
 | Loop | Interval | What it does |
@@ -99,7 +99,7 @@ lineages. The event vocabulary (`src/paa/core/types.py:67`):
 - Per-step retry budget `max_step_retries` (default 2) in
   `ChiefOrchestrator._execute_steps` (`orchestrator.py:523`).
 - Queue `max_delivery_attempts` (default 3) governs message redelivery
-  (`config.py:561`).
+  (`config.py:562`).
 - Recovery `max_attempts` (default 3, from `QueueSettings.max_delivery_attempts`)
   governs re-queue retries; beyond it → `TASK_ABANDONED` (`recovery.py:285`).
 
