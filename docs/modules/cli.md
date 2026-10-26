@@ -33,7 +33,7 @@ never overstates backends or isolation (`cli/main.py:13`).
 | `mode` | 336 | Show `PAA_POLICY__MODE=<value>` to set |
 | `tui` | 352 | Run `run_tui()` |
 
-All one-shot commands use `_build_runtime(run_recovery=False)` (`cli/main.py:51`) —
+All one-shot commands use `_build_runtime(run_recovery=False)` (`cli/main.py:53`) —
 recovery is opt-in per command (an operator decision, `coder/agent.py:124`);
 `serve` also does not run recovery at build (daemon does it at start, `daemon.py:64`).
 

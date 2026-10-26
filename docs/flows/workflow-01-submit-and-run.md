@@ -7,7 +7,7 @@ to `MUTATION_COMMITTED`. All paths verified against `src/paa/agents/orchestrator
 
 | Trigger | Entry | File |
 |---|---|---|
-| CLI | `paa submit "fix the login bug"` | `cli/main.py:73` → `Runtime.submit()` |
+| CLI | `paa submit "fix the login bug"` | `cli/main.py:74` → `Runtime.submit()` |
 | API | `POST /tasks?run=true` | `api/app.py:85` → `Runtime.submit()` + `Runtime.run()` |
 | Programmatic | `rt.submit_and_run("...")` | `runtime.py:241` |
 

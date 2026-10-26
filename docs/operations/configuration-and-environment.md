@@ -219,7 +219,7 @@ Provider `api_key_env` tuples are defined per row in `registry.py:_SPECS`
 1. `uv venv --python 3.12 && uv pip install -e ".[dev]"` (`AGENTS.md:8`).
 2. Optionally `cp .env.example .env` and set provider keys.
 3. `.venv/bin/python -m pytest tests/ -q` (`AGENTS.md:11`).
-4. `paa doctor` to confirm which backends are actually live (`cli/main.py:224`).
+4. `paa doctor` to confirm which backends are actually live (`cli/main.py:225`).
 
 ## Deployment vs development
 

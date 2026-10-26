@@ -43,7 +43,7 @@ Programmatic: `Runtime.build()` (`src/paa/runtime.py:260`):
    (`runtime.py:331`).
 
 CLI one-shot commands build a `Runtime`, do one thing, print, and close
-(`cli/main.py:51`). `paa serve` builds one `Runtime`, starts the `Daemon` and
+(`cli/main.py:53`). `paa serve` builds one `Runtime`, starts the `Daemon` and
 FastAPI app over it (`cli/main.py:254`).
 
 ## Daemon loops
@@ -83,7 +83,7 @@ All state under `PAA_HOME` (default `~/.paa`, outside the repo):
 ## Health / observability
 
 - `paa doctor` reports live backends and sandbox isolation level
-  (`cli/main.py:224`).
+  (`cli/main.py:225`).
 - `GET /health` returns backend type names and open task count
   (`api/app.py:68`).
 - `src/paa/observability/` (logging, metrics, tracing, runs) is built but

@@ -115,14 +115,14 @@ responsibility and the files it contains. All paths are repository-relative.
 | Entry point | File | Function |
 |---|---|---|
 | `paa` CLI | `src/paa/cli/main.py:38` | `app = typer.Typer(...)`; `__main__` at line 467 |
-| `paa submit` | `src/paa/cli/main.py:73` | `submit` |
-| `paa serve` | `src/paa/cli/main.py:289` | `serve` |
-| `paa doctor` | `src/paa/cli/main.py:224` | `doctor` |
-| `paa recover` | `src/paa/cli/main.py:206` | `recover` |
-| `paa ledger` | `src/paa/cli/main.py:144` | `ledger` |
-| `paa gate` | `src/paa/cli/main.py:179` | `gate` |
+| `paa submit` | `src/paa/cli/main.py:74` | `submit` |
+| `paa serve` | `src/paa/cli/main.py:290` | `serve` |
+| `paa doctor` | `src/paa/cli/main.py:225` | `doctor` |
+| `paa recover` | `src/paa/cli/main.py:207` | `recover` |
+| `paa ledger` | `src/paa/cli/main.py:145` | `ledger` |
+| `paa gate` | `src/paa/cli/main.py:180` | `gate` |
 | `paa agent` | `src/paa/cli/coder.py:53` | `register_agent` → `agent` |
-| `paa tui` | `src/paa/cli/main.py:352` | `tui` |
+| `paa tui` | `src/paa/cli/main.py:353` | `tui` |
 | Programmatic runtime | `src/paa/runtime.py:260` | `Runtime.build()` |
 | API factory | `src/paa/api/app.py:53` | `create_app(runtime)` |
 | Daemon | `src/paa/daemon.py:44` | `Daemon(runtime)` |

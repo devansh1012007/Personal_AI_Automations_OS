@@ -8,7 +8,7 @@ Verified against `src/paa/ledger/recovery.py`, `src/paa/ledger/store.py`,
 
 | Trigger | Entry | File |
 |---|---|---|
-| CLI | `paa recover` | `cli/main.py:190` → `Runtime.boot_recovery()` |
+| CLI | `paa recover` | `cli/main.py:191` → `Runtime.boot_recovery()` |
 | Service start | `paa serve` → `Daemon.start()` | `daemon.py:64` |
 | Runtime build | `Runtime.build(run_recovery=True)` (default) | `runtime.py:331` |
 
