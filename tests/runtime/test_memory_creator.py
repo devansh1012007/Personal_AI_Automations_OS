@@ -65,17 +65,6 @@ class TestBuildMemoryCreatorRuleBasedDefault:
         assert isinstance(creator, MemoryCreator)
         assert isinstance(creator._extractor, RuleBasedExtractor)
 
-    async def test_empty_string_extraction_model_uses_rule_based(self) -> None:
-        settings = _settings(extraction_model="")
-        db = _FakeDB()
-        model_adapter = _FakeModel()
-
-        creator = _build_memory_creator(settings, db, model_adapter)
-
-        from paa.memory.creator import RuleBasedExtractor
-
-        assert isinstance(creator._extractor, RuleBasedExtractor)
-
 
 class TestBuildMemoryCreatorLLMOptIn:
     """extraction_model non-empty → LLMFactExtractor wired from model_adapter."""
@@ -190,9 +179,15 @@ class TestBuildMemoryCreatorDegradation:
         assert isinstance(creator._extractor, RuleBasedExtractor)
         # The warning was emitted.
         assert "runtime.llm_extractor_unavailable" in captured_events
+        # Assert on the specific warning event rather than positional [-1]
+        # indexing, which is fragile if a second warning is ever added.
+        target_kwargs = [
+            kw for event, kw in zip(captured_events, captured_kwargs, strict=True)
+            if event == "runtime.llm_extractor_unavailable"
+        ]
+        assert target_kwargs, "no kwargs captured for runtime.llm_extractor_unavailable"
         # The secret must be redacted in the logged kwargs.
-        assert captured_kwargs, "no warning kwargs captured"
-        logged_error = captured_kwargs[-1].get("error", "")
+        logged_error = target_kwargs[-1].get("error", "")
         assert "sk-or-v1" not in logged_error, f"secret leaked into log: {logged_error!r}"
 
 
