@@ -101,8 +101,8 @@ class Daemon:
                 await loop()
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                log.exception("daemon.loop_crashed", loop=name)
+            except Exception as exc:
+                log.error("daemon.loop_crashed", loop=name, error=redact(str(exc)))
                 await self._sleep(1.0)
 
     async def _sleep(self, seconds: float) -> None:
