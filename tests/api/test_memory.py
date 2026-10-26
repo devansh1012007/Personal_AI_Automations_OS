@@ -217,6 +217,13 @@ class TestSignals:
         assert len(body) == 1
         assert body[0]["sync_status"] == "processed"
 
+    async def test_signals_invalid_status_returns_400(
+        self, client: TestClient, runtime: Runtime
+    ) -> None:
+        """An unknown sync_status is rejected with HTTP 400, not a 500."""
+        resp = client.get("/memory/signals", params={"status": "bogus-status"})
+        assert resp.status_code == 400, resp.text
+
 
 class TestDrain:
     async def test_drain_returns_batch_report(self, client: TestClient, runtime: Runtime) -> None:

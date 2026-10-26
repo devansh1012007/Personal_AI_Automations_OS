@@ -176,7 +176,10 @@ class ContextCompactor:
         3. character-level truncation of what remains, with a marker.
 
         The result is guaranteed to satisfy ``estimate(result) <= max_tokens``
-        and ``len(result) <= len(text)``.
+        and, when no ``summarizer`` is injected, ``len(result) <= len(text)``.
+        With a summarizer, its output is passed through as-is even if longer
+        than the input — non-expansion is waived for that path (see
+        :meth:`compact`).
 
         Only stages 1 and 2 return a :meth:`compact` fixed point. Stage 3 can
         cut inside a construct that the reducer would then rewrite, so the

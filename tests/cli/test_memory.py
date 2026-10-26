@@ -160,6 +160,9 @@ class TestDrain:
             "facts_written",
         ):
             assert counter in result.stdout, result.stdout
+        # All counters should be zero on an empty backlog; each counter column
+        # prints its cell value, so at least seven "0" digits must appear.
+        assert result.stdout.count("0") >= 7, result.stdout
 
     def test_processes_a_seeded_signal(self, paa_home: Path) -> None:
         asyncio.run(
@@ -178,8 +181,19 @@ class TestDrain:
         )
         result = _invoke(["drain", "--limit", "25"])
         assert result.exit_code == 0, result.output
-        assert "processed" in result.stdout
-        assert "facts_written" in result.stdout
+
+        async def _query() -> list[Any]:
+            db = await _connect_db(paa_home)
+            try:
+                return await db.fetch_all(
+                    "SELECT id FROM hot_serving_active_facts "
+                    "WHERE object_value = 'active'"
+                )
+            finally:
+                await db.close()
+
+        rows = asyncio.run(_query())
+        assert rows, "no facts written — drain did not persist"
 
     def test_drain_uses_llm_creator_when_extraction_model_set(
         self, paa_home: Path, monkeypatch: pytest.MonkeyPatch
@@ -256,10 +270,13 @@ class TestSignals:
         assert "no signals" in result.stdout
 
     def test_filters_by_status(self, paa_home: Path) -> None:
-        asyncio.run(_seed_signal(paa_home, {"facts": []}))
+        signal_id = asyncio.run(_seed_signal(paa_home, {"facts": []}))
         result = _invoke(["signals", "--status", "unprocessed"])
         assert result.exit_code == 0, result.output
         assert "unprocessed" in result.stdout
+        # Exactly one row: the seeded signal's short id appears once.
+        assert signal_id[:8] in result.stdout, result.stdout
+        assert result.stdout.count(signal_id[:8]) == 1, result.stdout
 
 
 class TestWorldModel:
