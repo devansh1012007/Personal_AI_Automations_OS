@@ -141,7 +141,7 @@ def create_app(runtime: Runtime) -> FastAPI:
                 cid, approved=body.approved, note=body.note
             )
         except PaaError as exc:
-            raise HTTPException(status_code=409, detail=redact(str(exc))) from exc
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return await task_status(correlation_id)
 
     @app.post("/tasks/{correlation_id}/correction", status_code=202)
@@ -228,7 +228,7 @@ def create_app(runtime: Runtime) -> FastAPI:
         try:
             facts = await FactRepository(runtime.db).search_facts_by_text(query=q)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=redact(str(exc))) from exc
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return [
             FactView(
                 id=f.id,
@@ -253,12 +253,12 @@ def create_app(runtime: Runtime) -> FastAPI:
         try:
             signals = await repo.list(status=status, limit=50)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=redact(str(exc))) from exc
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return [
             SignalView(
                 id=s.id,
                 channel=s.channel,
-                external_id=s.external_id,
+                external_id=s.external_id or "-",
                 sync_status=s.sync_status,
                 received_at=s.received_at.isoformat(),
                 processed_at=s.processed_at.isoformat() if s.processed_at else None,
