@@ -127,12 +127,8 @@ def test_summarizer_parameter_is_keyword_only() -> None:
     param = sig.parameters["summarizer"]
     assert param.kind is param.KEYWORD_ONLY
     # A positional call must raise TypeError, proving keyword-only enforcement.
-    try:
+    with pytest.raises(TypeError):
         ContextCompactor(lambda x: x)
-    except TypeError:
-        pass
-    else:
-        raise AssertionError("summarizer should be keyword-only")
 
 
 def test_repr_unchanged_when_summarizer_absent() -> None:
