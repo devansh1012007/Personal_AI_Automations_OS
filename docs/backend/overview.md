@@ -10,17 +10,17 @@ the CLI and API are both thin edges over the same `Runtime` object
 
 | Entry point | File | What it does |
 |---|---|---|
-| `paa submit "goal"` | `src/paa/cli/main.py:73` | Builds a `Runtime`, submits a task, optionally runs it to completion, then closes |
+| `paa submit "goal"` | `src/paa/cli/main.py:74` | Builds a `Runtime`, submits a task, optionally runs it to completion, then closes |
 | `paa run <id>` | `src/paa/cli/main.py:89` | Drives an already-submitted task to a terminal state |
-| `paa status <id>` | `src/paa/cli/main.py:118` | Shows the replayed projection of a task |
+| `paa status <id>` | `src/paa/cli/main.py:119` | Shows the replayed projection of a task |
 | `paa ledger <id>` | `src/paa/cli/main.py:134` | Walks a task's event chain (explainability) |
 | `paa gate <id> --approve/--reject` | `src/paa/cli/main.py:164` | Clears a task parked on a human gate |
-| `paa recover` | `src/paa/cli/main.py:190` | Runs the post-crash boot sweep |
-| `paa doctor` | `src/paa/cli/main.py:224` | Reports which backends/sandbox are actually live |
+| `paa recover` | `src/paa/cli/main.py:191` | Runs the post-crash boot sweep |
+| `paa doctor` | `src/paa/cli/main.py:225` | Reports which backends/sandbox are actually live |
 | `paa serve [host] [port]` | `src/paa/cli/main.py:248` | Starts FastAPI API + background daemon over one shared runtime |
 | `paa agent "prompt"` | `src/paa/cli/coder.py:44` | Tool-using coder loop over the runtime |
 | `paa tui` | `src/paa/cli/main.py:307` | Interactive dashboard |
-| `Runtime.build()` | `src/paa/runtime.py:251` | Programmatic composition root (used by all edges) |
+| `Runtime.build()` | `src/paa/runtime.py:260` | Programmatic composition root (used by all edges) |
 
 ## Backend module responsibilities
 
@@ -43,7 +43,7 @@ the CLI and API are both thin edges over the same `Runtime` object
 The backend is **single-process, single-user, single-machine**. There is no
 authentication, no multi-tenancy, no distributed consensus. `api_host` is
 enforced loopback unless `PAA_ALLOW_NON_LOOPBACK=1`
-(`config.py:409`).
+(`config.py:410`).
 
 ## Request flow into the backend
 
@@ -51,7 +51,7 @@ There is no HTTP "business" API surface beyond ingestion. The backend is driven
 by:
 
 1. **CLI one-shot commands** — each builds a `Runtime` (`Runtime.build()`),
-   performs one operation, prints, and closes (`cli/main.py:51`).
+   performs one operation, prints, and closes (`cli/main.py:53`).
 2. **`paa serve`** — builds one `Runtime`, starts a `Daemon` and a FastAPI app
    over it (`cli/main.py:254`). The API delegates to the same `Runtime`.
 3. **Programmatic `Runtime`** — `async with await Runtime.build() as rt:

@@ -1,0 +1,4 @@
+W2-IMPL-01	src/paa/config.py
+W2-IMPL-01	tests/memory/test_llm_extractor.py
+W2-IMPL-02	src/paa/runtime.py
+W2-IMPL-02	tests/daemon/test_drain_e2e.py

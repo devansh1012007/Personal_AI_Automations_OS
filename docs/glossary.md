@@ -151,7 +151,7 @@ Branches: `POLICY_BLOCKED / SECURITY_VIOLATION` (terminal blocked),
   modality) / SHEDDING (refuse discretionary ingestion, HTTP 429). Control-plane
   streams always accepted. `src/paa/storage/queue/backpressure.py:77`.
 - **Daemon** — Dispatch, ingestion, and maintenance loops over one shared runtime;
-  boot recovery runs first. `src/paa/daemon.py:42`.
+  boot recovery runs first. `src/paa/daemon.py:44`.
 - **Recovery / boot sweep** — Replays open lineages from the ledger (never the
   queue), reconciles the workspace against a checksum manifest, restores drift,
   re-queues resumable tasks, parks human-gated tasks. `src/paa/ledger/recovery.py`.

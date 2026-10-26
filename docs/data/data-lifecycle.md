@@ -178,7 +178,7 @@ enters the sandbox.
 the `patch` in the step output (`reasoning.py:469`).
 
 ### Validation
-`CriticValidatorAdapter` (`runtime.py:65`) adapts `DeterministicValidationEngine`
+`CriticValidatorAdapter` (`runtime.py:66`) adapts `DeterministicValidationEngine`
 (`validation/engine.py:208`) to the critic's call shape. Checks in order:
 schema → AST security scan → patch dry-run (`UnifiedDiffValidator.dry_run`,
 `validation/patch.py:467`) → workspace drift → tests (runs last, only inside
@@ -233,7 +233,7 @@ provided by ledger idempotency, not the queue.
 
 ## 7. Configuration data lifecycle
 
-`Settings` is built once (`get_settings()`, `lru_cache`d, `config.py:489`).
+`Settings` is built once (`get_settings()`, `lru_cache`d, `config.py:490`).
 `.env` is read from CWD at construction; provider API keys resolved via
 `dotenv_value` without touching `os.environ` (`config.py:460`). `PAA_HOME`
 changes require `reset_settings_cache()`. `ensure_directories()` creates all

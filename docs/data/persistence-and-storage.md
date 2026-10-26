@@ -99,7 +99,7 @@ Embeddings (`models/embeddings.py` → `storage/vector/embeddings.py`):
 Collections (`store.py`): `ACTIVE_FACTS` and `RFC_COLLECTIONS`.
 
 Consumers: `Runtime._try_vector` (`runtime.py:351`), `MemoryCreator` (embeds
-new facts, `creator.py:654`), context gatherer semantic search
+new facts, `creator.py:655`), context gatherer semantic search
 (`context_agents.py:182`).
 
 ## 4. Graph — `src/paa/storage/graph/`
@@ -131,9 +131,9 @@ Configuration: `StorageSettings.backend_queue`, `StorageSettings.redis_url`
 SHEDDING decision on queue depth; control-plane streams always accepted.
 
 Consumers: `Runtime` (`runtime.py:373`), `ChiefOrchestrator.submit` enqueues
-(`orchestrator.py:233`), daemon dispatch claims (`daemon.py:129`),
+(`orchestrator.py:233`), daemon dispatch claims (`daemon.py:130`),
 recovery requeue (`recovery.py:437`), API backpressure gate
-(`api/app.py:198`).
+(`api/app.py:199`).
 
 ## 6. Writes, transactions, and durability
 
@@ -151,7 +151,7 @@ recovery requeue (`recovery.py:437`), API backpressure gate
 Every optional-backend factory (`_try_vector`, `_try_graph`, `_try_queue`,
 `get_blob_store`) catches `Exception` and returns `None`/fallback with a logged
 warning — never raises for a missing optional backend in `auto` mode
-(`runtime.py:381`–`:387`). The runtime must boot on a laptop with only core
+(`runtime.py:392`–`:398`). The runtime must boot on a laptop with only core
 dependencies installed (`AGENTS.md:60`).
 
 Degradation impact:

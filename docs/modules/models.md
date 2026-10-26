@@ -15,7 +15,7 @@
 Provider-agnostic and local-first with explicit, ledger-logged escalation
 (ADR-0007/0015). Swapping the model is a config change, not a rewrite
 (`models/base.py:13`). The model seam is `ModelLike.complete_structured(prompt,
-schema)`; `RouterModelAdapter` (`runtime.py:108`) and `RouterToolCallingModel`
+schema)`; `RouterModelAdapter` (`runtime.py:109`) and `RouterToolCallingModel`
 (`coder/model_adapter.py:123`) are the only two places that know about
 `EscalatingModelRouter`.
 
@@ -101,7 +101,7 @@ resolution; the undocumented tolerance that fallback carried (a
 
 | Component | Relationship | Why | Source |
 |---|---|---|---|
-| `RouterModelAdapter` → `EscalatingModelRouter` | `complete_structured()` | Bridge agents' ModelLike to router | `runtime.py:131` |
+| `RouterModelAdapter` → `EscalatingModelRouter` | `complete_structured()` | Bridge agents' ModelLike to router | `runtime.py:132` |
 | `Reasoning agents` → `ModelLike` | `complete_structured()` | Model seam | `reasoning.py:26` |
 | `Router` → local/frontier `ModelProvider` | `complete/complete_structured` | Inference + escalation | `router.py:401`, `:436` |
 | `Router` → `LedgerStore` | `append(MODEL_ESCALATED)` | Audit escalation | `router.py:654` |

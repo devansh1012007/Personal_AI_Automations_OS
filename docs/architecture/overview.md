@@ -82,7 +82,7 @@ Runtime.build()
   └─ ChiefOrchestrator
 ```
 
-`src/paa/runtime.py:251`.
+`src/paa/runtime.py:260`.
 
 ### 2. Optional backends degrade; they never raise
 
@@ -93,7 +93,7 @@ Each is attempted inside `_try_vector` / `_try_graph` / `_try_queue` /
 in-process fallback with a logged warning. The runtime must boot on a laptop
 with only core dependencies installed.
 
-`src/paa/runtime.py:349`, `:362`, `:372`, `:382`.
+`src/paa/runtime.py:359`, `:372`, `:383`, `:393`.
 
 ### 3. No generative reasoning in the control path
 
@@ -184,7 +184,7 @@ not by prohibiting peer calls.
   `reset_settings_cache()`.
 - `api_host` is enforced loopback unless `PAA_ALLOW_NON_LOOPBACK=1`.
 
-`src/paa/config.py:1`, `:381`, `:460`, `:489`.
+`src/paa/config.py:1`, `:381`, `:460`, `:490`.
 
 ## Known deviations from the RFC (selected)
 
