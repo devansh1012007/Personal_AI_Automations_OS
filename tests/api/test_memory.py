@@ -67,8 +67,15 @@ async def _seed_signal(
     sync_status: str = "unprocessed",
     payload: dict[str, Any] | None = None,
     external_id: str | None = None,
+    processed_at: str | None = None,
+    error_detail: str | None = None,
 ) -> str:
-    """Insert one cold-lake signal row (inline payload, no CAS)."""
+    """Insert one cold-lake signal row (inline payload, no CAS).
+
+    ``processed_at`` and ``error_detail`` default to NULL so existing callers
+    (which seed unprocessed signals) keep their current shape; pass concrete
+    values to seed a processed/failed signal and assert its round-trip.
+    """
     signal_id = str(uuid4())
     now = _iso()
     raw = json.dumps(payload or {"k": "v"})
@@ -76,7 +83,7 @@ async def _seed_signal(
         "INSERT INTO cold_lake_signals "
         "(id, received_at, channel, external_id, raw_payload, content_hash, "
         "blob_uri, sync_status, processed_at, error_detail) "
-        "VALUES (?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL)",
+        "VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)",
         (
             signal_id,
             now,
@@ -85,6 +92,8 @@ async def _seed_signal(
             raw,
             sha256(raw.encode()).hexdigest(),
             sync_status,
+            processed_at,
+            error_detail,
         ),
     )
     return signal_id
@@ -223,6 +232,37 @@ class TestSignals:
         """An unknown sync_status is rejected with HTTP 400, not a 500."""
         resp = client.get("/memory/signals", params={"status": "bogus-status"})
         assert resp.status_code == 400, resp.text
+
+    async def test_signals_processed_at_and_error_detail_round_trip(
+        self, client: TestClient, runtime: Runtime
+    ) -> None:
+        """A processed signal's processed_at and error_detail round-trip non-null.
+
+        Seeds a signal with a concrete processed_at timestamp and error_detail
+        string, then asserts both come back through GET /memory/signals exactly
+        as stored (not NULL). Reversal: without the route populating
+        processed_at/error_detail from the row, these would be null.
+        """
+        processed_at = "2026-01-15T09:30:00+00:00"
+        error_detail = "provider returned 429; retry scheduled"
+        signal_id = await _seed_signal(
+            runtime,
+            sync_status="processed",
+            processed_at=processed_at,
+            error_detail=error_detail,
+        )
+
+        resp = client.get("/memory/signals")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert isinstance(body, list)
+        ids = {s["id"] for s in body}
+        assert signal_id in ids, f"seeded signal not in response: {ids}"
+        returned = next(s for s in body if s["id"] == signal_id)
+        assert returned["processed_at"] == processed_at
+        assert returned["error_detail"] == error_detail
+        assert returned["processed_at"] is not None
+        assert returned["error_detail"] is not None
 
 
 class TestDrain:
