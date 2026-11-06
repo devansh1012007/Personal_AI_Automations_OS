@@ -27,7 +27,7 @@
 
 - Wave 0 — Investigation (read-only, 3 investigators). Status: DONE (3 reports, all DONE, confidence high).
 - Wave 1 — T-001+T-002 (`runtime.py`, `memory/creator.py` incl. C01b payload alignment). Status: CLOSED. Code c5766c8 + improve e966b68 + docs-fix 5b8d6ee. Reviews: REV APPROVE-WITH-CHANGES (1 MAJOR), TREV APPROVE-WITH-CHANGES (3 MAJOR) → improver FIXED 13/REJECTED 2/DEFERRED 1 (+R-W1-DOCS fix 17 citations) → delta APPROVE (0 BLOCKER/MAJOR). Gate gate-w1-2 green vs baseline. Operator docs commits f8c12a6/aee3810 on-branch during run (docs only, no source conflict); VISION.md has uncommitted operator edit at wave close (left untouched).
-- Wave 2 — T-003+T-004 (recall paths + `daemon.py`). Status: pending Wave 1 review.
+- Wave 2 — T-003+T-004 (recall paths + `daemon.py`). Status: CLOSED. Code 3506e30 T-003 + 70dd91f T-004 + improve 2c72f96 + docs-fix 1541e0b. Reviews: REV APPROVE-WITH-CHANGES (2 MAJOR), TREV APPROVE-WITH-CHANGES (3 MAJOR) → improver FIXED 10/DEFERRED 4 → delta APPROVE-WITH-CHANGES (0 BLOCKER/MAJOR, 2 MINOR: R-W2-D-01 fallback bypasses preview on construction failure, R-W2-D-02 preview flag consumed by partial preview — DEFERRED to Wave 4). Gate gate-w2-2 green vs baseline. Operator README/VISION commits 90e1aae/88124f2 on-branch (docs only).
 - Wave 3 — T-005+T-006 (`creator.py` extractor + `config.py`/`decay.py`). Status: pending.
 - Wave 4 — T-007 e2e + observability. Status: pending.
 
