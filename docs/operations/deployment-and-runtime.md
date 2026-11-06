@@ -26,7 +26,7 @@ live-server run still needs a pass (parity + backend verification pending).
 
 ## Runtime startup
 
-Programmatic: `Runtime.build()` (`src/paa/runtime.py:251`):
+Programmatic: `Runtime.build()` (`src/paa/runtime.py:260`):
 1. `Settings()` → `ensure_directories()` creates all state dirs
    (`config.py:450`).
 2. `Database` connects + applies `schema_sqlite.sql`.
@@ -34,7 +34,7 @@ Programmatic: `Runtime.build()` (`src/paa/runtime.py:251`):
 4. Model router built (or a `model_adapter` injected); `RouterModelAdapter`
    wraps it.
 5. Optional backends: `_try_vector`, `_try_graph`, `_try_queue` — degrade, never
-   raise (`runtime.py:381`–`:387`).
+   raise (`runtime.py:392`–`:398`).
 6. `_build_agents()` constructs planner, policy, worker, critic, context
    builders, router (`runtime.py:407`).
 7. `_acquire_sandbox()` — 5s probe, falls back to subprocess (`runtime.py:382`).
@@ -43,12 +43,12 @@ Programmatic: `Runtime.build()` (`src/paa/runtime.py:251`):
    (`runtime.py:331`).
 
 CLI one-shot commands build a `Runtime`, do one thing, print, and close
-(`cli/main.py:51`). `paa serve` builds one `Runtime`, starts the `Daemon` and
+(`cli/main.py:53`). `paa serve` builds one `Runtime`, starts the `Daemon` and
 FastAPI app over it (`cli/main.py:254`).
 
 ## Daemon loops
 
-`Daemon(runtime)` (`src/paa/daemon.py:42`):
+`Daemon(runtime)` (`src/paa/daemon.py:44`):
 - Boot recovery first, before any new work is accepted (`daemon.py:64`).
 - Dispatch loop (0.5s): claims `StreamName.ORCHESTRATOR_CORE` messages, runs via
   `runtime.run(cid)`, `ack`/`nack` (`daemon.py:116`).
@@ -83,9 +83,9 @@ All state under `PAA_HOME` (default `~/.paa`, outside the repo):
 ## Health / observability
 
 - `paa doctor` reports live backends and sandbox isolation level
-  (`cli/main.py:224`).
+  (`cli/main.py:225`).
 - `GET /health` returns backend type names and open task count
-  (`api/app.py:67`).
+  (`api/app.py:68`).
 - `src/paa/observability/` (logging, metrics, tracing, runs) is built but
   **untested** — exercised nowhere (`AGENTS.md:97`).
 

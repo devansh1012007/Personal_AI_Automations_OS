@@ -27,11 +27,20 @@ reduction no longer changes.
 characters or replaces a separator with a shorter-or-equal one, and truncation
 accounts for its own marker. A "compactor" that can grow its input would be a
 denial-of-service vector on the one path that exists to prevent one.
+
+**Opt-in LLM summarisation.** The three reasons above still hold, so the
+mechanical path remains the default and is fully deterministic. An optional
+``summarizer`` callable (``str -> str``) can be injected at construction; when
+provided, :meth:`ContextCompactor.compact` invokes it exactly once on the
+mechanical fixed point and returns its output. With no summarizer (the default)
+nothing changes: every guarantee above holds unconditionally, and the output is
+purely mechanical.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from typing import Final
 
 import structlog
@@ -70,12 +79,19 @@ _HORIZONTAL_WS = re.compile(r"[^\S\n]+")
 
 
 class ContextCompactor:
-    """Mechanical, non-LLM text reduction.
+    """Mechanical, non-LLM text reduction with an optional LLM summarizer.
 
     Stateless after construction; one instance is safe to share.
+
+    By default (``summarizer=None``) reduction is purely mechanical and
+    deterministic, as the module docstring requires. When a ``summarizer``
+    callable (``str -> str``) is injected, :meth:`compact` runs the mechanical
+    reduction to a fixed point and then invokes the summarizer exactly once on
+    that result, returning its output. The summarizer is opt-in: nothing about
+    the mechanical path changes when it is absent.
     """
 
-    __slots__ = ("ellipsis", "estimator", "max_line_chars")
+    __slots__ = ("ellipsis", "estimator", "max_line_chars", "summarizer")
 
     def __init__(
         self,
@@ -84,6 +100,7 @@ class ContextCompactor:
         estimator: TokenEstimator | None = None,
         max_line_chars: int = DEFAULT_MAX_LINE_CHARS,
         ellipsis: str = DEFAULT_ELLIPSIS,
+        summarizer: Callable[[str], str] | None = None,
     ) -> None:
         """
         :param settings: context tuning, for the default estimator's
@@ -94,6 +111,10 @@ class ContextCompactor:
         :param max_line_chars: lines longer than this are truncated. Must leave
             room for the marker, otherwise truncation could not shorten a line.
         :param ellipsis: truncation marker.
+        :param summarizer: optional LLM-backed summarizer (``str -> str``).
+            When provided, :meth:`compact` invokes it exactly once on the
+            mechanical fixed point and returns its output. When ``None``
+            (default) the compactor is purely mechanical and deterministic.
         """
         if isinstance(max_line_chars, bool) or not isinstance(max_line_chars, int):
             raise ValueError(f"max_line_chars must be an int, got {type(max_line_chars).__name__}")
@@ -104,6 +125,7 @@ class ContextCompactor:
             )
         self.max_line_chars = max_line_chars
         self.ellipsis = ellipsis
+        self.summarizer = summarizer
         self.estimator = (
             estimator if estimator is not None else CharEstimator.from_settings(settings)
         )
@@ -125,14 +147,21 @@ class ContextCompactor:
         ``len(text)`` further passes. Real inputs converge in two or three; the
         bound exists so that convergence is a guarantee rather than an
         expectation.
+
+        If a ``summarizer`` callable was injected at construction, it is
+        invoked exactly once on the mechanical fixed point and its output is
+        returned. With no summarizer (the default) this method is purely
+        mechanical and deterministic, exactly as before.
         """
         current = text
         for _ in range(len(text) + 2):
             nxt = self._reduce_once(current)
             if nxt == current:
-                return current
+                break
             current = nxt
-        return current  # pragma: no cover — unreachable given the bound above
+        if self.summarizer is not None:
+            return self.summarizer(current)
+        return current
 
     def compact_to_budget(self, text: str, max_tokens: int) -> str:
         """Reduce ``text`` until the estimator says it fits in ``max_tokens``.
@@ -147,7 +176,10 @@ class ContextCompactor:
         3. character-level truncation of what remains, with a marker.
 
         The result is guaranteed to satisfy ``estimate(result) <= max_tokens``
-        and ``len(result) <= len(text)``.
+        and, when no ``summarizer`` is injected, ``len(result) <= len(text)``.
+        With a summarizer, its output is passed through as-is even if longer
+        than the input — non-expansion is waived for that path (see
+        :meth:`compact`).
 
         Only stages 1 and 2 return a :meth:`compact` fixed point. Stage 3 can
         cut inside a construct that the reducer would then rewrite, so the

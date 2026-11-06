@@ -23,7 +23,7 @@ No tracked files were modified during this audit.
 | Runtime composition | **Partially supported** | `src/paa/runtime.py:232-345` wires the built-in runtime, but `Runtime.build()` accepts no pipeline registry, pipeline implementation, or arbitrary loop host. |
 | Planner/worker/policy/critic chain | **Working** | `src/paa/agents/orchestrator.py:542-811`; tests in `tests/agents/test_orchestrator.py:64-210` cover ordering, policy blocking, retry, gates, and resumed steps. |
 | Deterministic permissions and risk checks | **Working** | `src/paa/agents/policy.py:122-183`; policy is model-independent and covers permissions, lockdown/network, irreversible operations, protected paths, operator rules, and anti-goals. |
-| Worker sandbox and validation | **Working on the built-in path** | `src/paa/runtime.py:437-482` composes `CriticValidatorAdapter`, `DeterministicValidationEngine`, sandbox, and `WorkerCell`. |
+| Worker sandbox and validation | **Working on the built-in path** | `src/paa/runtime.py:479-524` composes `CriticValidatorAdapter`, `DeterministicValidationEngine`, sandbox, and `WorkerCell`. |
 | Append-only ledger | **Working** | `src/paa/ledger/store.py:102-166` performs idempotency, state versioning, hash chaining, event insertion, and head projection atomically. |
 | Replay and recovery | **Working for ledger-aware orchestrator tasks** | `src/paa/ledger/recovery.py:226-304` and `:354-414`; `tests/ledger/test_recovery.py:71-431` covers recovery, idempotence, gates, drift rollback, and process death. |
 | Delegation/recursion protection | **Working** | `src/paa/agents/base.py` and orchestrator delegation mediation around `src/paa/agents/orchestrator.py:640+`. |

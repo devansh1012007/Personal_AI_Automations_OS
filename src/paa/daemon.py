@@ -28,6 +28,8 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from paa.models.base import redact
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -99,8 +101,8 @@ class Daemon:
                 await loop()
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                log.exception("daemon.loop_crashed", loop=name)
+            except Exception as exc:
+                log.error("daemon.loop_crashed", loop=name, error=redact(str(exc)))
                 await self._sleep(1.0)
 
     async def _sleep(self, seconds: float) -> None:
@@ -135,8 +137,8 @@ class Daemon:
                     await self._rt.run(cid)
                 await self._rt.queue.ack(msg.id)
             except Exception as exc:
-                log.error("daemon.task_failed", correlation_id=cid, error=str(exc))
-                await self._rt.queue.nack(msg.id, str(exc))
+                log.error("daemon.task_failed", correlation_id=cid, error=redact(str(exc)))
+                await self._rt.queue.nack(msg.id, redact(str(exc)))
         return len(messages)
 
     async def _ingestion_loop(self) -> None:
@@ -148,7 +150,7 @@ class Daemon:
                     report = await creator.run_batch(limit=25)
                     processed = report.claimed
                 except Exception as exc:
-                    log.error("daemon.ingestion_failed", error=str(exc))
+                    log.error("daemon.ingestion_failed", error=redact(str(exc)))
             await self._sleep(0 if processed else self._ingestion_interval)
 
     async def _maintenance_loop(self) -> None:
@@ -162,7 +164,7 @@ class Daemon:
 
                 await DecaySweeper(self._rt.db).sweep()
             except Exception as exc:
-                log.error("daemon.maintenance_failed", error=str(exc))
+                log.error("daemon.maintenance_failed", error=redact(str(exc)))
             await self._sleep(self._maintenance_interval)
 
     # -- collaborators -----------------------------------------------------
@@ -176,7 +178,7 @@ class Daemon:
         try:
             from paa.memory.creator import MemoryCreator
 
-            return MemoryCreator(self._rt.db)
+            return self._rt.memory_creator or MemoryCreator(self._rt.db)
         except Exception as exc:
-            log.warning("daemon.memory_creator_unavailable", error=str(exc))
+            log.warning("daemon.memory_creator_unavailable", error=redact(str(exc)))
             return None

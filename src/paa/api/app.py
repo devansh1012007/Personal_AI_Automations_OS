@@ -38,6 +38,7 @@ from paa.api.schemas import (
     TaskStatusResponse,
     TaskSubmitResponse,
 )
+from paa.models.base import redact
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -140,7 +141,7 @@ def create_app(runtime: Runtime) -> FastAPI:
                 cid, approved=body.approved, note=body.note
             )
         except PaaError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise HTTPException(status_code=409, detail=redact(str(exc))) from exc
         return await task_status(correlation_id)
 
     @app.post("/tasks/{correlation_id}/correction", status_code=202)
@@ -195,6 +196,86 @@ def create_app(runtime: Runtime) -> FastAPI:
             duplicate=pre_existing is not None,
         )
 
+    # -- memory recall ----------------------------------------------------
+    from paa.api.schemas import BatchReportView, FactView, SignalView
+    from paa.memory.creator import MemoryCreator
+    from paa.memory.facts import FactRepository
+
+    @app.get("/memory/facts", response_model=list[FactView])
+    async def list_facts(entity: str | None = None) -> list[FactView]:
+        """Live facts for an entity, ranked by effective confidence."""
+        if not await _admit(runtime, essential=False):
+            raise HTTPException(status_code=429, detail="memory under backpressure")
+        facts = await FactRepository(runtime.db).query_facts(entity_id=entity)
+        return [
+            FactView(
+                id=f.id,
+                entity_id=f.entity_id,
+                predicate=f.predicate,
+                object_value=f.object_value,
+                confidence=f.confidence,
+                domain=f.domain,
+                source_signal_id=f.source_signal_id,
+            )
+            for f in facts
+        ]
+
+    @app.get("/memory/search", response_model=list[FactView])
+    async def search_facts(q: str) -> list[FactView]:
+        """Keyword fallback over fact predicates and object values."""
+        if not await _admit(runtime, essential=False):
+            raise HTTPException(status_code=429, detail="memory under backpressure")
+        try:
+            facts = await FactRepository(runtime.db).search_facts_by_text(query=q)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=redact(str(exc))) from exc
+        return [
+            FactView(
+                id=f.id,
+                entity_id=f.entity_id,
+                predicate=f.predicate,
+                object_value=f.object_value,
+                confidence=f.confidence,
+                domain=f.domain,
+                source_signal_id=f.source_signal_id,
+            )
+            for f in facts
+        ]
+
+    @app.get("/memory/signals", response_model=list[SignalView])
+    async def list_signals(status: str | None = None) -> list[SignalView]:
+        """Cold-lake signals, optionally filtered by sync_status."""
+        if not await _admit(runtime, essential=False):
+            raise HTTPException(status_code=429, detail="memory under backpressure")
+        repo = _signal_repo(runtime)
+        if repo is None:
+            raise HTTPException(status_code=503, detail="cold lake not configured")
+        try:
+            signals = await repo.list(status=status, limit=50)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=redact(str(exc))) from exc
+        return [
+            SignalView(
+                id=s.id,
+                channel=s.channel,
+                external_id=s.external_id,
+                sync_status=s.sync_status,
+                received_at=s.received_at.isoformat(),
+                processed_at=s.processed_at.isoformat() if s.processed_at else None,
+                error_detail=s.error_detail,
+            )
+            for s in signals
+        ]
+
+    @app.post("/memory/drain", response_model=BatchReportView, status_code=200)
+    async def drain_memory(limit: int = 25) -> BatchReportView:
+        """Run one MemoryCreator batch over unprocessed cold-lake signals."""
+        if not await _admit(runtime, essential=False):
+            raise HTTPException(status_code=429, detail="memory under backpressure")
+        creator = runtime.memory_creator or MemoryCreator(runtime.db)
+        report = await creator.run_batch(limit=limit)
+        return BatchReportView(**report.summary())
+
     log.info("api.app_created", version=__version__)
     return app
 
@@ -241,7 +322,7 @@ def _signal_repo(runtime: Runtime) -> Any:
         cas = get_blob_store(runtime.settings.storage)
         return SignalRepository(runtime.db, cas)
     except Exception as exc:
-        log.warning("api.signal_repo_unavailable", error=str(exc))
+        log.warning("api.signal_repo_unavailable", error=redact(str(exc)))
         return None
 
 

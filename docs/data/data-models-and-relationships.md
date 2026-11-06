@@ -135,7 +135,7 @@ be fully established.
 `HEARTBEAT_PING`, `RETRY_FAILED`, `DEAD_LETTER_POISON`.
 
 `ORCHESTRATOR_CORE` is the control-plane stream the orchestrator and daemon use
-(`orchestrator.py:233`, `daemon.py:129`).
+(`orchestrator.py:233`, `daemon.py:130`).
 
 ## 4. Marketplace tables
 

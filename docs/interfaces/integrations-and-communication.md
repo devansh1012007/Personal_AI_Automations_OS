@@ -50,7 +50,7 @@ Provider keys are **not** `Settings` fields; they are named per registry row
 Default routing: `ModelSettings.local_provider="ollama"`, `local_model=
 "qwen2.5:3b-instruct"`, `local_base_url="http://127.0.0.1:11434"`;
 `escalation_provider="anthropic"`, `escalation_model="claude-sonnet-5"`,
-`escalation_api_key_env="ANTHROPIC_API_KEY"` (`config.py:298`–`:311`).
+`escalation_api_key_env="ANTHROPIC_API_KEY"` (`config.py:512`–`:514`).
 
 ### Structured output
 Every structured call is validated via `validate_against_schema` (pure-Python
@@ -123,7 +123,7 @@ uvicorn over the FastAPI app plus the daemon loops over one shared runtime
 - Structured output: `max_retries` repair attempts per provider (`models/base.py:906`).
 - Task step: `max_step_retries=2` per step (`orchestrator.py:108`); `EXECUTION_STARTED`
   uses `attempt` + `discriminator="step-N"` for idempotency.
-- Queue: `max_delivery_attempts=3`, `visibility_timeout_seconds=300` (`config.py:550`).
+- Queue: `max_delivery_attempts=3`, `visibility_timeout_seconds=300` (`config.py:562`).
 - Ledger: idempotency key suppresses duplicate redelivery; `attempt` permits
   genuine retries (`events.py:68`).
 

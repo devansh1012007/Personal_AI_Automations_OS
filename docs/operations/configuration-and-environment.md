@@ -7,7 +7,7 @@ read from the current working directory.
 ## Configuration precedence
 
 **explicit kwargs > environment (`PAA_*`) > `.env` file > defaults**
-(`config.py:7`). `get_settings()` is `lru_cache`d (`config.py:489`); callers
+(`config.py:7`). `get_settings()` is `lru_cache`d (`config.py:490`); callers
 that change `PAA_HOME` must call `reset_settings_cache()` (`config.py:495`).
 
 ## Two-layer .env reading
@@ -219,7 +219,7 @@ Provider `api_key_env` tuples are defined per row in `registry.py:_SPECS`
 1. `uv venv --python 3.12 && uv pip install -e ".[dev]"` (`AGENTS.md:8`).
 2. Optionally `cp .env.example .env` and set provider keys.
 3. `.venv/bin/python -m pytest tests/ -q` (`AGENTS.md:11`).
-4. `paa doctor` to confirm which backends are actually live (`cli/main.py:224`).
+4. `paa doctor` to confirm which backends are actually live (`cli/main.py:225`).
 
 ## Deployment vs development
 
@@ -233,7 +233,7 @@ Provider `api_key_env` tuples are defined per row in `registry.py:_SPECS`
 
 ## Validation
 
-- `SettingsConfigDict(validate_default=True)` (`config.py:585`) — defaults are
+- `SettingsConfigDict(validate_default=True)` (`config.py:586`) — defaults are
   validated too.
 - `extra="ignore"` — unknown `PAA_*` fields are ignored, not errors
   (`config.py:389`).

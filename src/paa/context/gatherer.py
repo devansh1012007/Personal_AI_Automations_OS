@@ -21,7 +21,7 @@ in production. All four are fixed here and each fix is documented at its site:
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import Final, Literal
 
 import structlog
@@ -278,6 +278,14 @@ def _rank_key(
     return (tier, -(element.relevance * element.confidence), -element.importance, element.id)
 
 
+#: An optional injected re-ranker. Receives the mechanically-sorted pool as a
+#: single tuple ``(pool, required_slots, invariant_importance)`` and returns a
+#: re-ordered list whose sequence drives packing. When ``None`` the mechanical
+#: ranking from :func:`_rank_key` is used unchanged, so behaviour is fully
+#: deterministic and a model is never required.
+Ranker = Callable[[tuple[list[ContextElement], frozenset[str], float]], list[ContextElement]]
+
+
 # ---------------------------------------------------------------------------
 # Gatherer
 # ---------------------------------------------------------------------------
@@ -295,6 +303,7 @@ class BoundedContextGatherer:
         settings: ContextSettings | None = None,
         *,
         estimator: TokenEstimator | None = None,
+        ranker: Ranker | None = None,
     ) -> None:
         """
         :param settings: context tuning. Defaults to the process settings.
@@ -308,11 +317,18 @@ class BoundedContextGatherer:
             happens to have would break cross-machine ledger replay. Callers
             wanting exact BPE counts pass an estimator explicitly and accept
             that trade.
+        :param ranker: optional LLM-backed re-ranker. Receives the mechanically
+            sorted pool as ``(pool, required_slots, invariant_importance)`` and
+            returns a re-ordered list whose sequence drives packing. When
+            ``None`` (the default) the mechanical ranking from
+            :func:`_rank_key` is used unchanged, so behaviour is fully
+            deterministic and no model is required.
         """
         self.settings = settings if settings is not None else get_settings().context
         self.estimator = (
             estimator if estimator is not None else CharEstimator.from_settings(self.settings)
         )
+        self.ranker = ranker
 
     # -- public API --------------------------------------------------------
 
@@ -514,6 +530,13 @@ class BoundedContextGatherer:
         pool = self._candidate_pool(hot_facts, semantic_matches, blocked_domains)
         invariant_floor = self.settings.invariant_importance
         pool.sort(key=lambda element: _rank_key(element, required, invariant_floor))
+
+        # An injected ranker re-orders the mechanically-sorted pool. Its output
+        # sequence is what gets packed, so an LLM can surface relevance the
+        # mechanical score cannot see. When no ranker is injected the mechanical
+        # order stands unchanged.
+        if self.ranker is not None:
+            pool = self.ranker((pool, required, invariant_floor))
 
         selected, costs = self._pack(pool, ceiling)
 

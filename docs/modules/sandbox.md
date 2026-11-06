@@ -111,7 +111,7 @@ subprocess backend (`sandbox/base.py:26`).
 and takes first healthy; unreachable fallback raises `RuntimeError`
 (subprocess always healthy) (`:98`).
 
-### `_acquire_sandbox` (`runtime.py:420`)
+### `_acquire_sandbox` (`runtime.py:431`)
 A bounded probe (`asyncio.wait_for(..., timeout=_SANDBOX_PROBE_BOUND_SECONDS)`,
 30 s) then fallback to subprocess. The bound is deliberately **longer** than the
 Docker backend's own probe timeout (20 s), so the inner probe is what gives out
@@ -148,7 +148,7 @@ enforcement (ADR-0009); heartbeat liveness with miss tolerance
 |---|---|---|---|
 | `WorkerCell` → `Sandbox` | `run(spec)` | Execute step | `reasoning.py:456` |
 | `PytestRunner` → `Sandbox` | `run(spec)` | Run tests | `validation/test_runner.py` |
-| `Runtime._acquire_sandbox` → `get_sandbox` | select backend | Compose runtime | `runtime.py:420` |
+| `Runtime._acquire_sandbox` → `get_sandbox` | select backend | Compose runtime | `runtime.py:431` |
 | `ClawHubAdapter` → `Sandbox` | `run(SandboxSpec)` | Run skill entrypoint | `skills/adapters/claw_hub.py:458` |
 | `RecursionGuard` → `MODALITY_PROFILES` | read ceilings | Depth/node bounds | `recursion.py:137` |
 
