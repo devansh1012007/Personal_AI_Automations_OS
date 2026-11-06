@@ -1540,7 +1540,7 @@ class MemoryCreator:
             pending_count = await self._pending_embedding_count()
             log.error(
                 "memory.embedding_drain_failed",
-                error=str(exc),
+                error=redact(str(exc)),
                 batch_size=batch_size,
                 indexed=0,
                 backlog_remaining=pending_count > 0,

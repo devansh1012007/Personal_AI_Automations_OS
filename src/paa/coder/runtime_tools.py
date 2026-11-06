@@ -743,8 +743,10 @@ class _RecallFacts(_RuntimeTool):
         "Recall previously remembered facts. The query is matched against "
         "entity names first (exact, alias, then fuzzy), falling back to a "
         "keyword search over fact predicates and values. Confidence is "
-        "time-decayed. Facts are not embedded, so recall is keyword-based, "
-        "not semantic."
+        "time-decayed. This tool is keyword-based; semantic recall over "
+        "embedded vectors is planner-side over the shared vector store "
+        "(C01 wired the embedding sink, so facts are embedded where the "
+        "backends are live)."
     )
 
     def schema(self) -> dict[str, Any]:
@@ -805,8 +807,8 @@ class _RecallFacts(_RuntimeTool):
                 ],
                 "count": len(facts),
                 "note": (
-                    "semantic recall unavailable: facts are not embedded "
-                    "(no vector sink wired)"
+                    "keyword recall; semantic recall is planner-side over "
+                    "embedded vectors"
                 ),
             }
         )

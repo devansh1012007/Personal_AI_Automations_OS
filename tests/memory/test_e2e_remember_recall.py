@@ -229,10 +229,16 @@ async def test_recall_facts_synonym_only_miss(db: Database) -> None:
     # R-W4-T-03: pin the user-facing note's existence (lexical content is
     # deliberately flexible) so the stale "no vector sink wired" text in
     # runtime_tools.py cannot silently drift away without a test noticing
-    # the contract change. The note text fix itself lives outside this
-    # write-set (NEED posted; see report §12).
+    # the contract change.
     assert "note" in payload
     assert payload["note"]
+    assert "no vector sink wired" not in payload["note"]
+    # FINAL-01: the note must state the post-C01 truth — this tool is
+    # keyword-based and semantic recall is planner-side over embedded
+    # vectors — not that facts are unembedded. Reversal: restoring the
+    # stale note fails both assertions above.
+    assert "planner-side" in payload["note"]
+    assert "embedded vectors" in payload["note"]
 
 
 async def test_ignored_emits_info_signal_processed(db: Database) -> None:
@@ -765,3 +771,69 @@ async def test_drain_backlog_then_recall(tmp_path: Path) -> None:
     finally:
         await db2.close()
         await store2.close()
+
+
+async def test_paraphrase_recall_via_handle_advances_use_count(
+    tmp_path: Path,
+) -> None:
+    """FINAL-03: the flagship paraphrase path proves touch through handle().
+
+    The other e2e legs call ``builder._semantic(...)`` directly, which never
+    touches the fact — touch lives in ``handle()`` over ``packet.elements``
+    (context_agents.py:328). This test drives the real planner handle path
+    with the same paraphrase goal and asserts ``use_count`` advanced by one
+    for the delivered fact. Reversal: removing the touch call from
+    ``PlannerContextBuilder.handle`` fails the ``use_count == 1`` assertion
+    while the direct ``_semantic`` legs still pass.
+    """
+    from paa.agents.base import AgentContext, AgentMessage, MessageType
+    from paa.agents.context_agents import PlannerContextBuilder
+    from paa.core.types import ComplexityModality, PermissionMode
+    from paa.storage.vector import ACTIVE_FACTS, NumpyVectorStore
+
+    db_path = tmp_path / "handle_touch.db"
+    vec_path = tmp_path / "vectors"
+    embedder = _SynonymEmbedder()
+    assert embedder.dimensions == ACTIVE_FACTS.dimensions
+
+    db = Database(db_path)
+    await db.connect()
+    store = NumpyVectorStore(vec_path)
+    try:
+        await store.ensure_spec(ACTIVE_FACTS)
+        creator = MemoryCreator(db, embedding_sink=VectorEmbeddingSink(store, embedder))
+        result = await creator.process_signal(
+            _row({"facts": [{"subject": "Aurora", "predicate": "status", "object": "swift"}]})
+        )
+        assert result.outcome is ProcessingOutcome.PROCESSED
+        fact_id = result.facts_written[0]
+        before = await db.fetch_value(
+            "SELECT use_count FROM hot_serving_active_facts WHERE id = ?",
+            (fact_id,),
+        )
+        assert before == 0
+
+        builder = PlannerContextBuilder(db=db, vector_store=store, embedder=embedder)
+        message = AgentMessage(
+            task_id=uuid.uuid4(),
+            correlation_id=uuid.uuid4(),
+            sender="orchestrator",
+            recipient="context_builder_planner",
+            intent=MessageType.CONTEXT_REQUEST,
+            payload={"goal": "rapid state aurora"},
+        )
+        ctx = AgentContext(
+            correlation_id=uuid.uuid4(),
+            modality=ComplexityModality.STANDARD,
+            permission_mode=PermissionMode.AUTO,
+        )
+        handled = await builder.handle(message, ctx)
+        assert handled.ok
+        after = await db.fetch_value(
+            "SELECT use_count FROM hot_serving_active_facts WHERE id = ?",
+            (fact_id,),
+        )
+        assert after == 1
+    finally:
+        await db.close()
+        await store.close()

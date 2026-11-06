@@ -486,3 +486,60 @@ async def test_zero_budget_first_tick_resumes_on_second(
     assert second is not None
     assert second.completed_fully
     assert daemon._curate_next_phase is None
+
+
+async def test_fallback_sweep_forwards_injected_explicit_floor(
+    runtime: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FINAL-02: the fallback sweep reads the injected runtime floor, not
+    the global singleton.
+
+    The curator path forwards ``settings.explicit_prune_floor()`` (curator.py);
+    the daemon fallback built a bare ``DecaySweeper(db)`` and read the floor
+    from ``get_settings().memory`` (decay.py). With an injected runtime
+    Settings whose explicit floor differs from the global, the fallback tick
+    would silently evict a different set. Reversal: removing the explicit
+    forward in daemon.py makes the spy capture no floor kwarg and fails.
+    """
+    import paa.memory.curator as curator_mod
+    import paa.memory.decay as decay_mod
+    from paa.config import MemorySettings
+
+    runtime.settings.memory = MemorySettings(prune_confidence_floor=0.9)
+    assert runtime.settings.memory.explicit_prune_floor() == 0.9
+
+    def _boom(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("curator wiring exploded")
+
+    monkeypatch.setattr(curator_mod, "MemoryCurator", _boom)
+    captured: dict[str, Any] = {}
+    real_sweeper = decay_mod.DecaySweeper
+
+    class _Spy(real_sweeper):  # type: ignore[misc]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            captured.update(kwargs)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(decay_mod, "DecaySweeper", _Spy)
+    await _stale_fact(runtime, "FloorFallback")
+    daemon = Daemon(runtime)
+    assert await daemon._run_curation_tick() is None
+    assert captured.get("prune_confidence_floor") == 0.9
+
+
+async def test_curator_forwards_injected_explicit_floor(
+    runtime: Runtime,
+) -> None:
+    """FINAL-02 companion: the curator path keeps forwarding the injected
+    floor (pinned at the same time as the fallback fix so both ticks read
+    one source). Reversal: dropping the forward in curator.py leaves
+    ``_prune_floor`` at the global value (0.9 here differs from any global
+    default the fixture sets) and fails.
+    """
+    from paa.config import MemorySettings
+    from paa.memory.curator import MemoryCurator
+
+    curator = MemoryCurator(
+        runtime.db, settings=MemorySettings(prune_confidence_floor=0.9)
+    )
+    assert curator._sweeper._prune_floor == 0.9

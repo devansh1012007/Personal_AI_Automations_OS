@@ -276,7 +276,17 @@ class Daemon:
             log.warning("daemon.curator_unavailable", error=redact(str(exc)))
             from paa.memory.decay import DecaySweeper
 
-            await DecaySweeper(self._rt.db).sweep(dry_run=dry_run)
+            # FINAL-02: forward the injected runtime settings' explicit floor
+            # exactly as the curator path does (curator.py:135), instead of
+            # letting DecaySweeper fall back to the global singleton. An
+            # unset (None) floor still defers to the global read inside
+            # DecaySweeper, so default deployments are byte-identical;
+            # without this the fallback tick would silently mix settings
+            # sources whenever the runtime Settings differ from the global.
+            await DecaySweeper(
+                self._rt.db,
+                prune_confidence_floor=settings.explicit_prune_floor(),
+            ).sweep(dry_run=dry_run)
             if dry_run:
                 # R-W4-001: consume the preview after a *successful* fallback
                 # preview so the next tick deletes. Without this a permanently
