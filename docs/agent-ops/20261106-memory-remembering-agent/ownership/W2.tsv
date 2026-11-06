@@ -1,0 +1,13 @@
+W2-IMPL-03	src/paa/agents/context_agents.py
+W2-IMPL-03	src/paa/coder/runtime_tools.py
+W2-IMPL-03	src/paa/api/app.py
+W2-IMPL-03	src/paa/cli/main.py
+W2-IMPL-03	tests/agents/test_context_agents.py
+W2-IMPL-03	tests/coder/test_runtime_tools.py
+W2-IMPL-03	tests/api/test_memory.py
+W2-IMPL-03	tests/cli/test_memory.py
+W2-IMPL-03	docs/agent-ops/20261106-memory-remembering-agent/reports/w2-impl/W2-IMPL-03-T-003.md
+W2-IMPL-04	src/paa/daemon.py
+W2-IMPL-04	tests/daemon/test_drain_e2e.py
+W2-IMPL-04	tests/daemon/test_maintenance_loop.py
+W2-IMPL-04	docs/agent-ops/20261106-memory-remembering-agent/reports/w2-impl/W2-IMPL-04-T-004.md
