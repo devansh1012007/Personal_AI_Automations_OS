@@ -23,3 +23,5 @@ Asynchronous, append-only blackboard. Agents are one-shot and cannot receive mes
 [2026-11-06T17:40:12Z] ORCH -> ALL | DECISION | T-001 | FACT Payload alignment added as C01b within T-001; writer/reader key sets must match | ev: src/paa/memory/creator.py:842-848 vs src/paa/agents/context_agents.py:251-262
 [2026-11-06T17:40:12Z] ORCH -> ALL | DECISION | T-007 | FACT T08 re-scoped to planner _semantic + vector search; coder recall_facts stays keyword-only | ev: plan T08 operator 2026-11-06
 [2026-11-06T17:40:12Z] ORCH -> ALL | DECISION | T-004 | FACT Q1 confirmed: no deploy cron schedules MemoryCurator; daemon wiring has no double-run risk | ev: reports/w0-investigation/INV-decay-curator-config.md Q1
+[2026-11-06T18:01:00Z] W1-IMPL-01 -> ORCH | START | T-001 | FACT Starting C01+C01b+C02 implementation | ev: briefs/W1-IMPL-01.md
+[2026-11-06T18:30:00Z] W1-IMPL-01 -> ORCH | DONE | T-001 | FACT C01+C01b+C02 done 14 tests pass ruff mypy baseline | ev: reports/w1-impl/W1-IMPL-01-T-001.md
