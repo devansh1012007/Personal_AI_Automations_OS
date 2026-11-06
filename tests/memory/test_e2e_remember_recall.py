@@ -7,16 +7,26 @@ aware fake embedder). HashEmbedder is lexical-only, so it cannot pass this
 test; the fake maps synonyms to canonical tokens before hashing, which is
 what a sentence embedder does implicitly.
 
-T-007b + MINORs: numeric pending_count on every embedding_drain INFO line,
-INFO signal_processed on the IGNORED path, daemon preview discipline
-(first-tick fallback honours dry-run; preview flag only on clean complete
-passes), and the existing daemon.curation_completed duration_seconds.
+T-007b + MINORs: numeric pending_count on every embedding_drain INFO line
+and on the drain-failed ERROR line (R-W4-006), idle drains skip the COUNT
+when the queue is known empty (R-W4-003), INFO signal_processed on the
+IGNORED path with a uniform ``outcome`` on both branches (R-W4-004),
+daemon preview discipline (first-tick fallback honours dry-run and then
+consumes the preview, preview flag only on clean complete passes, and a
+loud preview-incomplete warning while an erroring phase blocks deletes),
+and the existing daemon.curation_completed duration_seconds.
 
 Reversal: reverting the daemon dry-run passthrough deletes on the first
-tick; reverting the flag gate consumes preview on partial/errored passes;
-reverting pending_count removes the gauge; reverting the IGNORED INFO line
-returns to DEBUG-only; reverting the payload keys (C01b) empties _semantic
-content; removing the embedding sink wiring leaves the fact pending.
+tick; reverting the fallback preview consumption leaves the second tick
+dry-run forever (R-W4-001); reverting the flag gate consumes preview on
+partial/errored passes; reverting pending_count removes the gauge;
+reverting the idle skip re-runs the COUNT on idle ticks; reverting the
+IGNORED INFO line returns to DEBUG-only; reverting the payload keys
+(C01b) empties _semantic content; removing the *creator-level* embedding
+sink wiring leaves the fact pending. Runtime-level wiring
+(``_build_memory_creator`` threading) is pinned separately by
+``test_runtime_threaded_creator_paraphrase_retrieved_after_restart`` below
+and by ``tests/runtime/test_memory_creator.py`` at suite scope.
 """
 
 from __future__ import annotations
@@ -152,6 +162,9 @@ async def test_e2e_paraphrase_retrieved_after_restart(tmp_path: Path) -> None:
     db_path = tmp_path / "e2e.db"
     vec_path = tmp_path / "vectors"
     embedder = _SynonymEmbedder()
+    # R-W4-T-04: pin the fake width to the collection spec, so a spec change
+    # fails here with a legible assertion instead of a vector-shape error.
+    assert embedder.dimensions == ACTIVE_FACTS.dimensions
 
     db = Database(db_path)
     await db.connect()
@@ -213,6 +226,13 @@ async def test_recall_facts_synonym_only_miss(db: Database) -> None:
     payload = json.loads(str(await tool.run({"query": "rapid"})))
     assert payload["count"] == 0
     assert payload["facts"] == []
+    # R-W4-T-03: pin the user-facing note's existence (lexical content is
+    # deliberately flexible) so the stale "no vector sink wired" text in
+    # runtime_tools.py cannot silently drift away without a test noticing
+    # the contract change. The note text fix itself lives outside this
+    # write-set (NEED posted; see report §12).
+    assert "note" in payload
+    assert payload["note"]
 
 
 async def test_ignored_emits_info_signal_processed(db: Database) -> None:
@@ -269,11 +289,13 @@ async def test_pending_count_gauge_when_sink_absent(db: Database) -> None:
 async def test_construction_failure_fallback_respects_preview(
     db: Database, monkeypatch: Any
 ) -> None:
-    """R-W2-D-01: the fallback sweep previews on the first tick.
+    """R-W2-D-01 + R-W4-001: the fallback previews, consumes, then deletes.
 
-    With MemoryCurator construction broken and preview unconsumed, the
-    fallback must NOT delete the stale fact; once the preview is consumed
-    the same fallback deletes it.
+    With MemoryCurator construction broken, the first real fallback tick
+    previews (stale fact remains, preview consumed) and the second real
+    tick deletes. Two ticks are driven with no manual flag flip: pre-fix
+    the second tick stayed dry-run (preview never consumed) and this test
+    fails with remaining 1 == 0.
     """
     import paa.memory.curator as curator_mod
     from paa.daemon import Daemon
@@ -291,8 +313,8 @@ async def test_construction_failure_fallback_respects_preview(
         "SELECT COUNT(*) FROM hot_serving_active_facts WHERE id = ?", (stale_id,)
     )
     assert remaining == 1
+    assert daemon._curate_preview_done is True
 
-    daemon._curate_preview_done = True
     assert await daemon._run_curation_tick() is None
     remaining = await db.fetch_value(
         "SELECT COUNT(*) FROM hot_serving_active_facts WHERE id = ?", (stale_id,)
@@ -414,3 +436,332 @@ async def test_curation_completed_pins_duration_seconds(
     assert len(lines) == 1
     assert lines[0].get("duration_seconds") == 1.5
     assert lines[0].get("facts_evicted") == 2
+
+
+async def test_processed_emits_outcome_processed(db: Database) -> None:
+    """R-W4-004: the PROCESSED INFO line carries outcome="processed".
+
+    IGNORED already carried outcome="ignored"; dashboards counting
+    memory.signal_processed as "processed" overcounted ignored signals.
+    Both branches now share the key. Reversal: removing outcome from the
+    PROCESSED line makes ``entry.get("outcome")`` fall to None and fails.
+    """
+    creator = MemoryCreator(db)
+    with structlog.testing.capture_logs() as captured:
+        result = await creator.process_signal(
+            _row({"facts": [{"subject": "Aurora", "predicate": "status", "object": "swift"}]})
+        )
+    assert result.outcome is ProcessingOutcome.PROCESSED
+    lines = _events(captured, "memory.signal_processed")
+    assert len(lines) == 1
+    entry = lines[0]
+    assert entry.get("log_level") == "info"
+    assert entry.get("outcome") == "processed"
+    assert entry.get("facts") == 1
+    assert entry.get("dropped") == result.drop_counts.total
+    assert entry.get("drop_counts") == result.drop_counts.as_dict()
+
+
+class _FailingSink:
+    """Sink whose enqueue always raises (drain-failure gauge probe)."""
+
+    async def enqueue(self, facts: Sequence[Fact]) -> Sequence[str]:
+        raise RuntimeError("vector backend on fire")
+
+
+async def test_drain_failure_line_carries_pending_count(db: Database) -> None:
+    """R-W4-006: embedding_drain_failed carries the numeric gauge.
+
+    Two pending rows, sink raises: drain returns 0, facts stay pending, and
+    the ERROR line reports pending_count==2 and backlog_remaining True
+    (derived, not hardcoded). Pre-fix the line had no pending_count key.
+    """
+    await _seed_pending(db, n=2, prefix="gauge-fail")
+    creator = MemoryCreator(db, embedding_sink=_FailingSink())
+    with structlog.testing.capture_logs() as captured:
+        assert await creator.drain_pending_embeddings() == 0
+    lines = _events(captured, "memory.embedding_drain_failed")
+    assert len(lines) == 1
+    assert lines[0].get("log_level") == "error"
+    assert lines[0].get("batch_size") == 2
+    assert lines[0].get("indexed") == 0
+    assert lines[0].get("pending_count") == 2
+    assert lines[0].get("backlog_remaining") is True
+    remaining = await db.fetch_value(
+        "SELECT COUNT(*) FROM hot_serving_active_facts WHERE embedding_status = 'pending'"
+    )
+    assert remaining == 2
+
+
+async def test_idle_drain_skips_pending_count(db: Database) -> None:
+    """R-W4-003: an idle drain reports 0 without querying the COUNT.
+
+    The drain is spied via _pending_embedding_count: with zero pending the
+    spy must not fire at all (the same-predicate fetch already proved the
+    queue empty), yet the INFO line still carries pending_count==0. With
+    pending rows and no sink the COUNT does run (spy fires once, gauge 2).
+    Pre-fix both cases COUNTed once, so the idle spy assertion fails.
+    """
+    creator = MemoryCreator(db, embedding_sink=_RecordingSink())
+    calls: list[int] = []
+    original = creator._pending_embedding_count
+
+    async def _spy() -> int:
+        calls.append(1)
+        return await original()
+
+    creator._pending_embedding_count = _spy  # type: ignore[method-assign]
+    with structlog.testing.capture_logs() as captured:
+        assert await creator.drain_pending_embeddings() == 0
+    lines = _events(captured, "memory.embedding_drain")
+    assert len(lines) == 1
+    assert lines[0].get("batch_size") == 0
+    assert lines[0].get("pending_count") == 0
+    assert lines[0].get("backlog_remaining") is False
+    assert calls == []
+
+
+async def test_pending_count_gauge_when_sink_absent_counts_backlog(db: Database) -> None:
+    """R-W4-003 companion: a non-empty queue with no sink still COUNTs once.
+
+    The idle skip must not swallow the backlog gauge: two pending, no sink,
+    one spy hit, pending_count==2. Guards against an over-broad skip that
+    zeroes the gauge whenever the sink is absent.
+    """
+    await _seed_pending(db, n=2, prefix="gauge-spy")
+    creator = MemoryCreator(db)
+    calls: list[int] = []
+    original = creator._pending_embedding_count
+
+    async def _spy() -> int:
+        calls.append(1)
+        return await original()
+
+    creator._pending_embedding_count = _spy  # type: ignore[method-assign]
+    with structlog.testing.capture_logs() as captured:
+        assert await creator.drain_pending_embeddings() == 0
+    lines = _events(captured, "memory.embedding_drain")
+    assert len(lines) == 1
+    assert lines[0].get("pending_count") == 2
+    assert lines[0].get("backlog_remaining") is True
+    assert len(calls) == 1
+
+
+async def test_errored_preview_blocks_deletes_and_warns(
+    db: Database, monkeypatch: Any
+) -> None:
+    """R-W4-002: one permanently-erroring phase blocks deletes (safe).
+
+    Curator isolates per-phase errors (errors increments, loop continues),
+    but the daemon gate stays ``completed_fully and errors == 0`` because
+    CurationReport has no per-phase outcome: relaxing to
+    completed_fully-only could delete phases that never previewed cleanly.
+    A clean DECAY-phase stale fact therefore survives two errored preview
+    ticks, the flag never sets, and each tick logs
+    daemon.curation_preview_incomplete with errors==1.
+    """
+    import paa.memory.curator as curator_mod
+    from paa.daemon import Daemon
+    from paa.memory.curator import CurationReport
+
+    stale_id = await _stale_fact(db, "ErrorBlocked")
+
+    now = utc_now()
+
+    class _AlwaysErrored:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def run_maintenance(self, **kwargs: Any) -> CurationReport:
+            return CurationReport(started_at=now, finished_at=now, errors=1)
+
+    monkeypatch.setattr(curator_mod, "MemoryCurator", _AlwaysErrored)
+    daemon = Daemon(_stub_runtime(db))
+
+    for _ in range(2):
+        with structlog.testing.capture_logs() as captured:
+            report = await daemon._run_curation_tick()
+        assert report is not None
+        assert report.errors == 1
+        assert daemon._curate_preview_done is False
+        warnings = _events(captured, "daemon.curation_preview_incomplete")
+        assert len(warnings) == 1
+        assert warnings[0].get("errors") == 1
+        assert warnings[0].get("completed_fully") is True
+
+    remaining = await db.fetch_value(
+        "SELECT COUNT(*) FROM hot_serving_active_facts WHERE id = ?", (stale_id,)
+    )
+    assert remaining == 1
+
+
+async def test_runtime_threaded_creator_paraphrase_retrieved_after_restart(
+    tmp_path: Path,
+) -> None:
+    """T-01: the production threading path (_build_memory_creator) recalls.
+
+    Builds the creator via ``paa.runtime._build_memory_creator`` with the
+    real store + synonym embedder, writes through it, restarts, and lets
+    _semantic hit by paraphrase. Pre-fix the headline claim ("removing the
+    embedding sink wiring leaves the fact pending") was only true at
+    creator level; this test fails if the runtime threading stops attaching
+    the sink (identity + indexed + hit assertions).
+    """
+    from paa.agents.context_agents import PlannerContextBuilder
+    from paa.config import MemorySettings, Settings
+    from paa.runtime import _build_memory_creator
+    from paa.storage.vector import ACTIVE_FACTS, NumpyVectorStore
+
+    home = tmp_path / "settings_home"
+    home.mkdir(parents=True, exist_ok=True)
+    settings = Settings(home=home, memory=MemorySettings())
+
+    db_path = tmp_path / "e2e.db"
+    vec_path = tmp_path / "vectors"
+    embedder = _SynonymEmbedder()
+    assert embedder.dimensions == ACTIVE_FACTS.dimensions
+
+    db = Database(db_path)
+    await db.connect()
+    store = NumpyVectorStore(vec_path)
+    try:
+        await store.ensure_spec(ACTIVE_FACTS)
+        creator = _build_memory_creator(
+            settings, db, SimpleNamespace(), vector_store=store, embedder=embedder
+        )
+        assert isinstance(creator._sink, VectorEmbeddingSink)
+        assert creator._sink._store is store
+        assert creator._sink._embedder is embedder
+        result = await creator.process_signal(
+            _row({"facts": [{"subject": "Aurora", "predicate": "status", "object": "swift"}]})
+        )
+        assert result.outcome is ProcessingOutcome.PROCESSED
+        fact_id = result.facts_written[0]
+        status = await db.fetch_value(
+            "SELECT embedding_status FROM hot_serving_active_facts WHERE id = ?",
+            (fact_id,),
+        )
+        assert status == "indexed"
+    finally:
+        await db.close()
+        await store.close()
+
+    db2 = Database(db_path)
+    await db2.connect()
+    store2 = NumpyVectorStore(vec_path)
+    try:
+        builder = PlannerContextBuilder(db=db2, vector_store=store2, embedder=embedder)
+        elements = await builder._semantic("rapid state aurora")
+        assert elements
+        assert elements[0].id == fact_id
+        assert elements[0].content == "swift"
+    finally:
+        await db2.close()
+        await store2.close()
+
+
+async def test_paraphrase_decoy_ranking(tmp_path: Path) -> None:
+    """T-02: a 2-fact decoy pins ranking, not just retrieval.
+
+    Two facts share predicate/status and object/swift and differ only in
+    the subject: Aurora (the queried entity) vs Borealis (the decoy).
+    Query "rapid state aurora" must rank the Aurora fact first with
+    strictly higher relevance. A single-candidate e2e cannot catch an
+    inverted sort or a truncation bug (mutation g). The subject-change
+    shape (not same-entity/different-object) keeps the decoy out of the
+    contradiction quarantine: incumbents are filtered by entity_id, so a
+    same-entity second value would quarantine instead of ranking.
+    """
+    from paa.agents.context_agents import PlannerContextBuilder
+    from paa.storage.vector import ACTIVE_FACTS, NumpyVectorStore
+
+    db_path = tmp_path / "decoy.db"
+    vec_path = tmp_path / "vectors"
+    embedder = _SynonymEmbedder()
+    assert embedder.dimensions == ACTIVE_FACTS.dimensions
+
+    db = Database(db_path)
+    await db.connect()
+    store = NumpyVectorStore(vec_path)
+    try:
+        await store.ensure_spec(ACTIVE_FACTS)
+        creator = MemoryCreator(db, embedding_sink=VectorEmbeddingSink(store, embedder))
+        swift = await creator.process_signal(
+            _row({"facts": [{"subject": "Aurora", "predicate": "status", "object": "swift"}]})
+        )
+        decoy = await creator.process_signal(
+            _row({"facts": [{"subject": "Borealis", "predicate": "status", "object": "swift"}]})
+        )
+        assert swift.outcome is ProcessingOutcome.PROCESSED
+        assert decoy.outcome is ProcessingOutcome.PROCESSED
+        builder = PlannerContextBuilder(db=db, vector_store=store, embedder=embedder)
+        elements = await builder._semantic("rapid state aurora")
+        assert len(elements) >= 2
+        assert elements[0].id == swift.facts_written[0]
+        assert elements[0].content == "swift"
+        by_id = {element.id: element for element in elements}
+        decoy_element = by_id[decoy.facts_written[0]]
+        assert elements[0].relevance > decoy_element.relevance
+    finally:
+        await db.close()
+        await store.close()
+
+
+async def test_drain_backlog_then_recall(tmp_path: Path) -> None:
+    """R-W4-005 / P1: the backlog leg (write pending -> drain -> recall).
+
+    The synchronous write-path e2e never exercises drain_pending_embeddings
+    (process_signal indexes immediately when a sink is attached). This test
+    writes with NO sink (fact stays pending, semantic misses), restarts,
+    then drains with a sink attached and asserts indexed + paraphrase hit.
+    """
+    from paa.agents.context_agents import PlannerContextBuilder
+    from paa.storage.vector import ACTIVE_FACTS, NumpyVectorStore
+
+    db_path = tmp_path / "backlog.db"
+    vec_path = tmp_path / "vectors"
+    embedder = _SynonymEmbedder()
+    assert embedder.dimensions == ACTIVE_FACTS.dimensions
+
+    db = Database(db_path)
+    await db.connect()
+    store = NumpyVectorStore(vec_path)
+    try:
+        await store.ensure_spec(ACTIVE_FACTS)
+        creator = MemoryCreator(db)
+        result = await creator.process_signal(
+            _row({"facts": [{"subject": "Aurora", "predicate": "status", "object": "swift"}]})
+        )
+        assert result.outcome is ProcessingOutcome.PROCESSED
+        fact_id = result.facts_written[0]
+        status = await db.fetch_value(
+            "SELECT embedding_status FROM hot_serving_active_facts WHERE id = ?",
+            (fact_id,),
+        )
+        assert status == "pending"
+        builder = PlannerContextBuilder(db=db, vector_store=store, embedder=embedder)
+        assert await builder._semantic("rapid state aurora") == []
+    finally:
+        await db.close()
+        await store.close()
+
+    db2 = Database(db_path)
+    await db2.connect()
+    store2 = NumpyVectorStore(vec_path)
+    try:
+        await store2.ensure_spec(ACTIVE_FACTS)
+        draining = MemoryCreator(db2, embedding_sink=VectorEmbeddingSink(store2, embedder))
+        assert await draining.drain_pending_embeddings() == 1
+        status = await db2.fetch_value(
+            "SELECT embedding_status FROM hot_serving_active_facts WHERE id = ?",
+            (fact_id,),
+        )
+        assert status == "indexed"
+        builder2 = PlannerContextBuilder(db=db2, vector_store=store2, embedder=embedder)
+        elements = await builder2._semantic("rapid state aurora")
+        assert elements
+        assert elements[0].id == fact_id
+        assert elements[0].content == "swift"
+    finally:
+        await db2.close()
+        await store2.close()

@@ -199,7 +199,14 @@ async def test_maintenance_tick_works_without_vector_store(runtime: Runtime) -> 
 async def test_maintenance_tick_falls_back_to_sweep_when_curator_construction_fails(
     runtime: Runtime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Construction failure degrades to bare sweep (never raises, no double-run)."""
+    """Construction failure degrades to the sweep, honouring preview.
+
+    R-W4-001: the fallback sweeps dry-run on the first tick (stale fact
+    remains) and consumes the preview after that successful fallback, so
+    the second real fallback tick deletes. Two real ticks are driven (no
+    manual flag flip); the stale first-tick-deletes expectation encoded the
+    pre-R-W2-D-01 bug.
+    """
     stale_id = await _stale_fact(runtime, "FallbackStale")
 
     import paa.memory.curator as curator_mod
@@ -216,7 +223,16 @@ async def test_maintenance_tick_falls_back_to_sweep_when_curator_construction_fa
     remaining = await runtime.db.fetch_value(
         "SELECT COUNT(*) FROM hot_serving_active_facts WHERE id = ?", (stale_id,)
     )
-    assert remaining == 0  # bare sweep still evicted the stale fact
+    assert remaining == 1  # preview tick: nothing deleted
+    assert daemon._curate_preview_done is True
+
+    report = await daemon._run_curation_tick()
+
+    assert report is None
+    remaining = await runtime.db.fetch_value(
+        "SELECT COUNT(*) FROM hot_serving_active_facts WHERE id = ?", (stale_id,)
+    )
+    assert remaining == 0  # preview consumed: fallback deletes
 
 
 async def test_maintenance_tick_propagates_curator_error_without_fallback(
@@ -314,7 +330,18 @@ async def test_first_tick_is_preview_then_deletes(runtime: Runtime) -> None:
 
 
 async def test_orphan_purge_skips_when_entity_index_empty(runtime: Runtime) -> None:
-    """REV R-W2-004: an empty entity index must not wipe all facts."""
+    """REV R-W2-004 as refined in the W3 pass: the empty-index guard only
+    skips provenanced facts; provenance-less import dust is swept.
+
+    This test inserts a dangling fact with NULL ``source_signal_id`` (import
+    dust, matching the raw insert below) against an empty entity index. Under
+    the refined guard (``curator.py::_phase_orphans``) ``provenanced == 0`` so
+    the guard does not skip and the orphan IS removed. The provenanced-skip
+    leg is owned by ``test_curator.test_empty_index_skips_provenanced_facts``;
+    this test keeps the swept leg at daemon-suite scope rather than being
+    deleted, because the daemon suite is where the pre-refinement behaviour
+    was pinned and a reader of the old assertion deserves the delta in place.
+    """
     import aiosqlite
 
     from paa.memory.curator import MemoryCurator
@@ -339,17 +366,19 @@ async def test_orphan_purge_skips_when_entity_index_empty(runtime: Runtime) -> N
 
     assert await runtime.db.fetch_value("SELECT COUNT(*) FROM hot_serving_entity_index") == 0
     report = await MemoryCurator(runtime.db).run_maintenance()
-    assert report.orphans_removed == 0
+    assert report.orphans_removed == 1
     remaining = await runtime.db.fetch_value(
         "SELECT COUNT(*) FROM hot_serving_active_facts WHERE id = ?", (fact_id,)
     )
-    assert remaining == 1
+    assert remaining == 0
 
 
 async def test_import_failure_falls_back_to_sweep(
     runtime: Runtime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """REV R-W2-003: an importer failure still degrades to the bare sweep."""
+    """REV R-W2-003 + R-W4-001: an importer failure still degrades to the
+    fallback sweep, honouring preview (first tick previews, second deletes).
+    """
     import sys
     import types
 
@@ -369,7 +398,16 @@ async def test_import_failure_falls_back_to_sweep(
     remaining = await runtime.db.fetch_value(
         "SELECT COUNT(*) FROM hot_serving_active_facts WHERE id = ?", (stale_id,)
     )
-    assert remaining == 0
+    assert remaining == 1  # preview tick: nothing deleted
+    assert daemon._curate_preview_done is True
+
+    report = await daemon._run_curation_tick()
+
+    assert report is None
+    remaining = await runtime.db.fetch_value(
+        "SELECT COUNT(*) FROM hot_serving_active_facts WHERE id = ?", (stale_id,)
+    )
+    assert remaining == 0  # preview consumed: fallback deletes
 
 
 async def test_daemon_loop_survives_exploding_curator(runtime: Runtime) -> None:

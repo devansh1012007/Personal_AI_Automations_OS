@@ -233,11 +233,32 @@ class Daemon:
         ``daemon.curation_started`` and ``daemon.curation_completed`` carry
         the budget and the full ``CurationReport.summary()`` counts (preview
         counts are would-delete counts). If curator construction fails,
-        the tick falls back to a bare ``DecaySweeper.sweep()`` with a warning.
+        the tick falls back to a bare ``DecaySweeper.sweep()`` with a warning,
+        and the fallback honours the same preview discipline: its sweep is
+        ``dry_run`` on the first tick and it consumes the preview flag after
+        that successful preview, so the next tick deletes. A fallback sweep
+        that raises propagates to the loop and does not consume the preview.
         A ``run_maintenance`` exception is never masked by a fallback sweep
         (that would double-run decay); it propagates to the loop, which logs
         ``daemon.maintenance_failed`` and keeps the daemon alive. This tick
         runs in the maintenance task only — never inline in ingestion.
+
+        Liveness trade-off (R-W4-002): ``MemoryCurator.run_maintenance``
+        isolates failures per phase (``report.errors`` increments and the
+        loop continues), so ``completed_fully`` stays True when a phase
+        errors. The daemon nevertheless gates the preview flag on
+        ``completed_fully and errors == 0``. One permanently-erroring phase
+        therefore blocks every delete forever (preview-forever, the safe
+        direction): ``CurationReport`` carries no per-phase outcome fields,
+        so the daemon cannot know whether the DECAY phase itself previewed
+        cleanly or was the one that errored, and relaxing to
+        ``completed_fully``-only could delete phases that were never
+        successfully previewed. The incomplete preview is logged loudly
+        (``daemon.curation_preview_incomplete``) with the full summary;
+        the proper recovery (per-phase tracking) needs a curator.py report
+        field and is out of this wave's write-set. Budget stops are distinct:
+        they resume cleanly via ``_curate_next_phase`` and can still
+        complete on a later tick.
         """
         settings = self._rt.settings.memory
         budget = settings.curation_max_runtime_hours * 3600.0
@@ -256,6 +277,16 @@ class Daemon:
             from paa.memory.decay import DecaySweeper
 
             await DecaySweeper(self._rt.db).sweep(dry_run=dry_run)
+            if dry_run:
+                # R-W4-001: consume the preview after a *successful* fallback
+                # preview so the next tick deletes. Without this a permanently
+                # broken curator degraded to preview-forever (retention never
+                # ran). Each fallback tick already warns via
+                # ``curator_unavailable`` above, and the sweep logs its
+                # would-delete counts, so the operator sees every fallback
+                # tick. A raising sweep propagates and never reaches here, so
+                # the preview is only consumed on success.
+                self._curate_preview_done = True
             return None
         phase = self._curate_next_phase
         log.info(
@@ -270,5 +301,21 @@ class Daemon:
         self._curate_next_phase = report.stopped_early_at
         if report.completed_fully and report.errors == 0:
             self._curate_preview_done = True
+        elif dry_run:
+            # R-W4-002: the preview was not fully previewed (budget stop or a
+            # phase error). Stay in preview — the safe direction — but make
+            # the liveness trap visible instead of silent: without this line a
+            # permanently-erroring phase blocks deletes with no daemon-level
+            # signal beyond the per-tick summary carried in
+            # ``daemon.curation_completed`` below.
+            log.warning(
+                "daemon.curation_preview_incomplete",
+                dry_run=dry_run,
+                completed_fully=report.completed_fully,
+                errors=report.errors,
+                stopped_early_at=(
+                    report.stopped_early_at.value if report.stopped_early_at else None
+                ),
+            )
         log.info("daemon.curation_completed", dry_run=dry_run, **report.summary())
         return report

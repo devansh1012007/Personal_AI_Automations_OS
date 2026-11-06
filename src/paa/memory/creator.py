@@ -1205,6 +1205,7 @@ class MemoryCreator:
         log.info(
             "memory.signal_processed",
             signal_id=envelope.id,
+            outcome="processed",
             facts=len(fact_ids),
             entities=len(entity_ids),
             dropped=drop_counts.total,
@@ -1507,15 +1508,21 @@ class MemoryCreator:
         ``pending_count`` is their exact number: one bounded ``COUNT(*)``
         over the ``embedding_status = 'pending'`` partial index, via
         :meth:`_pending_embedding_count` (facts.py is read-only, so the
-        probe lives here). No unbounded loop: one batch per call, daemon
-        cadence drains progress iteratively.
+        probe lives here). The idle ``not pending`` branch skips the COUNT
+        (R-W4-003): the same-predicate LIMIT fetch already returned nothing,
+        so the count is 0 by definition and a query would buy nothing at
+        the daemon's ~1 Hz drain cadence. No unbounded loop: one batch per
+        call, daemon cadence drains progress iteratively.
         """
         if limit <= 0:
             return 0
         pending = await self._facts.pending_embeddings(limit)
         batch_size = len(pending)
         if self._sink is None or not pending:
-            pending_count = await self._pending_embedding_count()
+            # R-W4-003: ``pending_embeddings`` and ``_pending_embedding_count``
+            # share one predicate, so an empty fetch means the count is 0
+            # by definition — skip the indexed COUNT on idle ticks.
+            pending_count = 0 if not pending else await self._pending_embedding_count()
             log.info(
                 "memory.embedding_drain",
                 batch_size=batch_size,
@@ -1527,12 +1534,17 @@ class MemoryCreator:
         try:
             indexed = await self._sink.enqueue(pending)
         except Exception as exc:
+            # R-W4-006: carry the gauge on the failure line too — the error
+            # path is cold (never per-idle-tick), so one indexed COUNT buys
+            # operator parity where it matters most.
+            pending_count = await self._pending_embedding_count()
             log.error(
                 "memory.embedding_drain_failed",
                 error=str(exc),
                 batch_size=batch_size,
                 indexed=0,
-                backlog_remaining=True,
+                backlog_remaining=pending_count > 0,
+                pending_count=pending_count,
             )
             return 0
         indexed_ids = list(indexed)
