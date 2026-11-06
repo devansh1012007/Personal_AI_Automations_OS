@@ -35,7 +35,7 @@ Major subsystems:
 | Coder agent | `src/paa/coder/` | Tool-use loop over the runtime (permissions, hooks, sessions) |
 | Skills | `src/paa/skills/` | Unified Skill Adapter, contracts, secrets broker, adapters |
 | Marketplace | `src/paa/marketplace/` | Signed packages, five-gate installer, registry clients |
-| Observability | `src/paa/observability/` | Logging, metrics, tracing, execution runs (untested) |
+| Observability | `src/paa/observability/` | Logging, metrics, tracing, execution runs |
 | Daemon | `src/paa/daemon.py` | Dispatch, ingestion, maintenance loops |
 | CLI | `src/paa/cli/main.py` | `paa submit/run/status/ledger/recover/doctor/serve/agent/mode/tui` |
 | API | `src/paa/api/` | FastAPI ingestion edge (loopback only, port 8787) |
@@ -44,11 +44,11 @@ Major subsystems:
 Primary entry points:
 
 * `paa submit "goal"` — submit and run one task to completion (`src/paa/cli/main.py:74`)
-* `paa serve` — FastAPI API + background daemon (`src/paa/cli/main.py:248`)
+* `paa serve` — FastAPI API + background daemon (`src/paa/cli/main.py:290`)
 * `paa doctor` — report live backends/sandbox (`src/paa/cli/main.py:225`)
-* `paa recover` — post-crash boot sweep (`src/paa/cli/main.py:191`)
-* `paa ledger <id>` — walk a task's event chain (`src/paa/cli/main.py:134`)
-* `paa agent "prompt"` — tool-using coder loop (`src/paa/cli/coder.py:44`)
+* `paa recover` — post-crash boot sweep (`src/paa/cli/main.py:207`)
+* `paa ledger <id>` — walk a task's event chain (`src/paa/cli/main.py:145`)
+* `paa agent "prompt"` — tool-using coder loop (`src/paa/cli/coder.py:56`)
 
 The composition root is `Runtime.build()` (`src/paa/runtime.py:260`).
 
@@ -77,7 +77,7 @@ Module-specific deep dives
 - [modules/ledger.md](modules/ledger.md)
 - [modules/agents.md](modules/agents.md)
 - [modules/context.md](modules/context.md)
-- [modules/memory.md](modules/memory.md)
+- [modules/memory.md](modules/memory.md) — VectorEmbeddingSink wired with drain of the pending-embedding backlog, touch-on-recall retention (`last_queried_at`/`use_count`), `MemoryCurator` scheduled in the daemon, extractor drop counters, explicit-only `prune_confidence_floor` / deprecated `decay_lambda`; end-to-end (restart + paraphrase recall) proof in `tests/memory/test_e2e_remember_recall.py`. Run summary in [SUMMARY.md](agent-ops/20261106-memory-remembering-agent/SUMMARY.md); operator runbook *Memory curation* in [deployment-and-runtime](operations/deployment-and-runtime.md).
 - [modules/models.md](modules/models.md)
 - [modules/sandbox.md](modules/sandbox.md)
 - [modules/validation.md](modules/validation.md)
@@ -108,7 +108,11 @@ Security
 
 Operations
 - [operations/configuration-and-environment.md](operations/configuration-and-environment.md)
-- [operations/deployment-and-runtime.md](operations/deployment-and-runtime.md)
+- [operations/deployment-and-runtime.md](operations/deployment-and-runtime.md) — authoritative *Memory curation* runbook (full curator, first-tick preview, snapshot-before-delete, cold-lake replay restore).
+- [runtime/background-jobs-and-events.md](runtime/background-jobs-and-events.md) — daemon loops and event wiring.
+
+Glossary
+- [glossary.md](glossary.md)
 
 Testing and development
 - [development/testing-and-quality.md](development/testing-and-quality.md)
@@ -120,9 +124,19 @@ Review
 Existing (pre-existing) documents retained in `docs/`:
 - [coder-agent.md](coder-agent.md) — the `paa agent` tool loop.
 - [EXTENSIBILITY_PIPELINES.md](EXTENSIBILITY_PIPELINES.md) — pluggable agentic loops design.
-- [ROADMAP.md](ROADMAP.md), [VISION.md](VISION.md)
+- [ROADMAP.md](ROADMAP.md), [VISION.md](../VISION.md) (`VISION.md` lives at the repository root).
 - [deployment/docker.md](deployment/docker.md)
-- [adr/README.md](adr/README.md) and ADRs 0008, 0010, 0015, 0019, 0020.
+- [adr/README.md](adr/README.md) — ADR index (0001–0018 and 0019–0026, 0028–0035; 0027 reserved); bodies on disk: 0008, 0010, 0015, 0019–0026, 0028–0035.
+- [memory-polish/plans/Plan1.md](memory-polish/plans/Plan1.md) — dated memory-polish proposal (in scope for the `path:line` lock).
+- [MCP_AND_PLUGINS.md](<plans and audits/MCP_AND_PLUGINS.md>), [flexability-audit.md](<plans and audits/flexability-audit.md>), [w3-w5.md](<plans and audits/w3-w5.md>), [w6-w7-w9.md](<plans and audits/w6-w7-w9.md>) — dated proposals/audits (in scope for the `path:line` lock).
+
+Aspirational RFC proposals at `docs/` root (vision docs, not normative build specs; no ADR adopts them):
+- [A Disciplined System for Computational Attention Allocation.md](<A Disciplined System for Computational Attention Allocation.md>) — attention-allocation vision; its scorer formula deviates from the live implementation per ADR-0012 (index-only; see [SUMMARY.md](agent-ops/20261106-memory-remembering-agent/SUMMARY.md) §8, do not treat the doc's formula as normative).
+- [Core Architecture Specification and Production Runtime RFC.md](<Core Architecture Specification and Production Runtime RFC.md>) — runtime RFC v4.0+v4.1 in one file; not fully integrated (21 specialists empty, markdown vault 11/13 missing; see [SUMMARY.md](agent-ops/20261106-memory-remembering-agent/SUMMARY.md) §8, do not treat the doc as a normative spec).
+
+Agent-ops run 20261106-memory-remembering-agent (run trail, excluded from the `path:line` conventions lock):
+- [SUMMARY.md](agent-ops/20261106-memory-remembering-agent/SUMMARY.md) — run outcome (C01–C07 closed; §K install/launch not done at summary time).
+- [01-work-ledger.md](agent-ops/20261106-memory-remembering-agent/01-work-ledger.md) — per-wave dispositions; gates under `agent-ops/20261106-memory-remembering-agent/gates/`.
 
 ## D. How to trace a feature
 
@@ -136,23 +150,19 @@ Existing (pre-existing) documents retained in `docs/`:
 4. Note what is persisted (ledger event, recovery mark, queue message) and what is
    derived (context packet, projection, indexes).
 5. Follow errors: every `PaaError` subclass carries structured `details` written to the
-   ledger; terminal events close a lineage (`core/types.py:132`).
+   ledger; terminal events close a lineage (`core/types.py:176`).
 
 When modifying a component, check its [module page](modules) for upstream callers and
 downstream consumers, then update the corresponding flow trace and this index.
 
 ## E. Verification and known gaps
 
-- Subsystems with **zero test coverage**: `src/paa/observability/` (exercised nowhere),
-  `tests/validation/`. See AGENTS.md and
-  [development/testing-and-quality.md](development/testing-and-quality.md).
-- `docs/adr/README.md` indexes ADRs 0001–0020 but only 0008, 0010, 0015, 0019, 0020
-  exist on disk (AGENTS.md "Known-stale references").
+- Test suites on disk: `tests/observability/` (`test_logging`, `test_metrics`, `test_runs`, `test_tracing`) and `tests/validation/` (suite including the 19-test schema validator) — the former zero-coverage note is stale; `docs/operations/deployment-and-runtime.md` still describes `src/paa/observability/` as untested.
+- `docs/adr/README.md` indexes ADRs 0001–0018 and 0019–0026, 0028–0035 (0027 reserved) but only 0008, 0010, 0015, 0019–0026 and 0028–0035 have bodies on disk ("Known-stale references" in AGENTS.md).
 - `src/paa/agents/specialists/` is an empty package.
 - The marketplace/skills/coder layers import cleanly but are not yet wired into the
   orchestrator's main task path (no built-in file-edit/bash/web skills).
-- Six pre-existing environmental test failures (sandbox runs `python` where only
-  `python3` exists); all other tests pass.
+- Windows-host baseline for the 20261106-memory-remembering-agent run: `mypy` 3 pre-existing errors (`sandbox/subprocess_backend.py:548`, win32) and 12 pre-existing pytest failures (see `00-mission.md` in the run folder; Linux CI gate is zero per AGENTS.md). Scoped gates for C01–C07 were green; the full `pytest tests/` suite was not run to completion in the final gate (see the run [SUMMARY.md](agent-ops/20261106-memory-remembering-agent/SUMMARY.md) §5/§14).
 
 The [documentation audit](reviews/documentation-audit.md) records coverage, unresolved
 questions, and remaining gaps.
