@@ -99,7 +99,7 @@ Embeddings (`models/embeddings.py` → `storage/vector/embeddings.py`):
 Collections (`store.py`): `ACTIVE_FACTS` and `RFC_COLLECTIONS`.
 
 Consumers: `Runtime._try_vector` (`runtime.py:351`), `MemoryCreator` (embeds
-new facts, `creator.py:1453`), context gatherer semantic search
+new facts, `creator.py:1462`), context gatherer semantic search
 (`context_agents.py:182`).
 
 ## 4. Graph — `src/paa/storage/graph/`

@@ -200,7 +200,7 @@ Add a `paa memory` CLI command group and four memory API routes (`GET /memory/fa
 | OpenRouter key in exception chain | `models/router.py` | Key scrubbed; errors carry no chain | existing `test_key_secrecy` |
 | No vector store attached | `creator.py:1034` (`VectorEmbeddingSink`) | Facts stay `pending`; recall degrades, never dies | existing |
 | Memory command with no DB | `cli/main.py` | Clean refusal via `_settings_or_refuse` | C01 |
-| Concurrent drain + daemon drain | `creator.py:1273-1300` (`_claim`) | Atomic claim; second caller gets none | existing |
+| Concurrent drain + daemon drain | `creator.py:1282-1309` (`_claim`) | Atomic claim; second caller gets none | existing |
 | LLM summarizer raises | `world_model.py:210-220` | Falls back to deterministic path | C06 |
 
 ---
