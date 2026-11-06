@@ -19,25 +19,33 @@ cooperative via an `asyncio.Event`.
 
 ## Internal implementation
 
-### Loops (`daemon.py:119`–`:182`)
+### Loops (`src/paa/daemon.py:119`–`:182`)
 - **Dispatch** (0.5s interval): `claim_batch=4` messages from
   `StreamName.ORCHESTRATOR_CORE`; runs each via `runtime.run(cid)`; `ack` on
-  success, `nack` on failure (`daemon.py:136`). If `runtime.queue is None`, sleeps
-  (`daemon.py:121`).
+  success, `nack` on failure (`src/paa/daemon.py:136`). If `runtime.queue is None`, sleeps
+  (`src/paa/daemon.py:121`).
 - **Ingestion** (1.0s): `MemoryCreator.run_batch(limit=25)` drains unprocessed
-  signals into hot serving; isolates one poison signal from the batch (`daemon.py:150`).
-- **Maintenance** (6h): `DecaySweeper(db).sweep()` after one initial interval
-  (`daemon.py:158`).
+  signals into hot serving (`src/paa/daemon.py:156`); also drains the
+  pending-embedding backlog (`src/paa/daemon.py:165`).
+- **Maintenance** (6h): `MemoryCurator.run_maintenance` — decay, prune-edges,
+  consolidate, orphans, reconcile-vectors, analyze — after one initial
+  interval (`src/paa/daemon.py:200`). The first tick is a dry-run preview;
+  only a clean complete preview consumes the flag so the next tick deletes
+  (`src/paa/daemon.py:265`, `src/paa/daemon.py:312`). Curator construction
+  failure falls back to a bare `DecaySweeper.sweep()` honouring the same
+  preview discipline (`src/paa/daemon.py:286`). The operator runbook —
+  first-tick preview, snapshot-before-delete, cold-lake replay restore —
+  lives in `docs/operations/deployment-and-runtime.md` (*Memory curation*).
 
-### Supervision (`daemon.py:94`)
+### Supervision (`src/paa/daemon.py:102`)
 `_supervise(name, loop)` restarts on unexpected error after 1s; `CancelledError`
 propagates.
 
-### Shutdown (`daemon.py:73`)
+### Shutdown (`src/paa/daemon.py:81`)
 `stop()` sets `self._stop`, cancels tasks, awaits drain. `run_forever()` blocks
-on the event (`daemon.py:88`).
+on the event (`src/paa/daemon.py:92`).
 
-### Collaborators (`daemon.py:170`)
+### Collaborators (`src/paa/daemon.py:186`)
 `_memory_creator()` builds `MemoryCreator(self._rt.db)`; unavailable degrades
 to `None` (ingestion skipped).
 
@@ -55,31 +63,31 @@ to `None` (ingestion skipped).
 
 | Component | Relationship | Why | Source |
 |---|---|---|---|
-| `Daemon` → `Runtime` | `boot_recovery()`, `run()`, `queue`, `agents` | Drive the runtime | `daemon.py:45` |
-| `Daemon` → `MemoryCreator` | `run_batch()` | Ingest signals | `daemon.py:148` |
-| `Daemon` → `DecaySweeper` | `sweep()` | Evict stale facts | `daemon.py:173` |
+| `Daemon` → `Runtime` | `boot_recovery()`, `run()`, `queue`, `agents` | Drive the runtime | `src/paa/daemon.py:48` |
+| `Daemon` → `MemoryCreator` | `run_batch()` | Ingest signals | `src/paa/daemon.py:156` |
+| `Daemon` → `MemoryCurator` | `run_maintenance()` | Curate memory (decay, prune, consolidate, orphans, reconcile, analyze) | `src/paa/daemon.py:200` |
 | `cli.main serve` → `Daemon` | `Daemon(rt)`, `start()`/`stop()` | `paa serve` | `cli/main.py:309` |
 | `Runtime.build` → boot recovery | `orchestrator.boot()` | Recovery at boot | `runtime.py:326` |
 
 ## Runtime behavior
 
-- Boot recovery is a precondition of serving, not a background chore (`daemon.py:9`).
+- Boot recovery is a precondition of serving, not a background chore (`src/paa/daemon.py:6`).
 - Claiming (not just reading) means a crash mid-task leaves the message
-  reclaimable (`daemon.py:12`).
-- Each loop is supervised independently (`daemon.py:18`).
+  reclaimable (`src/paa/daemon.py:10`).
+- Each loop is supervised independently (`src/paa/daemon.py:17`).
 
 ## Failure behavior
 
-- Loop exception → logged, restarted after 1s (`daemon.py:103`).
+- Loop exception → logged, restarted after 1s (`src/paa/daemon.py:111`).
 - Task run exception → logged, message nacked (redelivery up to
-  `max_delivery_attempts`) (`daemon.py:138`).
-- Ingestion failure → logged, skipped (`daemon.py:151`).
-- Maintenance failure → logged, skipped (`daemon.py:181`).
+  `max_delivery_attempts`) (`src/paa/daemon.py:146`).
+- Ingestion failure → logged, skipped (`src/paa/daemon.py:159`).
+- Maintenance failure → logged, skipped (`src/paa/daemon.py:181`).
 - Recovery enqueue failure → logged, non-fatal (`recovery.py:444`).
 
 ## Modification impact
 
-- Loop intervals are constructor params (`daemon.py:49`–`:51`).
+- Loop intervals are constructor params (`src/paa/daemon.py:52`–`:55`).
 - Adding a loop means adding to `start()`'s task list and `stop()` handling.
 - Tests: daemon exercised via `tests/integration/` (16 tests per README).
 

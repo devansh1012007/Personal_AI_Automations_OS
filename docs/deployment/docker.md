@@ -939,6 +939,20 @@ To point one substrate back at its embedded engine, change just that variable �
 e.g. `PAA_STORAGE__BACKEND_COLDLAKE=filesystem` keeps Postgres and Redis but
 uses the local content-addressed store for blobs.
 
+## Memory embeddings in the Docker image (caveat)
+
+The runtime image deliberately ships **without** the `embeddings` extra
+(`Dockerfile` header, `src/paa/models` hash-embedder fallback): production
+semantic recall in this image is therefore hash-based, and the boot log names
+the actual embedder (`memory.embedding_sink status=wired embedder=…`). That
+is functional but lexical — a deployment that wants real sentence-embedding
+recall must build a derived image with `paa[embeddings]`. Memory curation
+(full curator, first-tick dry-run preview, snapshot, and cold-lake replay
+restore) is covered by the authoritative runbook in
+`docs/operations/deployment-and-runtime.md` (*Memory curation*); in this
+topology the snapshot is a Postgres dump plus the S3 bucket snapshot, and
+the restore is the cold-lake signal replay described there.
+
 ## Troubleshooting
 
 - **`paa` restarts / DSN errors** — check `.env` matches the DSN Compose builds;

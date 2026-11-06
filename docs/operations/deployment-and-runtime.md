@@ -48,16 +48,73 @@ FastAPI app over it (`cli/main.py:254`).
 
 ## Daemon loops
 
-`Daemon(runtime)` (`src/paa/daemon.py:45`):
-- Boot recovery first, before any new work is accepted (`daemon.py:64`).
+`Daemon(runtime)` (`src/paa/daemon.py:48`):
+- Boot recovery first, before any new work is accepted (`src/paa/daemon.py:72`).
 - Dispatch loop (0.5s): claims `StreamName.ORCHESTRATOR_CORE` messages, runs via
-  `runtime.run(cid)`, `ack`/`nack` (`daemon.py:127`).
+  `runtime.run(cid)`, `ack`/`nack` (`src/paa/daemon.py:136`).
 - Ingestion loop (1.0s): `MemoryCreator.run_batch(limit=25)` drains signals
-  into hot serving (`daemon.py:139`).
-- Maintenance loop (6h): `DecaySweeper(db).sweep()` evicts stale facts
-  (`daemon.py:151`).
-- Supervised: one loop crashing doesn't stop others (`daemon.py:94`).
-- Cooperative shutdown via `asyncio.Event` (`daemon.py:70`).
+  into hot serving (`src/paa/daemon.py:156`). After each batch it also drains
+  the pending-embedding backlog (`src/paa/daemon.py:165`).
+- Maintenance loop (6h): `MemoryCurator.run_maintenance` — decay, prune-edges,
+  consolidate, orphans, reconcile-vectors, analyze (`src/paa/daemon.py:200`,
+  `src/paa/memory/curator.py:141`). This is the **runbook home** for the
+  curator: first-tick preview, snapshot, and rollback live here (see
+  *Memory curation* below); `docs/modules/daemon.md` and
+  `docs/modules/memory.md` link to it.
+- Supervised: one loop crashing doesn't stop others (`src/paa/daemon.py:102`).
+- Cooperative shutdown via `asyncio.Event` (`src/paa/daemon.py:81`).
+
+## Memory curation (authoritative runbook)
+
+The daemon maintenance loop runs the full curator
+(`src/paa/daemon.py:200`, `src/paa/memory/curator.py:141`), not a bare decay
+sweep. It fires once per `maintenance_interval` (6h default): the loop sleeps
+one interval first, so the first tick runs ~6h after boot
+(`src/paa/daemon.py:176`).
+
+**First tick is a dry-run preview; the second deletes.** The first tick runs
+with `dry_run=True` — counts are logged, nothing is deleted — and only a
+clean, complete, error-free preview consumes the flag so the *next* tick
+actually deletes (`src/paa/daemon.py:265`,
+`src/paa/daemon.py:312`). Watch `daemon.curation_started` and
+`daemon.curation_completed(dry_run=True)` for the would-delete counts
+(`src/paa/daemon.py:302`, `src/paa/daemon.py:330`). A budget stop or a
+phase error keeps the daemon in preview (the safe direction) and logs
+`daemon.curation_preview_incomplete` loudly — that is not a stuck daemon,
+it is the liveness trap firing because one phase is erroring; fix the phase
+rather than disabling preview (`src/paa/daemon.py:321`).
+
+**Snapshot before the first deleting tick.** The curator's delete phases have
+no cold-lake summary in production — the daemon wires `archive_writer=None`
+(`src/paa/daemon.py:273`), so decay/prune/consolidate/orphan deletions write
+no summary of their own. Before the second (deleting) tick, snapshot the
+cold lake: copy `PAA_HOME` (`state/paa.db` plus `cold_lake/`), or a
+Postgres dump plus the S3 bucket snapshot on the Docker topology. There is
+a real window to do this — the first preview tick plus ~6h of cadence —
+but only if you know to look.
+
+**Restore is cold-lake replay, not code revert.** Reverting the curator code
+changes future behaviour; it does not bring deleted facts back. To restore a
+deleted fact, re-run the creator over its persisted signal: facts carry
+`source_signal_id` into `cold_lake_signals` (`src/paa/memory/facts.py:295`),
+and `MemoryCreator.run_batch` claims `unprocessed` signals
+(`src/paa/memory/creator.py:1282`). The operator steps are: set the affected
+signal(s) back to `unprocessed`, then `paa memory drain` (or
+`POST /memory/drain`, `src/paa/api/app.py:272`). The creator is
+deterministic and replay-stable (`src/paa/memory/creator.py:185`), so the
+fact is recreated from the same payload; contradiction and quarantine rules
+still apply on replay. Code revert restores neither the facts nor the
+retention clocks — `use_count`/`last_queried_at` reset on replay.
+
+**Backlog watch (no throttle dial).** `drain_pending_embeddings` moves one
+batch of 100 per call (`src/paa/memory/creator.py:1490`) and the daemon
+drain-calls back-to-back while signals keep arriving
+(`src/paa/daemon.py:165`), so a large backlog drains at embedder speed with
+no rate dial — observe `memory.embedding_drain` `pending_count`
+(`src/paa/memory/creator.py:1556`) for backlog size and batch/indexed
+progress. If ingestion starves under a backlog, the backlog size and the
+embedder speed bound the drain time; there is currently no sleep/backoff
+knob to turn.
 
 ## Process model
 

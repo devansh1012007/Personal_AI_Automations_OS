@@ -87,10 +87,22 @@ ADR-0025.
 
 ### `creator.py` — MemoryCreator
 Ingests unprocessed signals into hot-serving facts/entities. Called by daemon
-ingestion loop (`daemon.py:148`).
+ingestion loop (`src/paa/memory/creator.py:1225`). Also owns the
+pending-embedding backlog drain (`src/paa/memory/creator.py:1490`),
+called after each ingestion batch (`src/paa/daemon.py:165`). The creator is
+deterministic and replay-stable — every field is a pure function of the
+signal payload — so re-running it over a persisted signal recreates the
+fact (`src/paa/memory/creator.py:185`).
 
 ### `curator.py` — MemoryCurator
-Nightly consolidation (decay sweep interval 6h, `config.py:268`).
+The full nightly consolidation, run by the daemon maintenance loop on its
+6h cadence (`src/paa/memory/curator.py:141`). Phases in order
+(`src/paa/memory/curator.py:62`): decay, prune-edges, consolidate,
+orphans, reconcile-vectors, analyze. Delete phases count-only under
+`dry_run` (`src/paa/memory/curator.py:141`), which is what makes the
+daemon's first-tick preview safe. Authoritative operator runbook —
+snapshot before first delete, cold-lake replay restore — in
+`docs/operations/deployment-and-runtime.md` (*Memory curation*).
 
 ### `contradiction.py`
 Conflicts above `contradiction_threshold` (0.75) quarantine both records at
@@ -132,7 +144,7 @@ callable`.
 
 ## Runtime behavior
 
-- Decay sweep runs on the daemon's 6h maintenance interval (`daemon.py:154`).
+- Decay sweep runs as the first curator phase on the daemon's 6h maintenance interval (`src/paa/memory/curator.py:141`).
 - Confidence computed lazily at read time (not stored) — a two-year-old fact is
   not treated as freshly verified (`context_agents.py:221`).
 - Facts are immutable: supersede links versions; chain walkable backwards.
