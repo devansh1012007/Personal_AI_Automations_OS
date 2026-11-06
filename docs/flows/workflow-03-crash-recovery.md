@@ -135,7 +135,7 @@ sequenceDiagram
 
 ## What the daemon does next
 
-The daemon dispatch loop (`daemon.py:116`) claims the re-queued messages and
+The daemon dispatch loop (`daemon.py:127`) claims the re-queued messages and
 runs each via `Runtime.run(cid)`, which re-projects and resumes at
 `resume_step_index` (`orchestrator.py:519`, `replay.py` `completed_steps`).
 

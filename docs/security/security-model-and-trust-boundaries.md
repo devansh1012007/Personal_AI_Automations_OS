@@ -176,7 +176,7 @@ backend.py` `_read_capped`).
   `policy.py:_NET_PATTERNS`).
 - **No authentication or authorization beyond the single permission mode.** Any
   process on the loopback can call the API; there is no user model
-  (`README.md:175`).
+  (`README.md:250`).
 - **No TLS on the ingestion API.** Loopback only; no transport security
   configured (`AGENTS.md:132`).
 - **Observability is untested.** Metrics/tracing code exists but is never

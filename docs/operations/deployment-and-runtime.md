@@ -48,10 +48,10 @@ FastAPI app over it (`cli/main.py:254`).
 
 ## Daemon loops
 
-`Daemon(runtime)` (`src/paa/daemon.py:44`):
+`Daemon(runtime)` (`src/paa/daemon.py:45`):
 - Boot recovery first, before any new work is accepted (`daemon.py:64`).
 - Dispatch loop (0.5s): claims `StreamName.ORCHESTRATOR_CORE` messages, runs via
-  `runtime.run(cid)`, `ack`/`nack` (`daemon.py:116`).
+  `runtime.run(cid)`, `ack`/`nack` (`daemon.py:127`).
 - Ingestion loop (1.0s): `MemoryCreator.run_batch(limit=25)` drains signals
   into hot serving (`daemon.py:139`).
 - Maintenance loop (6h): `DecaySweeper(db).sweep()` evicts stale facts

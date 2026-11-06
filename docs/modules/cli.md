@@ -66,7 +66,7 @@ under `--yes`, else `prompt_yes` (blocks on `input`; EOF → deny)
 
 ## Known gaps
 
-- No streaming output to the terminal while a task runs (`README.md:161`).
+- No streaming output to the terminal while a task runs (`README.md:250`).
 - `paa doctor` isolation level reflects the backend's own declaration
   (`isolation_level`, never aspirational — `sandbox/base.py:404`).
 

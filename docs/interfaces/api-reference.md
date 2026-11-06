@@ -131,7 +131,7 @@ explainability endpoint — walk the causal chain backwards via `causation_id`.
 **Behavior:**
 1. `_admit(runtime, essential=False)` → 429 under backpressure.
 2. Builds `SignalRepository` over `runtime.db` + cold-lake CAS
-   (`_signal_repo`, `api/app.py:219`); 503 if cold lake not configured.
+   (`_signal_repo`, `api/app.py:315`); 503 if cold lake not configured.
 3. If `external_id` set, checks `get_by_external_id` for a pre-existing row
    (`duplicate` flag).
 4. `repo.record(channel, payload, external_id)` → idempotent insert.
@@ -156,7 +156,7 @@ FastAPI):
 
 | Status | Condition | Source |
 |---|---|---|
-| 400 | Invalid correlation_id UUID | `_parse_uuid` (`api/app.py:232`) |
+| 400 | Invalid correlation_id UUID | `_parse_uuid` (`api/app.py:337`) |
 | 404 | No such task (head is None / no events) | `task_status` (`api/app.py:109`), `ledger` (`api/app.py:150`) |
 | 409 | Task not awaiting human gate | `clear_gate` (`api/app.py:135`) |
 | 429 | Queue under backpressure (SHEDDING) | `_admit` (`api/app.py:87`, `:168`) |

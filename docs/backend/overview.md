@@ -66,8 +66,8 @@ All three converge on `ChiefOrchestrator` (`agents/orchestrator.py:188`).
   (`PermissionMode`, `core/types.py:169`).
 - No multi-user or multi-tenancy.
 - No built-in concrete tools (file edit, bash, web, git) wired into the
-  orchestrator's main task path (`README.md:160`).
-- No web dashboard or streaming terminal output (`README.md:161`).
+  orchestrator's main task path (`README.md:240`).
+- No web dashboard or streaming terminal output (`README.md:250`).
 - Observability (metrics, tracing, runs, logging) is built but untested
   (`AGENTS.md:97`).
 

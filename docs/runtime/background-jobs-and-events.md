@@ -9,13 +9,13 @@ default (Redis optional), and the ledger is authoritative over the queue
 
 ## 1. The Daemon
 
-`Daemon(runtime)` (`daemon.py:44`) runs three cooperating, independently
+`Daemon(runtime)` (`daemon.py:45`) runs three cooperating, independently
 supervised loops plus a one-time boot recovery:
 
 | Loop | Interval | What it does |
 |---|---|---|
 | Boot recovery | once at `start()` | `runtime.boot_recovery()` — replay open lineages, reconcile workspaces, re-queue (`daemon.py:64`) |
-| Dispatch | 0.5s | Claims queued tasks from `StreamName.ORCHESTRATOR_CORE` and runs each through `runtime.run(cid)`; `ack` on success, `nack` on failure (`daemon.py:116`) |
+| Dispatch | 0.5s | Claims queued tasks from `StreamName.ORCHESTRATOR_CORE` and runs each through `runtime.run(cid)`; `ack` on success, `nack` on failure (`daemon.py:127`) |
 | Ingestion | 1.0s | Drains unprocessed signals into hot serving via `MemoryCreator.run_batch(limit=25)`; isolates one poison signal from the batch (`daemon.py:139`) |
 | Maintenance | 6h | `DecaySweeper(db).sweep()` — evicts stale facts per domain decay policy (`daemon.py:151`) |
 
@@ -30,7 +30,7 @@ and drain (`daemon.py:70`). `run_forever()` blocks on the event
 (`daemon.py:81`).
 
 ### Claim semantics
-`_claim_and_run()` (`daemon.py:116`) claims messages (not just reads), so a
+`_claim_and_run()` (`daemon.py:127`) claims messages (not just reads), so a
 crash mid-task leaves the message reclaimable — no task is silently dropped.
 On exception it `nack`s (with error) rather than `ack`, allowing redelivery up
 to `max_delivery_attempts` (`daemon.py:134`).

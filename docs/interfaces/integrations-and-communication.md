@@ -4,7 +4,7 @@ PAA communicates over three boundaries: (1) the ingestion API (HTTP, loopback),
 (2) the model provider layer (local + optional frontier), and (3) optional
 external substrates (Qdrant, Kuzu, Redis, the S3 object store). There is no service mesh, no
 message broker beyond the durable SQLite/Redis queue, no webhooks, and no
-ingestion bridges (Telegram/email/Slack) yet (`README.md:169`).
+ingestion bridges (Telegram/email/Slack) yet (`README.md:247`).
 
 ## 1. Model providers (the primary external integration)
 
@@ -129,7 +129,7 @@ uvicorn over the FastAPI app plus the daemon loops over one shared runtime
 
 ## 6. What is NOT integrated (honest gaps)
 
-- No ingestion bridges (Telegram/email/Slack) — CLI/HTTP only (`README.md:169`).
+- No ingestion bridges (Telegram/email/Slack) — CLI/HTTP only (`README.md:247`).
 - No webhooks.
 - No service-to-service RPC beyond in-process agent messages.
 - No API keys, OAuth, or mTLS on the ingestion API (single-user loopback).

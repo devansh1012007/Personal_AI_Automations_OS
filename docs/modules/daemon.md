@@ -19,7 +19,7 @@ cooperative via an `asyncio.Event`.
 
 ## Internal implementation
 
-### Loops (`daemon.py:113`–`:166`)
+### Loops (`daemon.py:119`–`:182`)
 - **Dispatch** (0.5s interval): `claim_batch=4` messages from
   `StreamName.ORCHESTRATOR_CORE`; runs each via `runtime.run(cid)`; `ack` on
   success, `nack` on failure (`daemon.py:136`). If `runtime.queue is None`, sleeps
@@ -55,7 +55,7 @@ to `None` (ingestion skipped).
 
 | Component | Relationship | Why | Source |
 |---|---|---|---|
-| `Daemon` → `Runtime` | `boot_recovery()`, `run()`, `queue`, `agents` | Drive the runtime | `daemon.py:44` |
+| `Daemon` → `Runtime` | `boot_recovery()`, `run()`, `queue`, `agents` | Drive the runtime | `daemon.py:45` |
 | `Daemon` → `MemoryCreator` | `run_batch()` | Ingest signals | `daemon.py:148` |
 | `Daemon` → `DecaySweeper` | `sweep()` | Evict stale facts | `daemon.py:173` |
 | `cli.main serve` → `Daemon` | `Daemon(rt)`, `start()`/`stop()` | `paa serve` | `cli/main.py:309` |
@@ -74,7 +74,7 @@ to `None` (ingestion skipped).
 - Task run exception → logged, message nacked (redelivery up to
   `max_delivery_attempts`) (`daemon.py:138`).
 - Ingestion failure → logged, skipped (`daemon.py:151`).
-- Maintenance failure → logged, skipped (`daemon.py:165`).
+- Maintenance failure → logged, skipped (`daemon.py:181`).
 - Recovery enqueue failure → logged, non-fatal (`recovery.py:444`).
 
 ## Modification impact

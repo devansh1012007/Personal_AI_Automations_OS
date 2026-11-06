@@ -125,7 +125,7 @@ responsibility and the files it contains. All paths are repository-relative.
 | `paa tui` | `src/paa/cli/main.py:353` | `tui` |
 | Programmatic runtime | `src/paa/runtime.py:260` | `Runtime.build()` |
 | API factory | `src/paa/api/app.py:53` | `create_app(runtime)` |
-| Daemon | `src/paa/daemon.py:44` | `Daemon(runtime)` |
+| Daemon | `src/paa/daemon.py:45` | `Daemon(runtime)` |
 
 ## tests/
 

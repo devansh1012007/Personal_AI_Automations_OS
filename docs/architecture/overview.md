@@ -236,12 +236,12 @@ access layer, not business logic).
 ## What is NOT in the architecture (honest gaps)
 
 - No UI beyond CLI; a TUI exists (`src/paa/tui/`) but there is no web dashboard
-  and no streaming terminal output (`README.md:161`).
+  and no streaming terminal output (`README.md:250`).
 - No built-in concrete tools for real work (no file edit, bash, web search,
-  git) wired into the orchestrator yet (`README.md:160`).
+  git) wired into the orchestrator yet (`README.md:240`).
 - Observability code exists but is untested (`AGENTS.md:97`).
 - `src/paa/agents/specialists/` is an empty package (`AGENTS.md:146`).
-- No auth or multi-user; single-user, single-machine (`README.md:175`).
+- No auth or multi-user; single-user, single-machine (`README.md:250`).
 
 ## Related documents
 

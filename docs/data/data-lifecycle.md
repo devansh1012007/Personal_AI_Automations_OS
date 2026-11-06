@@ -123,7 +123,7 @@ Confidence stored is `initial_confidence` (C₀); the effective confidence
 - `DecaySweeper.sweep()` (`memory/decay.py`): per-domain `decay_lambda`; facts
   below `prune_floor` are archived to cold lake then deleted. Uses keyset
   pagination (`WHERE id > ?`) so deletion during scan doesn't skip rows
-  (OFFSET would skip — documented bug fix, `README.md:351`).
+  (OFFSET would skip — documented bug fix, `README.md:213`).
 - `ContradictionError`: conflicts above `contradiction_threshold` (0.75)
   quarantine both records at `contradiction_degraded_confidence` (0.20) and
   demand human tie-break; never auto-resolved (`core/errors.py:279`, `memory/

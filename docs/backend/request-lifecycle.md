@@ -12,7 +12,7 @@ outcome through the backend. It reflects the actual execution order in
 | `paa run <id>` | `cli/main.py:89` | `run` → `Runtime.run()` |
 | API `POST /tasks` (`?run=true`) | `api/app.py:85` | `submit_task` → `Runtime.submit()` then `Runtime.run()` |
 | API `POST /tasks` (`?run=false`) | `api/app.py:85` | Submit + queue only; daemon drains later |
-| Daemon dispatch loop | `daemon.py:116` | `_claim_and_run()` → `Runtime.run(cid)` |
+| Daemon dispatch loop | `daemon.py:127` | `_claim_and_run()` → `Runtime.run(cid)` |
 | Recovery requeue | `recovery.py:437` | `_requeue()` → queue → daemon dispatch |
 
 All converge on `ChiefOrchestrator.run()` (`orchestrator.py:292`).
