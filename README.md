@@ -1,296 +1,428 @@
-# PAA — Personal Autonomous Cognitive Operating System Runtime
+# PAA — Personal Autonomous Cognitive Operating System
 
-A local-first, event-sourced substrate for running autonomous agents on personal hardware. I built this off my own v4.0/v4.1 RFC, and adapted it wherever the spec didn't actually run on my machine or didn't work as written.
+**A local-first, event-sourced runtime for running, governing, and auditing autonomous agents.**
 
-**Status:** ~28,000 lines, 755 tests passing. The event-sourced core, context engine, storage layer, and sandbox are done and tested. A few subsystems are written but not tested yet — see the build status table below, I'm not going to pretend those are further along than they are.
+![Python](https://img.shields.io/badge/python-3.11%2B-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Status](https://img.shields.io/badge/status-alpha-orange)
 
-## What this actually is
+PAA records every agent action in a tamper-evident ledger, gates every mutation
+through deterministic checks, and can rebuild its state from that ledger after a
+crash. It is designed to answer, for any change an agent made: *what ran, what
+authorised it, what the agent knew, and whether verification actually passed.*
 
-Most agent frameworks keep task state in process memory. Kill the process, task's gone. My starting premise (from the RFC) is that the ledger is the only source of truth — everything else, queues, caches, even the filesystem, is a derived view you can always rebuild by replaying events.
+> **Status: alpha.** The runtime core is built and tested. The pieces that make it a
+> daily-driver coding tool (file, shell, and git tools) and the ability to host
+> third-party agent harnesses are **not built yet**. See
+> [Status](#status) and [Known limitations](#known-limitations) before relying on it.
+> Direction and sequencing live in [docs/VISION.md](docs/VISION.md).
 
-That one decision is what buys you:
+---
 
-| Property | How |
+## Contents
+
+- [Why PAA](#why-paa)
+- [Guarantees](#guarantees)
+- [Quick start](#quick-start)
+- [Using PAA from an editor (ACP)](#using-paa-from-an-editor-acp)
+- [Architecture](#architecture)
+- [Extension model](#extension-model)
+- [Where PAA fits](#where-paa-fits)
+- [Status](#status)
+- [Known limitations](#known-limitations)
+- [Security model](#security-model)
+- [Design decisions and RFC deviations](#design-decisions-and-rfc-deviations)
+- [Repository layout](#repository-layout)
+- [Testing](#testing)
+- [Documentation](#documentation)
+- [License](#license)
+
+---
+
+## Why PAA
+
+Most agent tooling keeps task state in process memory and trusts the model's own
+account of what it did. Kill the process and the task is gone. Ask what happened
+and you get a summary written by the thing being audited.
+
+PAA starts from the opposite premise: **the ledger is the only source of truth.**
+Queues, caches, vector indexes, and even the workspace on disk are derived views
+that can be rebuilt by replaying events. That single decision gives you:
+
+- recovery after a crash,
+- evidence that cannot be quietly rewritten,
+- a causal chain you can walk backwards from any action,
+- and a place to attach deterministic safety checks that no model can talk its way past.
+
+PAA does **not** try to out-reason frontier models. Agentic coding quality is
+mostly the model; architecture cannot close that gap
+([ADR-0015](docs/adr/0015-capability-ceiling.md)). PAA's job is to make whatever
+model you point at it *recoverable, auditable, and bounded*.
+
+## Guarantees
+
+| Property | Mechanism |
 |---|---|
-| Crash recovery | Boot sweep replays the ledger, checks the workspace against a checksum manifest, rolls back drift, re-queues what's safe |
-| Tamper evidence | Every event commits to the previous one's hash, so editing history breaks every digest after it |
-| Bounded context | Hard token ceiling enforced by the gatherer — there's a property test asserting it can't be broken |
-| Deterministic safety | AST scan, schema validation, and real test runs gate every mutation. No model sits in the security loop |
-| Explainability | Causation links let you walk backwards from any action to whatever event caused it |
+| **Crash recovery** | Boot sweep replays the ledger, verifies the workspace against a checksum manifest, rolls back drift, and re-queues work that is safe to retry. |
+| **Tamper evidence** | Each event commits to the previous event's hash; editing history invalidates every later digest. |
+| **Bounded context** | A hard token ceiling is enforced by the context gatherer and covered by a property test. |
+| **Deterministic safety** | AST scan, schema validation, and real test runs gate every mutation. No model sits in the security loop; a deterministic critic FAIL cannot be overridden by a model PASS. |
+| **Explainability** | Causation links let you walk from any action back to the event that caused it (`paa ledger`). |
+| **Controlled egress** | Escalation from a local model to a hosted one is a logged event. In `LOCKDOWN` mode it never happens. |
+
+Ordering rule: **ledger before side effect, always.** A crash between "event
+written" and "work done" is recoverable, because replay knows the work was
+intended. The reverse order would not be.
 
 ## Quick start
 
-```
+Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/) (or plain `pip`).
+
+```bash
 uv venv --python 3.12
 uv pip install -e ".[dev]"
-.venv/Scripts/python.exe -m pytest tests/ -q      # 1138 passed, 6 skipped
 ```
 
-Run it from the CLI (local model via Ollama, or `echo` if you're offline):
+Run the suite:
 
-```
-paa doctor                       # what backends/sandbox are actually live
-paa submit "summarise my notes"  # run a task to completion
-paa ledger <correlation-id>      # walk the event chain, see why it did what it did
-paa recover                      # post-crash boot sweep
-paa serve                        # FastAPI ingestion + background daemon (loopback only)
-```
-
-Optional extras, each with a fallback if you skip it:
-
-```
-uv pip install -e ".[vector]"       # Qdrant embedded, else numpy brute force
-uv pip install -e ".[graph]"        # KuzuDB, else SQLite recursive CTEs
-uv pip install -e ".[embeddings]"   # real embeddings, else a hash embedder (~2GB torch if you want real ones)
-uv pip install -e ".[api]"          # FastAPI ingestion
+```bash
+# Linux / macOS
+.venv/bin/python -m pytest tests/ -q
+# Windows
+.venv\Scripts\python.exe -m pytest tests\ -q
 ```
 
-No Docker, no server, no GPU required.
+Drive the runtime from the CLI. A local model (Ollama) or the offline `echo`
+provider works with no API keys:
 
-## This machine vs. the RFC
+```bash
+paa doctor                        # which backends and sandbox are actually live
+paa submit "summarise my notes"   # run a task to a terminal state
+paa status <correlation-id>       # replayed state of a task
+paa ledger <correlation-id>       # walk the causal event chain
+paa gate <correlation-id> --approve   # clear a human-attestation gate
+paa recover                       # post-crash boot sweep
+paa agent                         # tool-using agent loop over the runtime
+paa serve                         # loopback HTTP API + background daemon
+```
 
-The RFC assumes a CUDA workstation. My laptop is not that. I've been running this on a Ryzen 5 7535HS, 13.3 GB RAM (about 3.5 GB free most of the time), a Radeon 660M iGPU with 2GB VRAM, Windows 11, no Docker. Those are two different machines and I had to actually resolve the gap instead of hand-waving it.
+Hosted models are configuration, not code. For example, set
+`PAA_MODELS__LOCAL_PROVIDER=openrouter` and put the key in `.env`
+([ADR-0020](docs/adr/0020-provider-keys-from-dotenv.md)).
 
-| RFC wants | What I've got | What I did instead |
+Optional extras, each with a fallback if omitted:
+
+| Extra | Adds | Fallback |
 |---|---|---|
-| vLLM + Llama-3-8B-Q8 at 85% VRAM | vLLM only ships Linux wheels, needs CUDA/ROCm, and I have 2GB VRAM against an ~8.5GB requirement | Provider-agnostic layer, local-first with logged escalation (ADR-0007, ADR-0015) |
-| Concurrent Mistral-7B critic + 8B curator | Would need ~20GB more RAM than I have | One configurable provider — the critic's authority is deterministic, not generative, so it doesn't need its own model |
-| gVisor `runsc` sandbox | It's a Linux userspace kernel, doesn't exist on Windows | Pluggable Sandbox interface; Windows backend uses Job Object caps + workspace jail + AST pre-scan. It's materially weaker than gVisor and I'm not going to pretend otherwise (ADR-0006) |
-| PostgreSQL + Qdrant + Redis + S3 | No Docker on this box, and that stack idles at 4-6GB RAM | SQLite (WAL) + Qdrant embedded + SQLite queue + content-addressed blob store. Idles at basically 0MB (ADR-0001–0005) |
-| KuzuDB embedded | win_amd64 wheel exists, so this one's fine | used as specified |
-| 384-dim embeddings | MiniLM-L6-v2 is 384-dim and runs on CPU, also fine | used as specified |
+| `.[vector]` | Qdrant embedded | NumPy brute force |
+| `.[graph]` | KuzuDB | SQLite recursive CTEs |
+| `.[embeddings]` | Real embeddings (large download) | Hash embedder |
+| `.[api]` | FastAPI ingestion | CLI only |
+| `.[postgres]`, `.[redis]` | Postgres and Redis backends | SQLite (WAL) and SQLite queue |
+| `.[otel]` | OpenTelemetry exporters | In-process metrics |
 
-Every substitution keeps the same logical contract as the RFC. Swapping back to Postgres or gVisor later is a backend change, not a rewrite — that's the whole point of writing the ADRs down.
+No Docker, server, or GPU is required for the default configuration. A Docker
+deployment with Postgres and S3-compatible storage is available; see
+[docs/deployment/docker.md](docs/deployment/docker.md).
 
-## Bugs I found in my own spec
+### HTTP API (loopback only)
 
-Implementing the RFC literally would have produced something that deadlocks, leaks memory, or silently drops work. Fixed all of these, reasoning's in `docs/adr/`.
+| Route | Purpose |
+|---|---|
+| `GET /health` | Liveness and backend report |
+| `POST /tasks` | Submit a task |
+| `GET /tasks/{id}` | Replayed task state |
+| `POST /tasks/{id}/gate` | Approve or reject a parked task |
+| `POST /tasks/{id}/correction` | Submit a human correction |
+| `GET /ledger/{id}` | Event chain for a task |
+| `POST /signals` | Ingest a signal (backpressure returns HTTP 429) |
 
-**1. The idempotency scheme makes retries impossible.** (ADR-0008) `SHA256(correlation_id + event_type + state_version)` under a UNIQUE constraint means `EXECUTION_STARTED` can only ever be written once per task. So a task that fails on its first attempt can never get a second one — recovery deadlocks on exactly the tasks it's supposed to be rescuing. Fixed with an attempt counter plus a discriminator.
+## Using PAA from an editor (ACP)
 
-**2. The recovery index never shrinks.** (ADR-0010) A partial index that excludes terminal events never sheds rows on an append-only table, so every event from every completed task stays indexed forever. Boot recovery gets slower for the entire life of the system. Replaced it with a bounded head projection — one row per lineage.
+**Experimental.** PAA ships an [Agent Client Protocol](https://agentclientprotocol.com)
+server so ACP-capable editors can use it as an agent. Permission prompts from the
+runtime's gate are shown in the editor and **fail closed**: anything other than an
+explicit "Allow" is a denial.
 
-**3. `EXECUTION_COMPLETED` can't actually be terminal.** (ADR-0010) It fires once per step, not once per task. Treat it as closing the whole task and recovery marks a half-finished plan as done and silently skips the rest of the steps. Caught this with a test, not by reading the code.
+```bash
+uv pip install agent-client-protocol
+```
 
-**4. The sandbox kill rule has the wrong units.** (ADR-0009) `∫MemoryUsage(t)dt > Ceiling` gives you MB·seconds. That never fires on an actual spike and always fires on a long, benign run. Swapped it for peak RSS, which is what cgroups and Job Objects actually measure.
+Zed — Settings → AI → External Agents → Add Custom Agent:
 
-**5. `A_score` divides by things that can be zero.** (ADR-0012) Dividing by `pollution · hallucination_risk` (both in [0,1]) sends the score to infinity as either approaches zero. Rewrote it with `(1 + x)` denominators — same monotonic behavior, now bounded.
+```json
+"agent_servers": {
+  "PAA": {
+    "type": "custom",
+    "command": "/path/to/repo/.venv/bin/python",
+    "args": ["-m", "paa.acp_server"],
+    "env": { "PAA_HOME": "/path/to/.paa" }
+  }
+}
+```
 
-**6. Temporal decay was hitting the wrong term.** (ADR-0013) Operator precedence in `R_hybrid` only decayed the graph term, so stale semantic matches never got damped. Applied it to the whole score instead.
-
-**7. Friction score divides by zero for exactly the domains that need it most.** (ADR-0016) `F_ops` divides by "Total Successful Commits" — which is zero for a domain that's only ever failed. That's precisely the domain that needs reflection.
-
-**8. Pydantic v1 syntax.** My own `SkillContractModel` used `regex=` and `@validator`, neither of which run on Pydantic v2.
-
-Found four more of these during the build, through tests rather than by reading the code:
-
-- Keyset vs OFFSET pagination — deleting rows while paginating with OFFSET silently skips some. Those never get evicted and nothing tells you.
-- Recovery-sweep idempotency — keying the audit event on a version that the event itself bumps grows the ledger by one row per boot, forever.
-- zstd size sentinel — `stream_writer(size=None)` raises. The library wants `-1`. A declared-size mismatch fails inside the write, so the explicit check I'd written below it was dead code.
-- Non-deterministic claim order — tiebreaking "oldest first" on a random UUID shuffles same-instant arrivals, so ingestion order quietly stops meaning anything under load, right when it matters most.
+What this gives you today is a chat and approval interface over PAA's
+ledger-facing tools (`submit_task`, `run_task`, `read_ledger`, `recall_facts`, …).
+It does **not** edit files in your open project, because PAA has no file or shell
+tools yet. Responses are not streamed, cancel is not implemented, and editor
+context (`@`-mentions, working directory, MCP servers) is ignored. Coder-loop turns
+are recorded to session transcripts rather than the ledger; only mutating tool
+calls reach the ledger.
 
 ## Architecture
 
 ```
-                        ┌──────────────────────────┐
-   ingestion ──────────►│  cold_lake (immutable)   │  raw signals, CAS blobs
-                        └────────────┬─────────────┘
-                                     │
-                        ┌────────────▼─────────────┐
-                        │  system_state.ledger     │  ◄── SOURCE OF TRUTH
-                        │  append-only, hash-chain │      everything else derives
-                        └────────────┬─────────────┘
-                                     │ replay (left fold)
-                        ┌────────────▼─────────────┐
-                        │   TaskProjection         │
-                        └────────────┬─────────────┘
-                                     │
-   ┌─────────────┬───────────────────┼───────────────┬──────────────┐
-   ▼             ▼                   ▼               ▼              ▼
-hot_serving   vector index      graph edges      queue          workspaces
-(truth)       (recall)          (provenance)     (volatile)     (host disk)
+                      ┌──────────────────────────┐
+   ingestion ────────►│  cold lake (immutable)   │  raw signals, content-addressed blobs
+                      └────────────┬─────────────┘
+                                   │
+                      ┌────────────▼─────────────┐
+                      │  ledger (append-only,    │  ◄── SOURCE OF TRUTH
+                      │  hash-chained)           │      everything else is derived
+                      └────────────┬─────────────┘
+                                   │ replay (left fold)
+                      ┌────────────▼─────────────┐
+                      │     TaskProjection       │
+                      └────────────┬─────────────┘
+                                   │
+   ┌────────────┬──────────────────┼──────────────┬──────────────┐
+   ▼            ▼                  ▼              ▼              ▼
+hot_serving  vector index     graph edges      queue        workspaces
+ (truth)      (recall)       (provenance)    (volatile)     (host disk)
 ```
 
-Task lifecycle — every arrow writes a ledger event first:
+Task lifecycle. Every arrow writes a ledger event first:
 
 ```
 TASK_REQUESTED → TASK_QUEUED → CONTEXT_HYDRATED → PLAN_COMPILED
       → POLICY_CLEARED → EXECUTION_STARTED → CRITIQUE_CONCLUDED
       → EXECUTION_COMPLETED → MUTATION_COMMITTED
-                    │
-                    ├── POLICY_BLOCKED / SECURITY_VIOLATION  (terminal)
-                    ├── AWAITING_HUMAN_ATTESTATION           (parks, never auto-clears)
-                    └── STATE_ROLLBACK_TRIGGERED             (drift → restore)
+                  │
+                  ├── POLICY_BLOCKED / SECURITY_VIOLATION   (terminal)
+                  ├── AWAITING_HUMAN_ATTESTATION            (parks; never auto-clears)
+                  └── STATE_ROLLBACK_TRIGGERED              (drift → restore)
 ```
 
-Ledger before side effect, always. A crash between writing the event and doing the work is recoverable — replay knows the work was intended. A crash between doing the work and writing the event isn't recoverable. Ordering it this way means the only failure mode you can hit is the survivable one.
+Key design choices:
 
-## A few design calls worth explaining
+- **Optional router.** `should_route()` returns `False` when a target agent is named
+  or fewer than three agents are eligible. When routing runs, it uses an LLM,
+  because a small intent classifier cannot see project state.
+- **Delegation without deadlock.** Agents may delegate to each other, but only
+  through the orchestrator, which owns the delegation graph and refuses any edge
+  that would close a cycle ([ADR-0018](docs/adr/README.md)).
+- **AI proposes, code decides.** In the context builder, a model may expand queries
+  and infer slots; deterministic code does the ranking and enforces the ceiling.
+  This keeps packets reproducible for replay and keeps untrusted text out of the
+  planner's context by construction.
+- **Eighteen memory domains, six mechanisms.** Domains are vocabulary; each maps to
+  one of volatile, relational, immutable log, vector, graph, or document storage.
+  Adding a domain is a data change ([ADR-0014](docs/adr/README.md)).
+- **Pluggable infrastructure.** SQLite/Postgres, embedded/Qdrant vectors,
+  Kuzu/SQLite graph, SQLite/Redis queue, local/S3 blob store, and
+  subprocess/WSL/Docker/gVisor sandboxes all sit behind interfaces.
 
-**The router is optional.** Mostly it doesn't need to run — `should_route()` returns `False` if you name a target agent, or if fewer than 3 agents are even eligible. When it does run, it uses an LLM rather than a small classifier, because a compact intent model sees the request string but not the project state. It can't tell "fix the login bug" (one file) apart from the same words meaning a full auth rewrite.
+## Extension model
 
-**Agents can call each other without deadlocking.** The RFC forbids peer calls; I wanted them anyway. Turns out both are satisfiable, because the RFC's actual concern is blocking call graphs, not interaction in general. Delegation goes through the orchestrator, which owns the delegation graph and refuses any edge that would close a cycle. Real multi-agent interaction, safety property preserved by construction instead of by a blanket rule. (ADR-0018)
+PAA's extension surface is deliberately **narrow and protocol-based** rather than an
+in-process plugin API. The rule: *an extension may attach wherever its inputs and
+outputs cross a boundary that is recorded in the ledger and gated by policy.*
 
-**The context builder only uses AI for half the job.** AI proposes what to look for — query expansion, slot inference. Deterministic code decides what actually gets in — ranking, the ceiling, routing. If a model picked packet contents directly, text pulled from an untrusted source could talk its way into the planner's context, and packets would stop being reproducible, which breaks replay.
+| Seam | Direction | Interface | State |
+|---|---|---|---|
+| Tools and skills | Runtime → tools | MCP and Claw Hub via the Unified Skill Adapter | Built |
+| Models | Runtime → providers | Provider registry (Anthropic, Gemini, Ollama, OpenAI-compatible, echo) | Built |
+| Editors and UIs | Client → PAA | ACP server (`paa.acp_server`) | Experimental |
+| Lifecycle hooks | In coder loop | Pre/post tool, prompt submit | Built in-process; out-of-process JSON hooks planned |
+| External agent harnesses | PAA → agents | ACP client under the sandbox | Planned |
+| Event export | Ledger → observers | JSONL / OpenTelemetry | Planned |
+| Custom agentic loops | Pluggable pipelines | `Pipeline` + `RuntimeContext` | Design only ([design](docs/EXTENSIBILITY_PIPELINES.md), [audit](docs/flexability-audit.md)) |
 
-**18 memory domains, 6 real mechanisms.** The RFC lists 18 rows but most of them differ only by label — "Skill Memory" and "Procedural Memory" are the same table with the same policy under two names. Kept all 18 as vocabulary; each one maps onto one of six actual mechanisms (volatile, relational, immutable log, vector, graph, document). Adding a domain is a data change now, not a new subsystem. (ADR-0014)
+Constraints that any extension must satisfy: it runs out of process; it can tighten
+policy but never loosen it; its results are recorded as ledger events so replay reads
+the record rather than re-executing it; and it speaks a versioned event envelope.
+Rationale is in [docs/VISION.md](docs/VISION.md#extension-model).
 
-**On meta-learning — what's real here and what isn't.** I looked at MAML, prototypical networks, memory-augmented nets. Gradient-based MAML needs a differentiable model, a labelled task distribution with support/query splits, and training infra I don't have. A file called `maml.py` that doesn't actually do MAML would be worse than just not having it. Prototypical few-shot classification is the one that actually fits what I need — prototypes as mean embeddings of past task exemplars, classify by nearest prototype with a confidence margin, return "unknown" instead of guessing when the margin's thin. No gradients, no training loop, and it gets me the "adapt from a few examples" property I actually wanted. (ADR-0017 — designed, not built yet.)
+## Where PAA fits
 
-**On matching something like Claude Code.** Worth being straight about this: architecture doesn't close a model-capability gap. Agentic coding performance is mostly the reasoning model, not the harness. A well-built harness around an 8B model gets you a well-behaved 8B agent, nothing more. What this design does beat a stateless coding agent at: crash recoverability, durable memory across sessions, deterministic validation, auditability. So: equal or better on recoverability/memory/safety, dependent on whatever model you plug in for raw reasoning — which is exactly why the model layer is swappable. (ADR-0015)
+PAA is infrastructure beneath agents, not another agent.
 
-## Why this over what already exists
+- **Agent harnesses** (terminal and editor coding agents) decide *how a model works
+  on a task*. PAA does not replace them. Hosting them under PAA's ledger and sandbox
+  is the main planned direction and is **not implemented**.
+- **Multi-session managers and orchestrators** run agents in parallel. PAA's focus is
+  a durable, verifiable record of what happened, not session management.
+- **Governance gateways** provide organisation-wide identity and policy. PAA is
+  local-first and single-user today; team features are future work.
 
-I built this because I wanted something that doesn't exist as a single package yet. Let me be honest about what I'm comparing to and where PAA actually wins:
+## Status
 
-**vs Claude Code** (frontier reasoning agent): Claude Code will always out-think anything I can fit on this hardware. That's not what I'm competing on. What I get instead is: if a task crashes mid-execution, I get it back with full recovery. If I'm offline for a week and come back, I have complete history and can resume where I left off. I can point it at a local model, or a cheap API, without giving my code to a third party. Most importantly, I have an audit trail of every decision — I can walk backwards through the ledger and understand *why* it did something.
+Measured on a clean Linux checkout (Python 3.12, `.[dev]` only, no Docker) at commit
+`4ac96db`. Run the suite yourself for current numbers; they drift.
 
-**vs OpenClaw** (skill/agent ecosystem): OpenClaw is an excellent open-source framework for connecting agents to tools. But it doesn't have event-sourced recovery, deterministic validation, a sandbox that's actually restrictive, or signed packages with dependency isolation. PAA is built around the assumption that you want those guarantees before you install someone else's code.
+| Metric | Value |
+|---|---|
+| Python source (`src/`) | ~52,000 lines |
+| Tests collected | 3,145 |
+| Result | 2,899 passed · 241 skipped · 4 xfailed · 1 failed |
 
-**vs Hermes/Jarvis** (ambient assistants): These are great at always-on operation and multi-channel presence. I'm not there yet — I haven't built the ingestion bridges, the proactive loops, or the mobile layer. But once I do, mine will have something those don't: if you ask "what did I decide about auth in March?", the system can actually walk the causal chain and show you the reasoning, not just return a fuzzy search result.
+Skips are tests that need optional extras or live services (Postgres, S3, Redis,
+Docker). The 4 xfails are strict: three known validation defects and one open policy decision, each with its reason stated in the test. The
+single failure, `test_user_is_the_workspace_owner_not_root`, is environmental: it
+assumes a non-root host user and a Docker daemon. CI is defined in
+[.github/workflows/ci.yml](.github/workflows/ci.yml); check the Actions tab for its
+current state rather than trusting this file.
 
-**The real differentiation** is the combo: event-sourced recovery + crash-safe operation + deterministic safety + persistent memory + an open skill economy, all on hardware you own. None of those individually are novel; the fact that they coexist in one running system is the point.
+| Area | State |
+|---|---|
+| Event ledger, replay, recovery | Built and tested |
+| Context engine (budget, gatherer, compaction) | Built and tested |
+| Storage (relational, vector, graph, cold lake, queue) | Built and tested; Postgres/S3 have live-server suites that run when services are supplied |
+| Sandbox (subprocess, WSL, Docker, dry-run, recursion guard) | Built and tested |
+| Deterministic validation (AST, patch, workspace, test runner) | Built and tested; 3 known defects tracked as xfail |
+| Agents (orchestrator, delegation, policy, planner, critic, router, worker) | Built and tested |
+| Model providers and escalation router | Built and tested; **no frontier provider has driven a full task end to end** |
+| Memory (creator, curator, decay, contradiction, world model) | Built and tested |
+| Unified Skill Adapter (MCP, Claw Hub) | Built and tested |
+| Marketplace (signed packages, five-gate installer) | Metadata path built; executable package loading is not |
+| Observability (metrics, tracing, runs) | Built and tested |
+| Coder agent (`paa agent`) | Alpha; tools are ledger-facing only |
+| ACP server | Experimental |
+| Docker deployment | Built; operators should run the live-stack suites themselves |
+| File, shell, web, and git tools | **Not built** |
+| Codebase intelligence (indexing, LSP) | Not built |
+| Web UI | Not built (a terminal UI module exists in `paa/tui`) |
+| Hosting external agent harnesses | Not built |
 
-**What this *isn't***: it's not trying to out-reason a frontier model. It's not a consumer product yet (no UI, no installer wizard). It's not multimodal. And I haven't implemented the three products on top yet (the coder, the skill platform, the ambient assistant). The foundation is solid; the floors aren't built.
+## Known limitations
 
-## Known limitations and what I'm actively working on
+These block day-to-day use and are listed first on purpose.
 
-**Load-bearing gaps** (these block actually using the system day-to-day):
+1. **No concrete work tools.** There is no file edit, shell, web search, or git tool.
+   The agent can drive the runtime but cannot yet change your project.
+2. **The coder loop is not ledger-integrated.** Its turns are written to session
+   transcripts, not ledger events, so it does not get crash recovery or hash-chained
+   history. Mutating runtime tools are the exception.
+3. **No external-harness hosting.** There is no adapter for third-party agents, and no
+   supported way to install a replacement agentic loop without modifying core
+   ([audit](docs/flexability-audit.md)).
+4. **Weaker sandbox on Windows.** The Windows backend uses Job Object limits, a
+   workspace jail, and an AST pre-scan. That is materially weaker than gVisor. Use the
+   WSL2 or Docker backend for untrusted code ([ADR-0006](docs/adr/README.md)).
+5. **Single user, single machine.** No authentication, multi-user isolation, or remote
+   access.
+6. **No cost or budget dashboard**, and no evaluation harness for measuring whether
+   self-improvement loops help.
+7. **Multimodal input** (vision, voice, documents) is not supported.
 
-- **No concrete tools wired up.** The orchestrator can dispatch skills, but there are almost no built-in skills for real work — no file editing, no bash, no web search, no git. The coder loop isn't connected to the orchestrator yet. **In progress:** Phase 1 of the vision adds a real tool suite.
-- **No UI beyond CLI.** A TUI exists on paper; there's no web dashboard, no streaming output to the terminal, no way to watch a task run. **Planned:** Phase 3 adds this.
-- **Observability is untested.** Metrics and tracing code is there but never validated. You can't actually see what's slow or verify the token ceiling in action. **In progress:** Phase 0 (the build-status roadmap) covers this.
+## Security model
 
-**Capability gaps**:
+- Safety decisions are deterministic: permissions, protected paths, irreversible-
+  operation patterns, network egress, anti-goals, AST rules. Models propose; they do
+  not decide.
+- API keys must not appear in logs, ledger payloads, or router-raised exceptions; this
+  is asserted by tests. A provider that raises an error containing its own key is not
+  covered.
+- The AST scanner is a **screening layer, not an isolation boundary.** Isolation comes
+  from the sandbox backend.
+- The HTTP API binds to loopback only.
+- Marketplace packages pass signature, hash, AST, permission, and smoke gates, but
+  executable package loading is not implemented, so third-party code does not run today.
 
-- No multimodal (vision, voice, document reading). If you want to work with images or audio, you'd have to add that yourself.
-- No codebase indexing or LSP integration. The context builder doesn't know anything about your repo's structure; it's generic semantic retrieval.
-- No git integration. Changes don't automatically become commits; there's no branch-per-task or conflict awareness.
-- No ingestion bridges. You can't talk to PAA via Telegram, email, or Slack yet — it's CLI/HTTP only.
-- No learning harness. The self-improvement loops exist on paper but aren't validated. There's no A/B testing, no eval framework, no way to measure whether custom skills are actually helping.
+Details and trust boundaries:
+[docs/security/security-model-and-trust-boundaries.md](docs/security/security-model-and-trust-boundaries.md).
 
-**Product gaps**:
+## Design decisions and RFC deviations
 
-- No marketplace yet. The 5-gate installer and signed package system are built, but there's nowhere to publish a skill and no user/payment model.
-- No auth or multi-user. Right now this is single-user, single-machine.
-- No mobile or remote access. You run it on one box; if you're away from that box, you can't talk to it.
-- No cost/budget dashboard. You can't see how much you're spending on API calls or which models are used most.
+PAA was built from an internal RFC (v4.0/v4.1). Implementing it literally would have
+produced deadlocks, unbounded growth, or silently dropped work, so several rules were
+corrected. Each is recorded in `docs/adr/`.
 
-**Honest weaknesses on the Windows backend** (the machine I built and test on):
-
-- The sandbox is weaker than gVisor on Linux. It uses Job Objects + workspace jails + AST pre-scan, which is multiple layers of defense but not formally proven equivalent to a userspace kernel. If you're running untrusted code, you should use the WSL2 or Docker backend.
-- Performance tuning isn't done. Everything works, but nothing is optimized for latency yet.
-
-## The vision: what this becomes
-
-I've written out a 10-phase roadmap for what PAA grows into. The honest summary is:
-
-1. **Phases 1–3**: Add real tools (read/write files, bash, web, browser), add codebase intelligence (LSP, git, symbol awareness), add UIs (TUI, web dashboard, the "like xAI" search over your entire history).
-2. **Phases 4–6**: Ambient presence (ingestion bridges from Telegram/email/Slack, proactive suggestions, multimodal).
-3. **Phases 7–9**: Learning loops (self-improving on your own tasks, pluggable agentic loop strategies, multi-agent reasoning patterns like debate and ensemble).
-4. **Phase 10**: Security hardening, scaling to multiple machines, marketplace maturity, team mode.
-
-The end state is three products on the same foundation:
-- **A Claude-Code-like coding agent** that remembers your codebase, survives crashes, and you can run offline.
-- **A skill marketplace** (like OpenClaw) that's signed, sandboxed, has revenue splits, and lets you sell your own agents/skills.
-- **An ambient assistant** (like Hermes) that's always-on, reachable from anywhere, remembers everything, and proactively offers help.
-
-All three run on the same ledger-backed, crash-recoverable, deterministically-safe foundation. The reason this matters is that each layer trusts the layer below it — the marketplace trusts the sandbox, the ambient layer trusts the memory system, the coding agent trusts the crash recovery. That chain of trust is the moat.
-
-**Guiding principles I'm not dropping:**
-
-1. The ledger is truth; everything else is a cache you rebuild on boot.
-2. Deterministic where it matters — safety, validation, and money never depend on a model's mood.
-3. Local-first, escalate on purpose — privacy is the default; the network is a deliberate, logged choice.
-4. No silent capability without a gate — every new power comes with a permission and an audit trail.
-5. Honesty over hype — if a weaker model can't do something, say so and route around it.
-
-## Build status
-
-"Tested" means tests exist and pass. "Untested" means it imports fine but I haven't verified it — treat it as unfinished, because it is.
-
-| Subsystem | State | Tests |
+| Defect in the spec | Correction | ADR |
 |---|---|---|
-| Core types, config, permissions | tested | via ledger suite |
-| Event ledger + replay + recovery | tested | 71 |
-| Bounded context engine (metrics, budget, gatherer, compaction) | tested | 353 |
-| Storage (vector, graph, cold lake, queue, relational) | tested | 255 (+5 skipped, Redis) |
-| Sandbox (subprocess/WSL/docker/dryrun + recursion guard) | tested | 39 |
-| Memory decay + domains + contradiction | tested | 37 |
-| Agents (orchestrator, delegation, policy, context, planner, critic, router, worker) | tested | 70 |
-| Composition root + end-to-end integration | tested | 16 |
-| Deterministic validation (AST, patch, workspace, tests) | exercised via agents, no dedicated suite | — |
-| Model providers + escalation router + platform registry | tested (OpenAI/Groq/Gemini/etc + localhost) | 71 |
-| Memory creator/curator + world model | tested | 76 |
-| Unified Skill Adapter (Claw Hub + MCP) | tested | 51 |
-| Marketplace (signed packages, 5-gate installer) | tested | 18 |
-| Self-improvement + meta-learning | tested | 22 |
-| Claude-Code features (permissions, hooks, loop, sessions) | tested | 39 |
-| Coder agent (`paa agent` — router-backed tool loop over the runtime) | tested | 91 |
-| FastAPI ingestion + daemon + CLI | tested | 27 |
-| Docker deployment + Postgres/S3 backends | built, live-server run still needs a pass | parity + backend |
-| Observability (metrics, tracing, runs, logging) | built, untested | — |
+| Idempotency key made retries impossible (`EXECUTION_STARTED` writable once per task) | Attempt counter plus discriminator | [0008](docs/adr/0008-idempotency-key-with-attempt.md) |
+| Recovery index never shrank on an append-only table | Bounded head projection, one row per lineage | [0010](docs/adr/0010-head-projection-not-partial-index.md) |
+| `EXECUTION_COMPLETED` is per step, not per task, so it cannot be terminal | Terminal state derived from plan completion | [0010](docs/adr/0010-head-projection-not-partial-index.md) |
+| Sandbox kill rule integrated memory over time (MB·s) | Peak RSS, which cgroups and Job Objects measure | [0009](docs/adr/README.md) |
+| `A_score` divided by terms that can be zero | `(1 + x)` denominators, same monotonicity, bounded | [0012](docs/adr/README.md) |
+| Temporal decay applied to one term only | Applied to the whole hybrid score | [0013](docs/adr/README.md) |
+| Friction score divided by zero for domains with no successful commits | Zero-safe formulation | [0016](docs/adr/README.md) |
 
-Total: 1185 collected — 1104 passing, 75 skipped (optional extras not installed), 6 failing. All six failures are environmental and pre-existing: the sandbox executes steps with `python`, and on this machine only `python3` exists, so worker steps exhaust their retry budget. They fail identically on a clean checkout.
+Defects found by tests rather than by reading: OFFSET pagination skipping rows while
+deleting, a recovery sweep that grew the ledger by one row per boot, an incorrect
+zstd size sentinel, and non-deterministic claim order from random-UUID tiebreaks.
 
-You can drive the runtime from the CLI (`paa submit/status/ledger/recover/gate/doctor/serve/agent`) or over HTTP (loopback FastAPI), and there's a background daemon that runs boot recovery, drains the task queue, ingests signals, and runs the decay sweep.
+Hardware reality also shaped the defaults. The reference machine is a Ryzen 5 7535HS
+with ~13 GB RAM and no usable GPU, so the default stack is SQLite, embedded Qdrant,
+and a provider-agnostic model layer rather than vLLM, Postgres, Qdrant, and Redis.
+Every substitution keeps the logical contract, so moving back is a backend change.
 
-`paa agent` is the tool-using loop described in `docs/coder-agent.md`: it builds a real runtime, hands the model seven ledger-facing tools, and gates every call through the permission policy. Provider choice is configuration — set `PAA_MODELS__LOCAL_PROVIDER=openrouter` and put the key in `.env`, and it runs against a hosted model with no code change.
-
-`Runtime.build()` in `src/paa/runtime.py` wires the whole thing together, and `tests/integration/` proves all five DoD items in a single run: full lifecycle to `MUTATION_COMMITTED`, crash-and-recover, a human gate parking across a restart, deterministic security blocks, and the token ceiling actually holding.
-
-Validation, model providers, and observability still only get exercised indirectly through the agent and integration suites — they need dedicated coverage of their own. Observability's the only one with zero exercise right now. See `docs/ROADMAP.md` for what's next, and read that alongside this — it's a more honest picture of what's actually wired up end to end versus what's just tested in isolation.
-
-## Layout
+## Repository layout
 
 ```
 src/paa/
-├── core/          types, errors — imported by everything, depends on nothing
-├── config.py      every RFC constant, with its section cited
-├── ledger/        events, store, replay, recovery      ← the spine
-├── storage/
-│   ├── relational/  SQLite WAL + schema (Postgres-portable)
-│   ├── vector/      Qdrant embedded / numpy fallback
-│   ├── graph/       Kuzu / SQLite recursive CTE
-│   ├── coldlake/    content-addressed blobs + zstd
-│   └── queue/       durable SQLite queue / Redis
-├── context/       metrics, budget, gatherer, compaction
-├── memory/        domains, decay, contradiction
-├── agents/        base, delegation, orchestrator, policy, context, reasoning
-├── sandbox/       pluggable containment backends
-├── validation/    AST scan, patch apply/rollback, workspace manifests
-├── models/        provider abstraction + escalation router
-├── coder/         Claude-Code-shaped loop: permissions, hooks, sessions, tools
-├── skills/        Unified Skill Adapter
-└── observability/ metrics, tracing, execution runs
+├── core/           types and errors; imported by everything, depends on nothing
+├── config.py       every RFC constant, with its section cited
+├── ledger/         events, store, replay, recovery          ← the spine
+├── storage/        relational · vector · graph · coldlake · queue
+├── context/        metrics, budget, gatherer, compaction
+├── memory/         domains, decay, contradiction, creator, curator, world model
+├── agents/         orchestrator, delegation, policy, reasoning, specialists
+├── sandbox/        pluggable containment backends
+├── validation/     AST scan, patch apply/rollback, workspace manifests
+├── models/         provider abstraction and escalation router
+├── skills/         Unified Skill Adapter (MCP, Claw Hub)
+├── marketplace/    signed packages and the five-gate installer
+├── improvement/    reflection, distillation, optimiser, meta-learning
+├── coder/          permissions, hooks, tool loop, sessions
+├── api/            FastAPI ingestion (loopback)
+├── cli/            `paa` command
+├── tui/            terminal dashboard
+├── observability/  metrics, tracing, execution runs
+├── runtime.py      composition root: Runtime.build()
+├── daemon.py       background loop: recovery, queue drain, ingestion, decay sweep
+└── acp_server.py   ACP server (experimental)
 ```
 
-`coder/` is the one package that both consumes the runtime and is driven by a
-model directly; `coder/agent.py` is its composition root. See
-`docs/coder-agent.md`.
+`Runtime.build()` wires everything together. `tests/integration/` exercises the full
+lifecycle to `MUTATION_COMMITTED`, crash-and-recover, a human gate that parks across
+a restart, deterministic security blocks, and the token ceiling.
 
 ## Testing
 
+```bash
+python -m pytest tests/ -q                  # everything
+python -m pytest tests/ledger -q            # the spine
+python -m pytest -m chaos -q                # crash injection
+python -m ruff check src tests
+python -m mypy src                          # strict
 ```
-.venv/Scripts/python.exe -m pytest tests/ -q                 # everything
-.venv/Scripts/python.exe -m pytest tests/ledger -q           # the spine
-.venv/Scripts/python.exe -m pytest -m chaos -q               # crash injection
-```
 
-Uses `hypothesis` for the properties that need to hold universally — the gatherer never exceeding its ceiling, replay never raising on any event ordering, confidence never leaving [0,1].
+Property tests (Hypothesis) assert invariants that must hold universally: the
+gatherer never exceeds its ceiling, replay never raises on any event ordering, and
+confidence stays in [0, 1]. Crash tests simulate power loss by closing the database
+mid-lineage and reopening it.
 
-Crash tests simulate power loss by closing the database mid-lineage and reopening it: committed transactions survive, uncommitted ones vanish, exactly how SQLite behaves under WAL.
+Important caveat: end-to-end runs use an **injected model**. Passing tests establish
+that the wiring and guarantees hold, not that any particular model performs well.
 
-## What's next (the roadmap)
+## Documentation
 
-**Immediate (Phase 0 of the build roadmap):** Test the untested subsystems — especially agents and validation. Right now, security properties are asserted only in docstrings, which isn't strong enough. Once the suite is green, I can ship this with actual confidence.
+| Document | Contents |
+|---|---|
+| [docs/VISION.md](docs/VISION.md) | Thesis (authority and evidence), landscape, extension model, horizons, kill criteria |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Ordered delivery plan with an exit test per item and decision gates |
+| [docs/research/](docs/research/2026-11-deepseek-super-agent.md) | Research notes, starting with DeepSeek's Super-agent design |
+| [docs/architecture/](docs/architecture/) | Overview, component interactions, repository map |
+| [docs/adr/](docs/adr/README.md) | Architecture decision records |
+| [docs/security/](docs/security/security-model-and-trust-boundaries.md) | Security model and trust boundaries |
+| [docs/coder-agent.md](docs/coder-agent.md) | The `paa agent` tool loop and its permission model |
+| [docs/EXTENSIBILITY_PIPELINES.md](docs/EXTENSIBILITY_PIPELINES.md) | Pluggable-loop design (not implemented) |
+| [docs/flexability-audit.md](docs/flexability-audit.md) | What can and cannot be extended today |
+| [docs/MCP_AND_PLUGINS.md](docs/MCP_AND_PLUGINS.md) | Skill adapter and plugin notes |
+| [docs/deployment/docker.md](docs/deployment/docker.md) | Docker deployment |
+| [AGENTS.md](AGENTS.md) | Conventions for contributors and coding agents |
 
-**Short-term (Phase 1 — Real capabilities):** Wire up concrete tools. The orchestrator is architecturally sound but has no hands. File read/write, bash, web search, git — none of these are hooked in yet. This phase is the delta between "impressive substrate" and "something you use every day."
+## License
 
-**Medium-term (Phase 2–3):** Codebase intelligence (LSP, symbol indexing) and UIs (TUI, web dashboard, history search). Right now you can only drive this from the command line. Add the visualizations and the system stops being opaque.
-
-**The modular architecture piece:** I'm also building "pluggable agentic loops" as a separate system. Right now the execution strategy is hardcoded: hydrate → plan → policy → execute → commit. I want that to be swappable — so you can install a Tree-of-Thought pipeline, or a ReAct loop, or your own strategy as a signed package, and the system runs it with the same recovery/safety guarantees. This is in `docs/EXTENSIBILITY_PIPELINES.md` if you want the full design.
-
-**My actual v-next focus:** long-horizon tasks. The ledger and snapshot machinery is already the right foundation — a task spanning weeks is just a lineage that survives many restarts. Once tools and the coder loop are wired, this is where the effort goes.
-
-See `docs/ROADMAP.md` and `docs/VISION.md` for the detailed, phased breakdown of the next 10 phases.
+MIT. See [LICENSE](LICENSE). Copyright (c) 2026 Devansh Gaur.
