@@ -32,10 +32,16 @@ tool, relationship, identity, operational, environmental, workspace — `memory/
 ### `decay.py` — DecaySweeper
 `effective_confidence(initial_confidence, last_queried_at, domain)` =
 `C₀·e⁻ˡᵃᵐᵇᵈᵃ·t` (`memory/decay.py:54`). `DecaySweeper.sweep()` evicts facts below
-`prune_floor` using keyset pagination (`WHERE id > ?` — correct under
-deletion; OFFSET would skip rows, a documented fix). Doomed facts archived
+the applicable floor using keyset pagination (`WHERE id > ?` — correct under
+deletion; OFFSET would skip rows, a documented fix). The applicable floor is
+each domain's `prune_floor` from `DOMAINS` unless the operator sets an
+explicit override — the `DecaySweeper` constructor argument, or
+`MemorySettings.prune_confidence_floor` explicitly set (read lazily via
+`get_settings()` so existing bare constructions pick it up; unset ⇒
+per-domain, byte-identical eviction). Doomed facts archived
 to cold lake then deleted. Unknown domain → logged warning, row left
-untouched (a typo cannot silently destroy memory).
+untouched (a typo cannot silently destroy memory). Immutable domains are
+skipped regardless of any explicit floor.
 
 ### `facts.py` — FactRepository
 `upsert_entity` (idempotent on canonical_name; aliases unioned; importance max)
@@ -84,7 +90,7 @@ Ingests unprocessed signals into hot-serving facts/entities. Called by daemon
 ingestion loop (`daemon.py:148`).
 
 ### `curator.py` — MemoryCurator
-Nightly consolidation (decay sweep interval 6h, `config.py:249`).
+Nightly consolidation (decay sweep interval 6h, `config.py:268`).
 
 ### `contradiction.py`
 Conflicts above `contradiction_threshold` (0.75) quarantine both records at
@@ -149,7 +155,12 @@ callable`.
 
 - Adding a domain = add to `DOMAINS` dict (`memory/domains.py:137`) — data change.
 - Changing `decay_lambda` values affects eviction; source of truth is
-  `domains.py` (not `MemorySettings.decay_lambda` — potential drift).
+  `domains.py`. `MemorySettings.decay_lambda` is deprecated and ignored (kept
+  only so existing `PAA_MEMORY__DECAY_LAMBDA` / `.env` entries keep parsing;
+  setting it emits a `DeprecationWarning`, unknown keys are dropped with a
+  `UserWarning`). An explicitly-set `MemorySettings.prune_confidence_floor`
+  overrides every mutable domain's `prune_floor` for the sweep; unset, the
+  per-domain floor applies.
 - Tests: `tests/memory/` (37 tests decay/domains/contradiction; 76
   creator/curator/world-model per README). Entity resolution has its own
   three suites: `tests/memory/test_entity_resolution.py` (the candidate set,
@@ -161,10 +172,12 @@ callable`.
 
 ## Known gaps
 
-- `MemorySettings.prune_confidence_floor` (0.15) appears unused in `src/`
-  (decay/curator use domain `prune_floor`).
-- `MemorySettings.decay_lambda` duplicates `domains.py` but isn't read by them
-  (config/drift question).
+- `MemorySettings.prune_confidence_floor` (0.15) is an explicit-set-only
+  override: unset it is inert and the per-domain `prune_floor` applies;
+  set explicitly it replaces every mutable domain's floor for the sweep.
+- `MemorySettings.decay_lambda` is deprecated and ignored — the `DOMAINS`
+  matrix is the sole source of λ. Setting it warns at load; unknown
+  domain keys are warn-and-ignore (dropped), never a load failure.
 - Entity resolution's parity is exact for ASCII and **bounded** outside it.
   The candidate query folds the *column* with the engine's `lower()`
   (ASCII-only on SQLite, locale-aware on PostgreSQL) while the term is

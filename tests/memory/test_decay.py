@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import math
 import uuid
+import warnings
 from datetime import timedelta
 
 import pytest
 from hypothesis import given
 from hypothesis import settings as hyp_settings
 from hypothesis import strategies as st
+from pydantic import ValidationError
 
+from paa.config import MemorySettings, reset_settings_cache
 from paa.memory.decay import (
     DecaySweeper,
     effective_confidence,
@@ -324,3 +327,173 @@ class TestDecaySweeper:
 
         assert report.evicted == 1
         assert report.archived == 0
+
+
+class TestPruneFloorSettings:
+    """T07: prune_confidence_floor effective only when explicitly set."""
+
+    def test_explicit_prune_floor_is_none_by_default(self) -> None:
+        assert MemorySettings().explicit_prune_floor() is None
+
+    def test_explicit_prune_floor_returns_value_when_set(self) -> None:
+        assert MemorySettings(prune_confidence_floor=0.5).explicit_prune_floor() == 0.5
+
+    def test_explicit_default_value_still_counts_as_explicit(self) -> None:
+        """Setting the default 0.15 explicitly is an override, not unset."""
+        assert MemorySettings(prune_confidence_floor=0.15).explicit_prune_floor() == 0.15
+
+    def test_explicit_prune_floor_validates_range(self) -> None:
+        with pytest.raises(ValidationError):
+            MemorySettings(prune_confidence_floor=1.5)
+
+
+class TestPruneFloorSweep:
+    """The sweep honours an explicit floor and otherwise per-domain floors."""
+
+    async def _insert_fact(
+        self, db: Database, *, domain: str, confidence: float, idle: float
+    ) -> str:
+        entity_id = str(uuid.uuid4())
+        fact_id = str(uuid.uuid4())
+        now = utc_now()
+        await db.execute(
+            "INSERT INTO hot_serving_entity_index "
+            "(id, class, canonical_name, created_at, updated_at) VALUES (?,?,?,?,?)",
+            (entity_id, "project", f"entity-{entity_id[:8]}", to_iso(now), to_iso(now)),
+        )
+        await db.execute(
+            "INSERT INTO hot_serving_active_facts "
+            "(id, entity_id, predicate, object_value, memory_domain, initial_confidence,"
+            " created_at, last_queried_at) VALUES (?,?,?,?,?,?,?,?)",
+            (
+                fact_id,
+                entity_id,
+                "status",
+                "active",
+                domain,
+                confidence,
+                to_iso(now),
+                to_iso(now - timedelta(days=idle)),
+            ),
+        )
+        return fact_id
+
+    async def test_explicit_floor_evicts_above_domain_floor(self, db: Database) -> None:
+        # semantic prune_floor=0.30; 0.4 survives by default, dies at 0.5.
+        fact_id = await self._insert_fact(db, domain="semantic", confidence=0.4, idle=0)
+        default_report = await DecaySweeper(db).sweep(dry_run=True)
+        assert default_report.evicted == 0
+        explicit_report = await DecaySweeper(db, prune_confidence_floor=0.5).sweep()
+        assert explicit_report.evicted == 1
+        remaining = await db.fetch_all("SELECT id FROM hot_serving_active_facts")
+        assert remaining == []
+        assert fact_id not in [r["id"] for r in remaining]
+
+    async def test_explicit_floor_can_lower_threshold(self, db: Database) -> None:
+        # semantic 0.20 < 0.30 dies by default; explicit 0.15 keeps it.
+        await self._insert_fact(db, domain="semantic", confidence=0.2, idle=0)
+        default_report = await DecaySweeper(db).sweep(dry_run=True)
+        assert default_report.evicted == 1
+        explicit_report = await DecaySweeper(db, prune_confidence_floor=0.15).sweep()
+        assert explicit_report.evicted == 0
+        assert await db.fetch_value("SELECT COUNT(*) FROM hot_serving_active_facts") == 1
+
+    async def test_explicit_floor_zero_keeps_everything(self, db: Database) -> None:
+        # 0.0 < 0.0 is false: even a fully decayed fact survives an explicit 0.0.
+        await self._insert_fact(db, domain="semantic", confidence=0.0, idle=99999)
+        report = await DecaySweeper(db, prune_confidence_floor=0.0).sweep()
+        assert report.evicted == 0
+        assert await db.fetch_value("SELECT COUNT(*) FROM hot_serving_active_facts") == 1
+
+    async def test_explicit_floor_never_evicts_immutable(self, db: Database) -> None:
+        await self._insert_fact(db, domain="episodic", confidence=0.0, idle=99999)
+        report = await DecaySweeper(db, prune_confidence_floor=1.0).sweep()
+        assert report.evicted == 0
+        assert report.skipped_immutable == 1
+
+    async def test_explicit_floor_out_of_range_rejected(self, db: Database) -> None:
+        with pytest.raises(ValueError, match="prune_confidence_floor"):
+            DecaySweeper(db, prune_confidence_floor=1.5)
+        with pytest.raises(ValueError, match="prune_confidence_floor"):
+            DecaySweeper(db, prune_confidence_floor=-0.1)
+
+    async def test_env_explicit_floor_propagates_to_bare_sweeper(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No caller edits needed: a bare DecaySweeper(db) consults settings."""
+        monkeypatch.setenv("PAA_MEMORY__PRUNE_CONFIDENCE_FLOOR", "0.5")
+        reset_settings_cache()
+        try:
+            await self._insert_fact(db, domain="semantic", confidence=0.4, idle=0)
+            report = await DecaySweeper(db).sweep()
+        finally:
+            reset_settings_cache()
+        assert report.evicted == 1
+
+    async def test_unset_env_floor_keeps_per_domain_behavior(self, db: Database) -> None:
+        await self._insert_fact(db, domain="semantic", confidence=0.4, idle=0)
+        report = await DecaySweeper(db).sweep()
+        assert report.evicted == 0
+
+
+class TestDeprecatedDecayLambda:
+    """decay_lambda is deprecated, ignored, and never crashes the load."""
+
+    def test_explicit_decay_lambda_warns_deprecation(self) -> None:
+        with pytest.warns(DeprecationWarning, match="decay_lambda"):
+            MemorySettings(decay_lambda={"semantic": 1.0})
+
+    def test_default_decay_lambda_does_not_warn(self) -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            MemorySettings()
+
+    async def test_settings_lambda_does_not_change_decay(self, db: Database) -> None:
+        # DOMAINS semantic λ=0.002: after 100 idle days effective≈0.819,
+        # survives. Settings λ=1.0 would give e^-100≈0 and evict if used.
+        with pytest.warns(DeprecationWarning, match="decay_lambda"):
+            settings = MemorySettings(decay_lambda={"semantic": 1.0})
+        assert settings.explicit_prune_floor() is None
+        entity_id = str(uuid.uuid4())
+        fact_id = str(uuid.uuid4())
+        now = utc_now()
+        await db.execute(
+            "INSERT INTO hot_serving_entity_index "
+            "(id, class, canonical_name, created_at, updated_at) VALUES (?,?,?,?,?)",
+            (entity_id, "project", f"entity-{entity_id[:8]}", to_iso(now), to_iso(now)),
+        )
+        await db.execute(
+            "INSERT INTO hot_serving_active_facts "
+            "(id, entity_id, predicate, object_value, memory_domain, initial_confidence,"
+            " created_at, last_queried_at) VALUES (?,?,?,?,?,?,?,?)",
+            (
+                fact_id,
+                entity_id,
+                "status",
+                "active",
+                "semantic",
+                1.0,
+                to_iso(now),
+                to_iso(now - timedelta(days=100)),
+            ),
+        )
+        report = await DecaySweeper(db).sweep()
+        assert report.evicted == 0, "settings lambda must not alter decay"
+        assert await db.fetch_value("SELECT COUNT(*) FROM hot_serving_active_facts") == 1
+
+    def test_unknown_decay_lambda_keys_dropped_not_fatal(self) -> None:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            settings = MemorySettings(decay_lambda={"bogus_domain": 0.5, "semantic": 0.01})
+        categories = [w.category for w in caught]
+        assert DeprecationWarning in categories
+        assert UserWarning in categories
+        assert "bogus_domain" not in settings.decay_lambda
+        assert settings.decay_lambda["semantic"] == 0.01
+
+    def test_unknown_only_decay_lambda_loads(self) -> None:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            settings = MemorySettings(decay_lambda={"bogus_domain": 0.5})
+        assert settings.decay_lambda == {}
+        assert any(w.category is UserWarning for w in caught)

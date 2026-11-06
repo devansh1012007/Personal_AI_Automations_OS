@@ -96,17 +96,17 @@ working. `backend_coldlake` likewise takes `"s3"` or the alias `"minio"`. The
 
 | Field | Default | Notes |
 |---|---|---|
-| `prune_confidence_floor` | `0.15` | Eviction threshold (note: appears unused by decay.py/curator; domain `prune_floor` is used instead — see gaps) |
+| `prune_confidence_floor` | `0.15` | Explicit-set-only eviction override: unset ⇒ per-domain `prune_floor` from `DOMAINS` (byte-identical); set explicitly (`PAA_MEMORY__PRUNE_CONFIDENCE_FLOOR`) ⇒ replaces every mutable domain's floor in `DecaySweeper` |
 | `contradiction_threshold` | `0.75` | Quarantine both records |
 | `contradiction_degraded_confidence` | `0.20` | Quarantined confidence |
-| `decay_lambda` | {long_term_distilled:0.001, semantic:0.002, reflection:0.002, relationship:0.004, temporal:0.01, tool:0.05, operational:1.0} | Per-domain λ in C(t)=C₀·e⁻ˡᵃᵐᵇᵈᵃ·t |
+| `decay_lambda` | {long_term_distilled:0.001, semantic:0.002, reflection:0.002, relationship:0.004, temporal:0.01, tool:0.05, operational:1.0} | **Deprecated, ignored.** Kept only so existing entries keep parsing; sole source is `domains.domain_policy`. Setting it emits `DeprecationWarning`; unknown keys warn-and-ignore |
 | `relationship_prune_floor` | `0.10` | Graph edges severed |
 | `use_count_reinforcement` | `0.01` | δ in importance index |
 | `decay_sweep_interval_hours` | `6` | Daemon maintenance interval |
 | `curation_window_start_hour` | `2` | Nightly curation |
 | `curation_max_runtime_hours` | `2.0` | Hard cap |
 
-*Note: `domains.py` is the source of truth for per-domain decay policy; `MemorySettings.decay_lambda` duplicates the values but grep shows neither `decay.py` nor `domains.py` reads it directly (potential config/drift).*
+*Note: `domains.py` is the source of truth for per-domain decay policy. `MemorySettings.decay_lambda` no longer mirrors it — it is deprecated/ignored with load-time warnings, and decay reads only `DOMAINS`.*
 
 ### `PolicySettings`
 
@@ -242,9 +242,11 @@ Provider `api_key_env` tuples are defined per row in `registry.py:_SPECS`
 
 ## Gaps
 
-- `MemorySettings.prune_confidence_floor` appears unused in `src/` (decay uses
-  domain `prune_floor`; curator's usage unverified). It may be reserved for
-  callers or dead config.
+- `MemorySettings.prune_confidence_floor` is an explicit-set-only override
+  in `DecaySweeper`; unset it is inert and the per-domain `prune_floor`
+  applies. `MemorySettings.decay_lambda` is deprecated and ignored
+  (`domains.domain_policy` is the sole λ source); unknown keys in it are
+  warn-and-ignore, not a load failure.
 - `tests/validation/` has a suite now. `tests/observability/` exists and
   covers the run repository's identifier coercions (`AGENTS.md:97`).
 

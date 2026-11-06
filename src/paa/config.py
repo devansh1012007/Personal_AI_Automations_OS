@@ -11,6 +11,7 @@ Configuration precedence: explicit kwargs > environment (``PAA_*``) >
 from __future__ import annotations
 
 import os
+import warnings
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -216,6 +217,15 @@ class MemorySettings(BaseModel):
 
     #: Confidence below which a fact is evicted from hot serving and
     #: compressed into a one-line cold-lake summary (RFC §4.2).
+    #:
+    #: This is an *override*, not the default eviction threshold: the sweep
+    #: compares effective confidence against each domain's ``prune_floor``
+    #: in the ``DOMAINS`` matrix (``memory/domains.py``) unless the operator
+    #: sets this field explicitly. Unset, the default value below is inert
+    #: — a deployment that never sets it sees exactly the per-domain
+    #: eviction set. Setting it explicitly (including to ``0.15`` itself)
+    #: replaces every mutable domain's floor for the sweep; see
+    #: :meth:`explicit_prune_floor` and ``DecaySweeper``.
     prune_confidence_floor: Probability = 0.15
 
     #: Contradiction score at or above which both records are quarantined and a
@@ -227,6 +237,15 @@ class MemorySettings(BaseModel):
 
     #: Per-domain decay coefficients λ in ``C(t) = C0 · e^(-λt)``, t in days
     #: (RFC §4.1 matrix). Domains absent here do not decay.
+    #:
+    #: .. deprecated::
+    #:    Kept only so existing ``PAA_MEMORY__DECAY_LAMBDA`` / ``.env``
+    #:    entries keep parsing; the value is ignored. The sole source of λ
+    #:    is :func:`paa.memory.domains.domain_policy` (the ``DOMAINS``
+    #:    matrix). Setting this field explicitly emits a
+    #:    :class:`DeprecationWarning` at load time; unknown domain keys are
+    #:    dropped with a :class:`UserWarning` rather than failing the load
+    #:    (warn-and-ignore).
     decay_lambda: dict[str, float] = Field(
         default_factory=lambda: {
             "long_term_distilled": 0.001,
@@ -258,6 +277,60 @@ class MemorySettings(BaseModel):
     #: is resolved through the router's ``model_adapter``; no vendor is
     #: hardcoded.
     extraction_model: str = ""
+
+    def explicit_prune_floor(self) -> float | None:
+        """Return the operator-set eviction floor, or ``None`` when unset.
+
+        The ``0.15`` default is deliberately inert: the sweep uses each
+        domain's own ``prune_floor`` from the ``DOMAINS`` matrix unless this
+        returns a value. Explicitness is detected via ``model_fields_set``,
+        so setting the field to ``0.15`` by hand still counts as an override
+        (it differs from every per-domain floor it replaces) while a
+        deployment that never touches the field sees no change at all. Both
+        environment (``PAA_MEMORY__PRUNE_CONFIDENCE_FLOOR``) and kwargs
+        populate ``model_fields_set``, so the distinction holds however the
+        operator set it.
+        """
+        if "prune_confidence_floor" not in self.model_fields_set:
+            return None
+        return self.prune_confidence_floor
+
+    @model_validator(mode="after")
+    def _warn_deprecated_decay_lambda(self) -> MemorySettings:
+        """Deprecation + unknown-key hygiene for ``decay_lambda``.
+
+        warn-on-use via ``model_fields_set`` (unset is silent, so default
+        deployments see nothing). Unknown domain keys are warn-and-ignore:
+        dropped with a :class:`UserWarning`, never a load failure, so a
+        stale or mistyped ``.env`` entry cannot take the runtime down and a
+        known key alongside a bad one still loads.
+        """
+        if "decay_lambda" not in self.model_fields_set:
+            return self
+        warnings.warn(
+            "MemorySettings.decay_lambda is deprecated and ignored; per-domain "
+            "decay coefficients live in paa.memory.domains.domain_policy (the "
+            "DOMAINS matrix) and are the sole source. The field is kept only so "
+            "existing PAA_MEMORY__DECAY_LAMBDA / .env entries keep parsing.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        # Delayed import: a module-level import of paa.memory.domains would
+        # execute the memory package __init__, which imports curator ->
+        # config, and cycle. By validation time both modules are loaded.
+        from paa.memory.domains import MemoryDomain
+
+        known = {d.value for d in MemoryDomain}
+        unknown = sorted(k for k in self.decay_lambda if k not in known)
+        if unknown:
+            warnings.warn(
+                f"MemorySettings.decay_lambda: unknown domain key(s) {unknown} "
+                "dropped (warn-and-ignore); known keys are unaffected.",
+                UserWarning,
+                stacklevel=2,
+            )
+            self.decay_lambda = {k: v for k, v in self.decay_lambda.items() if k in known}
+        return self
 
 
 class PolicySettings(BaseModel):

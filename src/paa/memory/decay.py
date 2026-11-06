@@ -142,13 +142,46 @@ class DecaySweeper:
         *,
         archive_writer: object | None = None,
         batch_size: int = 500,
+        prune_confidence_floor: float | None = None,
     ) -> None:
+        """Create a sweeper.
+
+        :param prune_confidence_floor: explicit eviction-floor override in
+            ``[0, 1]``; when given it replaces every mutable domain's
+            ``prune_floor`` for the sweep. When ``None`` (the default) the
+            constructor lazily consults ``get_settings().memory`` and uses
+            its floor only when the operator set it explicitly (see
+            :meth:`paa.config.MemorySettings.explicit_prune_floor`); an
+            unset deployment therefore evicts exactly as before. The
+            settings read is lazy (inside this constructor, not module
+            scope) so the memory layer does not import config at module
+            load and bare ``DecaySweeper(db)`` constructions — daemon,
+            curator, tests — pick up an explicit operator setting without
+            call-site changes. Immutable domains are still skipped and
+            unknown domains still error; only the comparison threshold
+            changes.
+        """
         self._db = db
         self._archive = archive_writer
         self._batch = batch_size
+        self._prune_floor: float | None
+        if prune_confidence_floor is not None:
+            if not 0.0 <= prune_confidence_floor <= 1.0:
+                raise ValueError(
+                    f"prune_confidence_floor must be in [0,1], got {prune_confidence_floor}"
+                )
+            self._prune_floor = prune_confidence_floor
+        else:
+            from paa.config import get_settings
+
+            self._prune_floor = get_settings().memory.explicit_prune_floor()
 
     async def sweep(self, *, now: datetime | None = None, dry_run: bool = False) -> DecayReport:
         """Scan live facts and evict those below their domain's floor.
+
+        When an explicit operator floor applies (constructor override or
+        explicitly-set ``MemorySettings.prune_confidence_floor``), it
+        replaces the per-domain floor for every mutable domain.
 
         Processes in batches so a large hot set cannot pin the whole table in
         memory on a RAM-constrained host.
@@ -201,7 +234,15 @@ class DecaySweeper:
                     policy.domain,
                     now=reference,
                 )
-                if confidence < policy.prune_floor:
+                # INVARIANT: the comparison stays inlined (never via
+                # is_stale) so the established eviction set is preserved;
+                # an explicit operator floor (constructor arg or explicit
+                # settings value) replaces the per-domain floor for every
+                # mutable domain, otherwise the domain floor applies.
+                threshold = (
+                    self._prune_floor if self._prune_floor is not None else policy.prune_floor
+                )
+                if confidence < threshold:
                     doomed.append(
                         (
                             row["id"],
