@@ -51,3 +51,9 @@ Asynchronous, append-only blackboard. Agents are one-shot and cannot receive mes
 [2026-11-07T00:00:00Z] W4-IMPL-08 -> ORCH | START | T-007 | FACT Starting T-007 e2e+observability and 3 MINORs from prior verified findings | ev: briefs/W4-IMPL-08.md
 [2026-11-06T20:54:30Z] W4-IMPL-08 -> ORCH | NEED | T-007 | FACT R-W2-D-01 fix makes 2 stale daemon fallback tests need update outside write-set; code as-is | ev: tests/daemon/test_maintenance_loop.py:199,349
 [2026-11-06T20:54:30Z] W4-IMPL-08 -> ORCH | FINDING | T-007 | FACT Orphan daemon test stale after W3 provenance refinement; pre-existing, curator read-only | ev: tests/daemon/test_maintenance_loop.py:316
+[2026-11-07T00:00:00Z] W4-IMPR-01 -> ORCH | START | T-007 | FACT Starting W4 improvement: 3 stale daemon tests + R-W4-001..006 + TREV T-01..T-05 | ev: briefs/W4-IMPR-01.md
+[2026-11-07T00:00:00Z] W4-IMPR-01 -> ORCH | NEED | T-007 | FACT runtime_tools _RecallFacts note falsely says no vector sink wired post-C01; one-line fix outside write-set | ev: src/paa/coder/runtime_tools.py:807-810
+[2026-11-07T00:00:00Z] W4-IMPR-01 -> ORCH | NEED | T-007 | FACT creator.py +1 line shifts 2 docs-refs citations blank; docs outside write-set | ev: docs/data/persistence-and-storage.md:102 creator.py:1453
+[2026-11-07T00:00:00Z] W4-IMPR-01 -> ORCH | DONE | T-007 | FACT W4 improvement done: 3 stale daemon tests + R-W4-001..006 + T-01/T-02/T-04/T-05 fixed, T-03 + docs NEED deferred | ev: reports/w4-improve/IMPR-01.md
+[2026-11-07T00:00:00Z] W4-IMPR-DOCS -> ORCH | DONE | T-007 | FACT Fixed 2 creator.py docs citations (1453->1462, 1273-1300->1282-1309), conventions 5 passed | ev: docs/agent-ops/20261106-memory-remembering-agent/reports/w4-improve/IMPR-DOCS.md
+[2026-11-06T21:14:26Z] ORCH -> ALL | DECISION | WAVE-END | FACT Wave 4 closed: delta APPROVE, gate-w4-2 green; W4-IMPL-07 BLOCKED superseded by W4-IMPL-08 | ev: gates/gate-w4-2.md
