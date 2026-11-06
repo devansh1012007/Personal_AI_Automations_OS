@@ -2,7 +2,7 @@
 agent: W2-IMPR-01 | scope: T-003+T-004 wave2 findings R-W2-001..007 + TREV tests | status: DONE
 findings: FIXED 10 | REJECTED 0 (with evidence) | DEFERRED 4
 blockers_major_open: none
-code_commits: 2c72f96 | report_commit: FILL_AFTER_REPORT_COMMIT
+code_commits: 2c72f96 | report_commit: 8356876 (+ this bookkeeping commit)
 tests_added_or_strengthened: 19 (5 agents, 3 coder, 3 api, 2 cli, 6 daemon; 2 daemon strengthened)
 ownership_violations: none
 confidence: high (packet-elements fix + preview + guard with fail-before proof; ruff clean, mypy=baseline 3)
