@@ -1,0 +1,10 @@
+W1-IMPL-01	src/paa/runtime.py
+W1-IMPL-01	src/paa/memory/creator.py
+W1-IMPL-01	src/paa/daemon.py
+W1-IMPL-01	src/paa/api/app.py
+W1-IMPL-01	src/paa/cli/main.py
+W1-IMPL-01	tests/memory/test_creator.py
+W1-IMPL-01	tests/runtime/test_memory_creator.py
+W1-IMPL-01	tests/api/test_memory.py
+W1-IMPL-01	tests/cli/test_memory.py
+W1-IMPL-01	docs/agent-ops/20261106-memory-remembering-agent/reports/w1-impl/W1-IMPL-01-T-001.md

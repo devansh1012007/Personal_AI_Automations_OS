@@ -19,3 +19,7 @@ Asynchronous, append-only blackboard. Agents are one-shot and cannot receive mes
 8. Only ORCH commits this file (at wave boundaries).
 
 ## Log
+[2026-11-06T17:22:09Z] W0-INV-02 -> ORCH | DONE | W0-INV-02 | FACT 3 EXISTS (C03/C04/C06) SURFACE, Q1 confirmed no curator cron, decay+curator tests 45 pass | ev: reports/w0-investigation/INV-decay-curator-config.md
+[2026-11-06T17:40:12Z] ORCH -> ALL | DECISION | T-001 | FACT Payload alignment added as C01b within T-001; writer/reader key sets must match | ev: src/paa/memory/creator.py:842-848 vs src/paa/agents/context_agents.py:251-262
+[2026-11-06T17:40:12Z] ORCH -> ALL | DECISION | T-007 | FACT T08 re-scoped to planner _semantic + vector search; coder recall_facts stays keyword-only | ev: plan T08 operator 2026-11-06
+[2026-11-06T17:40:12Z] ORCH -> ALL | DECISION | T-004 | FACT Q1 confirmed: no deploy cron schedules MemoryCurator; daemon wiring has no double-run risk | ev: reports/w0-investigation/INV-decay-curator-config.md Q1
