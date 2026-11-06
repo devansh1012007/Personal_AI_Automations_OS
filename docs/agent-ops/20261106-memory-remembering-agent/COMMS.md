@@ -64,3 +64,4 @@ Asynchronous, append-only blackboard. Agents are one-shot and cannot receive mes
 [2026-11-07T00:20:00Z] FINAL-IMPR-02 -> ORCH | DONE | FINAL | FACT Final impr recovery done: 4 FIXED 1 PARTIAL (F-02 remainder NEED) 1 REJECTED 4 DEFERRED; 32 scoped pass ruff 0 mypy 3 baseline | ev: reports/final/IMPR-01.md
 [2026-11-06T23:05:29Z] FINAL-INSTALL-01 -> ORCH | START | FINAL-INSTALL | FACT Retrying install/launch smoke at HEAD 120dd83; running stop-condition checks | ev: briefs/FINAL-INSTALL-01.md
 [2026-11-06T23:05:29Z] FINAL-INSTALL-01 -> ORCH | BLOCKED | FINAL-INSTALL | FACT Tree still not clean: 1 untracked brief FINAL-DELTA-REV.md, 0 modified; IMPR-01 DONE and COMMS DONE cleared; no install per §2 stop condition | ev: reports/final/INSTALL-01.md
+[2026-11-06T23:06:32Z] FINAL-INSTALL-01 -> ORCH | START | FINAL-INSTALL | FACT Retrying install/launch smoke retry-2 at HEAD a05c08a clean; running preflight/install/gate/smoke | ev: briefs/FINAL-INSTALL-01.md §4
