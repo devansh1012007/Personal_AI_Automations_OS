@@ -313,7 +313,7 @@ class MemorySettings(BaseModel):
             "DOMAINS matrix) and are the sole source. The field is kept only so "
             "existing PAA_MEMORY__DECAY_LAMBDA / .env entries keep parsing.",
             DeprecationWarning,
-            stacklevel=2,
+            stacklevel=1,  # level 2 lands in pydantic internals (R-W3-001)
         )
         # Delayed import: a module-level import of paa.memory.domains would
         # execute the memory package __init__, which imports curator ->
@@ -327,7 +327,7 @@ class MemorySettings(BaseModel):
                 f"MemorySettings.decay_lambda: unknown domain key(s) {unknown} "
                 "dropped (warn-and-ignore); known keys are unaffected.",
                 UserWarning,
-                stacklevel=2,
+                stacklevel=1,  # same attribution fix as above (R-W3-001)
             )
             self.decay_lambda = {k: v for k, v in self.decay_lambda.items() if k in known}
         return self

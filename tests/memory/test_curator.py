@@ -135,6 +135,68 @@ class TestOrphans:
         report = await MemoryCurator(db).run_maintenance()
         assert report.orphans_removed == 1
 
+    async def test_empty_index_skips_provenanced_facts(
+        self, db: Database, repo: FactRepository
+    ) -> None:
+        """REG1 refined guard: dangling facts that carry provenance
+        (source_signal_id, written by the creator for every persisted
+        ingestion) are real memory whose *index* is the anomaly — a
+        rebuild or truncation in progress — so the empty-index guard must
+        skip them instead of wiping the table. Reversal: removing the
+        provenance check (or the guard entirely) deletes the fact and
+        ``orphans_removed == 0`` fails."""
+        import aiosqlite
+
+        orphan_entity = str(uuid.uuid4())
+        now = to_iso(utc_now())
+        raw = await aiosqlite.connect(db.path, isolation_level=None)
+        try:
+            await raw.execute("PRAGMA foreign_keys=OFF")
+            await raw.execute(
+                "INSERT INTO hot_serving_active_facts "
+                "(id, entity_id, predicate, object_value, memory_domain, initial_confidence, "
+                " importance, source_signal_id, created_at, last_queried_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    str(uuid.uuid4()),
+                    orphan_entity,
+                    "p",
+                    "v",
+                    "semantic",
+                    1.0,
+                    0.5,
+                    str(uuid.uuid4()),
+                    now,
+                    now,
+                ),
+            )
+            await raw.commit()
+        finally:
+            await raw.close()
+
+        report = await MemoryCurator(db).run_maintenance()
+        assert report.orphans_removed == 0
+        assert await db.fetch_value("SELECT COUNT(*) FROM hot_serving_active_facts") == 1
+
+
+class TestInjectedFloorForwarding:
+    async def test_injected_settings_floor_reaches_the_sweep(
+        self, db: Database, repo: FactRepository
+    ) -> None:
+        """R-W3-002: a MemoryCurator built with injected settings must
+        sweep at *those* settings' explicit floor, not the global
+        singleton's. The global env carries no explicit floor here, so
+        pre-fix (no forwarding, sweeper reads global) the 0.4 semantic
+        fact survives at the per-domain 0.30 floor and this test fails."""
+        from paa.config import MemorySettings
+
+        await _fact(db, repo, "Alpha", "status", "fresh", conf=0.4)
+
+        report = await MemoryCurator(
+            db, settings=MemorySettings(prune_confidence_floor=0.5)
+        ).run_maintenance()
+        assert report.facts_evicted == 1
+
 
 class TestBudget:
     async def test_budget_stops_the_pass_between_phases(

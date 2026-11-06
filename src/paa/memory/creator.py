@@ -45,6 +45,7 @@ import hashlib
 import re
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -407,6 +408,16 @@ _PRONOUN_SUBJECTS = frozenset(
 _FIRST_PERSON_SUBJECTS = frozenset({"i", "we"})
 
 #: The canonical entity name + ranking importance for first-person facts.
+#: The name is deliberately reserved to first-person facts: a literal
+#: entity named "user" (a system account, a test fixture) shares this
+#: exact row, because upsert_entity is idempotent on canonical_name. In
+#: this single-user local-first design the operator *is* the user, so
+#: the merge is intended, not a collision. Consequence, pinned by test:
+#: importance merges max(), so a non-first-person writer storing > 0.3
+#: for an entity named "user" raises the entity importance of every
+#: first-person fact on that row; the fact-level importance stays 0.3.
+#: Do not rename to "@self" (or any other name) without an operator
+#: decision -- that would fork every existing "user" row.
 _USER_ENTITY_NAME = "user"
 _USER_IMPORTANCE = 0.3
 
@@ -463,12 +474,36 @@ class RuleBasedExtractor:
 
     def __init__(self, *, default_class: str = "concept") -> None:
         self._default_class = default_class
-        # Per-signal diagnostics, reset at the head of every extract().
-        # INVARIANT: an extractor instance is single-flight -- process_signal
-        # snapshots these counters synchronously right after extract()
-        # returns, before any further await, so a sequential batch always
-        # reads the counts for the signal it just processed.
+        # Per-call diagnostics, reset at the head of every extract(),
+        # stored in a per-instance ContextVar so each asyncio task sees
+        # (and resets) only its own counters (R-W3-004).
+        # INVARIANT: counters are per-task locals, never shared mutable
+        # state. Two concurrent drains on one shared instance previously
+        # interleaved between the LLM await and the snapshot; now each
+        # task's reset/snapshot pair is invisible to the other, so drops
+        # can never attach to the wrong signal. The var is per instance
+        # (two extractors never share one), and every extract() sets a
+        # fresh object at its head before any increment, so a task copied
+        # from the construction context never mutates a shared object.
+        # Scope: asyncio tasks (contextvars copy per task at creation).
+        self._drops_var: ContextVar[ExtractionDropCounts | None] = ContextVar(
+            "paa_rule_extractor_drops", default=None
+        )
         self._drops = ExtractionDropCounts()
+
+    @property
+    def _drops(self) -> ExtractionDropCounts:
+        counts = self._drops_var.get()
+        if counts is None:
+            # A task that never ran extract() (e.g. drop_counts read
+            # before any signal): materialise this task's own counters.
+            counts = ExtractionDropCounts()
+            self._drops_var.set(counts)
+        return counts
+
+    @_drops.setter
+    def _drops(self, counts: ExtractionDropCounts) -> None:
+        self._drops_var.set(counts)
 
     @property
     def drop_counts(self) -> ExtractionDropCounts:
@@ -820,8 +855,26 @@ class LLMFactExtractor:
         self._timeout = timeout
         self._retry_backoff_base = max(0.0, retry_backoff_base)
         self._retry_backoff_cap = max(0.0, retry_backoff_cap)
-        # Same single-flight diagnostics contract as RuleBasedExtractor.
+        # Same per-task diagnostics contract as RuleBasedExtractor
+        # (R-W3-004): counters live in a per-instance ContextVar, so a
+        # model await inside extract() cannot let a concurrent drain
+        # steal or reset this call's counts.
+        self._drops_var: ContextVar[ExtractionDropCounts | None] = ContextVar(
+            "paa_llm_extractor_drops", default=None
+        )
         self._drops = ExtractionDropCounts()
+
+    @property
+    def _drops(self) -> ExtractionDropCounts:
+        counts = self._drops_var.get()
+        if counts is None:
+            counts = ExtractionDropCounts()
+            self._drops_var.set(counts)
+        return counts
+
+    @_drops.setter
+    def _drops(self, counts: ExtractionDropCounts) -> None:
+        self._drops_var.set(counts)
 
     @property
     def drop_counts(self) -> ExtractionDropCounts:
@@ -884,12 +937,19 @@ class LLMFactExtractor:
             if value is None:
                 self._drops.malformed_skipped += 1
                 continue
+            # First-person parity with the rule extractor (R-W3-003):
+            # "_first_person_parts" maps "I"/"we" subjects to user @0.3
+            # and passes every other name through at the default 0.5,
+            # so an LLM triple about the operator lands on the same
+            # entity row as a rule-path one.
+            entity_name, importance = _first_person_parts(" ".join(subject.split()))
             candidates.append(
                 CandidateFact(
-                    entity_name=" ".join(subject.split()),
+                    entity_name=entity_name,
                     predicate=" ".join(predicate.split()),
                     object_value=value,
                     confidence=_LLM_CONFIDENCE,
+                    importance=importance,
                     provenance={
                         "extractor": "llm",
                         "rule": "triple",
@@ -1097,10 +1157,10 @@ class MemoryCreator:
                 drop_counts=_snapshot_drop_counts(self._extractor),
             )
 
-        # Snapshot synchronously, before any further await (single-flight
-        # extractor invariant). _is_storable discards are counted here, in
-        # the step that discards them -- never in the extractor -- so the
-        # two never double-count the same input.
+        # Snapshot synchronously, before any further await (per-task
+        # counters). _is_storable discards are counted here, in the step
+        # that discards them -- never in the extractor -- so the two
+        # never double-count the same input.
         drop_counts = _snapshot_drop_counts(self._extractor)
         storable = [c for c in candidates if _is_storable(c)]
         drop_counts.non_storable += len(candidates) - len(storable)
@@ -1139,6 +1199,8 @@ class MemoryCreator:
             signal_id=envelope.id,
             facts=len(fact_ids),
             entities=len(entity_ids),
+            dropped=drop_counts.total,
+            drop_counts=drop_counts.as_dict(),
         )
         return ProcessingResult(
             envelope.id,

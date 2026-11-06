@@ -123,8 +123,17 @@ class MemoryCurator:
 
         self._db = db
         self._settings = settings or get_settings().memory
+        # Forward the injected settings' explicit floor: without this, an
+        # operator-supplied (non-global) MemorySettings never reaches the
+        # sweep -- the sweeper would fall back to the global singleton and
+        # silently mix settings sources (R-W3-002). An unset (None) floor
+        # still defers to the global read inside DecaySweeper, so default
+        # deployments are byte-identical.
         self._sweeper = sweeper or DecaySweeper(
-            db, archive_writer=archive_writer, batch_size=batch_size
+            db,
+            archive_writer=archive_writer,
+            prune_confidence_floor=self._settings.explicit_prune_floor(),
+            batch_size=batch_size,
         )
         self._vectors = vector_store
         self._batch = batch_size
@@ -320,8 +329,23 @@ class MemoryCurator:
         cross-backend migration or a manual edit can leave danglers, and an
         orphaned fact is unreachable noise that still costs a decay scan.
         """
-        # Empty-index guard (REV R-W2-004): if the guard table is empty,
-        # NOT IN (empty) would match every fact and wipe the table.
+        # Empty-index guard (REV R-W2-004, refined in the W3 improvement
+        # pass). If the guard table is empty, NOT IN (empty) would match
+        # every fact and wipe the table -- that is the catastrophic first-run
+        # shape. But a *blanket* skip makes the legitimate shape immortal
+        # too: a cross-backend import (FK enforcement off) can leave
+        # dangling facts in an otherwise empty index, and those are
+        # exactly what this phase exists to remove. The discriminator is
+        # provenance: the creator writes source_signal_id for every fact
+        # materialised from a persisted signal (creator._commit), so
+        # real memory always carries it, while import dust does not.
+        # Skip only when the empty index fronts provenance-carrying facts
+        # (the index is the anomaly -- a rebuild or truncation in
+        # progress); provenance-less facts are import dust and are swept.
+        # Accepted tradeoff, documented: a fact whose signal row was
+        # deleted carries NULL (ON DELETE SET NULL) and reads as dust;
+        # that needs an index wipe *and* a signal prune to bite, and the
+        # next pass after the index repopulates still sweeps it.
         entity_count = int(
             await self._db.fetch_value(
                 "SELECT COUNT(*) FROM hot_serving_entity_index"
@@ -329,9 +353,19 @@ class MemoryCurator:
             or 0
         )
         if entity_count == 0:
-            log.warning("curator.orphan_purge_skipped_empty_index")
-            report.orphans_removed = 0
-            return
+            provenanced = int(
+                await self._db.fetch_value(
+                    "SELECT COUNT(*) FROM hot_serving_active_facts "
+                    "WHERE source_signal_id IS NOT NULL"
+                )
+                or 0
+            )
+            if provenanced:
+                log.warning(
+                    "curator.orphan_purge_skipped_empty_index", facts=provenanced
+                )
+                report.orphans_removed = 0
+                return
         if dry_run:
             report.orphans_removed = int(
                 await self._db.fetch_value(

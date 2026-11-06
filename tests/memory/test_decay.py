@@ -416,6 +416,10 @@ class TestPruneFloorSweep:
             DecaySweeper(db, prune_confidence_floor=1.5)
         with pytest.raises(ValueError, match="prune_confidence_floor"):
             DecaySweeper(db, prune_confidence_floor=-0.1)
+        # NaN: the chained comparison is False for NaN, so it is rejected
+        # like any other out-of-range value (R-W3-006).
+        with pytest.raises(ValueError, match="prune_confidence_floor"):
+            DecaySweeper(db, prune_confidence_floor=float("nan"))
 
     async def test_env_explicit_floor_propagates_to_bare_sweeper(
         self, db: Database, monkeypatch: pytest.MonkeyPatch
@@ -430,14 +434,40 @@ class TestPruneFloorSweep:
             reset_settings_cache()
         assert report.evicted == 1
 
-    async def test_unset_env_floor_keeps_per_domain_behavior(self, db: Database) -> None:
-        await self._insert_fact(db, domain="semantic", confidence=0.4, idle=0)
-        report = await DecaySweeper(db).sweep()
+    async def test_unset_env_floor_keeps_per_domain_behavior(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # M4: pin isolation from a CI environment that sets the env var.
+        monkeypatch.delenv("PAA_MEMORY__PRUNE_CONFIDENCE_FLOOR", raising=False)
+        reset_settings_cache()
+        try:
+            await self._insert_fact(db, domain="semantic", confidence=0.4, idle=0)
+            report = await DecaySweeper(db).sweep()
+        finally:
+            reset_settings_cache()
         assert report.evicted == 0
 
 
 class TestDeprecatedDecayLambda:
     """decay_lambda is deprecated, ignored, and never crashes the load."""
+
+    def test_deprecation_warning_attributes_to_paa_and_is_not_swallowed(self) -> None:
+        """R-W3-001: with a validator-time stacklevel=2 the warning was
+        attributed to pydantic/main.py, so the gate's
+        ``error::DeprecationWarning:paa.*`` filter never matched and
+        explicit use was silent everywhere. Pinned here: the recorded
+        warning filename lives inside paa, and the error filter raises."""
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            MemorySettings(decay_lambda={"semantic": 1.0})
+        deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+        assert deprecations, "explicit decay_lambda must warn"
+        filename = deprecations[0].filename.replace("\\", "/")
+        assert "src/paa/" in filename, f"warning attributed to {filename}, not paa code"
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            with pytest.raises(DeprecationWarning):
+                MemorySettings(decay_lambda={"semantic": 1.0})
 
     def test_explicit_decay_lambda_warns_deprecation(self) -> None:
         with pytest.warns(DeprecationWarning, match="decay_lambda"):

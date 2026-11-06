@@ -615,3 +615,127 @@ class TestLLMExtractorDropCounts:
             "malformed_skipped": 0,
             "non_storable": 0,
         }
+
+
+class TestLLMFirstPersonParity:
+    """R-W3-003: LLM triples with first-person subjects map to ``user``,
+    exactly like the rule path.
+
+    Reversal: removing the mapping at the LLM seam creates entity "I"
+    instead of "user" and the DB assertions fail.
+    """
+
+    async def test_llm_i_subject_lands_on_user_entity_row(self, db: Database) -> None:
+        model = ScriptedModel(
+            {"facts": [{"subject": "I", "predicate": "status", "object": "active"}]}
+        )
+        creator = MemoryCreator(db, extractor=LLMFactExtractor(model=model))
+        result = await creator.process_signal(_row({"fakes": []}))
+
+        assert result.outcome is ProcessingOutcome.PROCESSED
+        assert len(result.facts_written) == 1
+        entities = await db.fetch_all(
+            "SELECT canonical_name, importance_weight FROM hot_serving_entity_index"
+        )
+        assert [(r["canonical_name"], r["importance_weight"]) for r in entities] == [
+            ("user", 0.3)
+        ]
+
+        # And a rule-path first-person fact lands on the very same row.
+        rule_creator = MemoryCreator(db)
+        rule_result = await rule_creator.process_signal(_row("I am based in Berlin"))
+        assert rule_result.outcome is ProcessingOutcome.PROCESSED
+        assert await db.fetch_value("SELECT COUNT(*) FROM hot_serving_entity_index") == 1
+
+
+class TestLLMValidInputZeroDrops:
+    """M1/TREV mutation (c): valid LLM input processes with zero drops.
+
+    Reversal: an extractor that always returns empty would strand this
+    test (IGNORED, 0 facts) -- it pins the new-suite contract rather than
+    relying on the pre-existing LLM tests to catch the mutant.
+    """
+
+    async def test_valid_triple_processes_with_zero_drops(self, db: Database) -> None:
+        model = ScriptedModel(
+            {"facts": [{"subject": "Acme", "predicate": "status", "object": "active"}]}
+        )
+        creator = MemoryCreator(db, extractor=LLMFactExtractor(model=model))
+        result = await creator.process_signal(_row({"fakes": []}))
+
+        assert result.outcome is ProcessingOutcome.PROCESSED
+        assert len(result.facts_written) == 1
+        assert result.drop_counts.total == 0
+
+
+class _GatedModel:
+    """A model that forces two concurrent extracts to interleave.
+
+    Records entry order, releases both callers only once both are inside
+    the model await, then returns scripted dicts in entry order. The
+    barrier is synchronisation (an Event both must reach), not a timed
+    sleep, so the interleaving is deterministic on every run.
+    """
+
+    def __init__(self, responses: list[dict[str, Any]]) -> None:
+        self._responses = responses
+        self._barrier = asyncio.Event()
+        self._entered = 0
+
+    async def complete_structured(
+        self, prompt: str, schema: dict[str, Any], **kwargs: Any
+    ) -> dict[str, Any]:
+        idx = self._entered
+        self._entered += 1
+        if self._entered >= 2:
+            self._barrier.set()
+        await self._barrier.wait()
+        return self._responses[idx]
+
+
+class TestConcurrentDrainCounters:
+    """R-W3-004: two concurrent drains on a shared creator attribute
+    drop counters to their own signals.
+
+    Both drains skip a *nonzero* number of entries (2 vs 5) on purpose:
+    with one shared mutable counters object, the second drain's reset
+    lands between the first drain's model await and its increments, so
+    at least one result necessarily reads a cumulative total and the
+    sorted pair cannot be [2, 5] in *either* interleaving order
+    (2-then-7 or 5-then-7). Both nonzero counts make the failure
+    order-independent, hence deterministic.
+    """
+
+    async def test_concurrent_drains_keep_drop_totals_separate(self, db: Database) -> None:
+        gated = _GatedModel(
+            [
+                {
+                    "facts": [
+                        {"subject": "Acme", "predicate": "status", "object": "active"},
+                        {"subject": "", "predicate": "status", "object": "bad"},
+                        {"subject": "NoObject", "predicate": "status", "object": None},
+                    ]
+                },
+                {
+                    "facts": [
+                        {"subject": "Beta", "predicate": "status", "object": "live"},
+                        {"subject": "", "predicate": "status", "object": "bad"},
+                        {"subject": "", "predicate": "status", "object": "bad"},
+                        {"subject": "", "predicate": "status", "object": "bad"},
+                        {"subject": "", "predicate": "status", "object": "bad"},
+                        {"subject": "", "predicate": "status", "object": "bad"},
+                    ]
+                },
+            ]
+        )
+        creator = MemoryCreator(db, extractor=LLMFactExtractor(model=gated))
+        first, second = await asyncio.gather(
+            creator.process_signal(_row({"fakes": []})),
+            creator.process_signal(_row({"fakes": []})),
+        )
+
+        assert first.outcome is ProcessingOutcome.PROCESSED
+        assert second.outcome is ProcessingOutcome.PROCESSED
+        assert len(first.facts_written) == 1
+        assert len(second.facts_written) == 1
+        assert sorted([first.drop_counts.total, second.drop_counts.total]) == [2, 5]

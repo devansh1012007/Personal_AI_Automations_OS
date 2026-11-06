@@ -737,6 +737,86 @@ class TestFirstPersonMapping:
         assert candidates[0].entity_name == "user"
         assert candidates[0].importance == pytest.approx(0.3)
 
+    async def test_key_value_subject_maps_to_user(self) -> None:
+        """M2: key-value path (subject from top level, 'status: v' in text)."""
+        extractor = RuleBasedExtractor()
+        candidates = await extractor.extract(
+            _envelope({"subject": "I", "text": "status: active"})
+        )
+        assert len(candidates) == 1
+        assert candidates[0].entity_name == "user"
+        assert candidates[0].importance == pytest.approx(0.3)
+        assert candidates[0].predicate == "status"
+        assert candidates[0].object_value == "active"
+
+    async def test_structured_walk_subject_maps_to_user(self) -> None:
+        """M2: _walk structured path (scalar pairs under a first-person subject)."""
+        extractor = RuleBasedExtractor()
+        candidates = await extractor.extract(_envelope({"subject": "I", "status": "active"}))
+        assert len(candidates) == 1
+        assert candidates[0].entity_name == "user"
+        assert candidates[0].importance == pytest.approx(0.3)
+        assert candidates[0].predicate == "status"
+        assert candidates[0].object_value == "active"
+
+    async def test_contraction_subject_is_unmapped_and_pinned(self) -> None:
+        """N1: "I'm" is a single token that matches neither "i" nor "we",
+        so the current behaviour is a plain entity "I'm" at default
+        importance, zero drops. Pinned (not fixed): mapping contractions
+        would be a behaviour change this task did not approve."""
+        extractor = RuleBasedExtractor()
+        candidates = await extractor.extract(_envelope("I'm based in Berlin"))
+        assert len(candidates) == 1
+        assert candidates[0].entity_name == "I'm"
+        assert candidates[0].importance == pytest.approx(0.5)
+        assert extractor.drop_counts.total == 0
+
+    async def test_user_lead_word_is_not_first_person(self) -> None:
+        """P1-2: a subject that merely starts with "user" ("User owns Acme")
+        is its own entity at default importance; the first-word map fires
+        only on i/we tokens, never on "user"."""
+        extractor = RuleBasedExtractor()
+        candidates = await extractor.extract(_envelope("User owns Acme"))
+        assert len(candidates) == 1
+        assert candidates[0].entity_name == "User"
+        assert candidates[0].importance == pytest.approx(0.5)
+        assert extractor.drop_counts.total == 0
+
+    async def test_empty_and_pronoun_only_inputs_are_ignored(
+        self, creator: MemoryCreator, db: Database
+    ) -> None:
+        """P1-3: "" / "I" / "we" alone carry no predicate, so they are
+        IGNORED with no entity or fact rows; bare pronouns count as
+        no_match exactly once, the empty string counts nothing."""
+        totals = []
+        for payload in ("", "I", "we"):
+            result = await creator.process_signal(_row(payload))
+            assert result.outcome is ProcessingOutcome.IGNORED
+            totals.append(result.drop_counts.total)
+        assert totals == [0, 1, 1]
+        assert await db.fetch_value("SELECT COUNT(*) FROM hot_serving_entity_index") == 0
+        assert await db.fetch_value("SELECT COUNT(*) FROM hot_serving_active_facts") == 0
+
+    async def test_user_entity_merge_uses_max_importance(
+        self, creator: MemoryCreator, db: Database
+    ) -> None:
+        """R-W3-007 pin: a pre-existing entity named "user" is the SAME row
+        the first-person map lands on (idempotent upsert); importance
+        merges by max(), so the 0.8 row keeps 0.8 while the *fact* stays
+        0.3. No second row is created."""
+        repo = FactRepository(db)
+        await repo.upsert_entity("concept", "user", importance=0.8)
+        result = await creator.process_signal(_row("I am based in Berlin"))
+        assert result.outcome is ProcessingOutcome.PROCESSED
+        assert len(result.facts_written) == 1
+        entities = await db.fetch_all(
+            "SELECT canonical_name, importance_weight FROM hot_serving_entity_index"
+        )
+        assert [(r["canonical_name"], r["importance_weight"]) for r in entities] == [("user", 0.8)]
+        fact = await repo.get_fact(result.facts_written[0])
+        assert fact is not None
+        assert fact.importance == pytest.approx(0.3)
+
     async def test_non_first_person_fact_keeps_default_importance(self) -> None:
         extractor = RuleBasedExtractor()
         candidates = await extractor.extract(_envelope("The pipeline is green"))
@@ -832,10 +912,13 @@ class TestExtractionDropCounts:
         summary = result.summary()
         assert summary["dropped"] == 1
         assert summary["drop_counts"]["hedges"] == 1
-        # Pre-existing keys are untouched (additive-only contract).
-        assert set(summary) >= {
+        # Pre-existing keys are untouched (additive-only contract). The
+        # exact-set equality pins the additive keys too: if summary()
+        # grows a key, this fails loudly instead of silently widening
+        # the contract (M3).
+        assert set(summary) == {
             "signal_id", "outcome", "candidates", "facts_written",
-            "conflicts", "error",
+            "conflicts", "error", "dropped", "drop_counts",
         }
 
     async def test_batch_report_aggregates_but_summary_stays_unchanged(self, db: Database) -> None:
