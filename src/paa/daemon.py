@@ -12,7 +12,7 @@ boot recovery:
    message reclaimable, so no task is silently dropped.
 3. **The ingestion loop** drains raw signals into hot serving via the memory
    creator, isolating one poison signal from the batch.
-4. **The maintenance loop** runs the decay sweep on its interval.
+4. **The maintenance loop** runs memory curation on its interval.
 
 Each loop is independent and supervised: one loop raising does not stop the
 others, because a stalled maintenance pass must not take ingestion down with it.
@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from paa.memory.creator import MemoryCreator
+    from paa.memory.curator import CurationPhase, CurationReport
     from paa.runtime import Runtime
 
 __all__ = ["Daemon"]
@@ -58,6 +59,7 @@ class Daemon:
         self._ingestion_interval = ingestion_interval
         self._maintenance_interval = maintenance_interval
         self._claim_batch = claim_batch
+        self._curate_next_phase: CurationPhase | None = None
         self._stop = asyncio.Event()
         self._tasks: list[asyncio.Task[None]] = []
 
@@ -164,13 +166,13 @@ class Daemon:
     async def _maintenance_loop(self) -> None:
         # Wait one interval before the first pass — a fresh boot has nothing to
         # curate, and running heavy maintenance during startup would compete
-        # with recovery.
+        # with recovery. The cadence is this loop's own maintenance_interval
+        # (6h default); MemorySettings.decay_sweep_interval_hours and
+        # curation_window_start_hour are not wired here (see C06 scope).
         await self._sleep(self._maintenance_interval)
         while not self._stop.is_set():
             try:
-                from paa.memory.decay import DecaySweeper
-
-                await DecaySweeper(self._rt.db).sweep()
+                await self._run_curation_tick()
             except Exception as exc:
                 log.error("daemon.maintenance_failed", error=redact(str(exc)))
             await self._sleep(self._maintenance_interval)
@@ -190,3 +192,63 @@ class Daemon:
         except Exception as exc:
             log.warning("daemon.memory_creator_unavailable", error=redact(str(exc)))
             return None
+
+    async def _run_curation_tick(self) -> CurationReport | None:
+        """Run one curation pass, degrading to a bare decay sweep if needed.
+
+        C04: the daemon maintenance loop schedules ``MemoryCurator`` so decay,
+        prune-edges, consolidate, orphans, reconcile-vectors, and analyze
+        actually execute in production. The curator's own ``run_maintenance``
+        budget/resume contract is preserved: the budget is the existing
+        ``MemorySettings.curation_max_runtime_hours`` (2.0h default, no new
+        config), and a budget-stopped pass records ``stopped_early_at`` in
+        ``self._curate_next_phase`` so the next tick resumes there instead of
+        restarting at DECAY and starving later phases.
+
+        Wiring is read from the real runtime: settings from
+        ``runtime.settings.memory`` and the vector store from
+        ``runtime.vector_store`` (``None``-able by the degrade-never-raise
+        factory — reconcile then no-ops). Runtime exposes no archive writer,
+        so ``archive_writer`` is resolved as ``None`` (eviction deletes without
+        the cold-lake summary; restore when a writer is wired). The decay phase
+        still runs inside the curator.
+
+        R3 safety: the delete phases run for the first time in production, so
+        every tick is observable — ``daemon.curation_started`` and
+        ``daemon.curation_completed`` carry the budget and the full
+        ``CurationReport.summary()`` counts. If curator construction fails,
+        the tick falls back to a bare ``DecaySweeper.sweep()`` with a warning.
+        A ``run_maintenance`` exception is never masked by a fallback sweep
+        (that would double-run decay); it propagates to the loop, which logs
+        ``daemon.maintenance_failed`` and keeps the daemon alive. This tick
+        runs in the maintenance task only — never inline in ingestion.
+        """
+        from paa.memory.curator import MemoryCurator
+
+        settings = self._rt.settings.memory
+        budget = settings.curation_max_runtime_hours * 3600.0
+        try:
+            curator = MemoryCurator(
+                self._rt.db,
+                settings=settings,
+                vector_store=self._rt.vector_store,
+                archive_writer=getattr(self._rt, "archive_writer", None),
+            )
+        except Exception as exc:
+            log.warning("daemon.curator_unavailable", error=redact(str(exc)))
+            from paa.memory.decay import DecaySweeper
+
+            await DecaySweeper(self._rt.db).sweep()
+            return None
+        phase = self._curate_next_phase
+        log.info(
+            "daemon.curation_started",
+            budget_seconds=budget,
+            start_phase=phase.value if phase is not None else None,
+        )
+        report = await curator.run_maintenance(
+            budget_seconds=budget, start_phase=phase
+        )
+        self._curate_next_phase = report.stopped_early_at
+        log.info("daemon.curation_completed", **report.summary())
+        return report
