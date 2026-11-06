@@ -99,9 +99,9 @@ class _BaseContextBuilder(Agent):
     """Shared retrieval plumbing.
 
     **Read-only by construction** (RFC §2.1 agent 2: "banned from writing to
-    any storage layer"). Nothing in this class or its subclasses issues an
-    INSERT, UPDATE or DELETE, and the only ``Database`` calls made are
-    ``fetch_*``.
+    any storage layer"). The one exception is the post-recall retention
+    touch at :func:`_touch_recalled`: after ``handle()`` returns, touch
+    advances ``use_count``/``last_queried_at`` — derived-state exception.
     """
 
     can_delegate = False
@@ -320,6 +320,7 @@ class PlannerContextBuilder(_BaseContextBuilder):
             tokens=packet.allocated_tokens,
             routing=packet.routing_directive,
         )
+        await _touch_recalled(self._db, [e.id for e in hot] + [e.id for e in semantic])
         return AgentResult.success(
             packet.model_dump(mode="json"),
             tokens_consumed=packet.allocated_tokens,
@@ -383,8 +384,33 @@ class WorkerContextBuilder(_BaseContextBuilder):
             # boundary. The domains are named so the ledger says what leaked
             # rather than only that something did.
             raise ValueError(f"narrative memory leaked into a worker packet: {', '.join(leaked)}")
+        await _touch_recalled(self._db, [e.id for e in hot])
         return AgentResult.success(
             packet.model_dump(mode="json"),
             tokens_consumed=packet.allocated_tokens,
             confidence=packet.density,
         )
+
+
+async def _touch_recalled(db: RelationalBackend | None, fact_ids: list[str]) -> None:
+    """Advance retention clocks for the fact ids one recall just returned.
+
+    ``DecaySweeper.touch_many`` is the only write this module performs, and it
+    writes only derived retention state (``use_count``/``last_queried_at``):
+    content, stored confidence, ranking and routing are untouched, so the
+    ledger-is-truth invariant holds. This is the documented derived-state
+    exception — retention clocks are not derivable from cold-lake replay (a
+    rebuild resets them), the same way the decay sweep itself mutates hot
+    serving state outside the ledger.
+    """
+    if db is None or not fact_ids:
+        return
+    from paa.memory.decay import DecaySweeper
+
+    ids = list(dict.fromkeys(fact_ids))
+    try:
+        await DecaySweeper(db).touch_many(ids)
+    except Exception as exc:
+        log.warning("memory.recall_touch_failed", count=len(ids), error=str(exc))
+        return
+    log.debug("memory.recall_touched", count=len(ids))

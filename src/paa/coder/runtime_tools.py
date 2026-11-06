@@ -789,6 +789,7 @@ class _RecallFacts(_RuntimeTool):
         if not facts:
             facts = await repo.search_facts_by_text(query, limit=limit)
 
+        await _touch_recalled(self._rt.db, [f.id for f in facts])
         return self._emit(
             {
                 "query": query,
@@ -878,3 +879,29 @@ def _clamp_int(value: Any, *, default: int, low: int, high: int) -> int:
         return max(low, min(high, int(value)))
     except (TypeError, ValueError):
         return default
+
+
+async def _touch_recalled(db: Any, fact_ids: list[str]) -> None:
+    """Advance retention clocks for the facts one recall just returned.
+
+    ``DecaySweeper.touch_many`` is the only write this tool performs, and it
+    writes only derived retention state (``use_count``/``last_queried_at``):
+    the emitted payload is unchanged (the ids never leave this function).
+    This is the documented derived-state exception — retention clocks are
+    not derivable from cold-lake replay (a rebuild resets them), the same
+    way the decay sweep itself mutates hot serving state outside the ledger.
+    """
+    if not fact_ids:
+        return
+    import structlog
+
+    from paa.memory.decay import DecaySweeper
+
+    log = structlog.get_logger(__name__)
+    ids = list(dict.fromkeys(fact_ids))
+    try:
+        await DecaySweeper(db).touch_many(ids)
+    except Exception as exc:
+        log.warning("memory.recall_touch_failed", count=len(ids), error=str(exc))
+        return
+    log.debug("memory.recall_touched", count=len(ids))

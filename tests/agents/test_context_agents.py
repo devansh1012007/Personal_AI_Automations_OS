@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterable, Sequence
+from typing import Any
 
 import pytest
 
@@ -332,3 +333,166 @@ class TestTheWorkerPacketCarriesNoNarrative:
         assert result.ok
         assert result.value is not None
         assert "elements" in result.value
+
+
+def _planner_msg(goal: str) -> AgentMessage:
+    return AgentMessage(
+        task_id=uuid.uuid4(),
+        correlation_id=uuid.uuid4(),
+        sender="orchestrator",
+        recipient="context_builder_planner",
+        intent=MessageType.CONTEXT_REQUEST,
+        payload={"goal": goal},
+    )
+
+
+async def _use_row(db: Database, fact_id: str) -> Any:
+    row = await db.fetch_one(
+        "SELECT use_count, last_queried_at FROM hot_serving_active_facts WHERE id = ?",
+        (fact_id,),
+    )
+    assert row is not None
+    return row
+
+
+async def _age_fact(db: Database, fact_id: str) -> str:
+    """Pin a fact's idle clock 60 days in the past; return the old stamp."""
+    from datetime import UTC, datetime, timedelta
+
+    old = (datetime.now(UTC) - timedelta(days=60)).isoformat()
+    await db.execute(
+        "UPDATE hot_serving_active_facts SET last_queried_at = ? WHERE id = ?",
+        (old, fact_id),
+    )
+    return old
+
+
+class TestTouchOnRecall:
+    """C03/T04: a recall that returns facts advances their retention clocks.
+
+    Reversal: removing the touch calls from the builder's handle() methods
+    leaves use_count at 0, so these fail without the fix.
+    """
+
+    async def test_planner_hot_recall_advances_use_count_and_last_queried(
+        self, builder: PlannerContextBuilder, repo: FactRepository, db: Database
+    ) -> None:
+        entity_id = await repo.upsert_entity("concept", "Widget")
+        fact_id = await _seed(repo, entity_id, "is", "foo_bar")
+        old = await _age_fact(db, fact_id)
+
+        result = await builder.handle(_planner_msg("widget foo_bar"), _worker_ctx())
+
+        assert result.ok
+        row = await _use_row(db, fact_id)
+        assert row["use_count"] == 1
+        assert row["last_queried_at"] > old
+
+    async def test_planner_touch_makes_effective_confidence_reflect_use(
+        self, builder: PlannerContextBuilder, repo: FactRepository, db: Database
+    ) -> None:
+        from paa.memory.decay import effective_confidence
+        from paa.storage.relational.database import from_iso
+
+        entity_id = await repo.upsert_entity("concept", "Widget")
+        fact_id = await _seed(repo, entity_id, "is", "foo_bar")
+        old = await _age_fact(db, fact_id)
+
+        stale_confidence = effective_confidence(0.9, from_iso(old), "semantic")
+        result = await builder.handle(_planner_msg("widget foo_bar"), _worker_ctx())
+
+        assert result.ok
+        row = await _use_row(db, fact_id)
+        fresh_confidence = effective_confidence(0.9, from_iso(row["last_queried_at"]), "semantic")
+        assert fresh_confidence > stale_confidence
+
+    async def test_planner_semantic_recall_touches_the_hit_fact(
+        self, repo: FactRepository, db: Database
+    ) -> None:
+        """A fact returned by both tiers is touched once, not twice."""
+
+        class _Hit:
+            def __init__(self, hit_id: str) -> None:
+                self.id = hit_id
+                self.score = 0.9
+                self.payload = {
+                    "object_value": "foo_bar",
+                    "confidence": 0.9,
+                    "importance": 0.5,
+                    "predicate": "is",
+                    "memory_domain": "semantic",
+                }
+
+        class _FakeVectors:
+            def __init__(self, hits: list[_Hit]) -> None:
+                self._hits = hits
+
+            async def search(self, collection: str, vector: Any, limit: int = 30) -> list[_Hit]:
+                return self._hits[:limit]
+
+        class _FakeEmbedder:
+            async def embed(self, texts: list[str]) -> list[list[float]]:
+                return [[0.1, 0.2, 0.3] for _ in texts]
+
+        entity_id = await repo.upsert_entity("concept", "Widget")
+        fact_id = await _seed(repo, entity_id, "is", "foo_bar")
+        builder = PlannerContextBuilder(
+            db=db,
+            vector_store=_FakeVectors([_Hit(fact_id)]),
+            embedder=_FakeEmbedder(),
+        )
+
+        result = await builder.handle(_planner_msg("widget foo_bar"), _worker_ctx())
+
+        assert result.ok
+        row = await _use_row(db, fact_id)
+        assert row["use_count"] == 1
+
+    async def test_worker_touches_only_the_facts_it_delivers(
+        self, repo: FactRepository, db: Database
+    ) -> None:
+        """Narrative facts the worker filters out keep their clocks (no leak)."""
+        entity_id = await repo.upsert_entity("concept", "Widget")
+        operational_id = await repo.add_fact(
+            entity_id, "status", "the report is ready", domain="operational"
+        )
+        narrative_id = await repo.add_fact(
+            entity_id, "status", "the report story", domain="narrative"
+        )
+
+        result = await WorkerContextBuilder(db=db).handle(_worker_msg(), _worker_ctx())
+
+        assert result.ok
+        operational = await _use_row(db, operational_id)
+        narrative = await _use_row(db, narrative_id)
+        assert operational["use_count"] == 1
+        assert narrative["use_count"] == 0
+
+    async def test_empty_recall_touches_nothing(
+        self, builder: PlannerContextBuilder, repo: FactRepository, db: Database
+    ) -> None:
+        entity_id = await repo.upsert_entity("concept", "Widget")
+        fact_id = await _seed(repo, entity_id, "is", "foo_bar")
+
+        result = await builder.handle(_planner_msg("zzzqqq"), _worker_ctx())
+
+        assert result.ok
+        row = await _use_row(db, fact_id)
+        assert row["use_count"] == 0
+
+    async def test_touch_failure_does_not_fail_the_recall(
+        self, builder: PlannerContextBuilder, repo: FactRepository, monkeypatch: Any
+    ) -> None:
+        from paa.memory.decay import DecaySweeper
+
+        async def _boom(self: Any, ids: Any, **kw: Any) -> None:
+            raise RuntimeError("db locked")
+
+        monkeypatch.setattr(DecaySweeper, "touch_many", _boom)
+        entity_id = await repo.upsert_entity("concept", "Widget")
+        await _seed(repo, entity_id, "is", "foo_bar")
+
+        result = await builder.handle(_planner_msg("widget foo_bar"), _worker_ctx())
+
+        assert result.ok
+        assert result.value is not None

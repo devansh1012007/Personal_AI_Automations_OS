@@ -415,3 +415,82 @@ class TestWorldModel:
         assert result.exit_code == 1, result.output
         assert "no such belief document" in result.output
         assert result.exception is not None
+
+
+class TestRecallTouch:
+    """C03/T04: `memory facts`/`memory search` advance retention clocks.
+
+    Reversal: removing the touch calls from the ``facts``/``search`` inner
+    ``_do`` functions leaves use_count at 0, so the first two tests fail
+    without the fix.
+    """
+
+    def _age_facts(self, paa_home: Path) -> str:
+        """Pin every fact's idle clock 60 days back; return the old stamp."""
+        from datetime import UTC, datetime, timedelta
+
+        old = (datetime.now(UTC) - timedelta(days=60)).isoformat()
+
+        async def _age() -> None:
+            db = await _connect_db(paa_home)
+            try:
+                await db.execute(
+                    "UPDATE hot_serving_active_facts SET last_queried_at = ?", (old,)
+                )
+            finally:
+                await db.close()
+
+        asyncio.run(_age())
+        return old
+
+    def _fact_row(self, paa_home: Path) -> Any:
+        async def _row() -> Any:
+            db = await _connect_db(paa_home)
+            try:
+                return await db.fetch_one(
+                    "SELECT use_count, last_queried_at FROM hot_serving_active_facts LIMIT 1"
+                )
+            finally:
+                await db.close()
+
+        return asyncio.run(_row())
+
+    def test_facts_command_touches_returned_facts(self, paa_home: Path) -> None:
+        asyncio.run(_seed_entity_fact(paa_home, "Acme Corp", "status", "active"))
+        old = self._age_facts(paa_home)
+
+        result = _invoke(["facts", "Acme Corp"])
+
+        assert result.exit_code == 0, result.output
+        row = self._fact_row(paa_home)
+        assert row is not None
+        assert row["use_count"] == 1
+        assert row["last_queried_at"] > old
+
+    def test_search_command_touches_returned_facts(self, paa_home: Path) -> None:
+        asyncio.run(_seed_entity_fact(paa_home, "Acme Corp", "owner", "Ada Lovelace"))
+        old = self._age_facts(paa_home)
+
+        result = _invoke(["search", "Ada"])
+
+        assert result.exit_code == 0, result.output
+        row = self._fact_row(paa_home)
+        assert row is not None
+        assert row["use_count"] == 1
+        assert row["last_queried_at"] > old
+
+    def test_touch_failure_does_not_fail_the_command(
+        self, paa_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from paa.memory.decay import DecaySweeper
+
+        async def _boom(self: Any, ids: Any, **kw: Any) -> None:
+            raise RuntimeError("db locked")
+
+        monkeypatch.setattr(DecaySweeper, "touch_many", _boom)
+        asyncio.run(_seed_entity_fact(paa_home, "Acme Corp", "status", "active"))
+
+        result = _invoke(["facts", "Acme Corp"])
+
+        assert result.exit_code == 0, result.output
+        assert "Acme Corp" in result.stdout

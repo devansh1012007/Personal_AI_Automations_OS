@@ -1021,3 +1021,52 @@ class TestLatestSessionTieBreak:
         monkeypatch.setattr(Path, "glob", listed_low_first)
 
         assert Session.latest_session(tmp_path) == "zzz"
+
+
+class TestRecallTouch:
+    """C03/T04: recall_facts advances the retention clocks of the facts returned.
+
+    Reversal: removing the touch from ``_RecallFacts.run`` leaves use_count at
+    0, so the first test fails without the fix.
+    """
+
+    async def test_recall_advances_use_count_and_last_queried(
+        self, tools: dict[str, Any], db: Database
+    ) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        await tools["remember_fact"].run({"text": "Project Alpha is active"})
+        old = (datetime.now(UTC) - timedelta(days=60)).isoformat()
+        row = await db.fetch_one("SELECT id FROM hot_serving_active_facts LIMIT 1")
+        assert row is not None
+        await db.execute(
+            "UPDATE hot_serving_active_facts SET last_queried_at = ? WHERE id = ?",
+            (old, row["id"]),
+        )
+
+        result = json.loads(await tools["recall_facts"].run({"query": "Project Alpha"}))
+
+        assert result["count"] == 1
+        row = await db.fetch_one(
+            "SELECT use_count, last_queried_at FROM hot_serving_active_facts WHERE id = ?",
+            (row["id"],),
+        )
+        assert row is not None
+        assert row["use_count"] == 1
+        assert row["last_queried_at"] > old
+
+    async def test_recall_touch_failure_returns_facts_unchanged(
+        self, tools: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from paa.memory.decay import DecaySweeper
+
+        async def _boom(self: Any, ids: Any, **kw: Any) -> None:
+            raise RuntimeError("db locked")
+
+        monkeypatch.setattr(DecaySweeper, "touch_many", _boom)
+        await tools["remember_fact"].run({"text": "Project Alpha is active"})
+
+        result = json.loads(await tools["recall_facts"].run({"query": "Project Alpha"}))
+
+        assert result["count"] == 1
+        assert "id" not in result["facts"][0]

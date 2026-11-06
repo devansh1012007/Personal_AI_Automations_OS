@@ -455,3 +455,73 @@ class TestBackpressure:
             await runtime_full.queue.enqueue(StreamName.ORCHESTRATOR_CORE, {"k": "v"})
         resp = client.get("/memory/facts", params={"entity": ENTITY_ID})
         assert resp.status_code == 429
+
+
+class TestRecallTouch:
+    """C03/T04: the fact/search endpoints advance retention clocks.
+
+    Reversal: removing the touch calls from ``list_facts``/``search_facts``
+    leaves use_count at 0, so the first two tests fail without the fix.
+    """
+
+    async def test_facts_endpoint_touches_returned_facts(
+        self, client: TestClient, runtime: Runtime
+    ) -> None:
+        from datetime import timedelta
+
+        fact_id = await _seed_fact(
+            runtime, entity_id=ENTITY_ID, predicate="knows", object_value="Bob"
+        )
+        old = (datetime.now(UTC) - timedelta(days=60)).isoformat()
+        await runtime.db.execute(
+            "UPDATE hot_serving_active_facts SET last_queried_at = ? WHERE id = ?",
+            (old, fact_id),
+        )
+
+        resp = client.get("/memory/facts", params={"entity": ENTITY_ID})
+
+        assert resp.status_code == 200
+        row = await runtime.db.fetch_one(
+            "SELECT use_count, last_queried_at FROM hot_serving_active_facts WHERE id = ?",
+            (fact_id,),
+        )
+        assert row is not None
+        assert row["use_count"] == 1
+        assert row["last_queried_at"] > old
+
+    async def test_search_endpoint_touches_returned_facts(
+        self, client: TestClient, runtime: Runtime
+    ) -> None:
+        fact_id = await _seed_fact(
+            runtime,
+            entity_id=ENTITY_ID,
+            predicate="likes",
+            object_value="dark chocolate",
+        )
+
+        resp = client.get("/memory/search", params={"q": "chocolate"})
+
+        assert resp.status_code == 200
+        use_count = await runtime.db.fetch_value(
+            "SELECT use_count FROM hot_serving_active_facts WHERE id = ?",
+            (fact_id,),
+        )
+        assert use_count == 1
+
+    async def test_touch_failure_does_not_fail_the_endpoint(
+        self, client: TestClient, runtime: Runtime, monkeypatch: Any
+    ) -> None:
+        from paa.memory.decay import DecaySweeper
+
+        async def _boom(self: Any, ids: Any, **kw: Any) -> None:
+            raise RuntimeError("db locked")
+
+        monkeypatch.setattr(DecaySweeper, "touch_many", _boom)
+        await _seed_fact(
+            runtime, entity_id=ENTITY_ID, predicate="knows", object_value="Bob"
+        )
+
+        resp = client.get("/memory/facts", params={"entity": ENTITY_ID})
+
+        assert resp.status_code == 200
+        assert isinstance(resp.json(), list)
