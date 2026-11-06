@@ -162,6 +162,50 @@ async def test_drain_requires_daemon_loop(runtime: Runtime) -> None:
     assert await _fact_count_for_signal(runtime, signal_id) == 0
 
 
+async def test_daemon_ingestion_loop_drains_pending_embeddings(runtime: Runtime) -> None:
+    """R-W1-001b / R-W1-01 (TREV P1-1): the daemon loop drains pending facts.
+
+    Seeds one ``pending`` fact directly (no signal — ``run_batch`` alone
+    would not touch it), attaches a recording sink to the runtime's
+    creator, starts the daemon, and waits for the fact to become
+    ``indexed``. Reversal: removing the ``drain_pending_embeddings`` call
+    from ``_ingestion_loop`` leaves the fact ``pending`` forever.
+    """
+    from paa.memory.facts import FactRepository
+
+    repo = FactRepository(runtime.db)
+    entity_id = await repo.upsert_entity("concept", "BacklogProj")
+    fact_id = await repo.add_fact(entity_id, "status", "backlog")
+    pending_before = await repo.pending_embeddings()
+    assert [f.id for f in pending_before] == [fact_id]
+
+    class _RecordingSink:
+        def __init__(self) -> None:
+            self.batches: list[list[Any]] = []
+
+        async def enqueue(self, facts: Any) -> list[str]:
+            self.batches.append(list(facts))
+            return [f.id for f in facts]
+
+    assert runtime.memory_creator is not None
+    runtime.memory_creator._sink = _RecordingSink()
+
+    daemon = Daemon(runtime, dispatch_interval=10.0, ingestion_interval=0.02)
+    await daemon.start()
+    try:
+        async def indexed() -> bool:
+            status = await runtime.db.fetch_value(
+                "SELECT embedding_status FROM hot_serving_active_facts WHERE id = ?",
+                (fact_id,),
+            )
+            return status == "indexed"
+
+        await _wait_for(indexed, timeout_seconds=5.0)
+        assert await repo.pending_embeddings() == []
+    finally:
+        await daemon.stop()
+
+
 async def test_drain_uses_llm_creator_when_extraction_model_set(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

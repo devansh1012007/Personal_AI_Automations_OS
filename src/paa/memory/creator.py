@@ -835,6 +835,14 @@ class VectorEmbeddingSink:
 
         collection = self._collection or ACTIVE_FACTS.name
         vectors = await self._embedder.embed([f.statement for f in facts])
+        if len(vectors) != len(facts):
+            # Short-return defence: zip(..., strict=False) would silently drop
+            # overflow facts (they stay pending, but silently). Surface it.
+            log.warning(
+                "memory.embedding_batch_short",
+                facts=len(facts),
+                vectors=len(vectors),
+            )
         # DECISION (C01b): payload carries the reader's keys (object_value /
         # confidence / importance) alongside the original writer keys
         # (statement etc.). The _semantic reader in
@@ -1231,15 +1239,27 @@ class MemoryCreator:
         (terminal). The batch stays ``pending`` for the next drain and the
         error is logged. Idempotent: with nothing pending, returns 0.
         Returns the number of facts newly indexed.
+
+        Log honesty (R-W1-002): ``batch_size`` is the size of the batch
+        attempted in *this* call, never the total backlog. ``backlog_remaining``
+        is a boolean probe — True when rows remain pending after this call.
+        On success it is one lightweight ``pending_embeddings(1)`` fetch
+        through the existing API (LIMIT 1 on the partial index). It is not
+        a total count: ``FactRepository`` exposes no ``COUNT(*)`` API and
+        this module must not invent one (facts.py is read-only in this
+        wave), so the probe reports presence, not a number. No unbounded
+        loop: one batch per call, daemon cadence drains progress iteratively.
         """
         if limit <= 0:
             return 0
         pending = await self._facts.pending_embeddings(limit)
+        batch_size = len(pending)
         if self._sink is None or not pending:
             log.info(
                 "memory.embedding_drain",
-                pending=len(pending),
+                batch_size=batch_size,
                 indexed=0,
+                backlog_remaining=batch_size > 0,
             )
             return 0
         try:
@@ -1248,16 +1268,24 @@ class MemoryCreator:
             log.error(
                 "memory.embedding_drain_failed",
                 error=str(exc),
-                pending=len(pending),
+                batch_size=batch_size,
+                indexed=0,
+                backlog_remaining=True,
             )
             return 0
         indexed_ids = list(indexed)
         if indexed_ids:
             await self._facts.mark_embedded(indexed_ids)
+        # Honest remaining-backlog probe via the existing API (bounded,
+        # LIMIT 1). Covers a full batch with more behind it, a partial/
+        # empty sink return, and the pathological unknown-id return — all
+        # leave a pending row behind.
+        backlog_remaining = bool(await self._facts.pending_embeddings(1))
         log.info(
             "memory.embedding_drain",
-            pending=len(pending),
+            batch_size=batch_size,
             indexed=len(indexed_ids),
+            backlog_remaining=backlog_remaining,
         )
         return len(indexed_ids)
 

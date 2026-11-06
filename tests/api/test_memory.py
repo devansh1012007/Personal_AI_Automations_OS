@@ -325,6 +325,38 @@ class TestDrain:
         )
         assert status == "indexed"
 
+    async def test_drain_failure_isolated_when_mark_embedded_raises(
+        self, client: TestClient, runtime: Runtime, monkeypatch: Any
+    ) -> None:
+        """P2-8 (R-W1-05): a ``mark_embedded`` DB failure does not fail the drain report.
+
+        Seeds a pending fact, attaches a recording sink, then makes
+        ``FactRepository.mark_embedded`` raise. The route must still return
+        200 with the batch report (the drain except block is the only
+        thing standing between a vector hiccup and a 500).
+        """
+        fact_id = await _seed_fact(
+            runtime, entity_id=OTHER_ENTITY, predicate="likes", object_value="decaf"
+        )
+        assert fact_id
+
+        class _RecordingSink:
+            async def enqueue(self, facts: Any) -> list[str]:
+                return [f.id for f in facts]
+
+        runtime.memory_creator._sink = _RecordingSink()
+
+        from paa.memory.facts import FactRepository
+
+        async def _boom(self: Any, ids: Any, **kw: Any) -> None:
+            raise RuntimeError("db locked")
+
+        monkeypatch.setattr(FactRepository, "mark_embedded", _boom)
+        resp = client.post("/memory/drain")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert set(body) == REPORT_FIELDS
+
     async def test_drain_uses_llm_creator_when_extraction_model_set(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

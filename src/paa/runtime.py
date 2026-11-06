@@ -481,7 +481,12 @@ def _build_memory_creator(
             log.warning("memory.embedding_sink", status="degraded", error=str(exc))
             embedding_sink = None
     else:
-        log.warning("memory.embedding_sink", status="degraded")
+        # Plain missing-backends case is expected on intentional minimal
+        # installs (enable_optional_backends=False or D2a degrade-never-raise)
+        # and when _try_vector already warned with runtime.vector_unavailable.
+        # Keep it debug so an intentional minimal boot does not train
+        # operators to ignore the one case that matters (R-W1-003).
+        log.debug("memory.embedding_sink", status="degraded")
     if embedding_sink is not None:
         embedder_name = getattr(embedder, "model_name", type(embedder).__name__)
         log.info("memory.embedding_sink", status="wired", embedder=embedder_name)

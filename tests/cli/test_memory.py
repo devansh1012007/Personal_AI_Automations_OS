@@ -25,7 +25,7 @@ runner = CliRunner()
 
 
 @pytest.fixture
-def paa_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def paa_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Isolated PAA_HOME + offline model/sandbox settings for CLI commands."""
     home = tmp_path / "home"
     home.mkdir(parents=True, exist_ok=True)
@@ -35,7 +35,9 @@ def paa_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("PAA_POLICY__MODE", "AUTO")
     monkeypatch.setenv("PAA_SANDBOX__BACKEND", "subprocess")
     reset_settings_cache()
-    return home
+    yield home
+    # R-W1-09: teardown reset so a failing test cannot leak cached settings.
+    reset_settings_cache()
 
 
 async def _connect_db(home: Path) -> Database:
@@ -205,7 +207,47 @@ class TestDrain:
                 await db.close()
 
         assert asyncio.run(_pending()) == []
-        reset_settings_cache()
+        # R-W1-09: no trailing reset here — the fixture teardown unconditionally resets.
+
+    def test_drain_failure_isolated_when_mark_embedded_raises(
+        self, paa_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """P2-8 (R-W1-05): a ``mark_embedded`` failure does not fail the CLI drain.
+
+        Seeds a pending fact, attaches a recording sink, makes
+        ``mark_embedded`` raise. The CLI must still exit 0 and print the
+        batch report table (the except block is the isolation).
+        """
+        asyncio.run(_seed_entity_fact(paa_home, "DrainFail Corp", "status", "active"))
+
+        from paa.memory.facts import FactRepository
+
+        async def _boom(self: Any, ids: Any, **kw: Any) -> None:
+            raise RuntimeError("db locked")
+
+        monkeypatch.setattr(FactRepository, "mark_embedded", _boom)
+
+        class _RecordingSink:
+            async def enqueue(self, facts: Any) -> list[str]:
+                return [f.id for f in facts]
+
+        async def fake_build_runtime(*, run_recovery: bool = False) -> Runtime:
+            settings = Settings(home=paa_home)
+            settings.policy.mode = PermissionMode.AUTO
+            settings.sandbox.backend = "subprocess"
+            rt = await Runtime.build(
+                settings,
+                run_recovery=False,
+                enable_optional_backends=False,
+            )
+            rt.memory_creator._sink = _RecordingSink()
+            return rt
+
+        monkeypatch.setattr("paa.cli.main._build_runtime", fake_build_runtime)
+        result = _invoke(["drain", "--limit", "25"])
+        assert result.exit_code == 0, result.output
+        for counter in ("claimed", "processed", "facts_written"):
+            assert counter in result.stdout, result.stdout
 
     def test_processes_a_seeded_signal(self, paa_home: Path) -> None:
         signal_id = asyncio.run(
