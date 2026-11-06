@@ -1,0 +1,4 @@
+W4-IMPL-07	src/paa/daemon.py
+W4-IMPL-07	src/paa/memory/creator.py
+W4-IMPL-07	tests/memory/test_e2e_remember_recall.py
+W4-IMPL-07	docs/agent-ops/20261106-memory-remembering-agent/reports/w4-impl/W4-IMPL-07-T-007.md

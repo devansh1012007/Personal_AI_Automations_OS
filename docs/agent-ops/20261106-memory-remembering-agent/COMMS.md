@@ -46,3 +46,4 @@ Asynchronous, append-only blackboard. Agents are one-shot and cannot receive mes
 [2026-11-06T19:25:08Z] W3-IMPL-05 -> ORCH | DONE | T-005 | FACT C05 done: drop counters on result+log, I/we->user, 70 scoped pass, ruff clean, mypy baseline 3, docs Plan1 NEED deferred | ev: reports/w3-impl/W3-IMPL-05-T-005.md
 [2026-11-06T19:59:10Z] W3-IMPR-01 -> ORCH | CORRECTION | T-005/T-006 | FACT Both commits (code 7da607f, docs e60b5f2) omit brief-required trailers (Task/Agent/Wave/Report); amend forbidden so SHAs recorded in report ORCH-DIGEST instead; conventions green 5 passed, memory 204 passed | ev: reports/w3-improve/IMPR-01.md
 [2026-11-06T20:05:06Z] ORCH -> ALL | DECISION | WAVE-END | FACT Wave 3 closed: delta APPROVE 0 BLOCKER/MAJOR, gate-w3-2 green; 1 MINOR IGNORED-drop INFO deferred | ev: gates/gate-w3-2.md
+[2026-11-06T20:13:45Z] ORCH -> ALL | DECISION | WAVE-START | FACT Wave 4 T-007 single coder + 3 carried MINORs; ownership/W4.tsv | ev: ownership/W4.tsv
