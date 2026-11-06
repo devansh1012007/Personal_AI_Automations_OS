@@ -60,6 +60,10 @@ class Daemon:
         self._maintenance_interval = maintenance_interval
         self._claim_batch = claim_batch
         self._curate_next_phase: CurationPhase | None = None
+        # First-tick preview flag (REV R-W2-002): the first curator tick is a
+        # dry-run preview; later ticks delete. In-memory only — a daemon
+        # restart previews again (documented limit, R-W2-005).
+        self._curate_preview_done: bool = False
         self._stop = asyncio.Event()
         self._tasks: list[asyncio.Task[None]] = []
 
@@ -205,6 +209,16 @@ class Daemon:
         ``self._curate_next_phase`` so the next tick resumes there instead of
         restarting at DECAY and starving later phases.
 
+        Budget wording matters (REV R-W2-005): the budget is checked
+        *between* phases, never inside one, so the worst-case wall time is
+        the budget plus the longest single phase duration — it is not a hard
+        7200s cap. Resume is in-memory only: a daemon restart drops the
+        cursor back to DECAY and previews again; a zero or tiny budget will
+        keep stopping at the same phase (no progress is made until a tick
+        has budget left for that phase). An invalid ``start_phase`` is reset
+        to DECAY inside ``run_maintenance`` with a warning, so a stale
+        cursor cannot wedge every later tick.
+
         Wiring is read from the real runtime: settings from
         ``runtime.settings.memory`` and the vector store from
         ``runtime.vector_store`` (``None``-able by the degrade-never-raise
@@ -214,20 +228,23 @@ class Daemon:
         still runs inside the curator.
 
         R3 safety: the delete phases run for the first time in production, so
-        every tick is observable — ``daemon.curation_started`` and
-        ``daemon.curation_completed`` carry the budget and the full
-        ``CurationReport.summary()`` counts. If curator construction fails,
+        the first tick is a dry-run preview — counts are logged, nothing is
+        deleted — and later ticks delete. Every tick is observable —
+        ``daemon.curation_started`` and ``daemon.curation_completed`` carry
+        the budget and the full ``CurationReport.summary()`` counts (preview
+        counts are would-delete counts). If curator construction fails,
         the tick falls back to a bare ``DecaySweeper.sweep()`` with a warning.
         A ``run_maintenance`` exception is never masked by a fallback sweep
         (that would double-run decay); it propagates to the loop, which logs
         ``daemon.maintenance_failed`` and keeps the daemon alive. This tick
         runs in the maintenance task only — never inline in ingestion.
         """
-        from paa.memory.curator import MemoryCurator
-
         settings = self._rt.settings.memory
         budget = settings.curation_max_runtime_hours * 3600.0
+        dry_run = not self._curate_preview_done
         try:
+            from paa.memory.curator import MemoryCurator
+
             curator = MemoryCurator(
                 self._rt.db,
                 settings=settings,
@@ -245,10 +262,12 @@ class Daemon:
             "daemon.curation_started",
             budget_seconds=budget,
             start_phase=phase.value if phase is not None else None,
+            dry_run=dry_run,
         )
         report = await curator.run_maintenance(
-            budget_seconds=budget, start_phase=phase
+            budget_seconds=budget, start_phase=phase, dry_run=dry_run
         )
         self._curate_next_phase = report.stopped_early_at
-        log.info("daemon.curation_completed", **report.summary())
+        self._curate_preview_done = True
+        log.info("daemon.curation_completed", dry_run=dry_run, **report.summary())
         return report

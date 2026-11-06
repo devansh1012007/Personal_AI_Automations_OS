@@ -320,7 +320,13 @@ class PlannerContextBuilder(_BaseContextBuilder):
             tokens=packet.allocated_tokens,
             routing=packet.routing_directive,
         )
-        await _touch_recalled(self._db, [e.id for e in hot] + [e.id for e in semantic])
+        # Touch only the delivered set. The gatherer drops low-confidence,
+        # low-relevance and over-budget candidates; touching those would reset
+        # the idle clock for facts the model never read (REV R-W2-001).
+        # Graph elements carry synthetic ids (graph:...) that match no fact
+        # row, so they are excluded explicitly.
+        delivered = [e.id for e in packet.elements if not e.id.startswith("graph:")]
+        await _touch_recalled(self._db, delivered)
         return AgentResult.success(
             packet.model_dump(mode="json"),
             tokens_consumed=packet.allocated_tokens,
@@ -384,7 +390,9 @@ class WorkerContextBuilder(_BaseContextBuilder):
             # boundary. The domains are named so the ledger says what leaked
             # rather than only that something did.
             raise ValueError(f"narrative memory leaked into a worker packet: {', '.join(leaked)}")
-        await _touch_recalled(self._db, [e.id for e in hot])
+        # Touch only the delivered packet (see planner handle, R-W2-001).
+        delivered = [e.id for e in packet.elements if not e.id.startswith("graph:")]
+        await _touch_recalled(self._db, delivered)
         return AgentResult.success(
             packet.model_dump(mode="json"),
             tokens_consumed=packet.allocated_tokens,
@@ -406,11 +414,12 @@ async def _touch_recalled(db: RelationalBackend | None, fact_ids: list[str]) -> 
     if db is None or not fact_ids:
         return
     from paa.memory.decay import DecaySweeper
+    from paa.models.base import redact
 
     ids = list(dict.fromkeys(fact_ids))
     try:
         await DecaySweeper(db).touch_many(ids)
     except Exception as exc:
-        log.warning("memory.recall_touch_failed", count=len(ids), error=str(exc))
+        log.warning("memory.recall_touch_failed", count=len(ids), error=redact(str(exc)))
         return
     log.debug("memory.recall_touched", count=len(ids))

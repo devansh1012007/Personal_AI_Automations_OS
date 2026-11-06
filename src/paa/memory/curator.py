@@ -135,12 +135,27 @@ class MemoryCurator:
         budget_seconds: float | None = None,
         start_phase: CurationPhase | None = None,
         now: datetime | None = None,
+        dry_run: bool = False,
     ) -> CurationReport:
         """Execute the maintenance phases until done or out of time.
 
         ``start_phase`` lets a follow-up run resume where a budget-limited
         previous run stopped, so no phase is perpetually starved by always
-        restarting at :attr:`CurationPhase.DECAY`.
+        restarting at :attr:`CurationPhase.DECAY`. A ``start_phase`` outside
+        the known order is rejected with a warning and resets to the start
+        rather than wedging every later tick on an invalid cursor.
+
+        The budget is checked *between* phases, never inside one, so the
+        worst-case wall time is ``budget_seconds`` plus the longest single
+        phase duration, not ``budget_seconds`` itself. Callers must not plan
+        on ``budget_seconds`` as a hard cap (REV R-W2-005).
+
+        ``dry_run`` is a preview pass: every delete phase counts what it
+        would remove and deletes nothing, quantities are reported in the
+        same summary fields, and the completion log carries
+        ``dry_run=True``. The daemon runs its first tick this way so the
+        operator sees delete volumes before anything is removed
+        (REV R-W2-002).
         """
         import time
 
@@ -157,8 +172,18 @@ class MemoryCurator:
 
         phases = _PHASE_ORDER
         if start_phase is not None:
-            idx = _PHASE_ORDER.index(start_phase)
-            phases = _PHASE_ORDER[idx:]
+            try:
+                idx = _PHASE_ORDER.index(start_phase)
+            except ValueError:
+                # Wedge recovery: a stale or hand-edited cursor must not
+                # raise on every tick forever. Reset to DECAY and warn.
+                log.warning(
+                    "curator.invalid_start_phase_reset",
+                    start_phase=str(start_phase),
+                )
+                phases = _PHASE_ORDER
+            else:
+                phases = _PHASE_ORDER[idx:]
 
         handlers = {
             CurationPhase.DECAY: self._phase_decay,
@@ -178,36 +203,54 @@ class MemoryCurator:
                 log.warning("curator.budget_exhausted", stopped_at=phase.value)
                 break
             try:
-                await handlers[phase](report, now=started)
+                await handlers[phase](report, now=started, dry_run=dry_run)
                 report.completed_phases.append(phase)
             except Exception as exc:
                 report.errors += 1
                 log.exception("curator.phase_failed", phase=phase.value, error=str(exc))
 
         report.finished_at = utc_now()
-        log.info("curator.maintenance_completed", **report.summary())
+        if dry_run:
+            log.warning("curator.dry_run_preview", **report.summary())
+        log.info("curator.maintenance_completed", dry_run=dry_run, **report.summary())
         return report
 
     # -- phases ------------------------------------------------------------
 
-    async def _phase_decay(self, report: CurationReport, *, now: datetime) -> None:
-        result = await self._sweeper.sweep(now=now)
+    async def _phase_decay(
+        self, report: CurationReport, *, now: datetime, dry_run: bool = False
+    ) -> None:
+        result = await self._sweeper.sweep(now=now, dry_run=dry_run)
         report.facts_evicted = result.evicted
 
-    async def _phase_prune_edges(self, report: CurationReport, *, now: datetime) -> None:
+    async def _phase_prune_edges(
+        self, report: CurationReport, *, now: datetime, dry_run: bool = False
+    ) -> None:
         """Sever relationship edges whose weight fell below the floor.
 
         RFC §4.1: relationship memory prunes at weight < 0.10. A weak edge is
         graph noise that inflates every multi-hop traversal it sits on.
         """
         floor = self._settings.relationship_prune_floor
+        if dry_run:
+            report.edges_pruned = int(
+                await self._db.fetch_value(
+                    "SELECT COUNT(*) FROM hot_serving_relationships "
+                    "WHERE weight < ? AND valid_to IS NULL",
+                    (floor,),
+                )
+                or 0
+            )
+            return
         deleted = await self._db.execute(
             "DELETE FROM hot_serving_relationships WHERE weight < ? AND valid_to IS NULL",
             (floor,),
         )
         report.edges_pruned = deleted
 
-    async def _phase_consolidate(self, report: CurationReport, *, now: datetime) -> None:
+    async def _phase_consolidate(
+        self, report: CurationReport, *, now: datetime, dry_run: bool = False
+    ) -> None:
         """Merge exact-duplicate facts; never merge across differing values.
 
         Duplicates arise when the creator extracts the same fact from several
@@ -224,6 +267,20 @@ class MemoryCurator:
             "FROM hot_serving_active_facts WHERE superseded_by IS NULL "
             "GROUP BY entity_id, predicate, object_value HAVING COUNT(*) > 1"
         )
+        if dry_run:
+            # Preview only: count losers without merging or deleting.
+            merged = 0
+            for group in groups:
+                rows = await self._db.fetch_all(
+                    "SELECT id FROM hot_serving_active_facts "
+                    "WHERE entity_id = ? AND predicate = ? AND object_value = ? "
+                    "  AND superseded_by IS NULL",
+                    (group["entity_id"], group["predicate"], group["object_value"]),
+                )
+                if len(rows) >= 2:
+                    merged += len(rows) - 1
+            report.duplicates_merged = merged
+            return
         merged = 0
         for group in groups:
             rows = await self._db.fetch_all(
@@ -254,20 +311,45 @@ class MemoryCurator:
             merged += len(losers)
         report.duplicates_merged = merged
 
-    async def _phase_orphans(self, report: CurationReport, *, now: datetime) -> None:
+    async def _phase_orphans(
+        self, report: CurationReport, *, now: datetime, dry_run: bool = False
+    ) -> None:
         """Delete facts whose entity is gone.
 
         The FK is ``ON DELETE CASCADE``, so this is belt-and-braces — but a
         cross-backend migration or a manual edit can leave danglers, and an
         orphaned fact is unreachable noise that still costs a decay scan.
         """
+        # Empty-index guard (REV R-W2-004): if the guard table is empty,
+        # NOT IN (empty) would match every fact and wipe the table.
+        entity_count = int(
+            await self._db.fetch_value(
+                "SELECT COUNT(*) FROM hot_serving_entity_index"
+            )
+            or 0
+        )
+        if entity_count == 0:
+            log.warning("curator.orphan_purge_skipped_empty_index")
+            report.orphans_removed = 0
+            return
+        if dry_run:
+            report.orphans_removed = int(
+                await self._db.fetch_value(
+                    "SELECT COUNT(*) FROM hot_serving_active_facts "
+                    "WHERE entity_id NOT IN (SELECT id FROM hot_serving_entity_index)"
+                )
+                or 0
+            )
+            return
         deleted = await self._db.execute(
             "DELETE FROM hot_serving_active_facts WHERE entity_id NOT IN "
             "(SELECT id FROM hot_serving_entity_index)"
         )
         report.orphans_removed = deleted
 
-    async def _phase_reconcile_vectors(self, report: CurationReport, *, now: datetime) -> None:
+    async def _phase_reconcile_vectors(
+        self, report: CurationReport, *, now: datetime, dry_run: bool = False
+    ) -> None:
         """Drop vectors whose backing fact was evicted this pass.
 
         Without this the vector index accumulates points that resolve to no
@@ -275,7 +357,7 @@ class MemoryCurator:
         which reads as memory corruption. Best-effort: a vector-store outage
         must not fail the whole maintenance pass.
         """
-        if self._vectors is None:
+        if self._vectors is None or dry_run:
             return
         try:
             live = {
@@ -297,8 +379,12 @@ class MemoryCurator:
             report.errors += 1
             log.warning("curator.vector_reconcile_failed", error=str(exc))
 
-    async def _phase_analyze(self, report: CurationReport, *, now: datetime) -> None:
+    async def _phase_analyze(
+        self, report: CurationReport, *, now: datetime, dry_run: bool = False
+    ) -> None:
         """Refresh the query planner's statistics after the churn above."""
+        if dry_run:
+            return
         analyze = getattr(self._db, "analyze", None)
         if analyze is not None:
             await analyze()

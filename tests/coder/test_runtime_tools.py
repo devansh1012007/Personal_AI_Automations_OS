@@ -1070,3 +1070,46 @@ class TestRecallTouch:
 
         assert result["count"] == 1
         assert "id" not in result["facts"][0]
+
+    async def test_recall_keyword_fallback_advances_use_count(
+        self, tools: dict[str, Any], db: Database
+    ) -> None:
+        """A query that misses the entity tier still touches the fallback hit."""
+        await tools["remember_fact"].run({"text": "Project Alpha is active"})
+        row = await db.fetch_one("SELECT id FROM hot_serving_active_facts LIMIT 1")
+        assert row is not None
+        fact_id = row["id"]
+        # "active" does not resolve to an entity but matches by keyword text.
+        result = json.loads(await tools["recall_facts"].run({"query": "active"}))
+
+        assert result["count"] == 1
+        row = await db.fetch_one(
+            "SELECT use_count FROM hot_serving_active_facts WHERE id = ?", (fact_id,)
+        )
+        assert row is not None
+        assert row["use_count"] == 1
+
+    async def test_recall_empty_result_touches_nothing(
+        self, tools: dict[str, Any], db: Database
+    ) -> None:
+        """An empty coder recall performs no touch."""
+        result = json.loads(await tools["recall_facts"].run({"query": "zzz-no-such-term-zzz"}))
+        assert result["count"] == 0
+        row = await db.fetch_one(
+            "SELECT COUNT(*) AS n FROM hot_serving_active_facts WHERE use_count > 0"
+        )
+        assert row is not None
+        assert row["n"] == 0
+
+    async def test_recall_nul_query_touches_nothing(
+        self, tools: dict[str, Any], db: Database
+    ) -> None:
+        """A refused NUL query returns an error and touches nothing."""
+        await tools["remember_fact"].run({"text": "Project Alpha is active"})
+        result = json.loads(await tools["recall_facts"].run({"query": "a\x00b"}))
+        assert "error" in result
+        row = await db.fetch_one(
+            "SELECT use_count FROM hot_serving_active_facts LIMIT 1"
+        )
+        assert row is not None
+        assert row["use_count"] == 0

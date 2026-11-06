@@ -525,3 +525,52 @@ class TestRecallTouch:
 
         assert resp.status_code == 200
         assert isinstance(resp.json(), list)
+
+    async def test_search_400_touches_nothing(
+        self, client: TestClient, runtime: Runtime
+    ) -> None:
+        """A NUL query is refused with 400 before any touch (failed recall)."""
+        fact_id = await _seed_fact(
+            runtime, entity_id=ENTITY_ID, predicate="likes", object_value="dark chocolate"
+        )
+        resp = client.get("/memory/search", params={"q": "x\x00y"})
+        assert resp.status_code == 400
+        use_count = await runtime.db.fetch_value(
+            "SELECT use_count FROM hot_serving_active_facts WHERE id = ?", (fact_id,)
+        )
+        assert use_count == 0
+
+    async def test_facts_429_touches_nothing(
+        self, client: TestClient, runtime: Runtime, monkeypatch: Any
+    ) -> None:
+        """A backpressured (429) facts read touches nothing."""
+        import paa.api.app as app_mod
+
+        async def _never_admit(rt: Any, *, essential: bool) -> bool:
+            return False
+
+        monkeypatch.setattr(app_mod, "_admit", _never_admit)
+        fact_id = await _seed_fact(
+            runtime, entity_id=ENTITY_ID, predicate="knows", object_value="Bob"
+        )
+        resp = client.get("/memory/facts", params={"entity": ENTITY_ID})
+        assert resp.status_code == 429
+        use_count = await runtime.db.fetch_value(
+            "SELECT use_count FROM hot_serving_active_facts WHERE id = ?", (fact_id,)
+        )
+        assert use_count == 0
+
+    async def test_empty_search_touches_nothing(
+        self, client: TestClient, runtime: Runtime
+    ) -> None:
+        """An empty search result performs no touch."""
+        fact_id = await _seed_fact(
+            runtime, entity_id=ENTITY_ID, predicate="likes", object_value="dark chocolate"
+        )
+        resp = client.get("/memory/search", params={"q": "zzz-no-such-term-zzz"})
+        assert resp.status_code == 200
+        assert resp.json() == []
+        use_count = await runtime.db.fetch_value(
+            "SELECT use_count FROM hot_serving_active_facts WHERE id = ?", (fact_id,)
+        )
+        assert use_count == 0

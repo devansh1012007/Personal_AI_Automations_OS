@@ -706,18 +706,19 @@ async def _touch_recalled(db: Any, fact_ids: list[str]) -> None:
     derivable from cold-lake replay (a rebuild resets them), the same way the
     decay sweep itself mutates hot serving state outside the ledger.
     """
-    if not fact_ids:
+    if db is None or not fact_ids:
         return
     import structlog
 
     from paa.memory.decay import DecaySweeper
+    from paa.models.base import redact
 
     log = structlog.get_logger(__name__)
     ids = list(dict.fromkeys(fact_ids))
     try:
         await DecaySweeper(db).touch_many(ids)
     except Exception as exc:
-        log.warning("memory.recall_touch_failed", count=len(ids), error=str(exc))
+        log.warning("memory.recall_touch_failed", count=len(ids), error=redact(str(exc)))
         return
     log.debug("memory.recall_touched", count=len(ids))
 

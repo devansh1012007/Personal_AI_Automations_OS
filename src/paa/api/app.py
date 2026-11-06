@@ -353,7 +353,7 @@ async def _touch_recalled(db: Any, fact_ids: list[str]) -> None:
     rebuild resets them), the same way the decay sweep itself mutates hot
     serving state outside the ledger.
     """
-    if not fact_ids:
+    if db is None or not fact_ids:
         return
     from paa.memory.decay import DecaySweeper
 

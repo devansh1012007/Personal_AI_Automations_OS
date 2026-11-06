@@ -496,3 +496,165 @@ class TestTouchOnRecall:
 
         assert result.ok
         assert result.value is not None
+
+    async def test_dropped_low_confidence_fact_is_not_touched(
+        self, builder: PlannerContextBuilder, repo: FactRepository, db: Database
+    ) -> None:
+        """R-W2-001: a fact the gatherer drops below the confidence floor stays 0.
+
+        Both facts match the same hot term; the 0.9 fact is delivered and
+        advances, the 0.5 fact is below the 0.70 floor and must not be
+        touched. Reversal: touching the pre-pack candidate superset gives
+        the dropped fact use_count == 1.
+        """
+        entity_id = await repo.upsert_entity("concept", "Widget")
+        kept_id = await repo.add_fact(entity_id, "is", "foo_bar kept", confidence=0.9)
+        dropped_id = await repo.add_fact(entity_id, "is", "foo_bar dropped", confidence=0.5)
+
+        result = await builder.handle(_planner_msg("widget foo_bar"), _worker_ctx())
+
+        assert result.ok
+        assert (await _use_row(db, kept_id))["use_count"] == 1
+        assert (await _use_row(db, dropped_id))["use_count"] == 0
+
+    async def test_low_relevance_semantic_hit_is_not_touched(
+        self, repo: FactRepository, db: Database
+    ) -> None:
+        """A semantic hit below the relevance floor is delivered nowhere, so it
+        keeps use_count == 0 (R-W2-001 semantic axis).
+        """
+        from paa.agents.context_agents import PlannerContextBuilder as _Planner
+
+        class _Hit:
+            def __init__(self, hit_id: str, score: float) -> None:
+                self.id = hit_id
+                self.score = score
+                self.payload = {
+                    "object_value": "foo_bar",
+                    "confidence": 0.9,
+                    "importance": 0.5,
+                    "predicate": "is",
+                    "memory_domain": "semantic",
+                }
+
+        class _FakeVectors:
+            def __init__(self, hits: list[_Hit]) -> None:
+                self._hits = hits
+
+            async def search(self, collection: str, vector: Any, limit: int = 30) -> list[_Hit]:
+                return self._hits[:limit]
+
+        class _FakeEmbedder:
+            async def embed(self, texts: list[str]) -> list[list[float]]:
+                return [[0.1, 0.2, 0.3] for _ in texts]
+
+        entity_id = await repo.upsert_entity("concept", "Widget")
+        fact_id = await _seed(repo, entity_id, "is", "zzz_unrelated")
+        # Score 0.5 < 0.75 relevance floor: the gatherer must drop it.
+        builder = _Planner(
+            db=db,
+            vector_store=_FakeVectors([_Hit(fact_id, 0.5)]),
+            embedder=_FakeEmbedder(),
+        )
+
+        result = await builder.handle(_planner_msg("zzzqqq"), _worker_ctx())
+
+        assert result.ok
+        assert (await _use_row(db, fact_id))["use_count"] == 0
+
+    async def test_worker_hydration_failure_touches_nothing(
+        self, repo: FactRepository, db: Database
+    ) -> None:
+        """A worker recall that fails with hydration_required touches nothing."""
+        entity_id = await repo.upsert_entity("concept", "Widget")
+        fact_id = await repo.add_fact(
+            entity_id, "status", "the report is ready", domain="operational"
+        )
+        msg = AgentMessage(
+            task_id=uuid.uuid4(),
+            correlation_id=uuid.uuid4(),
+            sender="planner",
+            recipient="context_builder_worker",
+            intent=MessageType.CONTEXT_REQUEST,
+            payload={
+                "step": {"action": "write the report", "requires": ["no-such-primitive"]}
+            },
+        )
+
+        result = await WorkerContextBuilder(db=db).handle(msg, _worker_ctx())
+
+        assert not result.ok
+        assert (await _use_row(db, fact_id))["use_count"] == 0
+
+    async def test_worker_leak_raise_touches_nothing(
+        self, repo: FactRepository, db: Database
+    ) -> None:
+        """A worker packet that triggers the narrative-leak raise touches nothing."""
+        entity_id = await repo.upsert_entity("concept", "Widget")
+        fact_id = await repo.add_fact(
+            entity_id, "status", "the report is ready", domain="operational"
+        )
+
+        class _LeakyWithRealId(BoundedContextGatherer):
+            def compile_worker_packet(
+                self,
+                hot_facts: Iterable[ContextElement],
+                semantic_matches: Iterable[ContextElement],
+                required_slots: Sequence[str],
+                *,
+                token_ceiling: int | None = None,
+            ) -> ContextPacket:
+                return ContextPacket(
+                    elements=(
+                        ContextElement(
+                            id=fact_id,
+                            content="the report lives at reports/q3.md",
+                            memory_domain="operational",
+                        ),
+                        ContextElement(
+                            id="narrative-1",
+                            content="narrative leak",
+                            memory_domain="narrative",
+                        ),
+                    ),
+                    density=1.0,
+                    allocated_tokens=16,
+                    routing_directive="PROCEED_TO_PLANNER",
+                    pollution_ratio=0.0,
+                    utility_score=0.5,
+                    entropy=0.0,
+                    token_ceiling=1000,
+                )
+
+        builder = WorkerContextBuilder(db=db, gatherer=_LeakyWithRealId())
+        with pytest.raises(ValueError, match="narrative memory leaked"):
+            await builder.handle(_worker_msg(), _worker_ctx())
+        assert (await _use_row(db, fact_id))["use_count"] == 0
+
+    async def test_touch_batched_one_call_per_recall(
+        self, repo: FactRepository, db: Database, monkeypatch: Any
+    ) -> None:
+        """One planner recall issues exactly one touch_many with deduped ids."""
+        from paa.memory.decay import DecaySweeper
+
+        calls: list[list[str]] = []
+        real_touch = DecaySweeper.touch_many
+
+        async def _counting(
+            self: Any, ids: Any, **kw: Any
+        ) -> None:
+            calls.append(list(ids))
+            await real_touch(self, ids, **kw)
+
+        monkeypatch.setattr(DecaySweeper, "touch_many", _counting)
+        entity_id = await repo.upsert_entity("concept", "Widget")
+        ids = [await _seed(repo, entity_id, "is", f"foo_bar {i}") for i in range(3)]
+        builder = PlannerContextBuilder(db=db)
+
+        result = await builder.handle(_planner_msg("widget foo_bar"), _worker_ctx())
+
+        assert result.ok
+        assert len(calls) == 1
+        assert sorted(calls[0]) == sorted(ids)
+        for fact_id in ids:
+            assert (await _use_row(db, fact_id))["use_count"] == 1

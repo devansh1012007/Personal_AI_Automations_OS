@@ -494,3 +494,22 @@ class TestRecallTouch:
 
         assert result.exit_code == 0, result.output
         assert "Acme Corp" in result.stdout
+
+    def test_empty_search_touches_nothing(self, paa_home: Path) -> None:
+        """An empty CLI search performs no touch."""
+        asyncio.run(_seed_entity_fact(paa_home, "Acme Corp", "owner", "Ada Lovelace"))
+        result = _invoke(["search", "zzz-no-such-term-zzz"])
+        assert result.exit_code == 0, result.output
+        assert "no matches" in result.stdout
+        row = self._fact_row(paa_home)
+        assert row is not None
+        assert row["use_count"] == 0
+
+    def test_failed_search_touches_nothing(self, paa_home: Path) -> None:
+        """A refused NUL search exits 1 and touches nothing."""
+        asyncio.run(_seed_entity_fact(paa_home, "Acme Corp", "owner", "Ada Lovelace"))
+        result = _invoke(["search", "x\x00y"])
+        assert result.exit_code == 1, result.output
+        row = self._fact_row(paa_home)
+        assert row is not None
+        assert row["use_count"] == 0
