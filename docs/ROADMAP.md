@@ -1,186 +1,243 @@
 # Roadmap
 
-Where the runtime is, and where it should go — in priority order, with honest
-effort and the reasoning behind the sequence.
+*Last reviewed: 2026-11-06 · Companion to [VISION.md](VISION.md) · Evidence base:
+[research note on DeepSeek Super-agent](research/2026-11-deepseek-super-agent.md)*
 
-## The one fact that shapes everything
-
-The spine is strong and tested (ledger, storage, context, sandbox, memory). The suite
-**collected 3,145 tests** when this file was last written — the ROADMAP's own "755
-tests" figure predates the substrate track and Phase 0.
-
-**What is true now:**
-
-- the four subsystems that used to have **zero test coverage** — agents, validation,
-  models, observability — have suites, and the security properties they carry are
-  asserted rather than promised (§"Phase 0");
-- the orchestrator **is** instantiated outside its own module, and one real task
-  flows from request to commit: `tests/integration/test_end_to_end.py` drives it
-  through the composition root, survives a stall mid-execution, and holds the token
-  ceiling;
-- the composition root is `Runtime.build` (`src/paa/runtime.py`) and the entry point
-  is the `paa` CLI (`src/paa/cli/main.py`) — `submit`, `status`, `ledger`, `gate`,
-  `recover`, `doctor` — with the FastAPI ingestion app beside it.
-
-**What is still not true:**
-
-- the whole run happens against an **injected** model. A frontier provider has never
-  driven a task here, so "the thing works" is a fact about the wiring and not about
-  the models;
-- the optional substrates are exercised by the suite — a live PostgreSQL, two live
-  S3 servers — but a deployment that wires every substrate together and drives a
-  task through it is still a thing an operator does, not a thing the suite asserts.
-
-So the honest status is: *a well-engineered collection of parts that now runs as a
-whole against an injected model.* The roadmap is still ordered to fix the rest
-first, because every aspirational feature in the brief is worthless until one real
-task can flow from request to commit.
-
-Effort key: **S** ≈ hours · **M** ≈ 1–2 days · **L** ≈ 3–5 days · **XL** ≈ 1–2+ weeks.
-(Solo-developer estimates; halve with parallel agents when the network cooperates.)
+This roadmap turns the [vision](VISION.md) into ordered work with an exit test per
+item. It replaces the earlier phase-based roadmap; that version's item-level detail,
+including the test-coverage notes for Phase 0, remains in git history.
 
 ---
 
-## Phase 0 — Make the written code trustworthy
+## Contents
 
-*Nothing new. Prove the code that already exists does what its docstrings claim.*
-This is first because the untested modules carry the system's **security
-properties**, and shipping security asserted only in prose is worse than not
-shipping it.
+1. [Where things stand](#where-things-stand)
+2. [How to read this](#how-to-read-this)
+3. [Horizon 1: Hands, authority, and honesty](#horizon-1-hands-authority-and-honesty)
+4. [Horizon 2: Seams](#horizon-2-seams)
+5. [Horizon 3: Evidence and attention](#horizon-3-evidence-and-attention)
+6. [Horizons 4 and 5 (conditional)](#horizons-4-and-5-conditional)
+7. [Ideas imported from DeepSeek Super-agent](#ideas-imported-from-deepseek-super-agent)
+8. [Sequencing and dependencies](#sequencing-and-dependencies)
+9. [Decision gates and metrics](#decision-gates-and-metrics)
+10. [Cross-cutting work](#cross-cutting-work)
+11. [Decisions that need an owner](#decisions-that-need-an-owner)
 
-**State: done, and the exit criterion is met for four of the five items.** The
-clauses below were the ROADMAP's own trust clause, and each one now has a suite that
-fails if the behaviour it names regresses. That is not the same as total coverage,
-and the second table names, per item, what covers the clause and **what is still
-open** — the parts that are a policy decision, a known defect, or a substrate that
-needs a live server.
+---
 
-| # | Task | Effort | State | Why it matters |
-|---|------|--------|-------|----------------|
-| 0.1 | Test `validation/` — AST scanner catches each forbidden construct; unparseable source is *rejected* not skipped; patch apply+rollback restores exact bytes; path-traversal patches refused; workspace manifest is deterministic | **M** | **done** | This is the layer that stops agent-authored code from touching the host. Untested, it is decoration. |
-| 0.2 | Test `agents/` — orchestrator emits the exact ledger event sequence end-to-end; delegation refuses a real 3-node cycle; policy gates (LOCKDOWN blocks egress, SAFE blocks deletion, anti-goal at 0.82); **critic's deterministic FAIL cannot be overridden by an LLM PASS** | **L** | **done** | The critic-override rule and the cycle guard are the two properties most likely to regress silently. |
-| 0.3 | Test `models/` — LOCKDOWN never escalates (spy provider, assert zero frontier calls); escalation writes exactly one `MODEL_ESCALATED` event; semaphore caps concurrency; no API key ever appears in logs or exceptions | **M** | **done** | The escalation boundary is the privacy promise. Assert it, don't hope. |
-| 0.4 | Test `observability/` — metric percentiles against hand-computed values; run repository round-trips; a failing exporter never breaks the traced operation | **S** | **done** | Cheap; unblocks trusting telemetry in the integration test. |
-| 0.5 | Wire CI (GitHub Actions) — run the full suite + `ruff` + `mypy --strict` on every push, matrix over the optional extras | **S** | **done** | Makes the gate a fact enforced on every commit, not a snapshot somebody remembers to run. |
+## Where things stand
 
-### What covers each clause, and what does not
+Measured on a clean Linux checkout at commit `4ac96db` (Python 3.12, `.[dev]`, no
+Docker): about 52,000 lines of source, 3,145 tests collected, 2,899 passed, 241
+skipped, 4 xfailed, 1 failed (environmental). Re-measure with the commands in the
+[README](../README.md#status) before quoting any figure.
 
-| # | Clause | What covers it now | What is **not** covered |
+**True now.** The spine (ledger, replay, recovery, storage, context, sandbox,
+validation, agents, memory, models, skills) is built and tested. One task flows from
+request to commit through the composition root, survives a mid-execution stall, and
+holds the token ceiling. The `paa` CLI, loopback API, daemon, and an experimental ACP
+server exist.
+
+**Not true yet.**
+
+- No frontier model has driven a task end to end. Every end-to-end run uses an
+  injected model, so passing tests establish the wiring, not model performance.
+- There are no file, shell, or git tools. The coder agent can drive the runtime but
+  cannot change a project.
+- The coder loop is not ledger-integrated, so it gets neither crash recovery nor
+  hash-chained history.
+- Tasks do not record **who requested them or under which policy**.
+- Third-party agents cannot be hosted, and no supported way exists to replace the
+  agentic loop.
+
+The honest summary: *a well-engineered runtime that has not yet done real work for a
+real person.* The sequence below is ordered to fix that first.
+
+## How to read this
+
+- **Effort:** **S** hours · **M** 1–2 days · **L** 3–5 days · **XL** 1–2+ weeks.
+  Solo-developer estimates; treat them as ordering aids, not commitments.
+- **Done when:** an observable test, not a description of work.
+- **Origin:** `PAA` for ideas from this project; `DS §n` for ideas taken or adapted from
+  DeepSeek's Super-agent essay section *n*; `DS doc` for its prototype docs; `DS field`
+  for failures independent users reported in the prototype.
+- Horizons 1–3 are committed. Horizons 4–5 are **conditional** on the
+  [validation test](VISION.md#validation-and-kill-criteria).
+
+---
+
+## Horizon 1: Hands, authority, and honesty
+
+*Make PAA capable of real work, record who authorised it, and make its documentation
+trustworthy.*
+
+| # | Task | Effort | Done when | Origin |
+|---|---|---|---|---|
+| H1.1 | **File, shell, and git tools** as permissioned skills run through the sandbox: read, write, anchored edit, glob, grep, bash, git status/diff/commit. Destructive git operations require a gate. | **XL** | Each tool has permission-profile tests; path traversal is refused; a denied tool call is a ledger event; the tools work under the subprocess, WSL2, and Docker backends. | PAA |
+| H1.2 | **Wire the coder loop into the ledger.** Every tool call and result becomes an event; the loop resumes after a crash. | **L** | `kill -9` mid-turn, restart, and `paa ledger <id>` shows an unbroken chain that resumes without repeating a completed side effect. | PAA, flexibility audit |
+| H1.3 | **Real-model end to end.** Drive one task with a frontier provider through configuration, record cost and failure modes. | **M** | A documented run from request to `MUTATION_COMMITTED`, with the trace and the failures it hit. | PAA |
+| H1.4 | **Mandates.** New events `TRIGGER_RECEIVED`, `ELIGIBILITY_DECIDED` (strength: explicit or inferred; matched rules), `MANDATE_GRANTED` (policy version, scope, requester identity). `POST /tasks` and the CLI require a requester and basis. | **M–L** | A task with no mandate is refused; a policy change that bears on a live task is recorded and delivered to it rather than silently ignored; `paa ledger` shows the mandate at the head of the chain. | DS doc 001, 002 |
+| H1.5 | **Asynchronous tool calls with cancellation.** Long commands return immediately and deliver results as events; the loop accepts new input mid-run; a cancel stops running work. | **L** | A 10-minute command does not block a new instruction; cancel kills the process tree and writes a ledger event; ACP cancel works. | DS §4.1 |
+| H1.6 | **Lifecycle fault tests** for the failure classes the prototype hit: retry after authorisation changed, stop while preparing a workspace, partial workspace after a failed prepare, event poll that reports success while skipping items, duplicate trigger. | **M** | Property and chaos tests fail on each injected fault and pass on the implementation. | DS field |
+| H1.7 | **Documentation truth.** One script prints the status block (source size, test totals, outcome counts); README, VISION, and ROADMAP quote its output. | **S** | CI fails if the README's numbers disagree with the script. | PAA |
+
+**Exit:** `paa agent "fix the failing test"` reads, edits, runs the tests, and commits;
+each step and the task's mandate are in the ledger and survive `kill -9`.
+
+---
+
+## Horizon 2: Seams
+
+*Make PAA connectable without widening the core.* Each seam follows the
+[extension rules](VISION.md#extension-model): out of process, tighten-only, recorded
+results, versioned envelope, rule of three.
+
+| # | Task | Effort | Done when | Origin |
+|---|---|---|---|---|
+| H2.1 | **Harden the ACP server**: streaming, cancellation, editor context (mentions, working directory), a CI test that stdout stays protocol-clean. | **M** | Zed and one other ACP client drive a session with streamed output and working cancel. | PAA |
+| H2.2 | **Event envelope v1**: versioned envelope, payload upcasters, a compatibility policy, JSONL export. | **M–L** | Golden-file tests for v1; a fixture ledger replays across a deliberate schema bump. | PAA |
+| H2.3 | **Out-of-process hooks** (before/after tool use, at commit, at a gate), JSON in and out, tighten-only. | **M** | A hook can block a call but cannot unblock one policy denied. | PAA |
+| H2.4 | **Per-task workspace isolation by default**: a worktree or directory per task, a recorded prepare step, detection of partial workspaces, cleanup on stop. | **M** | Stopping a task mid-prepare leaves no orphan process or half-built directory. | DS doc 003 |
+| H2.5 | **Credential broker.** Shell, git, and CLI commands can use secrets the model never sees. | **L** | A canary secret never appears in the ledger, logs, or model context during a task that uses it. | DS §8.4, PAA secrets design |
+| H2.6 | **First external agent under PAA** via an ACP client inside the sandbox; record file operations, commands, and permission requests. | **L** | A written measurement: what share of the agent's writes and commands were visible through the protocol versus only through the sandbox. **This decides whether belief B3 holds.** | PAA |
+| H2.7 | **Executor-port spike.** Read the prototype's code and its executor interface; decide whether PAA can be the executor behind a front-half system, receiving a ticket and mandate and returning result and evidence. | **M** | A written go/no-go. If go: one ticket flows through PAA and its mandate lands in the ledger. | DS doc 001, 007 |
+
+**Exit:** one external agent runs under PAA with its boundary activity recorded, and a
+crash restores the workspace to the last checkpoint.
+
+---
+
+## Horizon 3: Evidence and attention
+
+*Deliver the value the thesis claims and test it with outsiders.*
+
+| # | Task | Effort | Done when | Origin |
+|---|---|---|---|---|
+| H3.1 | **Attested change bundle and `paa verify`.** Contains the mandate, diff, commands run, test results, approvals, and hash chain, and verifies offline without trusting the producer. | **L–XL** | A bundle altered by one byte fails verification; a reviewer can verify one on a machine without PAA's database. | PAA + DS doc 001 |
+| H3.2 | **Accept modes per policy**: `off`, `observe` (record "would accept", start nothing), `auto`. Explicit requests work in every mode; unrequested work needs a written rule and starts in observe. | **M** | In observe mode a proactive candidate produces a ledger record and no task; switching to auto starts work under the matched rule. | DS doc 002 |
+| H3.3 | **Watchdog v1 (deterministic).** From the ledger: no progress events within a window, repeated identical tool calls, spend without a changed diff, a task parked past its deadline. | **M** | Each condition is detected in a chaos test and produces an escalation event. | DS §6 |
+| H3.4 | **Attention ledger.** Record every human interruption (question, gate, notification) as an event and report attention per accepted change. | **M** | `paa report attention` shows interruptions per task and per accepted change over a period. | DS §1, B6 |
+| H3.5 | **Replay to regression test**: turn a recorded failure into a repeatable test. | **L** | A recorded failed run re-executes deterministically from the ledger and fails identically. | PAA |
+| H3.6 | **Evaluation harness**: compare agents and configurations on your own repository with deterministic verification. | **XL** | Two agents run the same ten tasks and are scored by tests, not by self-report. | PAA |
+| H3.7 | **Codebase intelligence, minimal**: symbol index and blast radius, only as far as H3.1 and H3.6 require. | **L** | Attested bundles list affected symbols for a change. | PAA |
+| H3.8 | **Watchdog v2 (model-based drift judgement)**, only if H3.3 misses real stalls. | **L** | Drift detected in recorded runs where v1 was silent, with a measured false-positive rate. | DS §6 |
+| H3.9 | **Validation trial** with about ten engineers. | calendar time | The [decision table](VISION.md#validation-and-kill-criteria) is applied. | PAA |
+
+**Exit:** the validation trial is complete and a decision is recorded.
+
+---
+
+## Horizons 4 and 5 (conditional)
+
+Start only if the trial supports it. Items are listed to show intent, not a plan.
+
+**Horizon 4: Reach**
+
+- Minimal GitHub event source (only if H2.7 shows integration is insufficient).
+- Web dashboard listing what needs a person; ledger "time machine".
+- Durable long-horizon tasks: milestone checkpoints, progressive summarisation,
+  context objects with stable IDs for multi-hop recall (DS §3.3).
+- Speculative execution in sandboxes with recorded, discardable branches (DS §3.4).
+- Authentication, per-user isolation, team mode.
+- One-command install and first-run setup.
+
+**Horizon 5: Platform**
+
+- Out-of-process pipeline SDK for custom loops, built to the
+  [pipelines design](EXTENSIBILITY_PIPELINES.md).
+- Executable package loading and marketplace publishing.
+- Strong isolation as default where available; third-party security review.
+
+---
+
+## Ideas imported from DeepSeek Super-agent
+
+| Idea | Decision | Where it lands |
+|---|---|---|
+| Mandate recording policy version, scope, strength, requester (DS doc 001) | **Adopt** | H1.4, H3.1 |
+| Observe mode before autonomy (DS doc 002) | **Adopt** | H3.2 |
+| Stored first, done afterwards; backoff retries (DS doc 003) | Already PAA's rule; **verify** against the lifecycle faults in H1.6 | H1.6 |
+| Recovery note after restart (DS doc 003) | **Adapt**: PAA also verifies the workspace against a manifest | H1.2, H2.4 |
+| One workspace per task (DS doc 003) | **Adopt** | H2.4 |
+| Asynchronous start/stop tools (DS §4.1) | **Adopt** | H1.5 |
+| Watchdog for stalls and drift (DS §6) | **Adopt**, deterministic first | H3.3, H3.8 |
+| Attention as the product metric (DS §1, philosophy) | **Adopt** as a measurable | H3.4 |
+| "Defaults, not a security boundary" (DS doc 003) | **Counter-position**: containment is PAA's reason to exist | H1.1, H2.4, H2.6 |
+| Credentials usable without entering model context (DS §8.4) | **Adopt** | H2.5 |
+| Context IDs and Chain of Recall (DS §3.3) | **Later** | Horizon 4 |
+| Speculative execution (DS §3.4) | **Later**: safe only inside sandboxes with recorded branches | Horizon 4 |
+| Resident LLM Router session, thread subscriptions (DS §2, §3.2) | **Skip for now**: commodity for a solo maintainer; integrate instead (H2.7) | Parked |
+| Cloud agent loop with remote daemons (DS §5) | **Skip**: changes the threat model; PAA's local loop avoids the compromise path the authors flag | Parked |
+| Feishu and chat-platform sources (DS doc 001) | **Skip** | Parked |
+| Router sharding (DS §2.1) | **Skip**: not needed at PAA's scale | Parked |
+
+Things *not* to take from the Super-agent evidence: its headline timing result
+(12.4 vs 29.5 minutes p95) came from a synthetic stream with coding replaced by a
+sleep tool, five runs per design, at about 3.8× the cache-read tokens of the neutral
+single-session baseline. It says nothing about code quality and should not justify
+roadmap choices.
+
+---
+
+## Sequencing and dependencies
+
+```
+H1.1 tools ──► H1.2 coder→ledger ──► H1.3 real-model run
+   │                │
+   │                └──► H1.5 async + cancel ──► H2.1 ACP hardening
+   │
+H1.4 mandates ──► H1.6 lifecycle fault tests
+        │
+        ├──► H2.2 event envelope ──► H2.3 hooks
+        │
+        └──► H2.7 executor-port spike ──┐
+                                        ▼
+H1.1 + H2.4 + H2.5 ──► H2.6 external agent under PAA ──► H3.1 attested change ──► H3.9 trial
+                                        │                      ▲
+                                        └──► H3.3 watchdog ────┤
+                                             H3.2 observe mode ┤
+                                             H3.4 attention    ┘
+```
+
+If you do nothing else, do **H1.1 and H1.2**. Everything later, including the evidence
+claim, assumes PAA can change a project and record doing so.
+
+## Decision gates and metrics
+
+| Gate | After | Question | Evidence required |
 |---|---|---|---|
-| 0.1 | the scanner, the patch, the workspace | `tests/validation/test_ast_scanner.py` derives the rule inventory **from the scanner's own source** and checks it against all **19** rule names, each with a case; the default policy's **42** denied modules (in both spellings), **38** denied attributes and **7** denied builtins are each refused. `unparseable_source` is one of the 19, so "rejected, never skipped" is asserted. `test_patch.py` refuses traversal, absolute paths, control characters and the two symlink escapes a string-only check misses, and `test_apply_then_rollback_restores_the_exact_bytes` pins the rollback. `test_workspace.py` exercises the **real** `WorkspaceSnapshot` — the manifest does not depend on the write order or on the root, paths use `/`, CRLF and LF hash differently, a symlink is skipped and not followed. `test_engine.py` pins the gate's order and its short-circuits; `test_test_runner.py` pins that a run never reports a false pass. | Three behaviours are **xfail** — asserted to fail, each naming the file and the fix: the scanner's *walk* escapes a 2000-deep parse as `RecursionError` (`ast_scanner.py`); an artifact with nothing to check is reported as PASS (`engine.py`); a created file gains a trailing newline it was never given (`patch.py`). `paa.validation` is at **94%** line coverage (`pytest tests/validation --cov=paa.validation`). |
-| 0.2 | the orchestrator, the cycle guard, the policy gates | `tests/agents/test_orchestrator.py` asserts the **exact** ordered event list for six paths — happy, failure, block, anti-goal block, gate, released gate — and `tests/integration/test_end_to_end.py` asserts the same through the real wiring. `tests/agents/test_delegation.py` refuses a **mediated** three-node cycle and pins that the *cycle guard* fires, not the depth ceiling: at the default modality the depth ceiling fires first, so a test written at the default would pass even if the guard were deleted. `tests/agents/test_policy.py` refuses network egress under LOCKDOWN, refuses deletion under SAFE, and asserts the anti-goal cosine path on **both** sides of 0.82 with an injected embedder. The nine irreversible patterns each have a case that fails when that pattern is removed, and the inventory is derived from the module's own source. `tests/integration/test_end_to_end.py::test_model_pass_cannot_override_a_deterministic_fail` pins the critic's rule. | **Two operator decisions are open** and are not this phase's to close: the **declared-permission half** of `_check_lockdown` cannot fire, and making it reachable changes *which* refusal the ledger records — a judgement about what the policy should say, not a defect; and four **pattern-semantics** findings (`git push -f`, the `rm` flag spellings, `DELETE FROM public.users`, `TRUNCATE` without `TABLE`) each widen a security rule over prose, so each is a policy decision. Both are named in `AGENTS.md` §"The rules this tree holds itself to", and carried with their reproductions in the run's work ledger. `paa.agents` is at **89%** line coverage; `context_agents.py` is the thinnest at **70%**. |
-| 0.3 | the escalation boundary | `tests/models/test_router_lockdown.py` uses a spy provider and asserts **zero** frontier calls and exactly one local call, and that `force_escalate=True` does not bypass LOCKDOWN. `tests/models/test_escalation_audit.py` asserts exactly one `MODEL_ESCALATED` per escalation, and `tests/models/test_router_concurrency.py` asserts that two routers under one correlation write **two** records, because the audit's identity is the event's own id. The same file asserts `max_in_flight == cap` — `==`, not `<=`, because a semaphore that serialised everything would pass `<=`. `tests/models/test_key_secrecy.py` asserts the key reaches no log line, no ledger payload, no exception message, no details **and no exception chain**; the router's errors carry no chain at all. | The no-key guarantee is a guarantee about **the router's** errors: a provider that raises an error carrying its own key still has that key in that error, and the test file says so. `paa.models` is at **85%**; the provider *transports* are the thin part — `anthropic_provider.py` at **43%** and `ollama_provider.py` at **44%** — because they need a live endpoint. |
-| 0.4 | the telemetry | `tests/observability/test_metrics.py` asserts hand-computed percentiles (p95 of 1..5 is 4.8), pins the rank formula with a property, and refuses a quantile outside the unit interval. `tests/observability/test_runs.py` round-trips the repository — the row that comes back is the row that was written, a run is in flight until it is finished, a non-zero exit code is an error, and an unfinished run is excluded from an aggregate rather than counted as a failure. `tests/observability/test_tracing.py` asserts a failing exporter never breaks the traced operation, and pins the `BaseException` asymmetry: an *interruption* propagates while the span is still finished and retained. `logging.py`, which had **zero** coverage, now has `tests/observability/test_logging.py`. | `paa.observability` is at **90%** line coverage; `tracing.py` is at **84%** and `metrics.py` at **85%**. |
-| 0.5 | CI | `.github/workflows/ci.yml` runs `ruff check src tests`, `mypy src` (which is `strict = true` in the project's own config) and the whole `pytest` suite with `--strict-markers --strict-config` on every push and pull request. The matrix is over **install shapes** — a minimal one, the documented `.[dev]` one and `.[all]` — because "never import one at module scope in a core path" is a claim a minimal install has to be tested against. The developer shape installs `.[dev]`, which carries `paa[api]` and `paa[s3]`; without them the API suite and the live S3 suite skip themselves at import. A **PostgreSQL service container** and two **S3 service containers** (SeaweedFS and RustFS) are declared with health checks, and the suites' own variable names are exported: `PAA_TEST_POSTGRES_DSN` and the *labelled* `PAA_TEST_S3_*` spellings. The workflow installs **`python-is-python3`**, because the sandbox builds its child `PATH` as `/usr/local/bin:/usr/bin:/bin` and `actions/setup-python`'s tool-cache interpreter is not on it; without that line six assertions fail on the runner for a reason that has nothing to do with the code. The install uses the retry convention the Dockerfiles already encode. | **The workflow has never run** — there is no GitHub here, so it was parsed and its steps were executed locally as far as they could be, and the run itself is UNVERIFIED. The `requires_postgres` suite only *runs* in the `.[all]` shape (`paa[postgres]` is not in `dev`), so in the other two shapes it skips even though the server is there. A green run without the services says only that the suites skipped. |
+| G1 | Horizon 1 | Is PAA useful to its own author on real work? | Two weeks of daily use; ledger shows tasks, mandates, recoveries |
+| G2 | Horizon 2 | Does the boundary hold, and is integration with a front-half system possible? | H2.6 measurement; H2.7 go/no-go |
+| G3 | Horizon 3 | Does anyone outside value authority and evidence? | Trial outcome per the decision table |
 
-**Exit:** every module has coverage; CI is green; the draft PR can leave draft.
-**Read that as it stands:** the four subsystems have coverage, and it is *not*
-total — the coverage column above is the honest figure, and the named gaps are the
-known defects rather than the unmeasured remainder. The exit criterion's own words
-("every module has coverage") were not met in the strict sense and are not claimed
-here; what is met is that the four subsystems' headline clauses are asserted.
+Metrics tracked from Horizon 1 onward, each from the ledger itself:
 
----
+- **Mandate coverage:** share of accepted tasks with a recorded mandate (target 100%).
+- **Recovery success:** share of injected crashes that resume without a repeated side
+  effect (chaos suite).
+- **Boundary coverage:** share of an external agent's writes and commands observed
+  (H2.6).
+- **Attention per accepted change:** interruptions per merged change (H3.4).
+- **Verification time:** time for a reviewer to verify an attested bundle.
 
-## Phase 1 — Make it run end to end
+## Cross-cutting work
 
-*Turn the parts into a system you can actually start and drive.*
+- **Security review** of the sandbox, credential broker, and hooks before any untrusted
+  extension is accepted. The Windows backend is weaker than gVisor; gate hostile code
+  on WSL2 or Docker.
+- **Packaging:** `pipx install paa`, a first-run wizard, sane defaults.
+- **Documentation:** fill the ADR bodies that are index-only; a getting-started guide;
+  keep status figures generated, not typed.
+- **Static analysis:** `mypy --strict` and `ruff` clean on every merge.
+- **CI:** confirm the workflow's actual state in the Actions tab; treat it as
+  unverified until green.
 
-| # | Task | Effort | Notes |
-|---|------|--------|-------|
-| 1.1 | **Composition root** (`paa/runtime.py`) — one `Runtime.build(settings)` that constructs and wires ledger, storage, queue, model router, all agents, orchestrator, recovery. The missing centre. | **M** | Everything else in this phase depends on it. Use dependency injection so tests can swap fakes. |
-| 1.2 | **End-to-end integration test** proving all five DoD items in one run: submit → hydrate → plan → policy → execute → validate → commit; then kill mid-execution and prove clean recovery; prove the 1500-token ceiling holds; prove an injection string is blocked with no model call | **L** | This is the test that proves the *thesis*. Until it's green, "it works" is a claim, not a fact. |
-| 1.3 | **CLI** (`paa` via Typer) — `paa submit "<goal>"`, `paa status <id>`, `paa recover`, `paa gate <id> --approve`, `paa ledger <id>` (walk the causal chain), `paa doctor` (check which backends are live) | **M** | The first way a human drives the system. `paa ledger` is the "explain why it did that" DoD item made usable. |
-| 1.4 | **FastAPI ingestion** — loopback-bound webhook → atomic `cold_lake.signals` write → orchestrator, with backpressure returning real HTTP 429 | **M** | The RFC's edge. The loopback guard is already enforced in config. |
-| 1.5 | **Background daemon** — the async loop that drains queues, runs the memory creator, fires the decay sweep on its 6-hour cadence, and boots recovery on start | **M** | Makes the system *ambient* rather than one-shot. |
-| 1.6 | **Markdown vault seeding** — create `constitution.md`, `principles.md`, `anti_goals.md`, `goals.md`, `identity.md` etc. on first run; the policy agent already reads anti-goals | **S** | The "strategic human interface" (RFC §9). Cheap and high-leverage. |
+## Decisions that need an owner
 
-**Exit:** `paa submit "..."` runs a real task to `MUTATION_COMMITTED`, survives a
-`kill -9` mid-run, and resumes on restart.
-
----
-
-## Phase 2 — Complete the RFC subsystems
-
-*The pieces the spec calls for that aren't built yet.*
-
-| # | Task | Effort | Notes |
-|---|------|--------|-------|
-| 2.1 | **Memory creator finish + test** — `creator.py` and `facts.py` exist and are tested: `tests/memory/test_creator.py` covers signal → extracted fact → hot serving, malformed-input containment and contradiction quarantine; `tests/memory/test_facts.py` covers idempotent upsert, alias resolution and NUL refusal. | **M** | Done; real-time ingestion half of memory (RFC §2.1 agent 8). |
-| 2.2 | **Memory curator** (`curator.py`) — nightly maintenance: decay sweep + relationship pruning + duplicate consolidation + orphan cleanup + vector reconciliation, under a wall-clock budget that stops cleanly mid-pass | **L** | Tested in `tests/memory/test_curator.py`. Done; low-frequency optimizer (RFC §2.1 agent 9). Hardcoded refusal to auto-resolve conflicts. |
-| 2.3 | **World model** (`world_model.py`) — maintain the four belief-state docs (`current_focus`, `strategic_risks`, `active_constraints`, `operating_themes`) with atomic marker-bounded writes that never clobber human text; episodic compression ladder (RFC §12) | **M** | Tested in `tests/memory/test_world_model.py`. Done; the "cognitive world model" — raw logs → patterns → principles → playbooks. |
-| 2.4 | **Unified Skill Adapter runtime** — `contracts.py` and `secrets.py` exist; still need the registry, Claw-Hub adapter (parse `SKILL.md`), MCP client (JSON-RPC over stdio), and the §8.2 state machine with the secret proxy | **L** | Turns the system from "runs its own code" into "runs the ecosystem's tools." The secret broker is the security-critical piece. |
-| 2.5 | **Self-improvement loops** (`improvement/`) — weekly reflection engine (friction score, anti-pattern extraction → playbooks), skill distillation on clean commits, tool-weight EWMA optimizer | **L** | The "Hermes-class" self-optimization (RFC §3). Depends on 2.3 for playbook writes. |
-| 2.6 | **Multi-session isolation** — session-scoped workspace overlays, cross-session query tool gated by the policy agent (RFC §7) | **M** | Concurrent projects without context bleed. |
-
-**Exit:** the runtime learns from its own history and can run community skills
-safely.
-
----
-
-## Phase 3 — The brief's new capabilities
-
-*The things you asked for beyond the RFC.*
-
-| # | Task | Effort | Notes |
-|---|------|--------|-------|
-| 3.1 | **Chat / history search ("like XAI")** — hybrid search over the cold lake: FTS5 trigram + vector recall + graph expansion, ranked by the §15.8 hybrid score, with time and entity filters. A `paa search "..."` command and an API route. | **L** | High user value, and most of the substrate (vector store, FTS, graph, hybrid-score metric) already exists — this is assembly, not new infrastructure. |
-| 3.2 | **Marketplace** (`marketplace/`) — signed skill/agent packages (`.paapkg`), Ed25519 verification, a 5-gate installer (signature → hash → AST scan → permission check → sandbox smoke-test), a `LocalDirectoryRegistry` default + optional `HttpRegistry` | **XL** | The platform play. The installer's five gates are the whole security model — a marketplace is the largest attack surface in the design. Build the gates before the storefront. |
-| 3.3 | **Prototypical few-shot task classification** (`improvement/meta.py`) — class prototypes as mean embeddings of past task exemplars; classify a new task by nearest prototype with a confidence margin; return "unknown" rather than guess | **M** | The real, honest member of the meta-learning family (ADR-0017). Feeds the router and the modality classifier so the system adapts from few examples with no training loop. |
-| 3.4 | **LLM wiki with context** — a browsable, linkable knowledge base built from the graph + distilled facts + markdown vault, cross-referenced and served locally; agents can read and write entries under curator approval | **L** | Turns accumulated memory into something a human can browse and an agent can cite. Depends on 2.3. |
-| 3.5 | **Specialist agent ecosystem** — the 21 RFC specialists as data-driven configs (tools/permissions/budgets/schema), seeded into the agent registry, with the coding/research/writing three fully wired first | **M** | Data-driven so adding a specialist is a row, not a class. Communication + robotics carry mandatory human gates. Progress: the *coding* one exists today as `paa agent` (`src/paa/coder/`, see `docs/coder-agent.md`) — but it is wired through its own loop rather than the specialist registry, so the registry/seed half of this task is still open. |
-| 3.6 | **Notification & bridge adapters** — Telegram / email / desktop ingestion into the cold lake; the outbound communication agent already mandates a human gate | **M** | Makes the system reachable from where you already are. |
-
-**Exit:** the system is searchable, extensible by a community, adapts from few
-examples, and reachable from your existing tools.
-
----
-
-## Phase 4 — Long-horizon tasks (your stated v-next)
-
-*The hardest and most valuable frontier.*
-
-| # | Task | Effort | Notes |
-|---|------|--------|-------|
-| 4.1 | **Durable task graphs** — a task spanning weeks is a lineage that must survive dozens of restarts. Extend the ledger's snapshot machinery to milestone-level checkpoints; model dependencies as graph edges (`DEPENDS_ON`, `BLOCKS`) | **XL** | The ledger + snapshots are already the right foundation — this is why crash recovery was built first. |
-| 4.2 | **Time-aware scheduling** — deadline tracking, the §15.2 attention-allocation score to pick what to work on next, calendar integration | **L** | The productivity agent's real job. |
-| 4.3 | **Forecasting** — schedule-slip prediction and resource-usage estimates from historical execution logs | **M** | The forecasting specialist, made real. |
-| 4.4 | **Progressive summarization for very long lineages** — so a months-long task's context stays under the token ceiling as its history grows | **L** | Where the context engine's compaction meets the world model's episodic compression. |
-
----
-
-## Cross-cutting (do continuously, not as a phase)
-
-- **Security review** of the sandbox and marketplace before either is exposed to
-  anything untrusted. The Windows subprocess backend is honestly weaker than
-  gVisor — for genuinely hostile code, gate on the WSL2 or Docker backend.
-- **Packaging** — `pipx install paa`, a first-run wizard, sane defaults so it
-  works before any optional extra is installed.
-- **Docs** — fill in the ADR bodies that are currently index-only (0001–0007,
-  0009, 0011–0014, 0016–0018); a getting-started guide once the CLI exists.
-- **`mypy --strict` to zero** across the untested modules as they gain coverage.
-
----
-
-## Suggested order, and why
-
-```
-Phase 0 (trust) ──► Phase 1 (make it run) ──► Phase 2 (complete RFC)
-                          │                          │
-                          └──► Phase 3.1 (search) ◄──┘   ← highest value / cost
-                                     │
-                          Phase 3.2–3.6 (platform, agents, bridges)
-                                     │
-                          Phase 4 (long-horizon)
-```
-
-The through-line: **you cannot improve what you cannot run, and you should not
-run what you cannot trust.** Phase 0 buys trust, Phase 1 buys a running system,
-and only then does building features stop being building on sand.
-
-If you want the single highest-leverage next step: **the rest of Phase 1.** Phase 0
-is done — the agents, validation, models and observability are asserted rather than
-promised — and the composition root, the `paa` CLI and the end-to-end test are
-already in the tree, so what remains of Phase 1 is the part that has never run
-against anything but an injected model. That is what converts "3,107 collected
-tests" into "the thing works," which is the claim everything else rests on.
+1. **First external agent for H2.6.** Pick one (for example Codex or Claude Code
+   through an ACP adapter) and one repository.
+2. **Policy versioning scheme** for mandates (content hash, counter, or both).
+3. **Requester identity model**: what counts as an identity for a CLI, an ACP client,
+   and a webhook.
+4. **Whether to read the prototype's source before H2.7**, or to wait until the spike.
+5. **Trial participants** for H3.9, and the instrument for measuring review time.
