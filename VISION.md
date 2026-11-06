@@ -28,6 +28,7 @@ read the [README](../README.md). For delivery detail, read the [ROADMAP](ROADMAP
 11. [Principles](#principles)
 12. [Risks and open questions](#risks-and-open-questions)
 13. [Appendix](#appendix-mapping-from-the-earlier-ten-phase-plan)
+14. [Temporal and spatial composability for PAA](#appendix-temporal-and-spatial-composability-for-paa)
 
 ---
 
@@ -397,3 +398,567 @@ Also stop and reassess if:
 | 8. Platform and economy | **Horizon 5**, conditional; payments and reputation **parked** |
 | 9. Advanced reasoning | Speculative execution in **Horizon 4**; the rest **parked** |
 | 10. Trust, scale, moat | Credential broker in **Horizon 2**; isolation and review in **Horizon 5**; ongoing throughout |
+## Appendix: Temporal and spatial composability for PAA
+
+> **Status: proposed architectural clarification; not an implementation claim.** This
+> addendum extends the existing thesis, product shape, extension constraints, and
+> horizons. It does not replace or remove any existing task. A proposed interface or
+> event name below is a design candidate until it is implemented and tested.
+
+### Why this belongs in PAA
+
+The paper [*A Programming Paradigm for Spatiotemporal Composability*](https://arxiv.org/abs/2608.25512)
+(Yifan Shi, Wei Zhang, and Tianyi Cui, 26 August 2026) distinguishes two properties
+of dynamically composed systems:
+
+- **Temporal composability:** a component can be removed and the effects it introduced
+  into its managed environment can be accounted for and, where reversible, reverted.
+- **Spatial composability:** a component declares what it requires, and the runtime
+  reacts correctly when those requirements become satisfied, unsatisfied, or changed.
+
+The paper develops these ideas as *revertible effects* and *reactive coeffects*,
+mediated through a shared context. Cordis is its reference implementation. PAA should
+adopt the underlying discipline, not copy a plugin-oriented API or assume that every
+real-world action is reversible.
+
+PAA's environment is more demanding than an in-process component container. A PAA
+component may own a process, workspace, capability lease, event subscription, model
+session, database transaction, or external action. It may run for minutes or days,
+crash between an external action and its acknowledgement, and operate under a mandate
+whose permissions can be tightened while it runs. Therefore:
+
+**PAA temporal composability means durable, scope-owned lifecycle accounting and safe
+unwinding of managed effects. PAA spatial composability means declarative, reactive,
+policy-aware dependency resolution for each task.**
+
+Neither property means that PAA can reverse an email already delivered, restore a
+third-party model's hidden reasoning state, or safely hot-swap an arbitrary process in
+the middle of an uncheckpointed operation.
+
+### The three graphs must remain distinct
+
+PAA should not collapse every relationship into one generic graph. Three related
+structures answer different questions:
+
+| Structure | Question it answers | Durable representation |
+|---|---|---|
+| **Component dependency graph** | What must be available before a harness, pipeline, provider, or service can activate? | Versioned declarations and recorded resolution decisions |
+| **Task execution DAG** | What work must happen, in what order, and with which branches, joins, retries, and approvals? | Task/step records, checkpoints, and causal event links |
+| **Effect ownership graph** | Which scope introduced each resource or side effect, and what is its disposal or compensation path? | Effect records linked to task, component, resource, and ledger events |
+
+The dependency graph is the spatial-composition mechanism. The effect ownership graph
+is the temporal-composition mechanism. The execution DAG describes task work. They
+must link through stable IDs, but they must not be treated as interchangeable.
+
+### A task-scoped composition model
+
+The target is not one universal agent loop with every capability loaded globally. PAA
+should assemble a bounded runtime for each task from a shared trusted kernel and a
+task-specific set of compatible components.
+
+Proposed conceptual objects:
+
+1. **TaskSpec** — the user's goal, inputs, constraints, expected outputs, deadline or
+   budget, and verification requirements.
+2. **Mandate** — who or what requested the task, the request's authority strength, the
+   applicable policy version, and the maximum permitted scope. This remains the source
+   of authority; a harness declaration cannot grant itself permission.
+3. **HarnessSpec** — the selected execution arrangement: harness adapter, planning
+   strategy, memory strategy, action strategy, and required contracts. It is
+   declarative configuration, not arbitrary code generated and trusted at runtime.
+4. **Component declarations** — the requirements and services offered by harnesses,
+   pipelines, capability providers, context adapters, watchdogs, and other runtime
+   participants.
+5. **Resolved task context** — the bounded, versioned view of memory, task state,
+   budget, policy decisions, workspace handles, and capability leases exposed to that
+   task.
+6. **Task execution DAG** — the actual steps and dependencies for carrying out the
+   TaskSpec.
+7. **Effect scopes** — the ownership boundaries for runtime registrations, processes,
+   leases, transactions, workspaces, and other effects created while executing it.
+
+A task therefore gets its own composition and context. It does not receive unrestricted
+access to a mutable global service container. The shared PAA kernel continues to own
+the ledger, mandate checks, policy, sandbox boundary, validation, recovery, and
+resource accounting.
+
+A harness can be native to PAA or external (for example, an ACP-connected agent). Both
+must use the same narrow, versioned runtime contract for any operation for which PAA
+claims authority, containment, or evidence. An external harness that bypasses PAA's
+instrumented boundary does not inherit PAA's guarantees.
+
+### Temporal composability: effects, scopes, and lifecycle
+
+#### 1. Give every effect an owner and a scope
+
+Every managed effect should be attributed to a stable scope, with hierarchical
+ownership such as:
+
+```text
+PAA runtime
+└── Task scope
+    ├── Harness-instance scope
+    │   ├── process/session
+    │   └── event subscriptions
+    ├── Pipeline-instance scope
+    │   └── strategy-local resources
+    ├── Workspace scope
+    │   └── snapshot / branch / temporary files
+    └── Capability-lease scopes
+        ├── filesystem lease
+        ├── shell lease
+        └── test-runner lease
+```
+
+A scope has a stable ID, owner, parent, generation, creation event, lifecycle state,
+and the IDs of effects it owns. A resource shared by multiple tasks must be represented
+as an explicitly shared resource with leases or reference ownership; it must not be
+silently owned by whichever task happened to use it first.
+
+#### 2. Represent each effect as a managed lifecycle record
+
+A proposed effect record should capture at least:
+
+```yaml
+ effect_id: effect-uuid
+ owner_scope_id: task-123/harness-generation-2
+ resource_kind: event_subscription
+ operation: register
+ provider_id: paa-event-bus
+ operation_key: stable-idempotency-key
+ inverse_or_recovery:
+   operation: unregister
+   resource_handle: subscription-789
+ reversibility: exact
+ state: applied
+ created_by_event: ledger-event-id
+ mandate_id: mandate-id
+ policy_version: policy-version
+```
+
+The exact schema is open. The requirements are not: ownership, operation identity,
+recovery information, authority provenance, and lifecycle state must be explicit.
+Sensitive credentials should be referenced through a credential broker, never copied
+into the ledger or exposed to a model.
+
+Use one mediated effect-registration path for all runtime-managed mutations. A
+component must not mutate shared runtime context through an untracked side channel and
+then claim it can be unloaded safely.
+
+#### 3. Classify effects by what can truthfully be undone
+
+PAA must distinguish at least these classes:
+
+| Class | Examples | Removal behavior |
+|---|---|---|
+| Runtime-local registration | Listener, callback, registry entry | Invoke its exact inverse; record disposal |
+| Acquired resource | Process, socket, temporary directory, model session | Cancel/close/release; verify termination or record failure |
+| Transactional local mutation | Database row or isolated workspace change | Roll back inside the transaction, or apply a version-checked undo/snapshot restore |
+| Persistent local artifact | Committed file or Git commit | Preserve by default; revert only under an explicit, separately authorised rollback policy |
+| External side effect | Email, webhook, issue comment, publication | Record as irreversible unless the provider proves cancellation; compensation is a new action |
+| Financial or safety-critical action | Payment, purchase, destructive infrastructure change | Require the relevant deterministic gate and human authority; never imply generic undo |
+
+A compensation is not erasure. If an email was sent and a correction is later sent,
+both events remain in the ledger. The correction requires its own mandate and policy
+decision. A task may be *stopped with residual effects*; PAA must not label that state
+as a clean rollback.
+
+#### 4. Use prepare, apply, reconcile, and dispose semantics
+
+For an effectful operation, PAA should durably record an intent and its recovery
+strategy before crossing the effect boundary whenever possible. It then executes with
+a stable operation/idempotency key and records the provider result and resource handle.
+If the process crashes after the provider acts but before PAA records the response, the
+effect becomes **outcome unknown** and must be reconciled against provider state or an
+idempotency lookup. PAA must not blindly repeat the action or blindly run a compensator.
+
+Candidate ledger events (names are illustrative):
+
+- `EFFECT_PREPARED`
+- `EFFECT_APPLIED`
+- `EFFECT_OUTCOME_UNKNOWN`
+- `EFFECT_RECONCILIATION_RESULT`
+- `EFFECT_DISPOSAL_REQUESTED`
+- `EFFECT_DISPOSED`
+- `EFFECT_COMPENSATION_REQUIRED`
+- `EFFECT_COMPENSATED`
+- `EFFECT_DISPOSAL_FAILED`
+
+The registry is a derived index over the append-only ledger, not a second source of
+truth. Replay reconstructs effect state from recorded facts; it never reissues the
+original external operation.
+
+#### 5. Define component lifecycle and safe replacement
+
+A useful proposed lifecycle is:
+
+```text
+DECLARED → PENDING → RESOLVING → ACTIVE
+                              ↘ DEGRADED
+ACTIVE → QUIESCING → DISPOSING → DISPOSED
+   │          │          ↘ DISPOSAL_FAILED
+   └──────────┴→ SUSPENDED / NEEDS_RECONCILIATION
+```
+
+The exact state machine can be smaller in the first implementation. Its invariants
+matter more than its names:
+
+- No new operation is admitted after quiescing begins.
+- In-flight operations are drained or cancelled according to their declared contract.
+- Child scopes and dependent components are quiesced before their providers are
+  disposed; independent effects are disposed in reverse registration order (LIFO)
+  within their owning scope.
+- Shared resources are released only when their ownership/lease rules permit it.
+- Disposal failure is durable and visible; it is never silently treated as success.
+- A scope cannot become `DISPOSED` while it has unresolved effects.
+
+For replacement, do not mutate a running component's identity in place. Create a new
+generation, validate and prepare its dependencies, transfer only explicitly
+serializable checkpoint state, then cut over at a safe checkpoint. Quiesce and dispose
+the old generation after the new one is healthy. If preparation fails, retain the old
+generation where safe. This is blue/green replacement for managed components, not a
+promise to resume an external agent mid-thought.
+
+#### 6. Preserve the distinctions between stop, unload, rollback, and replay
+
+- **Cancel** stops further task work; it does not itself undo prior actions.
+- **Quiesce** stops new admissions and drains or cancels in-flight work.
+- **Unload/dispose** releases the component's owned runtime effects.
+- **Rollback** reverses eligible mutations within an explicit transaction boundary.
+- **Compensate** performs a new, separately authorised action to mitigate an earlier
+  irreversible effect.
+- **Replay** reconstructs state from recorded events and never repeats external work.
+- **Recover** restores the task and workspace to a known checkpoint, then resumes only
+  under valid authority and dependencies.
+
+This vocabulary should be used consistently in APIs, event names, UI, and docs.
+
+### Spatial composability: requirements and reactive resolution
+
+#### 1. Declare requirements independently of providers
+
+A harness or pipeline should say what it needs, not which concrete integration must
+satisfy it. For example, a coding harness may require `filesystem.read`,
+`filesystem.write`, `shell.execute`, and `tests.run`; a research harness may require
+`web.search`, `document.read`, and `evidence.store`.
+
+A component declaration should be able to express:
+
+- required and optional capabilities/services;
+- contract and version range;
+- trust and isolation requirements;
+- data-location or network constraints where applicable;
+- resource needs and limits (time, tokens, concurrency, storage);
+- required context fields or schemas;
+- events it consumes or publishes;
+- conflicts and ordering constraints;
+- lifecycle hooks for quiesce and disposal.
+
+A requirement is not permission. Resolving `filesystem.write` only identifies a
+candidate provider. The mandate and current deterministic policy must separately
+authorize the requested paths and operations before PAA issues a lease.
+
+#### 2. Resolve requirements to providers and issue bounded leases
+
+The dependency resolver should choose an eligible provider using declared contract
+compatibility, version, trust, sandbox support, availability, cost/budget, locality,
+and task constraints. It should produce a recorded resolution decision containing
+both the requested contract and the selected provider/version. The task receives a
+narrow lease or client for the resolved operation, not a global provider object or
+ambient credentials.
+
+Pin the resolution for the relevant run or checkpoint interval. Do not silently move a
+running task to a provider with different semantics, data handling, trust, cost, or
+permissions. A provider swap is a dependency change: suspend or quiesce the affected
+component, compare the new provider against the original constraints, re-authorize if
+needed, record the decision, and then resume at a safe boundary.
+
+#### 3. Treat changing dependencies as lifecycle events
+
+The key mechanism in reactive coeffects is to compare each relevant environment change
+against a component's declared requirements and classify it as:
+
+- **Activating:** a previously missing or unsatisfied requirement is now satisfied.
+- **Deactivating:** a required dependency is withdrawn, incompatible, unhealthy, or no
+  longer authorised.
+- **Neutral:** the change does not affect this component's requirements.
+
+PAA should apply this to changes in provider availability, contract version, sandbox
+health, credential lease, policy, mandate scope, budget, workspace identity, context
+schema, and subscribed event source. A reverse index from dependency keys to affected
+components avoids rescanning every component after every event.
+
+A missing *hard* dependency prevents activation or suspends execution. A missing
+*optional* dependency may leave a component active in a declared degraded mode. The
+fallback must be explicit in the HarnessSpec and policy; it must not silently weaken a
+security requirement. Dependency cycles should be rejected by default. If a valid
+cycle is needed, it must be an explicit activation group with well-defined startup and
+shutdown semantics.
+
+#### 4. Make context access task-scoped and mediated
+
+The Cordis context paradigm suggests one mediated context through which component
+effects and dependency requirements are observed. PAA should adapt this as a
+`RuntimeContext` boundary, not as a shared mutable bag of services.
+
+A task's context should contain:
+
+- an immutable snapshot/reference to its TaskSpec, mandate, policy decision, and
+  resolved dependency set;
+- scoped reads of approved memory, artifacts, and prior events;
+- capability clients backed by explicit leases;
+- budget and deadline views;
+- methods to request an effect, checkpoint, approval, or cancellation;
+- stable IDs for task, run, component generation, workspace, and checkpoint.
+
+All writes and external calls go through mediated runtime methods that enforce policy
+and append evidence. Context changes are published as typed events; affected
+components re-evaluate their declared requirements. Components cannot acquire new
+ambient authority merely because a new service appeared in context.
+
+#### 5. Keep a stable resolution during a run, but react safely to change
+
+Reactive does not mean that every task should rebind immediately whenever a provider
+appears. The default should be predictable execution: record and pin a compatible
+resolution, then react to meaningful invalidation. If a required provider disappears,
+policy tightens, a credential is revoked, or a budget is exhausted, the affected work
+is suspended or denied. Re-resolution is allowed only if the new binding still meets
+the original constraints and current authority. Any change that expands scope requires
+a new mandate or explicit approval.
+
+### How the two forms work together in a task-specific PAA run
+
+Consider two different tasks arriving at the same PAA runtime:
+
+```text
+Task A: Refactor a repository
+  Harness: coding
+  Requirements: repo.read, repo.write, shell.execute, tests.run
+  Context: repository snapshot, coding conventions, relevant memory
+  Execution DAG: inspect → plan → edit → test → review → commit
+
+Task B: Research a regulation
+  Harness: research
+  Requirements: web.search, document.read, evidence.store
+  Context: question, source policy, prior research, evidence collection
+  Execution DAG: discover → retrieve → compare → verify → synthesise
+```
+
+Both tasks use the same PAA ledger, mandate service, policy engine, sandbox boundary,
+recovery machinery, and evidence model. They resolve different dependency graphs and
+receive different bounded RuntimeContexts. They do not load every capability into a
+global agent environment.
+
+For Task A, suppose `tests.run` becomes unavailable. Spatial resolution marks the
+coding harness as blocked or degraded according to its declared contract. PAA pauses
+steps that require test evidence; it must not let the harness claim verified success.
+If a compatible test provider becomes available, PAA records a new resolution and
+resumes only after the required authorization checks.
+
+Suppose the coding harness itself must be replaced. Temporal composition quiesces its
+old generation, preserves the task ledger and durable workspace checkpoint, disposes
+its listeners/process/leases, and starts a new harness generation against the same
+approved task context. The new harness sees recorded evidence and checkpoint state; it
+does not inherit hidden internal reasoning from the old process.
+
+If Task A is then cancelled, PAA disposes only Task A's effect scopes. Task B's research
+context, provider leases, and event subscriptions remain intact. Any committed or
+external effects from Task A remain in the record and are not falsely described as
+undone.
+
+### Proposed component declaration and task configuration
+
+The following is illustrative YAML, not a committed schema. It shows the separation
+between a task's requested outcome, the strategy selected for it, and the contracts
+that the runtime resolves:
+
+```yaml
+ task:
+   kind: repository_change
+   goal: "Refactor authentication and prove the tests pass"
+   constraints:
+     workspace_scope: current_repository
+     network: denied_by_default
+     require_test_evidence: true
+
+ harness:
+   id: coding
+   version: "1.x"
+   strategy:
+     planning: dependency_aware
+     action: iterative
+     memory: repository_context
+   requires:
+     - capability: filesystem.read
+       contract: "^1"
+       required: true
+     - capability: filesystem.write
+       contract: "^1"
+       required: true
+     - capability: shell.execute
+       contract: "^1"
+       required: true
+     - capability: tests.run
+       contract: "^1"
+       required: true
+   lifecycle:
+     checkpoint_before_replace: true
+     quiesce_inflight: true
+     dispose_owned_effects: true
+```
+
+The runtime validates this declaration, resolves eligible providers, checks the
+mandate and policy, creates task-scoped leases, and records the resulting resolution.
+The model may propose a HarnessSpec; deterministic validation decides whether it is
+well-formed and permitted. A generated specification must never grant itself a
+capability, widen its mandate, or bypass sandbox constraints.
+
+### The immutable-ledger boundary
+
+Temporal disposal must never rewrite, delete, or reverse the authoritative event
+ledger. The ledger records that an effect was requested, authorised, attempted,
+applied, disposed, compensated, or left unresolved. Disposal changes the current
+managed environment where possible; it does not erase the historical fact that the
+effect happened. Derived registries, leases, caches, and temporary resources may be
+rebuilt or unwound, but the evidence history remains append-only. This is the boundary
+that lets PAA combine reversible runtime composition with trustworthy provenance.
+
+### Relationship to the existing PAA architecture
+
+| Existing PAA element | Composability role | Clarification to preserve |
+|---|---|---|
+| Append-only ledger and replay | Durable record of effect, dependency, and lifecycle transitions | The ledger remains the source of truth; registries and graphs are derived indexes |
+| Mandates and policy | Authority for activation and every effectful operation | Dependency availability never implies permission |
+| Sandbox and capability boundary | Enforces where providers and harnesses execute | Third-party code remains out of process; a declaration is not a sandbox |
+| Memory and bounded context | Supplies task-specific, permission-filtered information | A task receives a scoped context view, not global mutable state |
+| Recovery and checkpoints | Restores known task/workspace state | Does not restore a third-party agent's hidden reasoning state |
+| `Pipeline` + `RuntimeContext` | Candidate seam for task-specific strategies | Keep strategy replaceable; the runtime owns guarantees |
+| ACP / Executor ports | Candidate external harness boundary | Measure observable coverage before claiming containment |
+| Unified Skill Adapter / MCP | Existing capability integration path | Treat as a provider/transport behind capability contracts, not as the core abstraction |
+
+This design reinforces the existing narrow-waist rule. It does not justify a wide API
+where arbitrary components can mutate each other's state. The trusted kernel should
+mediate context access, effect registration, dependency resolution, authority checks,
+and event recording. Components may be numerous; the privileged runtime surface
+should remain small.
+
+### Required invariants
+
+These should become executable tests before PAA claims temporal or spatial
+composability:
+
+**Temporal invariants**
+
+1. Every managed effect has exactly one owning scope or an explicit shared-ownership
+   rule.
+2. Disposing one task cannot dispose another task's effects.
+3. An effect is not reported disposed until its inverse, release, or reconciliation
+   has been confirmed; failures remain visible.
+4. Disposal follows reverse dependency order and LIFO order within a scope where the
+   operations are ordered and independent.
+5. A crash at every point between intent, provider execution, acknowledgement, and
+   result recording yields a reconcilable state; no blind duplicate external action.
+6. Replay never invokes the forward operation or compensation again.
+7. Irreversible effects remain in evidence; compensation creates a new event and
+   requires its own authority.
+8. A component replacement does not erase task history or claim mid-thought recovery.
+
+**Spatial invariants**
+
+1. A component cannot activate while a hard requirement is unsatisfied.
+2. A provider is eligible only when its contract, version, trust, isolation, and task
+   constraints match.
+3. Dependency resolution never grants authority; every effect is still policy-gated.
+4. Withdrawal or invalidation of a hard dependency blocks affected work before its
+   next dependent effect.
+5. Optional dependency loss produces only the declared degraded behavior.
+6. Provider changes are recorded and pinned/re-authorised; no silent semantic or
+   security downgrade.
+7. A policy or mandate tightening can revoke a lease even if the provider remains
+   available; prior ledger facts are not rewritten.
+8. Cycles and ambiguous provider selection fail closed unless explicitly modelled.
+
+### Validation scenarios
+
+The smallest credible proof should use two concurrent tasks and a small set of fake
+providers before integrating more external harnesses.
+
+- Run a coding task and a research task simultaneously; cancel one and prove the
+  other's scopes and leases remain active.
+- Remove a required provider; prove only dependent components suspend and no dependent
+  operation is admitted afterward.
+- Add the provider back; prove reactivation occurs only after compatibility and policy
+  checks and that the resolution is recorded.
+- Tighten a policy mid-task; prove affected leases are revoked without rewriting the
+  original mandate or prior events.
+- Crash before an effect, during provider execution, after provider success, and before
+  result persistence; prove recovery reconciles each state without duplicate side
+  effects.
+- Replace a harness at a checkpoint; prove the old generation is quiesced and
+  disposed, the new generation receives only serialized checkpoint state, and the
+  task ledger remains continuous.
+- Force disposal to fail; prove PAA reports residual effects and refuses to claim a
+  cleanly disposed scope.
+- Replay the full event sequence; prove no shell command, network call, email, or other
+  external effect is executed again.
+
+### Adoption sequence without removing existing roadmap items
+
+This is an additive interpretation of the current horizons, not a replacement or
+reordering of them:
+
+- **Horizon 1 — Hands, authority, and honesty:** while wiring the coder loop and
+  permissioned tools, introduce task/run/scope IDs, effect ownership, and the minimum
+  prepare/apply/result lifecycle for managed operations. Keep the first implementation
+  narrow; do not build a general hot-reload framework yet.
+- **Horizon 2 — Seams:** when adding the external harness and out-of-process hooks,
+  define versioned capability requirements, provider resolution records, bounded
+  leases, quiesce/cancel semantics, and dependency-loss behavior. Measure which
+  external operations cross PAA's boundary.
+- **Horizon 3 — Evidence and attention:** add crash-point fault injection, concurrent
+  task isolation tests, disposal/reconciliation evidence, policy-change tests, and
+  independent verification of the resulting event history.
+- **Horizon 4 — Reach:** apply the same scope and dependency rules to durable,
+  long-horizon task graphs, milestone checkpoints, and speculative branches. A branch
+  must own its effects and be discardable without damaging another branch.
+- **Horizon 5 — Platform:** only after the earlier invariants hold, expose an
+  out-of-process component/pipeline SDK and package/marketplace path. Third-party
+  components provide declarations and execute behind the same mediated boundaries.
+
+This does not move an existing parked idea into active work, mark a planned item done,
+or remove any validation or kill criterion. Each capability should be promoted only
+when its corresponding exit tests pass.
+
+### Open design decisions to resolve before freezing a public contract
+
+- Which effects can be exactly inverted, which require compensation, and which must be
+  retained as irreversible evidence?
+- What is the minimum stable event envelope for effects, dependency resolutions,
+  leases, and component generations?
+- Which resource ownership model is appropriate for shared providers: reference-counted
+  leases, explicit owner sets, or both for different resource classes?
+- What is the policy for a provider disappearing mid-operation, especially when the
+  outcome is unknown?
+- Which checkpoint data can safely cross a harness-generation boundary, and how is it
+  schema-versioned?
+- How are dependency cycles represented if a future capability genuinely requires a
+  mutually activating group?
+- Which requirements must be pinned for an entire task, and which may be re-resolved
+  at a checkpoint?
+
+Do not freeze these as universal abstractions before real integrations expose the
+necessary cases. Apply the existing rule of three: validate the narrow contract against
+at least three concrete component/provider cases before generalising it.
+
+### Positioning consequence
+
+PAA should not promise that every agent component can be removed with a magical global
+undo, or that every service can be swapped at any instant. Its stronger and more
+credible promise is:
+
+**Every task runs with an explicit, recorded dependency set and bounded authority;
+every managed effect has an owner and a truthful recovery/disposal path; and changes
+to either dependencies or lifecycle are mediated, recorded, and testable.**
+
+That is how temporal and spatial composability become extensions of PAA's authority
+and evidence thesis rather than a second, plugin-centric product direction.
