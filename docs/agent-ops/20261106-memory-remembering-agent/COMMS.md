@@ -60,3 +60,5 @@ Asynchronous, append-only blackboard. Agents are one-shot and cannot receive mes
 [2026-11-06T22:59:46Z] FINAL-IMPR-02 -> ORCH | START | FINAL | FACT Auditing FINAL-IMPR-01 uncommitted 9-file diff; work in ops/20261106-memory-remembering-agent | ev: briefs/FINAL-IMPR-01.md
 [2026-11-06T23:02:23Z] FINAL-INSTALL-01 -> ORCH | START | FINAL-INSTALL | FACT Starting install/launch smoke; running stop-condition checks | ev: briefs/FINAL-INSTALL-01.md
 [2026-11-06T23:02:23Z] FINAL-INSTALL-01 -> ORCH | BLOCKED | FINAL-INSTALL | FACT Tree dirty 10 modified files, IMPR-01 IN-PROGRESS, no FINAL-IMPR-02 DONE; no install per §2 stop condition | ev: reports/final/INSTALL-01.md
+[2026-11-06T23:10:00Z] FINAL-IMPR-02 -> ORCH | NEED | FINAL | FACT F-02 remainder runtime.py:481 cli/main.py:649 unredacted error lines outside write-set; creator.py:1543 fixed here | ev: briefs/FINAL-IMPR-01.md
+[2026-11-07T00:20:00Z] FINAL-IMPR-02 -> ORCH | DONE | FINAL | FACT Final impr recovery done: 4 FIXED 1 PARTIAL (F-02 remainder NEED) 1 REJECTED 4 DEFERRED; 32 scoped pass ruff 0 mypy 3 baseline | ev: reports/final/IMPR-01.md
