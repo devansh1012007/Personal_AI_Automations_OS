@@ -1,428 +1,345 @@
-# PAA — Personal Autonomous Cognitive Operating System
+# PAA — Personal Autonomous Cognitive Operating System Runtime
 
-**A local-first, event-sourced runtime for running, governing, and auditing autonomous agents.**
+**A local-first, event-sourced runtime for authority, evidence, and recoverable work across AI agents.**
 
-![Python](https://img.shields.io/badge/python-3.11%2B-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
-![Status](https://img.shields.io/badge/status-alpha-orange)
+PAA sits beneath and beside agent harnesses. It does not try to out-reason frontier models or replace every agent with one universal loop. Its job is to provide the durable record, authority checks, execution boundaries, validation, and recovery that remain useful when the model, harness, provider, or interface changes.
 
-PAA records every agent action in a tamper-evident ledger, gates every mutation
-through deterministic checks, and can rebuild its state from that ledger after a
-crash. It is designed to answer, for any change an agent made: *what ran, what
-authorised it, what the agent knew, and whether verification actually passed.*
+> **The ledger is truth. Models propose; deterministic policy decides. Every managed effect has an owner, an authority trail, and a truthful recovery or disposal path.**
 
-> **Status: alpha.** The runtime core is built and tested. The pieces that make it a
-> daily-driver coding tool (file, shell, and git tools) and the ability to host
-> third-party agent harnesses are **not built yet**. See
-> [Status](#status) and [Known limitations](#known-limitations) before relying on it.
-> Direction and sequencing live in [docs/VISION.md](docs/VISION.md).
+**Status:** See [Build status](#build-status) for the repository's recorded test snapshot and implementation boundaries. Planned architecture in this README and in `docs/VISION.md` is not a claim that those interfaces are already implemented.
 
----
+## What PAA is
 
-## Contents
+Most agent systems keep important task state inside a running process or in a vendor-specific session. When that process disappears, the task history, authority behind actions, and evidence of what actually ran can become fragmented.
 
-- [Why PAA](#why-paa)
-- [Guarantees](#guarantees)
-- [Quick start](#quick-start)
-- [Using PAA from an editor (ACP)](#using-paa-from-an-editor-acp)
-- [Architecture](#architecture)
-- [Extension model](#extension-model)
-- [Where PAA fits](#where-paa-fits)
-- [Status](#status)
-- [Known limitations](#known-limitations)
-- [Security model](#security-model)
-- [Design decisions and RFC deviations](#design-decisions-and-rfc-deviations)
-- [Repository layout](#repository-layout)
-- [Testing](#testing)
-- [Documentation](#documentation)
-- [License](#license)
+PAA starts from a different premise: **the append-only event ledger is the source of truth**. Queues, caches, projections, indexes, and workspaces are derived state that can be reconstructed, reconciled, or checked against recorded checkpoints.
 
----
-
-## Why PAA
-
-Most agent tooling keeps task state in process memory and trusts the model's own
-account of what it did. Kill the process and the task is gone. Ask what happened
-and you get a summary written by the thing being audited.
-
-PAA starts from the opposite premise: **the ledger is the only source of truth.**
-Queues, caches, vector indexes, and even the workspace on disk are derived views
-that can be rebuilt by replaying events. That single decision gives you:
-
-- recovery after a crash,
-- evidence that cannot be quietly rewritten,
-- a causal chain you can walk backwards from any action,
-- and a place to attach deterministic safety checks that no model can talk its way past.
-
-PAA does **not** try to out-reason frontier models. Agentic coding quality is
-mostly the model; architecture cannot close that gap
-([ADR-0015](docs/adr/0015-capability-ceiling.md)). PAA's job is to make whatever
-model you point at it *recoverable, auditable, and bounded*.
-
-## Guarantees
-
-| Property | Mechanism |
+| Property | How PAA approaches it |
 |---|---|
-| **Crash recovery** | Boot sweep replays the ledger, verifies the workspace against a checksum manifest, rolls back drift, and re-queues work that is safe to retry. |
-| **Tamper evidence** | Each event commits to the previous event's hash; editing history invalidates every later digest. |
-| **Bounded context** | A hard token ceiling is enforced by the context gatherer and covered by a property test. |
-| **Deterministic safety** | AST scan, schema validation, and real test runs gate every mutation. No model sits in the security loop; a deterministic critic FAIL cannot be overridden by a model PASS. |
-| **Explainability** | Causation links let you walk from any action back to the event that caused it (`paa ledger`). |
-| **Controlled egress** | Escalation from a local model to a hosted one is a logged event. In `LOCKDOWN` mode it never happens. |
+| Crash recovery | Replays the ledger, checks workspace state against recorded manifests, and resumes only work that is safe to resume. |
+| Tamper evidence | Events are hash-chained; modifying history invalidates subsequent digests. |
+| Authority | A task carries a mandate recording who or what requested it, the applicable policy, and its permitted scope. |
+| Deterministic safety | Policy, schema checks, sandbox boundaries, and validation gate managed mutations; a model cannot override those decisions. |
+| Bounded context | The context gatherer enforces a token ceiling and selects information through deterministic rules. |
+| Explainability | Causal links connect actions to the task, mandate, decisions, and prior events that led to them. |
+| Portability | Model providers, storage backends, sandbox implementations, and agent harnesses are intended to be replaceable behind narrow interfaces. |
 
-Ordering rule: **ledger before side effect, always.** A crash between "event
-written" and "work done" is recoverable, because replay knows the work was
-intended. The reverse order would not be.
+PAA's central distinction is **authority plus evidence**: who permitted the work, under which rules, what crossed the execution boundary, and what verification actually passed.
+
+## What PAA is not
+
+- Not another general-purpose agent framework or a replacement for every agent harness.
+- Not a promise to outperform frontier models at reasoning.
+- Not a prompt-based safety layer. Models may propose actions; deterministic runtime policy authorizes them.
+- Not an unrestricted plugin host where third-party code can mutate trusted runtime state.
+- Not a claim that external actions can always be undone or that a third-party agent's hidden reasoning can be resumed after a crash.
+
+PAA should integrate with front-half systems that handle intake, routing, and agent interaction. It should focus on the back half: containment, authorization, verification, evidence, and recovery.
 
 ## Quick start
-
-Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/) (or plain `pip`).
 
 ```bash
 uv venv --python 3.12
 uv pip install -e ".[dev]"
+.venv/Scripts/python.exe -m pytest tests/ -q
 ```
 
-Run the suite:
+Run it from the CLI (for example, with a local model via Ollama, or `echo` when offline):
 
 ```bash
-# Linux / macOS
-.venv/bin/python -m pytest tests/ -q
-# Windows
-.venv\Scripts\python.exe -m pytest tests\ -q
+paa doctor                       # inspect configured backends and sandbox
+paa submit "summarise my notes"  # submit a task
+paa ledger <correlation-id>      # inspect the event chain and causal history
+paa recover                      # run the post-crash recovery sweep
+paa serve                        # FastAPI ingestion + background daemon (loopback only)
 ```
 
-Drive the runtime from the CLI. A local model (Ollama) or the offline `echo`
-provider works with no API keys:
+Optional extras, each with a fallback if skipped:
 
 ```bash
-paa doctor                        # which backends and sandbox are actually live
-paa submit "summarise my notes"   # run a task to a terminal state
-paa status <correlation-id>       # replayed state of a task
-paa ledger <correlation-id>       # walk the causal event chain
-paa gate <correlation-id> --approve   # clear a human-attestation gate
-paa recover                       # post-crash boot sweep
-paa agent                         # tool-using agent loop over the runtime
-paa serve                         # loopback HTTP API + background daemon
+uv pip install -e ".[vector]"       # Qdrant embedded, otherwise NumPy brute force
+uv pip install -e ".[graph]"        # KuzuDB, otherwise SQLite recursive CTEs
+uv pip install -e ".[embeddings]"   # real embeddings, otherwise a hash embedder
+uv pip install -e ".[api]"          # FastAPI ingestion
 ```
 
-Hosted models are configuration, not code. For example, set
-`PAA_MODELS__LOCAL_PROVIDER=openrouter` and put the key in `.env`
-([ADR-0020](docs/adr/0020-provider-keys-from-dotenv.md)).
-
-Optional extras, each with a fallback if omitted:
-
-| Extra | Adds | Fallback |
-|---|---|---|
-| `.[vector]` | Qdrant embedded | NumPy brute force |
-| `.[graph]` | KuzuDB | SQLite recursive CTEs |
-| `.[embeddings]` | Real embeddings (large download) | Hash embedder |
-| `.[api]` | FastAPI ingestion | CLI only |
-| `.[postgres]`, `.[redis]` | Postgres and Redis backends | SQLite (WAL) and SQLite queue |
-| `.[otel]` | OpenTelemetry exporters | In-process metrics |
-
-No Docker, server, or GPU is required for the default configuration. A Docker
-deployment with Postgres and S3-compatible storage is available; see
-[docs/deployment/docker.md](docs/deployment/docker.md).
-
-### HTTP API (loopback only)
-
-| Route | Purpose |
-|---|---|
-| `GET /health` | Liveness and backend report |
-| `POST /tasks` | Submit a task |
-| `GET /tasks/{id}` | Replayed task state |
-| `POST /tasks/{id}/gate` | Approve or reject a parked task |
-| `POST /tasks/{id}/correction` | Submit a human correction |
-| `GET /ledger/{id}` | Event chain for a task |
-| `POST /signals` | Ingest a signal (backpressure returns HTTP 429) |
-
-## Using PAA from an editor (ACP)
-
-**Experimental.** PAA ships an [Agent Client Protocol](https://agentclientprotocol.com)
-server so ACP-capable editors can use it as an agent. Permission prompts from the
-runtime's gate are shown in the editor and **fail closed**: anything other than an
-explicit "Allow" is a denial.
-
-```bash
-uv pip install agent-client-protocol
-```
-
-Zed — Settings → AI → External Agents → Add Custom Agent:
-
-```json
-"agent_servers": {
-  "PAA": {
-    "type": "custom",
-    "command": "/path/to/repo/.venv/bin/python",
-    "args": ["-m", "paa.acp_server"],
-    "env": { "PAA_HOME": "/path/to/.paa" }
-  }
-}
-```
-
-What this gives you today is a chat and approval interface over PAA's
-ledger-facing tools (`submit_task`, `run_task`, `read_ledger`, `recall_facts`, …).
-It does **not** edit files in your open project, because PAA has no file or shell
-tools yet. Responses are not streamed, cancel is not implemented, and editor
-context (`@`-mentions, working directory, MCP servers) is ignored. Coder-loop turns
-are recorded to session transcripts rather than the ledger; only mutating tool
-calls reach the ledger.
+No Docker, server, or GPU is required for the lightweight local setup. Stronger isolation backends may require WSL2 or Docker; see the platform limitations below.
 
 ## Architecture
 
-```
-                      ┌──────────────────────────┐
-   ingestion ────────►│  cold lake (immutable)   │  raw signals, content-addressed blobs
-                      └────────────┬─────────────┘
-                                   │
-                      ┌────────────▼─────────────┐
-                      │  ledger (append-only,    │  ◄── SOURCE OF TRUTH
-                      │  hash-chained)           │      everything else is derived
-                      └────────────┬─────────────┘
-                                   │ replay (left fold)
-                      ┌────────────▼─────────────┐
-                      │     TaskProjection       │
-                      └────────────┬─────────────┘
-                                   │
-   ┌────────────┬──────────────────┼──────────────┬──────────────┐
-   ▼            ▼                  ▼              ▼              ▼
-hot_serving  vector index     graph edges      queue        workspaces
- (truth)      (recall)       (provenance)    (volatile)     (host disk)
-```
+PAA is designed as a **narrow waist** between front-half agent systems and the machine capabilities they use. The core owns the guarantees. Harnesses and providers attach through explicit, versioned boundaries.
 
-Task lifecycle. Every arrow writes a ledger event first:
-
-```
-TASK_REQUESTED → TASK_QUEUED → CONTEXT_HYDRATED → PLAN_COMPILED
-      → POLICY_CLEARED → EXECUTION_STARTED → CRITIQUE_CONCLUDED
-      → EXECUTION_COMPLETED → MUTATION_COMMITTED
-                  │
-                  ├── POLICY_BLOCKED / SECURITY_VIOLATION   (terminal)
-                  ├── AWAITING_HUMAN_ATTESTATION            (parks; never auto-clears)
-                  └── STATE_ROLLBACK_TRIGGERED              (drift → restore)
+```text
+  Front-half systems / clients
+  Editors · chat · event sources · agent harnesses · custom UIs
+                 │
+                 │  ACP · HTTP · CLI · webhooks · Executor port
+                 ▼
+  ┌────────────────────────────────────────────────────────────┐
+  │                         PAA CORE                            │
+  │                                                            │
+  │  mandates · deterministic policy · sandbox · validation   │
+  │  event ledger · replay · recovery · watchdog · budgets     │
+  │  memory · bounded context · provenance · evidence export   │
+  └──────────────────────────────┬─────────────────────────────┘
+                                 │
+                   policy-gated, recorded operations
+                                 │
+  ┌──────────────────────────────▼─────────────────────────────┐
+  │                 CAPABILITY / PROVIDER BOUNDARY              │
+  │  filesystem · shell · git · browser · search · model APIs  │
+  │  MCP and other adapters · sandboxed local/remote providers │
+  └────────────────────────────────────────────────────────────┘
 ```
 
-Key design choices:
+The ledger remains the source of truth. The cold lake holds immutable inputs and content-addressed blobs; replay builds task projections and derived indexes. Queues, caches, vector/graph indexes, and workspace metadata are not competing authorities.
 
-- **Optional router.** `should_route()` returns `False` when a target agent is named
-  or fewer than three agents are eligible. When routing runs, it uses an LLM,
-  because a small intent classifier cannot see project state.
-- **Delegation without deadlock.** Agents may delegate to each other, but only
-  through the orchestrator, which owns the delegation graph and refuses any edge
-  that would close a cycle ([ADR-0018](docs/adr/README.md)).
-- **AI proposes, code decides.** In the context builder, a model may expand queries
-  and infer slots; deterministic code does the ranking and enforces the ceiling.
-  This keeps packets reproducible for replay and keeps untrusted text out of the
-  planner's context by construction.
-- **Eighteen memory domains, six mechanisms.** Domains are vocabulary; each maps to
-  one of volatile, relational, immutable log, vector, graph, or document storage.
-  Adding a domain is a data change ([ADR-0014](docs/adr/README.md)).
-- **Pluggable infrastructure.** SQLite/Postgres, embedded/Qdrant vectors,
-  Kuzu/SQLite graph, SQLite/Redis queue, local/S3 blob store, and
-  subprocess/WSL/Docker/gVisor sandboxes all sit behind interfaces.
+```text
+                    ingestion / external inputs
+                                │
+                                ▼
+                 ┌─────────────────────────────┐
+                 │ cold_lake (immutable blobs) │
+                 └──────────────┬──────────────┘
+                                │
+                 ┌──────────────▼──────────────┐
+                 │ system_state.ledger         │  SOURCE OF TRUTH
+                 │ append-only, hash-chained   │
+                 └──────────────┬──────────────┘
+                                │ replay
+                 ┌──────────────▼──────────────┐
+                 │ task / effect projections  │
+                 └──────────────┬──────────────┘
+                                │
+        ┌─────────────┬──────────┼─────────┬──────────────┐
+        ▼             ▼          ▼         ▼              ▼
+   hot serving    vector     graph     queue        workspaces
+   projections    index      edges     (derived)    (checked state)
+```
 
-## Extension model
+The task lifecycle is event-led. The exact event sequence depends on the operation, but the important rule is that intent, authority, execution results, and verification are recorded around every managed effect. Replay reconstructs recorded state; it does not repeat external actions.
 
-PAA's extension surface is deliberately **narrow and protocol-based** rather than an
-in-process plugin API. The rule: *an extension may attach wherever its inputs and
-outputs cross a boundary that is recorded in the ledger and gated by policy.*
+## Task-specific composition, not a global plugin container
 
-| Seam | Direction | Interface | State |
-|---|---|---|---|
-| Tools and skills | Runtime → tools | MCP and Claw Hub via the Unified Skill Adapter | Built |
-| Models | Runtime → providers | Provider registry (Anthropic, Gemini, Ollama, OpenAI-compatible, echo) | Built |
-| Editors and UIs | Client → PAA | ACP server (`paa.acp_server`) | Experimental |
-| Lifecycle hooks | In coder loop | Pre/post tool, prompt submit | Built in-process; out-of-process JSON hooks planned |
-| External agent harnesses | PAA → agents | ACP client under the sandbox | Planned |
-| Event export | Ledger → observers | JSONL / OpenTelemetry | Planned |
-| Custom agentic loops | Pluggable pipelines | `Pipeline` + `RuntimeContext` | Design only ([design](docs/EXTENSIBILITY_PIPELINES.md), [audit](docs/flexability-audit.md)) |
+Different tasks need different execution strategies and different subsets of capabilities. A coding task may need repository access, a shell, and tests. A research task may need search, document retrieval, and evidence storage. They should not load every integration into one global agent environment.
 
-Constraints that any extension must satisfy: it runs out of process; it can tighten
-policy but never loosen it; its results are recorded as ledger events so replay reads
-the record rather than re-executing it; and it speaks a versioned event envelope.
-Rationale is in [docs/VISION.md](docs/VISION.md#extension-model).
+PAA's direction is to assemble a **task-scoped runtime context** from a shared trusted kernel and a validated set of dependencies. A task can use a native PAA loop or an external harness, provided that operations for which PAA claims authority, containment, or evidence cross PAA's instrumented boundaries.
 
-## Where PAA fits
+### Temporal composability — safe lifecycle over time
 
-PAA is infrastructure beneath agents, not another agent.
+Temporal composability means that components can be started, suspended, replaced, cancelled, or removed while PAA accounts for the effects they introduced.
 
-- **Agent harnesses** (terminal and editor coding agents) decide *how a model works
-  on a task*. PAA does not replace them. Hosting them under PAA's ledger and sandbox
-  is the main planned direction and is **not implemented**.
-- **Multi-session managers and orchestrators** run agents in parallel. PAA's focus is
-  a durable, verifiable record of what happened, not session management.
-- **Governance gateways** provide organisation-wide identity and policy. PAA is
-  local-first and single-user today; team features are future work.
+Each managed effect should have an explicit owner (task, harness generation, pipeline, workspace, or capability lease), a durable identity, and a truthful disposal or recovery path. Examples include unregistering an event listener, terminating a process, releasing a lease, or restoring an isolated workspace to a verified checkpoint.
 
-## Status
+Not every effect is reversible. A delivered email cannot generally be unsent; a payment cannot be treated as undone because a process was unloaded. PAA must preserve those facts in the ledger and treat a correction or compensation as a new, separately authorized action.
 
-Measured on a clean Linux checkout (Python 3.12, `.[dev]` only, no Docker) at commit
-`4ac96db`. Run the suite yourself for current numbers; they drift.
+The lifecycle vocabulary matters:
 
-| Metric | Value |
+| Operation | Meaning |
 |---|---|
-| Python source (`src/`) | ~52,000 lines |
-| Tests collected | 3,145 |
-| Result | 2,899 passed · 241 skipped · 4 xfailed · 1 failed |
+| Cancel | Stop further task work; does not undo prior effects. |
+| Quiesce | Stop admitting new work and drain or cancel in-flight work. |
+| Dispose / unload | Release resources and registrations owned by a component scope. |
+| Roll back | Reverse eligible changes within an explicit transaction boundary. |
+| Compensate | Perform a new authorized action to mitigate an irreversible effect. |
+| Replay | Reconstruct state from events without re-executing external work. |
+| Recover | Reconcile effects and restore a known checkpoint before safe resumption. |
 
-Skips are tests that need optional extras or live services (Postgres, S3, Redis,
-Docker). The 4 xfails are strict: three known validation defects and one open policy decision, each with its reason stated in the test. The
-single failure, `test_user_is_the_workspace_owner_not_root`, is environmental: it
-assumes a non-root host user and a Docker daemon. CI is defined in
-[.github/workflows/ci.yml](.github/workflows/ci.yml); check the Actions tab for its
-current state rather than trusting this file.
+A crash between a provider's successful action and PAA's acknowledgement creates an **unknown outcome**, not proof that the action failed. Recovery must reconcile using provider state or idempotency keys; it must not blindly repeat the action.
 
-| Area | State |
-|---|---|
-| Event ledger, replay, recovery | Built and tested |
-| Context engine (budget, gatherer, compaction) | Built and tested |
-| Storage (relational, vector, graph, cold lake, queue) | Built and tested; Postgres/S3 have live-server suites that run when services are supplied |
-| Sandbox (subprocess, WSL, Docker, dry-run, recursion guard) | Built and tested |
-| Deterministic validation (AST, patch, workspace, test runner) | Built and tested; 3 known defects tracked as xfail |
-| Agents (orchestrator, delegation, policy, planner, critic, router, worker) | Built and tested |
-| Model providers and escalation router | Built and tested; **no frontier provider has driven a full task end to end** |
-| Memory (creator, curator, decay, contradiction, world model) | Built and tested |
-| Unified Skill Adapter (MCP, Claw Hub) | Built and tested |
-| Marketplace (signed packages, five-gate installer) | Metadata path built; executable package loading is not |
-| Observability (metrics, tracing, runs) | Built and tested |
-| Coder agent (`paa agent`) | Alpha; tools are ledger-facing only |
-| ACP server | Experimental |
-| Docker deployment | Built; operators should run the live-stack suites themselves |
-| File, shell, web, and git tools | **Not built** |
-| Codebase intelligence (indexing, LSP) | Not built |
-| Web UI | Not built (a terminal UI module exists in `paa/tui`) |
-| Hosting external agent harnesses | Not built |
+### Spatial composability — task-specific dependency resolution
 
-## Known limitations
+Spatial composability means that a harness or pipeline declares what it requires, while PAA determines which eligible providers can satisfy those requirements under the current mandate and policy.
 
-These block day-to-day use and are listed first on purpose.
+A component declares contracts such as `filesystem.read`, `filesystem.write`, `shell.execute`, `tests.run`, `web.search`, or `evidence.store`. It should not hardcode a specific operating system, provider, or integration unless the task requires one.
 
-1. **No concrete work tools.** There is no file edit, shell, web search, or git tool.
-   The agent can drive the runtime but cannot yet change your project.
-2. **The coder loop is not ledger-integrated.** Its turns are written to session
-   transcripts, not ledger events, so it does not get crash recovery or hash-chained
-   history. Mutating runtime tools are the exception.
-3. **No external-harness hosting.** There is no adapter for third-party agents, and no
-   supported way to install a replacement agentic loop without modifying core
-   ([audit](docs/flexability-audit.md)).
-4. **Weaker sandbox on Windows.** The Windows backend uses Job Object limits, a
-   workspace jail, and an AST pre-scan. That is materially weaker than gVisor. Use the
-   WSL2 or Docker backend for untrusted code ([ADR-0006](docs/adr/README.md)).
-5. **Single user, single machine.** No authentication, multi-user isolation, or remote
-   access.
-6. **No cost or budget dashboard**, and no evaluation harness for measuring whether
-   self-improvement loops help.
-7. **Multimodal input** (vision, voice, documents) is not supported.
+PAA resolves each requirement against contract compatibility, version, trust, isolation, availability, locality, and resource constraints. The task receives a bounded, revocable **lease** or client for the selected provider—not ambient access to a global service container. Finding a provider does not grant permission: every effect still passes mandate and deterministic policy checks.
 
-## Security model
+When a required provider disappears, becomes unhealthy, changes contract, or loses authorization, only affected work should be suspended or moved into an explicitly declared degraded mode. Provider changes are recorded and re-authorized where needed; PAA must not silently weaken security, change data handling, or exceed the task's original mandate.
 
-- Safety decisions are deterministic: permissions, protected paths, irreversible-
-  operation patterns, network egress, anti-goals, AST rules. Models propose; they do
-  not decide.
-- API keys must not appear in logs, ledger payloads, or router-raised exceptions; this
-  is asserted by tests. A provider that raises an error containing its own key is not
-  covered.
-- The AST scanner is a **screening layer, not an isolation boundary.** Isolation comes
-  from the sandbox backend.
-- The HTTP API binds to loopback only.
-- Marketplace packages pass signature, hash, AST, permission, and smoke gates, but
-  executable package loading is not implemented, so third-party code does not run today.
+### Keep three graphs distinct
 
-Details and trust boundaries:
-[docs/security/security-model-and-trust-boundaries.md](docs/security/security-model-and-trust-boundaries.md).
-
-## Design decisions and RFC deviations
-
-PAA was built from an internal RFC (v4.0/v4.1). Implementing it literally would have
-produced deadlocks, unbounded growth, or silently dropped work, so several rules were
-corrected. Each is recorded in `docs/adr/`.
-
-| Defect in the spec | Correction | ADR |
+| Graph | What it answers | What it records |
 |---|---|---|
-| Idempotency key made retries impossible (`EXECUTION_STARTED` writable once per task) | Attempt counter plus discriminator | [0008](docs/adr/0008-idempotency-key-with-attempt.md) |
-| Recovery index never shrank on an append-only table | Bounded head projection, one row per lineage | [0010](docs/adr/0010-head-projection-not-partial-index.md) |
-| `EXECUTION_COMPLETED` is per step, not per task, so it cannot be terminal | Terminal state derived from plan completion | [0010](docs/adr/0010-head-projection-not-partial-index.md) |
-| Sandbox kill rule integrated memory over time (MB·s) | Peak RSS, which cgroups and Job Objects measure | [0009](docs/adr/README.md) |
-| `A_score` divided by terms that can be zero | `(1 + x)` denominators, same monotonicity, bounded | [0012](docs/adr/README.md) |
-| Temporal decay applied to one term only | Applied to the whole hybrid score | [0013](docs/adr/README.md) |
-| Friction score divided by zero for domains with no successful commits | Zero-safe formulation | [0016](docs/adr/README.md) |
+| Dependency graph | What must be available for a component to activate? | Requirements, provider bindings, compatibility, and resolution decisions. |
+| Execution DAG | What work must happen, in which order, with which branches and approvals? | Steps, dependencies, retries, checkpoints, and outcomes. |
+| Effect-ownership graph | Which scope created each resource or side effect, and how can it be disposed or reconciled? | Scope ownership, resource handles, inverse/compensation strategy, and lifecycle state. |
 
-Defects found by tests rather than by reading: OFFSET pagination skipping rows while
-deleting, a recovery sweep that grew the ledger by one row per boot, an incorrect
-zstd size sentinel, and non-deterministic claim order from random-UUID tiebreaks.
+These graphs connect through stable IDs and ledger events, but they are not interchangeable. See the [Temporal and spatial composability addendum in VISION](docs/VISION.md#appendix-temporal-and-spatial-composability-for-paa) for the proposed object model, lifecycle invariants, event candidates, and validation scenarios.
 
-Hardware reality also shaped the defaults. The reference machine is a Ryzen 5 7535HS
-with ~13 GB RAM and no usable GPU, so the default stack is SQLite, embedded Qdrant,
-and a provider-agnostic model layer rather than vLLM, Postgres, Qdrant, and Redis.
-Every substitution keeps the logical contract, so moving back is a backend change.
+**Implementation status:** This is a proposed architectural direction, not a claim that the dependency resolver, effect registry, universal harness protocol, or hot replacement system is already implemented. The first step is to prove the smallest lifecycle and provider contracts against real integrations before generalising them.
 
-## Repository layout
+## Front-half / back-half boundary
 
-```
+PAA does not need to own every chat surface, event router, worker scheduler, or agent loop. Those systems can provide intake and reasoning. PAA's value is the layer that can independently answer:
+
+- Who requested this work, and what mandate allowed it?
+- Which policy version and constraints applied?
+- Which harness, provider, and capability implementation actually ran?
+- What crossed the sandbox or external boundary?
+- Which commands, mutations, approvals, and tests have recorded evidence?
+- What is recoverable after a crash, and which effects remain unresolved?
+
+The intended seams include ACP for client/editor interaction, an Executor port for front-half systems that can hand a task and mandate to PAA, and MCP or other adapters for tool interoperability. These are integration seams, not permission to bypass PAA's policy and ledger.
+
+## This machine vs. the original RFC
+
+The RFC assumes a CUDA workstation. The original development environment is a Ryzen 5 7535HS laptop with 13.3 GB RAM (about 3.5 GB free most of the time), a Radeon 660M iGPU with 2 GB VRAM, Windows 11, and no Docker. The implementation has been adapted to that constrained machine rather than pretending the target environment is the RFC's ideal hardware.
+
+| RFC assumption | Development environment constraint | Adaptation |
+|---|---|---|
+| vLLM + Llama-3-8B-Q8 at high VRAM utilisation | Windows laptop with Radeon 660M iGPU and 2 GB VRAM; vLLM's CUDA/Linux assumptions do not fit | Provider-agnostic layer, local-first with logged escalation (ADR-0007, ADR-0015) |
+| Concurrent Mistral-7B critic + 8B curator | Insufficient memory headroom | One configurable provider; critical authorization remains deterministic rather than model-generated |
+| gVisor `runsc` sandbox | gVisor is a Linux userspace kernel and is not a native Windows backend | Pluggable sandbox; Windows uses Job Object caps, workspace jail, and AST pre-scan. This is materially weaker than gVisor (ADR-0006). |
+| PostgreSQL + Qdrant + Redis + S3 | No Docker in the original development environment; high idle memory for the proposed stack | SQLite (WAL), embedded Qdrant, SQLite queue, content-addressed blob store (ADR-0001–0005) |
+| KuzuDB embedded | Compatible Windows wheel available | Used as specified |
+| 384-dimensional embeddings | MiniLM-L6-v2 runs on CPU | Used as specified |
+
+The goal of these substitutions is to preserve logical contracts so a backend can be changed without rewriting the system. The Windows sandbox is not equivalent to gVisor; use WSL2 or Docker when stronger isolation is required.
+
+## Implementation lessons captured in the ADRs
+
+Implementing the original RFC literally would have introduced deadlocks, leaks, and silent work loss. These corrections were found during implementation and testing; their rationale is recorded in `docs/adr/`.
+
+1. **Retry identity (ADR-0008):** The original idempotency key made `EXECUTION_STARTED` unique per task, preventing a failed task from starting another attempt. An attempt counter and discriminator make retries distinct while preserving idempotency.
+2. **Bounded recovery index (ADR-0010):** A partial index over an append-only event table did not shrink as completed events accumulated. A bounded head projection keeps one row per lineage.
+3. **Step completion vs. task completion (ADR-0010):** `EXECUTION_COMPLETED` can occur per step and must not be treated as a terminal event for the whole task.
+4. **Sandbox memory units (ADR-0009):** Integrating memory usage over time produces MB-seconds, not a memory ceiling. The implementation uses peak RSS, matching the resource that cgroups and Job Objects constrain.
+5. **Bounded scoring (ADR-0012):** A score that divides by factors allowed to reach zero can become unbounded. The formula was rewritten with `(1 + x)` denominators while preserving monotonic behavior.
+6. **Temporal decay precedence (ADR-0013):** Decay originally applied only to the graph term, not the full hybrid retrieval score. The expression was corrected.
+7. **Zero-success domains (ADR-0016):** The friction score divided by successful commits, which is zero for a domain that has only failed. The formula was adjusted for that case.
+8. **Pydantic v2 compatibility:** The `SkillContractModel` used v1-only `regex=` and `@validator` syntax and was updated.
+
+Additional defects found through tests included OFFSET pagination skipping rows during deletion, recovery-sweep audit events that grew the ledger on every boot, an incorrect zstd unknown-size sentinel (`-1` is required), and nondeterministic tie ordering when same-time arrivals were sorted by random UUID.
+
+## Design decisions worth explaining
+
+- **The router is optional.** Routing should be used when multiple eligible agents or strategies make it useful, not inserted into every task.
+- **Delegation is mediated.** Agent interaction is allowed through the orchestrator, which owns the delegation graph and rejects cycles rather than relying on a blanket ban on peer interaction (ADR-0018).
+- **Context is partly model-assisted, deterministically assembled.** A model may propose queries or slots; deterministic ranking and token ceilings decide what enters context. Untrusted source text cannot directly choose the planner's packet.
+- **Memory domains share a small number of mechanisms.** The 18-domain vocabulary maps onto six storage/retrieval mechanisms rather than requiring 18 independent subsystems (ADR-0014).
+- **Meta-learning is staged honestly.** Prototypical few-shot classification is designed (ADR-0017), not a claim of gradient-based MAML or a validated self-improving harness.
+- **A stronger harness cannot erase a model-capability gap.** PAA's advantage is intended to be recovery, durable memory, deterministic safety, authority, and evidence—not an unsupported claim that a small local model reasons like a frontier model.
+
+## Why this over existing tools
+
+PAA is not a claim that other systems cannot perform the same individual features. The intended distinction is the combination of a vendor-neutral, local-first runtime with an independent record of authority and execution evidence.
+
+- **Compared with a frontier coding agent:** PAA does not claim superior reasoning. It aims to make work recoverable, auditable, and subject to deterministic policy across sessions and providers.
+- **Compared with an agent/skill ecosystem:** PAA treats third-party capabilities as untrusted until their operations cross an explicit permission and execution boundary.
+- **Compared with an ambient assistant:** PAA is not yet an always-on, multimodal personal assistant. Its potential future interfaces should inherit the same mandate, context, and evidence model rather than inventing separate trust rules.
+
+The bet is that people will use more than one agent system, and will want a neutral system of record for what those agents were authorized to do and what they actually did. That is a hypothesis to validate, not a guaranteed market outcome.
+
+## Known limitations and planned work
+
+The following are gaps or proposed work, not completed features. The detailed, ordered plan and exit criteria live in [`docs/VISION.md`](docs/VISION.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md).
+
+| Area | Current limitation / next proof |
+|---|---|
+| Real-world capabilities | The coder loop exists, but the permissioned file, shell, and Git tool path must be completed and proven end to end through the ledger and sandbox. |
+| External harnesses | ACP server is experimental; running an external harness behind PAA's sandbox and measuring what activity remains outside observable boundaries is planned. |
+| Lifecycle accounting | A durable, scope-owned effect registry and crash reconciliation for provider outcomes are proposed; they must be validated before PAA claims general temporal composability. |
+| Dependency resolution | Task-specific declarations, provider resolution, bounded leases, and dependency-loss behavior are proposed; no universal resolver is claimed. |
+| Observability | Metrics and tracing are built but require dedicated validation. |
+| Codebase intelligence | Full repository indexing and LSP/symbol-aware context are not yet complete. |
+| Git workflow | Branch-per-task, conflict awareness, and verified commits remain work to complete. |
+| Ingestion | Minimal event-source integration is planned; broad Telegram/email/Slack and ambient bridges are not a current commitment. |
+| Multimodal | Vision, voice, and general document/audio interaction are parked. |
+| Evaluation | Agent comparison on the user's own tasks with deterministic verification is planned; self-improvement claims are not yet validated. |
+| Product surface | CLI and loopback HTTP exist; a web dashboard, mobile access, and multi-user/team mode are later and conditional. |
+| Marketplace | Signed package metadata and installer work exist, but publishing and a marketplace economy are conditional platform work, not the immediate product. |
+| Security | The Windows sandbox is weaker than gVisor; stronger isolation and independent security review remain future work. |
+
+## Roadmap at a glance
+
+The current plan is horizon-based. Existing ideas are retained, but sequenced by dependency and evidence rather than treated as commitments to build every surface immediately.
+
+1. **Horizon 0 — Foundation:** event-sourced ledger, replay and recovery, context and memory, storage, sandbox, policy, model providers, Unified Skill Adapter, API/daemon/CLI, router-backed coder loop, experimental ACP server.
+2. **Horizon 1 — Hands, authority, and honesty:** permissioned file/shell/Git capabilities, coder-to-ledger wiring, mandate events, cancellation, and a real end-to-end task using a frontier model.
+3. **Horizon 2 — Seams:** harden ACP, version the event envelope, add out-of-process hooks and event export, run the first external harness inside the sandbox, test the Executor-port idea, and add a credential broker.
+4. **Horizon 3 — Evidence and attention:** offline-verifiable change bundles, observe mode, watchdog, attention measurement, replay-based regression, and agent evaluation on real repositories.
+5. **Horizon 4 — Reach (conditional):** minimal event intake if needed, dashboard, durable long-horizon task graphs, speculative sandboxed branches, and team support.
+6. **Horizon 5 — Platform (conditional):** out-of-process pipeline SDK, executable package loading, marketplace publishing, stronger default isolation, and third-party security review.
+
+Parked until the earlier horizons validate the thesis: a full in-house router/worker/panel stack, broad ambient and multimodal bridges, local fine-tuning, cloud-hosted remote-machine orchestration, and a skill economy with payments or reputation.
+
+This sequencing does **not** delete earlier ideas. It prevents a marketplace, always-on assistant, or universal harness system from outrunning the runtime guarantees that would make those products trustworthy.
+
+## Build status
+
+"Tested" means tests exist and pass. "Untested" means code may exist but has not been verified; treat it as unfinished. The status below is the repository's recorded snapshot, not a guarantee about a later checkout. Re-run the commands in [Testing](#testing) before relying on it.
+
+| Subsystem | State | Tests / evidence |
+|---|---|---:|
+| Core types, config, permissions | Tested | Via ledger suite |
+| Event ledger + replay + recovery | Tested | 71 |
+| Bounded context engine (metrics, budget, gatherer, compaction) | Tested | 353 |
+| Storage (vector, graph, cold lake, queue, relational) | Tested | 255 (+5 skipped, Redis) |
+| Sandbox (subprocess/WSL/Docker/dryrun + recursion guard) | Tested | 39 |
+| Memory decay + domains + contradiction | Tested | 37 |
+| Agents (orchestrator, delegation, policy, context, planner, critic, router, worker) | Tested | 70 |
+| Composition root + end-to-end integration | Tested | 16 |
+| Deterministic validation (AST, patch, workspace, tests) | Exercised via agents; no dedicated suite | — |
+| Model providers + escalation router + platform registry | Tested (OpenAI/Groq/Gemini/etc. + localhost) | 71 |
+| Memory creator/curator + world model | Tested | 76 |
+| Unified Skill Adapter (Claw Hub + MCP) | Tested | 51 |
+| Marketplace (signed packages, 5-gate installer) | Tested | 18 |
+| Self-improvement + meta-learning | Tested | 22 |
+| Claude-Code features (permissions, hooks, loop, sessions) | Tested | 39 |
+| Coder agent (`paa agent` — router-backed tool loop) | Tested | 91 |
+| FastAPI ingestion + daemon + CLI | Tested | 27 |
+| Docker deployment + Postgres/S3 backends | Built; live-server run still needs a pass | Parity + backend |
+| Observability (metrics, tracing, runs, logging) | Built; untested | — |
+
+**Recorded test snapshot:** 1,185 collected — 1,104 passing, 75 skipped, 6 failing. The existing project note attributes the six failures to an environment-specific `python`/`python3` executable mismatch in sandbox worker steps. Verify that diagnosis on the current checkout rather than treating it as a permanent property of the code.
+
+The CLI includes `paa submit/status/ledger/recover/gate/doctor/serve/agent`; the HTTP interface is loopback FastAPI. The background daemon runs boot recovery, drains the task queue, ingests signals, and runs the decay sweep. `Runtime.build()` in `src/paa/runtime.py` is the composition root. The existing integration suite records coverage for full task lifecycle, crash-and-recover, human-gate persistence, deterministic security blocks, and the token ceiling; consult the tests and roadmap for the exact current proof.
+
+## Layout
+
+```text
 src/paa/
-├── core/           types and errors; imported by everything, depends on nothing
-├── config.py       every RFC constant, with its section cited
-├── ledger/         events, store, replay, recovery          ← the spine
-├── storage/        relational · vector · graph · coldlake · queue
-├── context/        metrics, budget, gatherer, compaction
-├── memory/         domains, decay, contradiction, creator, curator, world model
-├── agents/         orchestrator, delegation, policy, reasoning, specialists
-├── sandbox/        pluggable containment backends
-├── validation/     AST scan, patch apply/rollback, workspace manifests
-├── models/         provider abstraction and escalation router
-├── skills/         Unified Skill Adapter (MCP, Claw Hub)
-├── marketplace/    signed packages and the five-gate installer
-├── improvement/    reflection, distillation, optimiser, meta-learning
-├── coder/          permissions, hooks, tool loop, sessions
-├── api/            FastAPI ingestion (loopback)
-├── cli/            `paa` command
-├── tui/            terminal dashboard
-├── observability/  metrics, tracing, execution runs
-├── runtime.py      composition root: Runtime.build()
-├── daemon.py       background loop: recovery, queue drain, ingestion, decay sweep
-└── acp_server.py   ACP server (experimental)
+├── core/          types, errors — imported by everything, depends on nothing
+├── config.py      RFC constants and configuration
+├── ledger/        events, store, replay, recovery       ← the spine
+├── storage/
+│   ├── relational/  SQLite WAL + schema (Postgres-portable)
+│   ├── vector/      Qdrant embedded / NumPy fallback
+│   ├── graph/       Kuzu / SQLite recursive CTE
+│   ├── coldlake/    content-addressed blobs + zstd
+│   └── queue/       durable SQLite queue / Redis
+├── context/       metrics, budget, gatherer, compaction
+├── memory/        domains, decay, contradiction
+├── agents/        base, delegation, orchestrator, policy, context, reasoning
+├── sandbox/       pluggable containment backends
+├── validation/    AST scan, patch apply/rollback, workspace manifests
+├── models/        provider abstraction + escalation router
+├── coder/         coding-agent loop, permissions, hooks, sessions, tools
+├── skills/        Unified Skill Adapter
+└── observability/ metrics, tracing, execution runs
 ```
 
-`Runtime.build()` wires everything together. `tests/integration/` exercises the full
-lifecycle to `MUTATION_COMMITTED`, crash-and-recover, a human gate that parks across
-a restart, deterministic security blocks, and the token ceiling.
+`coder/` is the package that consumes the runtime and is driven by a model directly; `coder/agent.py` is its composition root. See `docs/coder-agent.md`.
 
 ## Testing
 
 ```bash
-python -m pytest tests/ -q                  # everything
-python -m pytest tests/ledger -q            # the spine
-python -m pytest -m chaos -q                # crash injection
-python -m ruff check src tests
-python -m mypy src                          # strict
+.venv/Scripts/python.exe -m pytest tests/ -q                 # everything
+.venv/Scripts/python.exe -m pytest tests/ledger -q           # the spine
+.venv/Scripts/python.exe -m pytest -m chaos -q               # crash injection
 ```
 
-Property tests (Hypothesis) assert invariants that must hold universally: the
-gatherer never exceeds its ceiling, replay never raises on any event ordering, and
-confidence stays in [0, 1]. Crash tests simulate power loss by closing the database
-mid-lineage and reopening it.
+Uses Hypothesis for properties that should hold universally, including the gatherer's token ceiling, replay robustness under event orderings, and bounded confidence values. Crash tests exercise database shutdown and reopening around a lineage; extend these with provider-boundary fault injection before claiming that external effects are exactly-once or generally reversible.
 
-Important caveat: end-to-end runs use an **injected model**. Passing tests establish
-that the wiring and guarantees hold, not that any particular model performs well.
+## Further reading
 
-## Documentation
-
-| Document | Contents |
-|---|---|
-| [docs/VISION.md](docs/VISION.md) | Thesis (authority and evidence), landscape, extension model, horizons, kill criteria |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Ordered delivery plan with an exit test per item and decision gates |
-| [docs/research/](docs/research/2026-11-deepseek-super-agent.md) | Research notes, starting with DeepSeek's Super-agent design |
-| [docs/architecture/](docs/architecture/) | Overview, component interactions, repository map |
-| [docs/adr/](docs/adr/README.md) | Architecture decision records |
-| [docs/security/](docs/security/security-model-and-trust-boundaries.md) | Security model and trust boundaries |
-| [docs/coder-agent.md](docs/coder-agent.md) | The `paa agent` tool loop and its permission model |
-| [docs/EXTENSIBILITY_PIPELINES.md](docs/EXTENSIBILITY_PIPELINES.md) | Pluggable-loop design (not implemented) |
-| [docs/flexability-audit.md](docs/flexability-audit.md) | What can and cannot be extended today |
-| [docs/MCP_AND_PLUGINS.md](docs/MCP_AND_PLUGINS.md) | Skill adapter and plugin notes |
-| [docs/deployment/docker.md](docs/deployment/docker.md) | Docker deployment |
-| [AGENTS.md](AGENTS.md) | Conventions for contributors and coding agents |
+- [`docs/VISION.md`](docs/VISION.md) — thesis, non-goals, horizons, validation/kill criteria, and the detailed temporal/spatial composability proposal.
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — implementation status, work items, and exit criteria.
+- [`docs/EXTENSIBILITY_PIPELINES.md`](docs/EXTENSIBILITY_PIPELINES.md) — proposed strategy/pipeline seam.
+- [`docs/coder-agent.md`](docs/coder-agent.md) — the current coder-agent loop.
+- [`docs/adr/`](docs/adr/) — architectural decisions and implementation corrections.
 
 ## License
 
-MIT. See [LICENSE](LICENSE). Copyright (c) 2026 Devansh Gaur.
+MIT. See [`LICENSE`](LICENSE).
