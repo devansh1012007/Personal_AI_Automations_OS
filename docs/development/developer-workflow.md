@@ -20,7 +20,7 @@ No Docker, no server, no GPU required (`README.md:66`).
 ## State root
 
 `PAA_HOME` defaults to `~/.paa`, deliberately outside the repo so `git clean`
-can't eat the ledger (`config.py:41`). Tests override it via `tmp_path` and
+can't eat the ledger (`config.py:42`). Tests override it via `tmp_path` and
 `reset_settings_cache()`.
 
 ## Daily commands

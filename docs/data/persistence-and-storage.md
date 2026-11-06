@@ -16,7 +16,7 @@ are **never imported at module scope in a core path** (`AGENTS.md:59`).
 | Queue (durable messages) | SQLite | Redis | — (SQLite is the only alternative) | `storage/queue/__init__.py:get_queue` |
 | Cold lake (immutable blobs) | Filesystem CAS | S3 | — (filesystem is the only alternative) | `storage/coldlake/__init__.py:get_blob_store` |
 
-Settings (`src/paa/config.py:55`):
+Settings (`src/paa/config.py:56`):
 - `backend_relational` (`sqlite`\|`postgres`, default `sqlite`)
 - `backend_vector` (`auto`\|`qdrant_local`\|`qdrant_server`\|`numpy`, default `auto`)
 - `backend_graph` (`auto`\|`kuzu`\|`sqlite`, default `sqlite`)
@@ -99,7 +99,7 @@ Embeddings (`models/embeddings.py` → `storage/vector/embeddings.py`):
 Collections (`store.py`): `ACTIVE_FACTS` and `RFC_COLLECTIONS`.
 
 Consumers: `Runtime._try_vector` (`runtime.py:351`), `MemoryCreator` (embeds
-new facts, `creator.py:655`), context gatherer semantic search
+new facts, `creator.py:1453`), context gatherer semantic search
 (`context_agents.py:182`).
 
 ## 4. Graph — `src/paa/storage/graph/`

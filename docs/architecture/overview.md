@@ -192,14 +192,14 @@ These are deliberate, documented, and cited in source:
 
 | Deviation | Where | Rationale |
 |---|---|---|
-| Embedded SQLite/Qdrant/Kuzu instead of Postgres/Redis/S3 | ADR-0001–0005, `config.py:58` | Target machine has ~3.5 GB free RAM, no Docker |
+| Embedded SQLite/Qdrant/Kuzu instead of Postgres/Redis/S3 | ADR-0001–0005, `config.py:59` | Target machine has ~3.5 GB free RAM, no Docker |
 | gVisor unavailable; pluggable sandbox | ADR-0006, `config.py:281` | Windows target, no runsc |
 | Provider-agnostic models; explicit escalation | ADR-0007/0015, `config.py:476` | vLLM needs CUDA + 8.5 GB VRAM |
 | Idempotency key includes `attempt` + `discriminator` | ADR-0008, `events.py:68` | Retries must be possible |
 | Head projection replaces partial recovery index | ADR-0010, `ledger/store.py:48` | Partial index never shrinks |
 | `EXECUTION_COMPLETED` is per-step, not terminal | ADR-0010, `core/types.py:187` | Treating it as terminal skips remaining steps |
 | Optional router; bypassed when a target agent is named | ADR-0011, `reasoning.py:303` | Explicit user direction |
-| Peak RSS, not ∫Memory·dt | ADR-0009, `config.py:338` | The RFC's rule is dimensionally wrong |
+| Peak RSS, not ∫Memory·dt | ADR-0009, `config.py:420` | The RFC's rule is dimensionally wrong |
 | 18 memory domains over 6 mechanisms | ADR-0014, `memory/domains.py:78` | Most RFC rows differ only by label |
 
 Full ADR list that exists on disk: `0008`, `0010`, `0015`, `0019`, `0020`.
