@@ -45,7 +45,7 @@ import hashlib
 import re
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -66,6 +66,7 @@ if TYPE_CHECKING:
 __all__ = [
     "CandidateFact",
     "EmbeddingSink",
+    "ExtractionDropCounts",
     "FactExtractor",
     "LLMFactExtractor",
     "MalformedSignalError",
@@ -177,8 +178,74 @@ class ProcessingOutcome(str, enum.Enum):
 
 
 @dataclass(slots=True)
+class ExtractionDropCounts:
+    """How many inputs an extraction silently discarded, by cause (C05).
+
+    Deterministic and replay-stable: every field is a pure function of the
+    signal payload -- no wall-clock, no randomness -- so a replayed signal
+    reports the same counts as the original. ``total`` sums the fields;
+    ``as_dict`` is the structlog/``summary()`` shape.
+
+    Counting design (no double-counting): the extractor counts only drops
+    that happen *before* a candidate exists (questions, hedges, pronouns,
+    noise, no-match sentences, subjectless structured payloads, skipped
+    malformed entries). ``non_storable`` is different in kind: it counts
+    candidates the extractor *did* return that :meth:`MemoryCreator.
+    process_signal` then discarded via ``_is_storable`` -- those never
+    passed through the extractor's counters, so adding them cannot
+    double-count. Empty text chunks between sentence splits and
+    schema-reserved keys are *not* drops and are never counted.
+
+    Attribution order for a sentence that is both a question and hedged:
+    question first (``endswith("?")`` is its own branch), then hedge. One
+    dropped line increments exactly one field.
+    """
+
+    questions: int = 0
+    hedges: int = 0
+    pronouns: int = 0
+    noise: int = 0
+    no_match: int = 0
+    subjectless: int = 0
+    malformed_skipped: int = 0
+    non_storable: int = 0
+
+    @property
+    def total(self) -> int:
+        """Inputs dropped for any counted reason."""
+        return (
+            self.questions
+            + self.hedges
+            + self.pronouns
+            + self.noise
+            + self.no_match
+            + self.subjectless
+            + self.malformed_skipped
+            + self.non_storable
+        )
+
+    def as_dict(self) -> dict[str, int]:
+        """The eight counters as a plain dict (log / summary shape)."""
+        return {
+            "questions": self.questions,
+            "hedges": self.hedges,
+            "pronouns": self.pronouns,
+            "noise": self.noise,
+            "no_match": self.no_match,
+            "subjectless": self.subjectless,
+            "malformed_skipped": self.malformed_skipped,
+            "non_storable": self.non_storable,
+        }
+
+
+@dataclass(slots=True)
 class ProcessingResult:
-    """Outcome of one :meth:`MemoryCreator.process_signal` call."""
+    """Outcome of one :meth:`MemoryCreator.process_signal` call.
+
+    ``drop_counts`` is additive (C05): existing consumers reading the
+    original fields see no change; new consumers can surface the drop
+    counters instead of discovering silence after the fact.
+    """
 
     signal_id: str
     outcome: ProcessingOutcome
@@ -187,6 +254,7 @@ class ProcessingResult:
     entities_touched: list[str] = field(default_factory=list)
     conflicts: list[str] = field(default_factory=list)
     error: str | None = None
+    drop_counts: ExtractionDropCounts = field(default_factory=ExtractionDropCounts)
 
     @property
     def requires_human_attestation(self) -> bool:
@@ -205,12 +273,21 @@ class ProcessingResult:
             "facts_written": len(self.facts_written),
             "conflicts": len(self.conflicts),
             "error": self.error,
+            "dropped": self.drop_counts.total,
+            "drop_counts": self.drop_counts.as_dict(),
         }
 
 
 @dataclass(slots=True)
 class BatchReport:
-    """Outcome of one :meth:`MemoryCreator.run_batch` pass."""
+    """Outcome of one :meth:`MemoryCreator.run_batch` pass.
+
+    ``dropped`` / ``drop_counts`` are additive aggregates over the batch's
+    per-signal counts (C05). They are deliberately *not* part of
+    :meth:`summary`: ``BatchReportView(**report.summary())`` unpacks that
+    dict in ``api/app.py`` and the CLI table reads its keys by name, so
+    the summary shape stays exactly as existing consumers expect.
+    """
 
     claimed: int = 0
     processed: int = 0
@@ -219,6 +296,8 @@ class BatchReport:
     quarantined: int = 0
     errors: int = 0
     facts_written: int = 0
+    dropped: int = 0
+    drop_counts: ExtractionDropCounts = field(default_factory=ExtractionDropCounts)
     results: list[ProcessingResult] = field(default_factory=list)
 
     def summary(self) -> dict[str, int]:
@@ -323,6 +402,14 @@ _PRONOUN_SUBJECTS = frozenset(
     }
 )
 
+#: First-person subjects resolve to the ``user`` entity (C05). Case-folded
+#: at use, so "I", "We" and "WE" all map -- never assume lowercase input.
+_FIRST_PERSON_SUBJECTS = frozenset({"i", "we"})
+
+#: The canonical entity name + ranking importance for first-person facts.
+_USER_ENTITY_NAME = "user"
+_USER_IMPORTANCE = 0.3
+
 #: Whole lines that are social protocol, not information.
 _NOISE_LINE_RE = re.compile(
     r"^\W*(hi|hey|hello|yo|thanks|thank you|ta|ok|okay|k|sure|yep|yes|yeah|nope|no|"
@@ -376,8 +463,24 @@ class RuleBasedExtractor:
 
     def __init__(self, *, default_class: str = "concept") -> None:
         self._default_class = default_class
+        # Per-signal diagnostics, reset at the head of every extract().
+        # INVARIANT: an extractor instance is single-flight -- process_signal
+        # snapshots these counters synchronously right after extract()
+        # returns, before any further await, so a sequential batch always
+        # reads the counts for the signal it just processed.
+        self._drops = ExtractionDropCounts()
+
+    @property
+    def drop_counts(self) -> ExtractionDropCounts:
+        """A copy of the drop counters for the most recent :meth:`extract`.
+
+        Copied (not shared) so a later signal cannot mutate the counts an
+        earlier result already surfaced.
+        """
+        return replace(self._drops)
 
     async def extract(self, envelope: SignalEnvelope) -> list[CandidateFact]:
+        self._drops = ExtractionDropCounts()
         _reject_suspicious(envelope.raw, signal_id=envelope.id)
         _unparseable_guard(envelope.payload, envelope.id)
         payload = envelope.payload
@@ -447,15 +550,20 @@ class RuleBasedExtractor:
                 )
             value = _scalar_to_text(obj, signal_id=env.id)
             if value is None:
+                # An empty object value asserts nothing; the entry is
+                # skipped (missing subject/predicate above is malformed).
+                self._drops.malformed_skipped += 1
                 continue
+            entity_name, importance = _first_person_parts(_strip_article(subject))
             out.append(
                 CandidateFact(
-                    entity_name=_strip_article(subject),
+                    entity_name=entity_name,
                     predicate=_normalise_predicate(predicate),
                     object_value=value,
                     entity_class=_first_string(item, _CLASS_KEYS) or entity_class,
                     domain=domain,
                     confidence=_as_confidence(item.get("confidence"), _CONFIDENCE_TRIPLE),
+                    importance=importance,
                     provenance=_provenance(env, "triple"),
                 )
             )
@@ -504,6 +612,7 @@ class RuleBasedExtractor:
                 # A predicate with no subject is not a fact. Inventing a
                 # synthetic entity per orphaned payload would fill the entity
                 # index with rows nothing can ever resolve against.
+                self._drops.subjectless += 1
                 continue
 
             confidence = (
@@ -512,15 +621,18 @@ class RuleBasedExtractor:
             for item in _iter_scalars(value, signal_id=env.id):
                 text = _scalar_to_text(item, signal_id=env.id)
                 if text is None or _is_noise(text):
+                    self._drops.noise += 1
                     continue
+                entity_name, importance = _first_person_parts(subject)
                 out.append(
                     CandidateFact(
-                        entity_name=subject,
+                        entity_name=entity_name,
                         predicate=_normalise_predicate(f"{prefix}{name}"),
                         object_value=text,
                         entity_class=entity_class,
                         domain=domain,
                         confidence=confidence,
+                        importance=importance,
                         provenance=_provenance(env, "structured"),
                     )
                 )
@@ -542,20 +654,32 @@ class RuleBasedExtractor:
 
         for chunk in _SENTENCE_SPLIT.split(text):
             line = chunk.strip()
-            if not line or _is_noise(line):
+            if not line:
+                # Splitting "a\n\nb" yields an empty chunk; that is not a
+                # drop and is never counted.
+                continue
+            if _is_noise(line):
+                self._drops.noise += 1
                 continue
 
             if (kv := _KEY_VALUE_RE.match(line)) and not _looks_like_url(line):
                 value = kv.group("value").strip().rstrip(".")
-                if subject is not None and value and not _is_noise(value):
+                if subject is None:
+                    # "key: value" with no entity to attach it to.
+                    self._drops.subjectless += 1
+                elif not value or _is_noise(value):
+                    self._drops.noise += 1
+                else:
+                    entity_name, importance = _first_person_parts(subject)
                     out.append(
                         CandidateFact(
-                            entity_name=subject,
+                            entity_name=entity_name,
                             predicate=_normalise_predicate(kv.group("key")),
                             object_value=value,
                             entity_class=entity_class,
                             domain=resolved_domain,
                             confidence=_CONFIDENCE_KEY_VALUE,
+                            importance=importance,
                             provenance=_provenance(env, "key_value"),
                         )
                     )
@@ -575,28 +699,49 @@ class RuleBasedExtractor:
         green?" would otherwise parse as a perfectly well-formed assertion that
         the pipeline *is* "green?".
         """
-        if line.endswith("?") or _HEDGE_RE.search(line):
+        if line.endswith("?"):
+            self._drops.questions += 1
+            return None
+        if _HEDGE_RE.search(line):
+            self._drops.hedges += 1
             return None
 
         match = _SENTENCE_RE.match(line.rstrip(".!"))
         if match is None:
+            self._drops.no_match += 1
             return None
 
         subject = _strip_article(match.group("subject"))
-        if not subject or subject.lower() in _PRONOUN_SUBJECTS:
+        if not subject:
+            self._drops.subjectless += 1
             return None
+
+        # First-person subjects map to ``user`` (not a drop, so no pronoun
+        # count); every other pronoun subject is still dropped. The
+        # first-person check must run first: _PRONOUN_SUBJECTS contains
+        # "i"/"we" exactly.
+        mapped = _first_person_mapping(subject)
+        if mapped is not None:
+            entity_name, importance = mapped
+        elif subject.lower() in _PRONOUN_SUBJECTS:
+            self._drops.pronouns += 1
+            return None
+        else:
+            entity_name, importance = subject, 0.5
 
         obj = _strip_article(match.group("object"))
         if not obj or _is_noise(obj):
+            self._drops.noise += 1
             return None
 
         return CandidateFact(
-            entity_name=subject,
+            entity_name=entity_name,
             predicate=_normalise_predicate(match.group("predicate")),
             object_value=obj,
             entity_class=entity_class,
             domain=domain,
             confidence=_CONFIDENCE_SENTENCE,
+            importance=importance,
             provenance=_provenance(env, "sentence"),
         )
 
@@ -675,6 +820,13 @@ class LLMFactExtractor:
         self._timeout = timeout
         self._retry_backoff_base = max(0.0, retry_backoff_base)
         self._retry_backoff_cap = max(0.0, retry_backoff_cap)
+        # Same single-flight diagnostics contract as RuleBasedExtractor.
+        self._drops = ExtractionDropCounts()
+
+    @property
+    def drop_counts(self) -> ExtractionDropCounts:
+        """A copy of the skipped-entry counters for the last :meth:`extract`."""
+        return replace(self._drops)
 
     async def extract(self, envelope: SignalEnvelope) -> list[CandidateFact]:
         """Triples the model asserts for this signal, or an empty list.
@@ -686,6 +838,7 @@ class LLMFactExtractor:
         facts written; a clean response with no facts yields an empty list and
         the signal is ignored, not errored.
         """
+        self._drops = ExtractionDropCounts()
         _reject_suspicious(envelope.raw, signal_id=envelope.id)
 
         prompt = (
@@ -706,23 +859,30 @@ class LLMFactExtractor:
 
         facts = response.get("facts")
         if not isinstance(facts, list):
+            # The whole response is unusable, not just one entry.
+            self._drops.malformed_skipped += 1
             return []
 
         candidates: list[CandidateFact] = []
         for entry in facts:
             if not isinstance(entry, Mapping):
+                self._drops.malformed_skipped += 1
                 continue
             subject = entry.get("subject")
             predicate = entry.get("predicate")
             obj = entry.get("object")
             if not isinstance(subject, str) or not subject.strip():
+                self._drops.malformed_skipped += 1
                 continue
             if not isinstance(predicate, str) or not predicate.strip():
+                self._drops.malformed_skipped += 1
                 continue
             if obj is None:
+                self._drops.malformed_skipped += 1
                 continue
             value = _scalar_to_text(obj, signal_id=envelope.id)
             if value is None:
+                self._drops.malformed_skipped += 1
                 continue
             candidates.append(
                 CandidateFact(
@@ -931,14 +1091,27 @@ class MemoryCreator:
         except MalformedSignalError as exc:
             await self._quarantine_malformed(envelope, str(exc))
             return ProcessingResult(
-                envelope.id, ProcessingOutcome.MALFORMED, error=exc.reason
+                envelope.id,
+                ProcessingOutcome.MALFORMED,
+                error=exc.reason,
+                drop_counts=_snapshot_drop_counts(self._extractor),
             )
 
-        candidates = [c for c in candidates if _is_storable(c)]
+        # Snapshot synchronously, before any further await (single-flight
+        # extractor invariant). _is_storable discards are counted here, in
+        # the step that discards them -- never in the extractor -- so the
+        # two never double-count the same input.
+        drop_counts = _snapshot_drop_counts(self._extractor)
+        storable = [c for c in candidates if _is_storable(c)]
+        drop_counts.non_storable += len(candidates) - len(storable)
+        candidates = storable
+        _log_drops(envelope, drop_counts)
         if not candidates:
             await self._set_status(envelope, "processed", now=now)
             log.debug("memory.signal_ignored", signal_id=envelope.id, channel=envelope.channel)
-            return ProcessingResult(envelope.id, ProcessingOutcome.IGNORED)
+            return ProcessingResult(
+                envelope.id, ProcessingOutcome.IGNORED, drop_counts=drop_counts
+            )
 
         resolved = await self._resolve_entities(candidates)
         conflicts = await self._detect_conflicts(resolved, correlation_id=correlation_id)
@@ -955,6 +1128,7 @@ class MemoryCreator:
                 ProcessingOutcome.QUARANTINED,
                 candidates=len(candidates),
                 conflicts=conflicts,
+                drop_counts=drop_counts,
             )
 
         fact_ids, entity_ids = await self._commit_with_retry(envelope, resolved, now=now)
@@ -972,6 +1146,7 @@ class MemoryCreator:
             candidates=len(candidates),
             facts_written=fact_ids,
             entities_touched=entity_ids,
+            drop_counts=drop_counts,
         )
 
     # -- batch -------------------------------------------------------------
@@ -1002,6 +1177,17 @@ class MemoryCreator:
 
             report.results.append(result)
             report.facts_written += len(result.facts_written)
+            report.dropped += result.drop_counts.total
+            # Field-by-field (not summary()): see BatchReport docstring.
+            counts = report.drop_counts
+            counts.questions += result.drop_counts.questions
+            counts.hedges += result.drop_counts.hedges
+            counts.pronouns += result.drop_counts.pronouns
+            counts.noise += result.drop_counts.noise
+            counts.no_match += result.drop_counts.no_match
+            counts.subjectless += result.drop_counts.subjectless
+            counts.malformed_skipped += result.drop_counts.malformed_skipped
+            counts.non_storable += result.drop_counts.non_storable
             match result.outcome:
                 case ProcessingOutcome.PROCESSED:
                     report.processed += 1
@@ -1014,7 +1200,12 @@ class MemoryCreator:
                 case ProcessingOutcome.ERROR:
                     report.errors += 1
 
-        log.info("memory.batch_completed", **report.summary())
+        log.info(
+            "memory.batch_completed",
+            **report.summary(),
+            dropped=report.dropped,
+            drop_counts=report.drop_counts.as_dict(),
+        )
         return report
 
     async def _claim(self, limit: int) -> list[SignalEnvelope]:
@@ -1430,6 +1621,33 @@ def _reject_suspicious(raw: str, *, signal_id: str | None) -> None:
         )
 
 
+def _snapshot_drop_counts(extractor: FactExtractor) -> ExtractionDropCounts:
+    """The extractor's drop counters for the signal it just processed.
+
+    Probed, not required: the :class:`FactExtractor` protocol is unchanged
+    (``extract`` still returns a bare list), and extractors that predate
+    C05 expose no ``drop_counts`` attribute -- those yield zero counts.
+    The built-in extractors' property returns a copy, so the snapshot a
+    result carries cannot be mutated by the next signal.
+    """
+    probe: Any = getattr(extractor, "drop_counts", None)
+    if isinstance(probe, ExtractionDropCounts):
+        return probe
+    return ExtractionDropCounts()
+
+
+def _log_drops(envelope: SignalEnvelope, counts: ExtractionDropCounts) -> None:
+    """One batched line per signal with drops -- never one per dropped line."""
+    if counts.total:
+        log.debug(
+            "memory.extraction_dropped",
+            signal_id=envelope.id,
+            channel=envelope.channel,
+            dropped=counts.total,
+            **counts.as_dict(),
+        )
+
+
 def _is_storable(candidate: CandidateFact) -> bool:
     if not candidate.entity_name.strip() or not candidate.predicate.strip():
         return False
@@ -1445,6 +1663,35 @@ def _is_noise(text: str) -> bool:
 
 def _looks_like_url(line: str) -> bool:
     return bool(re.match(r"^\s*[a-z][a-z0-9+.\-]*://", line, re.IGNORECASE))
+
+
+def _first_person_mapping(name: str) -> tuple[str, float] | None:
+    """``("user", 0.3)`` for first-person subjects, else ``None``.
+
+    The sentence regex lazily absorbs auxiliaries into the subject group
+    ("I am based in Berlin" parses with subject ``"I am"``, because "am"
+    is not in the predicate lexicon), so a first word check is required
+    for the natural corpus to map at all -- an exact-match check alone
+    maps none of it. The check is on the first word only, case-folded, so
+    "I", "We" and "WE" map while whole words merely containing them
+    ("Ikea", "Weave") do not. Tradeoff (documented): a multi-word name
+    whose first word is "we"/"i" also maps -- rarer than the natural
+    first-person corpus it fixes.
+    """
+    tokens = name.split()
+    if tokens and tokens[0].lower() in _FIRST_PERSON_SUBJECTS:
+        return _USER_ENTITY_NAME, _USER_IMPORTANCE
+    return None
+
+
+def _first_person_parts(name: str) -> tuple[str, float]:
+    """``(entity_name, importance)`` with first-person mapped to ``user``.
+
+    Unmapped names keep ``0.5`` -- the ``CandidateFact`` default -- so
+    passing this explicitly changes nothing for non-first-person subjects.
+    """
+    mapped = _first_person_mapping(name)
+    return mapped if mapped is not None else (name, 0.5)
 
 
 def _strip_article(value: str) -> str:

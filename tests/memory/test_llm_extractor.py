@@ -552,3 +552,66 @@ class TestLLMFactExtractor:
         assert result.outcome is ProcessingOutcome.MALFORMED
         assert model.calls == []  # containment refused the payload before inference
         assert await db.fetch_value("SELECT COUNT(*) FROM hot_serving_active_facts") == 0
+
+
+class TestLLMExtractorDropCounts:
+    """C05: the LLM extractor's skipped entries are counted too.
+
+    Reversal: removing the counters leaves every field 0. The extractor
+    still skips bad entries (never fatal) -- only the observability
+    changed, which is also why every pre-existing test above stays green.
+    """
+
+    async def test_skipped_malformed_entries_are_counted(self, db: Database) -> None:
+        model = ScriptedModel(
+            {
+                "facts": [
+                    {"subject": "Good", "predicate": "status", "object": "active"},
+                    {"subject": "", "predicate": "status", "object": "bad subject"},
+                    {"subject": "NoObject", "predicate": "status", "object": None},
+                    "not a triple",
+                    {"subject": "Empty", "predicate": "status", "object": ""},
+                ]
+            }
+        )
+        creator = MemoryCreator(db, extractor=LLMFactExtractor(model=model))
+        result = await creator.process_signal(_row({"fakes": []}))
+
+        assert result.outcome is ProcessingOutcome.PROCESSED
+        assert len(result.facts_written) == 1
+        assert result.drop_counts.malformed_skipped == 4
+        assert result.drop_counts.total == 4
+
+    async def test_non_list_facts_response_is_counted_once(self, db: Database) -> None:
+        model = ScriptedModel({"facts": "not an array"})
+        creator = MemoryCreator(db, extractor=LLMFactExtractor(model=model))
+        result = await creator.process_signal(_row({"fakes": []}))
+
+        assert result.outcome is ProcessingOutcome.IGNORED
+        assert result.drop_counts.malformed_skipped == 1
+        assert result.drop_counts.total == 1
+
+    async def test_extractor_without_drop_counts_yields_zero(self, db: Database) -> None:
+        """Third-party extractors (protocol-compatible, no diagnostics
+        attribute) still work: the creator probes and falls back to zero
+        rather than failing. ScriptedLLMExtractor is exactly such an
+        extractor."""
+        extractor = ScriptedLLMExtractor(
+            script=[{"subject": "Beta", "predicate": "status", "object": "live"}]
+        )
+        creator = MemoryCreator(db, extractor=extractor)
+        result = await creator.process_signal(_row({"fakes": []}))
+
+        assert result.outcome is ProcessingOutcome.PROCESSED
+        assert len(result.facts_written) == 1
+        assert result.drop_counts.total == 0
+        assert result.drop_counts.as_dict() == {
+            "questions": 0,
+            "hedges": 0,
+            "pronouns": 0,
+            "noise": 0,
+            "no_match": 0,
+            "subjectless": 0,
+            "malformed_skipped": 0,
+            "non_storable": 0,
+        }

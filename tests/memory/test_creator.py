@@ -14,7 +14,12 @@ from typing import Any
 
 import pytest
 
-from paa.memory.creator import MemoryCreator, ProcessingOutcome
+from paa.memory.creator import (
+    MemoryCreator,
+    ProcessingOutcome,
+    RuleBasedExtractor,
+    SignalEnvelope,
+)
 from paa.memory.facts import Fact, FactRepository
 from paa.storage.relational.database import Database, to_iso, utc_now
 
@@ -671,3 +676,196 @@ class TestDrainPendingEmbeddings:
             assert status == "indexed"
             point = store.points[fact_id]
             assert point.payload["object_value"] in {"active", "Ada"}
+
+
+def _envelope(payload: Any) -> SignalEnvelope:
+    """An unpersisted envelope for direct extractor assertions."""
+    return SignalEnvelope(
+        id=str(uuid.uuid4()),
+        channel="test",
+        payload=payload,
+        raw=json.dumps(payload) if not isinstance(payload, str) else payload,
+        external_id=None,
+        received_at=None,
+        persisted=False,
+    )
+
+
+class TestFirstPersonMapping:
+    """C05 (T06): first-person pronoun subjects resolve to ``user``.
+
+    Reversal: removing the mapping yields entity "I am" for the sentence
+    case and entity "I"/"we" for the triple cases -- the ``canonical_name``
+    and ``entity_name`` assertions below fail. No upper-case assumption:
+    "WE" maps the same way "We" does.
+    """
+
+    async def test_i_am_based_writes_user_fact(self, creator: MemoryCreator, db: Database) -> None:
+        result = await creator.process_signal(_row("I am based in Berlin"))
+        assert result.outcome is ProcessingOutcome.PROCESSED
+        assert len(result.facts_written) == 1
+        assert result.drop_counts.total == 0
+        entities = await db.fetch_all(
+            "SELECT canonical_name, importance_weight FROM hot_serving_entity_index"
+        )
+        assert [(r["canonical_name"], r["importance_weight"]) for r in entities] == [("user", 0.3)]
+        fact = await FactRepository(db).get_fact(result.facts_written[0])
+        assert fact is not None
+        assert fact.importance == pytest.approx(0.3)
+
+    async def test_we_subject_maps_to_user_at_extractor_level(self) -> None:
+        extractor = RuleBasedExtractor()
+        candidates = await extractor.extract(_envelope("We owns Acme"))
+        assert len(candidates) == 1
+        assert candidates[0].entity_name == "user"
+        assert candidates[0].importance == pytest.approx(0.3)
+        assert candidates[0].confidence == pytest.approx(0.60)
+        assert extractor.drop_counts.pronouns == 0
+
+    async def test_uppercase_we_maps_to_user(self) -> None:
+        extractor = RuleBasedExtractor()
+        candidates = await extractor.extract(_envelope("WE owns Acme"))
+        assert len(candidates) == 1
+        assert candidates[0].entity_name == "user"
+
+    async def test_triple_subject_i_maps_to_user(self) -> None:
+        extractor = RuleBasedExtractor()
+        candidates = await extractor.extract(
+            _envelope({"facts": [{"subject": "I", "predicate": "status", "object": "active"}]})
+        )
+        assert len(candidates) == 1
+        assert candidates[0].entity_name == "user"
+        assert candidates[0].importance == pytest.approx(0.3)
+
+    async def test_non_first_person_fact_keeps_default_importance(self) -> None:
+        extractor = RuleBasedExtractor()
+        candidates = await extractor.extract(_envelope("The pipeline is green"))
+        assert len(candidates) == 1
+        assert candidates[0].entity_name == "pipeline"
+        assert candidates[0].importance == pytest.approx(0.5)
+
+
+class TestExtractionDropCounts:
+    """C05 (T06): silent-drop classes are counted, not silent.
+
+    Every assertion reads the public ``ProcessingResult.drop_counts`` /
+    ``extractor.drop_counts`` fields -- never the extractor's private
+    counter. Reversal: removing the counters leaves every field 0, so
+    the nonzero assertions fail; removing the mapping above additionally
+    turns hedged/question lines into facts or drops silently again.
+    """
+
+    async def test_hedge_yields_zero_candidates_with_counter(self, creator: MemoryCreator) -> None:
+        result = await creator.process_signal(_row("Maybe Acme owns Beta"))
+        assert result.outcome is ProcessingOutcome.IGNORED
+        assert result.drop_counts.hedges == 1
+        assert result.drop_counts.total == 1
+        assert result.drop_counts.as_dict()["hedges"] == 1
+
+    async def test_question_yields_zero_candidates_with_counter(
+        self, creator: MemoryCreator
+    ) -> None:
+        result = await creator.process_signal(_row("Is the pipeline green?"))
+        assert result.outcome is ProcessingOutcome.IGNORED
+        assert result.drop_counts.questions == 1
+        assert result.drop_counts.total == 1
+
+    async def test_non_first_person_pronoun_still_dropped_and_counted(
+        self, creator: MemoryCreator
+    ) -> None:
+        result = await creator.process_signal(_row("You owns Acme"))
+        assert result.outcome is ProcessingOutcome.IGNORED
+        assert result.drop_counts.pronouns == 1
+        assert result.drop_counts.total == 1
+
+    async def test_mixed_signal_counts_each_class_once(self, creator: MemoryCreator) -> None:
+        text = "Maybe Acme owns Beta. Is the pipeline green? You owns Acme."
+        result = await creator.process_signal(_row(text))
+        assert result.outcome is ProcessingOutcome.IGNORED
+        assert result.drop_counts.hedges == 1
+        assert result.drop_counts.questions == 1
+        assert result.drop_counts.pronouns == 1
+        assert result.drop_counts.total == 3
+
+    async def test_noise_line_and_no_match_are_counted(self, creator: MemoryCreator) -> None:
+        noise = await creator.process_signal(_row("thanks"))
+        assert noise.outcome is ProcessingOutcome.IGNORED
+        assert noise.drop_counts.noise == 1
+        assert noise.drop_counts.total == 1
+
+        nomatch = await creator.process_signal(_row("hello world"))
+        assert nomatch.outcome is ProcessingOutcome.IGNORED
+        assert nomatch.drop_counts.no_match == 1
+        assert nomatch.drop_counts.total == 1
+
+    async def test_subjectless_structured_payload_is_counted(self, creator: MemoryCreator) -> None:
+        result = await creator.process_signal(_row({"status": "active"}))
+        assert result.outcome is ProcessingOutcome.IGNORED
+        assert result.drop_counts.subjectless == 1
+        assert result.drop_counts.total == 1
+
+    async def test_non_storable_candidate_is_counted_by_creator_not_extractor(
+        self, creator: MemoryCreator
+    ) -> None:
+        # The triple path extracts "thanks" as a candidate; the creator's
+        # _is_storable filter discards it (noise object value). Counted
+        # exactly once: extractor counters stay 0, non_storable is 1.
+        result = await creator.process_signal(
+            _row({"facts": [{"subject": "Acme", "predicate": "status", "object": "thanks"}]})
+        )
+        assert result.outcome is ProcessingOutcome.IGNORED
+        assert result.drop_counts.non_storable == 1
+        assert result.drop_counts.malformed_skipped == 0
+        assert result.drop_counts.total == 1
+
+    async def test_counters_reset_per_signal_and_snapshot_is_a_copy(self) -> None:
+        extractor = RuleBasedExtractor()
+        await extractor.extract(_envelope("Maybe Acme owns Beta"))
+        first = extractor.drop_counts
+        assert first.hedges == 1
+        await extractor.extract(_envelope("Acme owns Beta"))
+        assert first.hedges == 1  # the snapshot was not mutated by signal two
+        assert extractor.drop_counts.total == 0
+
+    async def test_result_summary_surfaces_drop_counts(self, creator: MemoryCreator) -> None:
+        result = await creator.process_signal(_row("Maybe Acme owns Beta"))
+        summary = result.summary()
+        assert summary["dropped"] == 1
+        assert summary["drop_counts"]["hedges"] == 1
+        # Pre-existing keys are untouched (additive-only contract).
+        assert set(summary) >= {
+            "signal_id", "outcome", "candidates", "facts_written",
+            "conflicts", "error",
+        }
+
+    async def test_batch_report_aggregates_but_summary_stays_unchanged(self, db: Database) -> None:
+        from paa.storage.relational.database import dumps
+
+        async def insert(payload: Any) -> None:
+            await db.execute(
+                "INSERT INTO cold_lake_signals "
+                "(id, received_at, channel, raw_payload, content_hash, sync_status) "
+                "VALUES (?,?,?,?,?, 'unprocessed')",
+                (
+                    str(uuid.uuid4()),
+                    to_iso(utc_now()),
+                    "test",
+                    dumps(payload),
+                    "h" + uuid.uuid4().hex[:20],
+                ),
+            )
+
+        await insert({"facts": [{"subject": "Good", "predicate": "status", "object": "active"}]})
+        await insert("Maybe Acme owns Beta")
+        report = await MemoryCreator(db).run_batch(limit=10)
+        assert report.processed == 1
+        assert report.ignored == 1
+        assert report.dropped == 1
+        assert report.drop_counts.hedges == 1
+        # BatchReportView(**report.summary()) in api/app.py unpacks this
+        # dict; the summary shape must stay exactly as existing consumers
+        # expect.
+        assert set(report.summary()) == {
+            "claimed", "processed", "ignored", "malformed",
+            "quarantined", "errors", "facts_written",
+        }
