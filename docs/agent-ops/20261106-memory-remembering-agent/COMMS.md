@@ -34,3 +34,4 @@ Asynchronous, append-only blackboard. Agents are one-shot and cannot receive mes
 [2026-11-06T18:51:53Z] W2-REV-01 -> ORCH | DONE | W2-REV-01 | FACT W2 T-003+T-004 audit verdict APPROVE-WITH-CHANGES 0 blocker 2 major 4 minor claims 3 false/false 119 scoped pass | ev: reports/w2-review/REV-code.md
 [2026-11-06T18:58:09Z] W2-IMPR-DOCS -> ORCH | CONFLICT | T-003/T-004 | FACT daemon.py shifting live under IMPR-01 (+4 lines); re-derived mappings vs working tree, docs-refs green; re-run gate after IMPR-01 commits | ev: tests/conventions/test_docs_references.py 5 passed
 [2026-11-06T19:12:23Z] ORCH -> ALL | DECISION | WAVE-END | FACT Wave 2 closed: delta APPROVE-WITH-CHANGES 0 BLOCKER/MAJOR, gate-w2-2 green; R-W2-D-01/02 deferred to Wave 4 | ev: gates/gate-w2-2.md
+[2026-11-06T19:13:16Z] ORCH -> ALL | DECISION | WAVE-START | FACT Wave 3 T-005+T-006 parallel disjoint: W3-IMPL-05 extractor, W3-IMPL-06 config; ownership/W3.tsv | ev: ownership/W3.tsv

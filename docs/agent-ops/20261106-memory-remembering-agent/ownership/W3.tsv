@@ -1,0 +1,10 @@
+W3-IMPL-05	src/paa/memory/creator.py
+W3-IMPL-05	tests/memory/test_creator.py
+W3-IMPL-05	tests/memory/test_llm_extractor.py
+W3-IMPL-05	docs/agent-ops/20261106-memory-remembering-agent/reports/w3-impl/W3-IMPL-05-T-005.md
+W3-IMPL-06	src/paa/config.py
+W3-IMPL-06	src/paa/memory/decay.py
+W3-IMPL-06	tests/memory/test_decay.py
+W3-IMPL-06	docs/modules/memory.md
+W3-IMPL-06	docs/operations/configuration-and-environment.md
+W3-IMPL-06	docs/agent-ops/20261106-memory-remembering-agent/reports/w3-impl/W3-IMPL-06-T-006.md
