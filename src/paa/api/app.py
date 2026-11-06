@@ -274,6 +274,12 @@ def create_app(runtime: Runtime) -> FastAPI:
             raise HTTPException(status_code=429, detail="memory under backpressure")
         creator = runtime.memory_creator or MemoryCreator(runtime.db)
         report = await creator.run_batch(limit=limit)
+        # C02: drain the pending-embedding backlog after the signal batch
+        # so facts committed while the sink was absent/erroring get indexed.
+        try:
+            await creator.drain_pending_embeddings()
+        except Exception as exc:
+            log.error("api.embedding_drain_failed", error=redact(str(exc)))
         return BatchReportView(**report.summary())
 
     log.info("api.app_created", version=__version__)

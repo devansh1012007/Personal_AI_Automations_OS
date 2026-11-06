@@ -331,7 +331,9 @@ class Runtime:
             embedder=embedder,
             sandbox=sandbox,
         )
-        memory_creator = _build_memory_creator(settings, db, model_adapter)
+        memory_creator = _build_memory_creator(
+            settings, db, model_adapter, vector_store=vector_store, embedder=embedder
+        )
 
         recovery = RecoveryEngine(
             ledger,
@@ -432,6 +434,9 @@ def _build_memory_creator(
     settings: Settings,
     db: RelationalBackend,
     model_adapter: Any,
+    *,
+    vector_store: Any = None,
+    embedder: Any = None,
 ) -> Any:
     """Build the Memory Creator with its extractor wired from configuration.
 
@@ -440,6 +445,17 @@ def _build_memory_creator(
     extractor (``LLMFactExtractor``, supplied by T-003) is used; it is resolved
     lazily so a configured-but-not-yet-implemented extractor degrades to the
     rule-based default rather than crashing boot.
+
+    C01: when ``vector_store`` and ``embedder`` are both available (the
+    :func:`_try_vector` result threaded from :meth:`Runtime.build`), a
+    ``VectorEmbeddingSink`` is attached so new facts are embedded. DECISION:
+    keyword-only params thread the already-built pair rather than rebuilding
+    inside this function — rebuilding would double-construct the store and
+    needlessly reload the embedder, and keyword-only defaults keep the
+    existing 3-positional-arg calls (tests) working unchanged. When either
+    is missing, or construction fails, the creator degrades to
+    ``embedding_sink=None`` with a warning, matching the degrade-never-raise
+    factory pattern; boot must not fail on a missing vector extra.
     """
     import paa.memory.creator as _creator_mod
 
@@ -456,7 +472,20 @@ def _build_memory_creator(
                 )
         except Exception as exc:  # degradation path: never crash boot on a model
             log.warning("runtime.llm_extractor_unavailable", error=redact(str(exc)))
-    return MemoryCreator(db, extractor=extractor)
+
+    embedding_sink: Any = None
+    if vector_store is not None and embedder is not None:
+        try:
+            embedding_sink = _creator_mod.VectorEmbeddingSink(vector_store, embedder)
+        except Exception as exc:  # degradation path: never crash boot on vectors
+            log.warning("memory.embedding_sink", status="degraded", error=str(exc))
+            embedding_sink = None
+    else:
+        log.warning("memory.embedding_sink", status="degraded")
+    if embedding_sink is not None:
+        embedder_name = getattr(embedder, "model_name", type(embedder).__name__)
+        log.info("memory.embedding_sink", status="wired", embedder=embedder_name)
+    return MemoryCreator(db, extractor=extractor, embedding_sink=embedding_sink)
 
 
 async def _acquire_sandbox(settings: Settings) -> Any:

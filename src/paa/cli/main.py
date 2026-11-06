@@ -637,6 +637,14 @@ def drain(
         # ``or MemoryCreator(rt.db)`` fallback was dead code.
         creator = rt.memory_creator
         report = await creator.run_batch(limit=limit)
+        # C02: drain the pending-embedding backlog after the signal batch.
+        # drain_pending_embeddings leaves facts pending (never terminal
+        # ``failed``) on sink errors; isolate the call so the batch report
+        # still prints.
+        try:
+            await creator.drain_pending_embeddings()
+        except Exception as exc:
+            console.print(f"[red]embedding drain failed: {exc}[/red]")
         summary = report.summary()
         table = Table(
             "claimed",

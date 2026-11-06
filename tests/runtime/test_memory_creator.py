@@ -191,6 +191,107 @@ class TestBuildMemoryCreatorDegradation:
         assert "sk-or-v1" not in logged_error, f"secret leaked into log: {logged_error!r}"
 
 
+class _FakeVectorStore:
+    """Minimal vector-store stand-in — _build_memory_creator only threads it
+    into VectorEmbeddingSink, which stores it without touching it."""
+
+    def __init__(self) -> None:
+        pass
+
+
+class _FakeEmbedder:
+    """Minimal embedder stand-in exposing model_name like the real encoders."""
+
+    model_name = "fake-embedder-v1"
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        return [[1.0] for _ in texts]
+
+
+class TestBuildMemoryCreatorEmbeddingSink:
+    """C01: VectorEmbeddingSink wired only when store AND embedder present.
+
+    Reversal: without the threading, creator._sink is always None and the
+    wired test fails; without the degrade path, the missing-vector tests
+    raise instead of returning a creator with sink None.
+    """
+
+    async def test_wires_sink_when_vector_store_and_embedder_available(self) -> None:
+        settings = _settings()
+        db = _FakeDB()
+        model_adapter = _FakeModel()
+        store = _FakeVectorStore()
+        embedder = _FakeEmbedder()
+
+        creator = _build_memory_creator(
+            settings, db, model_adapter, vector_store=store, embedder=embedder
+        )
+
+        from paa.memory.creator import VectorEmbeddingSink
+
+        assert isinstance(creator._sink, VectorEmbeddingSink)
+        assert creator._sink._store is store
+        assert creator._sink._embedder is embedder
+
+    async def test_degrades_to_none_without_vector_backends(self) -> None:
+        settings = _settings()
+        db = _FakeDB()
+        model_adapter = _FakeModel()
+
+        creator = _build_memory_creator(settings, db, model_adapter)
+
+        assert creator._sink is None
+
+    async def test_degrades_when_only_store_present(self) -> None:
+        settings = _settings()
+        db = _FakeDB()
+        model_adapter = _FakeModel()
+
+        creator = _build_memory_creator(
+            settings, db, model_adapter, vector_store=_FakeVectorStore(), embedder=None
+        )
+
+        assert creator._sink is None
+
+    async def test_degrades_when_only_embedder_present(self) -> None:
+        settings = _settings()
+        db = _FakeDB()
+        model_adapter = _FakeModel()
+
+        creator = _build_memory_creator(
+            settings, db, model_adapter, vector_store=None, embedder=_FakeEmbedder()
+        )
+
+        assert creator._sink is None
+
+    async def test_sink_construction_failure_degrades(self) -> None:
+        import paa.memory.creator as creator_mod
+
+        settings = _settings()
+        db = _FakeDB()
+        model_adapter = _FakeModel()
+
+        original = creator_mod.VectorEmbeddingSink
+
+        class _BrokenSink:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                raise RuntimeError("no index")
+
+        creator_mod.VectorEmbeddingSink = _BrokenSink  # type: ignore[assignment]
+        try:
+            creator = _build_memory_creator(
+                settings,
+                db,
+                model_adapter,
+                vector_store=_FakeVectorStore(),
+                embedder=_FakeEmbedder(),
+            )
+        finally:
+            creator_mod.VectorEmbeddingSink = original
+
+        assert creator._sink is None
+
+
 class TestBuildMemoryCreatorReturnsMemoryCreator:
     """The return value is always a MemoryCreator, never None."""
 

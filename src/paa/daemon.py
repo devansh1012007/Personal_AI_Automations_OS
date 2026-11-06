@@ -151,6 +151,14 @@ class Daemon:
                     processed = report.claimed
                 except Exception as exc:
                     log.error("daemon.ingestion_failed", error=redact(str(exc)))
+                # C02: drain the pending-embedding backlog after each batch.
+                # drain_pending_embeddings never flips facts to terminal
+                # ``failed`` on sink errors, but isolate the call so a
+                # substrate hiccup cannot stall ingestion.
+                try:
+                    await creator.drain_pending_embeddings()
+                except Exception as exc:
+                    log.error("daemon.embedding_drain_failed", error=redact(str(exc)))
             await self._sleep(0 if processed else self._ingestion_interval)
 
     async def _maintenance_loop(self) -> None:

@@ -835,6 +835,13 @@ class VectorEmbeddingSink:
 
         collection = self._collection or ACTIVE_FACTS.name
         vectors = await self._embedder.embed([f.statement for f in facts])
+        # DECISION (C01b): payload carries the reader's keys (object_value /
+        # confidence / importance) alongside the original writer keys
+        # (statement etc.). The _semantic reader in
+        # paa.agents.context_agents reads object_value for content and
+        # confidence/importance for ranking; without them every hit returned
+        # empty content. Old points without the new keys still read with
+        # reader defaults (0.8/0.5).
         points = [
             VectorPoint(
                 id=fact.id,
@@ -845,6 +852,9 @@ class VectorEmbeddingSink:
                     "memory_domain": fact.domain,
                     "memory_scope": fact.scope,
                     "statement": fact.statement,
+                    "object_value": fact.object_value,
+                    "confidence": fact.confidence,
+                    "importance": fact.importance,
                 },
             )
             for fact, vector in zip(facts, vectors, strict=False)
@@ -1206,6 +1216,50 @@ class MemoryCreator:
             return
         if indexed:
             await self._facts.mark_embedded(list(indexed))
+
+    async def drain_pending_embeddings(self, limit: int = 100) -> int:
+        """Embed the head of the ``pending`` backlog, oldest first.
+
+        C02 backlog path: facts written while the sink was absent or
+        erroring stay ``pending`` (``_enqueue_embeddings`` is write-path
+        only). Draining calls :meth:`FactRepository.pending_embeddings`
+        (drained, not paginated — ``mark_embedded`` moves rows out of the
+        partial index), hands the batch to the sink, then marks the
+        returned ids ``indexed``.
+
+        INVARIANT: a sink failure never flips a fact to ``failed``
+        (terminal). The batch stays ``pending`` for the next drain and the
+        error is logged. Idempotent: with nothing pending, returns 0.
+        Returns the number of facts newly indexed.
+        """
+        if limit <= 0:
+            return 0
+        pending = await self._facts.pending_embeddings(limit)
+        if self._sink is None or not pending:
+            log.info(
+                "memory.embedding_drain",
+                pending=len(pending),
+                indexed=0,
+            )
+            return 0
+        try:
+            indexed = await self._sink.enqueue(pending)
+        except Exception as exc:
+            log.error(
+                "memory.embedding_drain_failed",
+                error=str(exc),
+                pending=len(pending),
+            )
+            return 0
+        indexed_ids = list(indexed)
+        if indexed_ids:
+            await self._facts.mark_embedded(indexed_ids)
+        log.info(
+            "memory.embedding_drain",
+            pending=len(pending),
+            indexed=len(indexed_ids),
+        )
+        return len(indexed_ids)
 
     # -- signal bookkeeping ------------------------------------------------
 

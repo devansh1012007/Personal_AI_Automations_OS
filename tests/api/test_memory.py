@@ -295,6 +295,36 @@ class TestDrain:
         assert body["claimed"] == 0
         assert body["facts_written"] == 0
 
+    async def test_drain_also_indexes_pending_embeddings(
+        self, client: TestClient, runtime: Runtime
+    ) -> None:
+        """C02: POST /memory/drain drains pending embeddings after run_batch.
+
+        Reversal: without the drain call the seeded pending fact stays
+        pending.
+        """
+        from paa.memory.facts import FactRepository
+
+        fact_id = await _seed_fact(
+            runtime, entity_id=ENTITY_ID, predicate="likes", object_value="espresso"
+        )
+
+        class _RecordingSink:
+            async def enqueue(self, facts: Any) -> list[str]:
+                return [f.id for f in facts]
+
+        runtime.memory_creator._sink = _RecordingSink()
+
+        resp = client.post("/memory/drain")
+        assert resp.status_code == 200, resp.text
+        pending = await FactRepository(runtime.db).pending_embeddings()
+        assert fact_id not in [f.id for f in pending]
+        status = await runtime.db.fetch_value(
+            "SELECT embedding_status FROM hot_serving_active_facts WHERE id = ?",
+            (fact_id,),
+        )
+        assert status == "indexed"
+
     async def test_drain_uses_llm_creator_when_extraction_model_set(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

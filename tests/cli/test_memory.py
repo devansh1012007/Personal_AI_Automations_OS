@@ -164,6 +164,49 @@ class TestDrain:
         # prints its cell value, so at least seven "0" digits must appear.
         assert result.stdout.count("0") >= 7, result.stdout
 
+    def test_drain_also_indexes_pending_embeddings(
+        self, paa_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """C02: `paa memory drain` drains pending embeddings after run_batch.
+
+        Reversal: without the drain call the seeded pending fact stays
+        pending.
+        """
+        asyncio.run(_seed_entity_fact(paa_home, "Drain Corp", "status", "active"))
+
+        class _RecordingSink:
+            async def enqueue(self, facts: Any) -> list[str]:
+                return [f.id for f in facts]
+
+        async def fake_build_runtime(*, run_recovery: bool = False) -> Runtime:
+            settings = Settings(home=paa_home)
+            settings.policy.mode = PermissionMode.AUTO
+            settings.sandbox.backend = "subprocess"
+            rt = await Runtime.build(
+                settings,
+                run_recovery=False,
+                enable_optional_backends=False,
+            )
+            rt.memory_creator._sink = _RecordingSink()
+            return rt
+
+        monkeypatch.setattr("paa.cli.main._build_runtime", fake_build_runtime)
+        result = _invoke(["drain", "--limit", "25"])
+        assert result.exit_code == 0, result.output
+
+        async def _pending() -> list[Any]:
+            db = await _connect_db(paa_home)
+            try:
+                return await db.fetch_all(
+                    "SELECT id FROM hot_serving_active_facts "
+                    "WHERE embedding_status = 'pending'"
+                )
+            finally:
+                await db.close()
+
+        assert asyncio.run(_pending()) == []
+        reset_settings_cache()
+
     def test_processes_a_seeded_signal(self, paa_home: Path) -> None:
         signal_id = asyncio.run(
             _seed_signal(

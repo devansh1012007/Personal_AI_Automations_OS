@@ -240,3 +240,173 @@ class TestEmbeddingHandOff:
             (result.facts_written[0],),
         )
         assert [row["embedding_status"] for row in statuses] == ["pending"]
+
+
+class _FakeEmbedder:
+    """Deterministic 384-d embedder returning one unit-ish vector per text."""
+
+    dimensions = 384
+    model_name = "fake-embedder-v1"
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        return [[1.0, 0.0] + [0.0] * 382 for _ in texts]
+
+
+class _FakeVectorStore:
+    """In-memory vector store capturing upserted points for assertions."""
+
+    def __init__(self) -> None:
+        self.points: dict[str, Any] = {}
+
+    async def upsert(self, collection: str, points: Sequence[Any]) -> None:
+        for point in points:
+            self.points[point.id] = point
+
+    async def search(self, collection: str, vector: Any, *, limit: int = 30) -> list[Any]:
+        from paa.storage.vector import SearchHit
+
+        return [
+            SearchHit(id=p.id, score=0.99, payload=dict(p.payload))
+            for p in list(self.points.values())[:limit]
+        ]
+
+    async def count(self, collection: str) -> int:
+        return len(self.points)
+
+
+class TestVectorSinkSemanticRoundTrip:
+    """C01b: sink payload keys must match what _semantic reads.
+
+    Reversal: removing object_value/confidence/importance from the payload
+    makes _semantic return content == "" (reader default), so the round-trip
+    assertion fails.
+    """
+
+    async def test_wired_sink_indexes_and_marks_indexed(self, db: Database) -> None:
+        """T01: triple-payload process_signal with a real VectorEmbeddingSink
+        leaves zero pending rows and one point in active_facts."""
+        from paa.memory.creator import VectorEmbeddingSink
+
+        store = _FakeVectorStore()
+        creator = MemoryCreator(db, embedding_sink=VectorEmbeddingSink(store, _FakeEmbedder()))
+
+        result = await creator.process_signal(_signal_row("Project Sigma"))
+
+        assert result.outcome is ProcessingOutcome.PROCESSED
+        assert len(result.facts_written) == 1
+        assert len(store.points) == 1
+        fact_id = result.facts_written[0]
+        assert fact_id in store.points
+        statuses = await db.fetch_all(
+            "SELECT embedding_status FROM hot_serving_active_facts WHERE id = ?",
+            (fact_id,),
+        )
+        assert [row["embedding_status"] for row in statuses] == ["indexed"]
+
+    async def test_payload_carries_reader_keys(self, db: Database) -> None:
+        from paa.memory.creator import VectorEmbeddingSink
+
+        store = _FakeVectorStore()
+        creator = MemoryCreator(db, embedding_sink=VectorEmbeddingSink(store, _FakeEmbedder()))
+        await creator.process_signal(_signal_row("Project Payload"))
+
+        assert len(store.points) == 1
+        point = next(iter(store.points.values()))
+        assert point.payload["object_value"] == "active"
+        assert point.payload["predicate"] == "status"
+        assert float(point.payload["confidence"]) > 0.0
+        assert float(point.payload["importance"]) > 0.0
+        assert point.payload["statement"] != ""
+
+    async def test_semantic_round_trip_returns_non_empty_content(
+        self, db: Database
+    ) -> None:
+        from paa.agents.context_agents import PlannerContextBuilder
+        from paa.memory.creator import VectorEmbeddingSink
+
+        store = _FakeVectorStore()
+        embedder = _FakeEmbedder()
+        creator = MemoryCreator(db, embedding_sink=VectorEmbeddingSink(store, embedder))
+        result = await creator.process_signal(_signal_row("Project RoundTrip"))
+        assert result.outcome is ProcessingOutcome.PROCESSED
+
+        builder = PlannerContextBuilder(db=db, vector_store=store, embedder=embedder)
+        elements = await builder._semantic("Project RoundTrip status")
+        assert elements, "semantic search returned no elements"
+        assert elements[0].content != "", "semantic content must be the fact object_value"
+        assert elements[0].content == "active"
+
+
+class TestDrainPendingEmbeddings:
+    """C02: drain_pending_embeddings replays pending -> indexed, idempotently.
+
+    Reversal: without the method every drain test raises AttributeError;
+    without the call sites the API/CLI drains leave the fact pending.
+    """
+
+    async def test_drain_indexes_pending_and_is_idempotent(self, db: Database) -> None:
+        """T02 second half: a fact committed with no sink (pending) is
+        indexed by a later drain; a second drain returns 0."""
+        creator_no_sink = MemoryCreator(db)
+        result = await creator_no_sink.process_signal(_signal_row("Project Delta"))
+        assert result.outcome is ProcessingOutcome.PROCESSED
+        fact_id = result.facts_written[0]
+
+        pending = await FactRepository(db).pending_embeddings()
+        assert [f.id for f in pending] == [fact_id]
+
+        sink = _RecordingSink()
+        creator_with_sink = MemoryCreator(db, embedding_sink=sink)
+        indexed = await creator_with_sink.drain_pending_embeddings()
+        assert indexed == 1
+        assert await FactRepository(db).pending_embeddings() == []
+        statuses = await db.fetch_all(
+            "SELECT embedding_status FROM hot_serving_active_facts WHERE id = ?",
+            (fact_id,),
+        )
+        assert [row["embedding_status"] for row in statuses] == ["indexed"]
+
+        # Idempotent: nothing left to drain.
+        assert await creator_with_sink.drain_pending_embeddings() == 0
+
+    async def test_drain_with_failing_sink_leaves_pending_then_recovers(
+        self, db: Database
+    ) -> None:
+        """A failing sink never flips to terminal failed; next drain flips."""
+        creator_no_sink = MemoryCreator(db)
+        result = await creator_no_sink.process_signal(_signal_row("Project Epsilon"))
+        fact_id = result.facts_written[0]
+
+        class BrokenSink:
+            async def enqueue(self, facts: Sequence[Fact]) -> Sequence[str]:
+                raise RuntimeError("vector substrate down")
+
+        failing = MemoryCreator(db, embedding_sink=BrokenSink())
+        assert await failing.drain_pending_embeddings() == 0
+        statuses = await db.fetch_all(
+            "SELECT embedding_status FROM hot_serving_active_facts WHERE id = ?",
+            (fact_id,),
+        )
+        assert [row["embedding_status"] for row in statuses] == ["pending"]
+
+        recovering = MemoryCreator(db, embedding_sink=_RecordingSink())
+        assert await recovering.drain_pending_embeddings() == 1
+        statuses = await db.fetch_all(
+            "SELECT embedding_status FROM hot_serving_active_facts WHERE id = ?",
+            (fact_id,),
+        )
+        assert [row["embedding_status"] for row in statuses] == ["indexed"]
+
+    async def test_drain_without_sink_returns_zero_and_leaves_pending(
+        self, db: Database
+    ) -> None:
+        creator = MemoryCreator(db)
+        result = await creator.process_signal(_signal_row("Project Zeta"))
+        assert result.outcome is ProcessingOutcome.PROCESSED
+        assert await creator.drain_pending_embeddings() == 0
+        pending = await FactRepository(db).pending_embeddings()
+        assert len(pending) == 1
+
+    async def test_drain_empty_backlog_returns_zero(self, db: Database) -> None:
+        creator = MemoryCreator(db, embedding_sink=_RecordingSink())
+        assert await creator.drain_pending_embeddings() == 0
