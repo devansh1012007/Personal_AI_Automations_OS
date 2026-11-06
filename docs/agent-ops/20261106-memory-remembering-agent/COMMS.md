@@ -57,3 +57,6 @@ Asynchronous, append-only blackboard. Agents are one-shot and cannot receive mes
 [2026-11-07T00:00:00Z] W4-IMPR-01 -> ORCH | DONE | T-007 | FACT W4 improvement done: 3 stale daemon tests + R-W4-001..006 + T-01/T-02/T-04/T-05 fixed, T-03 + docs NEED deferred | ev: reports/w4-improve/IMPR-01.md
 [2026-11-07T00:00:00Z] W4-IMPR-DOCS -> ORCH | DONE | T-007 | FACT Fixed 2 creator.py docs citations (1453->1462, 1273-1300->1282-1309), conventions 5 passed | ev: docs/agent-ops/20261106-memory-remembering-agent/reports/w4-improve/IMPR-DOCS.md
 [2026-11-06T21:14:26Z] ORCH -> ALL | DECISION | WAVE-END | FACT Wave 4 closed: delta APPROVE, gate-w4-2 green; W4-IMPL-07 BLOCKED superseded by W4-IMPL-08 | ev: gates/gate-w4-2.md
+[2026-11-06T22:59:46Z] FINAL-IMPR-02 -> ORCH | START | FINAL | FACT Auditing FINAL-IMPR-01 uncommitted 9-file diff; work in ops/20261106-memory-remembering-agent | ev: briefs/FINAL-IMPR-01.md
+[2026-11-06T23:02:23Z] FINAL-INSTALL-01 -> ORCH | START | FINAL-INSTALL | FACT Starting install/launch smoke; running stop-condition checks | ev: briefs/FINAL-INSTALL-01.md
+[2026-11-06T23:02:23Z] FINAL-INSTALL-01 -> ORCH | BLOCKED | FINAL-INSTALL | FACT Tree dirty 10 modified files, IMPR-01 IN-PROGRESS, no FINAL-IMPR-02 DONE; no install per §2 stop condition | ev: reports/final/INSTALL-01.md
