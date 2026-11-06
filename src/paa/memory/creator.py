@@ -1168,7 +1168,15 @@ class MemoryCreator:
         _log_drops(envelope, drop_counts)
         if not candidates:
             await self._set_status(envelope, "processed", now=now)
-            log.debug("memory.signal_ignored", signal_id=envelope.id, channel=envelope.channel)
+            log.info(
+                "memory.signal_processed",
+                signal_id=envelope.id,
+                outcome="ignored",
+                facts=0,
+                entities=0,
+                dropped=drop_counts.total,
+                drop_counts=drop_counts.as_dict(),
+            )
             return ProcessingResult(
                 envelope.id, ProcessingOutcome.IGNORED, drop_counts=drop_counts
             )
@@ -1495,24 +1503,25 @@ class MemoryCreator:
 
         Log honesty (R-W1-002): ``batch_size`` is the size of the batch
         attempted in *this* call, never the total backlog. ``backlog_remaining``
-        is a boolean probe — True when rows remain pending after this call.
-        On success it is one lightweight ``pending_embeddings(1)`` fetch
-        through the existing API (LIMIT 1 on the partial index). It is not
-        a total count: ``FactRepository`` exposes no ``COUNT(*)`` API and
-        this module must not invent one (facts.py is read-only in this
-        wave), so the probe reports presence, not a number. No unbounded
-        loop: one batch per call, daemon cadence drains progress iteratively.
+        is True when rows remain pending after this call, and
+        ``pending_count`` is their exact number: one bounded ``COUNT(*)``
+        over the ``embedding_status = 'pending'`` partial index, via
+        :meth:`_pending_embedding_count` (facts.py is read-only, so the
+        probe lives here). No unbounded loop: one batch per call, daemon
+        cadence drains progress iteratively.
         """
         if limit <= 0:
             return 0
         pending = await self._facts.pending_embeddings(limit)
         batch_size = len(pending)
         if self._sink is None or not pending:
+            pending_count = await self._pending_embedding_count()
             log.info(
                 "memory.embedding_drain",
                 batch_size=batch_size,
                 indexed=0,
-                backlog_remaining=batch_size > 0,
+                backlog_remaining=pending_count > 0,
+                pending_count=pending_count,
             )
             return 0
         try:
@@ -1529,18 +1538,25 @@ class MemoryCreator:
         indexed_ids = list(indexed)
         if indexed_ids:
             await self._facts.mark_embedded(indexed_ids)
-        # Honest remaining-backlog probe via the existing API (bounded,
-        # LIMIT 1). Covers a full batch with more behind it, a partial/
-        # empty sink return, and the pathological unknown-id return — all
-        # leave a pending row behind.
-        backlog_remaining = bool(await self._facts.pending_embeddings(1))
+        # Exact remaining-backlog gauge (bounded COUNT, see docstring).
+        pending_count = await self._pending_embedding_count()
+        backlog_remaining = pending_count > 0
         log.info(
             "memory.embedding_drain",
             batch_size=batch_size,
             indexed=len(indexed_ids),
             backlog_remaining=backlog_remaining,
+            pending_count=pending_count,
         )
         return len(indexed_ids)
+
+    async def _pending_embedding_count(self) -> int:
+        """Exact pending-embedding backlog size (one bounded COUNT)."""
+        value = await self._db.fetch_value(
+            "SELECT COUNT(*) FROM hot_serving_active_facts "
+            "WHERE embedding_status = 'pending' AND superseded_by IS NULL"
+        )
+        return int(value or 0)
 
     # -- signal bookkeeping ------------------------------------------------
 

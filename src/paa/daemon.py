@@ -255,7 +255,7 @@ class Daemon:
             log.warning("daemon.curator_unavailable", error=redact(str(exc)))
             from paa.memory.decay import DecaySweeper
 
-            await DecaySweeper(self._rt.db).sweep()
+            await DecaySweeper(self._rt.db).sweep(dry_run=dry_run)
             return None
         phase = self._curate_next_phase
         log.info(
@@ -268,6 +268,7 @@ class Daemon:
             budget_seconds=budget, start_phase=phase, dry_run=dry_run
         )
         self._curate_next_phase = report.stopped_early_at
-        self._curate_preview_done = True
+        if report.completed_fully and report.errors == 0:
+            self._curate_preview_done = True
         log.info("daemon.curation_completed", dry_run=dry_run, **report.summary())
         return report
