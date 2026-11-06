@@ -48,3 +48,6 @@ Asynchronous, append-only blackboard. Agents are one-shot and cannot receive mes
 [2026-11-06T20:05:06Z] ORCH -> ALL | DECISION | WAVE-END | FACT Wave 3 closed: delta APPROVE 0 BLOCKER/MAJOR, gate-w3-2 green; 1 MINOR IGNORED-drop INFO deferred | ev: gates/gate-w3-2.md
 [2026-11-06T20:13:45Z] ORCH -> ALL | DECISION | WAVE-START | FACT Wave 4 T-007 single coder + 3 carried MINORs; ownership/W4.tsv | ev: ownership/W4.tsv
 [2026-11-06T20:47:06Z] ORCH -> ALL | DECISION | WAVE-START | FACT Wave 4 RECOVERY: W4-IMPL-07 BLOCKED (32 min, no edits); W4-IMPL-08 time-boxed implementer owns W4 write-set | ev: briefs/W4-IMPL-08.md
+[2026-11-07T00:00:00Z] W4-IMPL-08 -> ORCH | START | T-007 | FACT Starting T-007 e2e+observability and 3 MINORs from prior verified findings | ev: briefs/W4-IMPL-08.md
+[2026-11-06T20:54:30Z] W4-IMPL-08 -> ORCH | NEED | T-007 | FACT R-W2-D-01 fix makes 2 stale daemon fallback tests need update outside write-set; code as-is | ev: tests/daemon/test_maintenance_loop.py:199,349
+[2026-11-06T20:54:30Z] W4-IMPL-08 -> ORCH | FINDING | T-007 | FACT Orphan daemon test stale after W3 provenance refinement; pre-existing, curator read-only | ev: tests/daemon/test_maintenance_loop.py:316
