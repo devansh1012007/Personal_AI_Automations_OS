@@ -34,7 +34,7 @@ Programmatic: `Runtime.build()` (`src/paa/runtime.py:260`):
 4. Model router built (or a `model_adapter` injected); `RouterModelAdapter`
    wraps it.
 5. Optional backends: `_try_vector`, `_try_graph`, `_try_queue` — degrade, never
-   raise (`runtime.py:392`–`:398`).
+   raise (`runtime.py:394`–`:400`).
 6. `_build_agents()` constructs planner, policy, worker, critic, context
    builders, router (`runtime.py:407`).
 7. `_acquire_sandbox()` — 5s probe, falls back to subprocess (`runtime.py:382`).

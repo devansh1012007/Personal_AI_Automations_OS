@@ -56,7 +56,7 @@ ingestion ─────────► cold_lake (immutable CAS blobs)
  (truth)       (recall)      (provenance)    (volatile)      (host disk)
 ```
 
-This diagram is reproduced from `README.md:94` and reflects the actual
+This diagram is reproduced from `README.md:174` and reflects the actual
 substrate topology. `hot_serving` is the relational mutable read path; the
 other three are derived/caches that degrade when their optional extras are
 absent.
@@ -93,7 +93,7 @@ Each is attempted inside `_try_vector` / `_try_graph` / `_try_queue` /
 in-process fallback with a logged warning. The runtime must boot on a laptop
 with only core dependencies installed.
 
-`src/paa/runtime.py:359`, `:372`, `:383`, `:393`.
+`src/paa/runtime.py:359`, `:372`, `:423`, `:496`.
 
 ### 3. No generative reasoning in the control path
 
@@ -143,7 +143,7 @@ TASK_REQUESTED → TASK_QUEUED → CONTEXT_HYDRATED → PLAN_COMPILED
                 └── STATE_ROLLBACK_TRIGGERED             (drift → restore)
 ```
 
-`README.md:114`. `EXECUTION_COMPLETED` fires **per step**, not per task, and is
+`README.md:194`. `EXECUTION_COMPLETED` fires **per step**, not per task, and is
 not terminal (`docs/adr/0010`).
 
 Orchestrator phases (`src/paa/agents/orchestrator.py:292`):

@@ -57,7 +57,7 @@ to `None` (ingestion skipped).
 |---|---|---|---|
 | `Daemon` → `Runtime` | `boot_recovery()`, `run()`, `queue`, `agents` | Drive the runtime | `daemon.py:44` |
 | `Daemon` → `MemoryCreator` | `run_batch()` | Ingest signals | `daemon.py:148` |
-| `Daemon` → `DecaySweeper` | `sweep()` | Evict stale facts | `daemon.py:163` |
+| `Daemon` → `DecaySweeper` | `sweep()` | Evict stale facts | `daemon.py:173` |
 | `cli.main serve` → `Daemon` | `Daemon(rt)`, `start()`/`stop()` | `paa serve` | `cli/main.py:309` |
 | `Runtime.build` → boot recovery | `orchestrator.boot()` | Recovery at boot | `runtime.py:326` |
 

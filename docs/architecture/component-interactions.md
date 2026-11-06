@@ -223,7 +223,7 @@ paa agent "prompt" (cli/coder.py:44)
   catch all exceptions and return `None` with a warning (`runtime.py:387`).
 - **Sandbox probe is bounded at 5s:** `_acquire_sandbox` uses
   `asyncio.wait_for(..., timeout=5.0)` then falls back to subprocess
-  (`runtime.py:431`).
+  (`runtime.py:496`).
 - **API is an edge layer only:** `create_app` parses/validates and delegates to
   `Runtime`; it holds no application state and makes no model calls
   (`api/app.py:53`).
