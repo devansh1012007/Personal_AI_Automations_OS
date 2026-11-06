@@ -27,3 +27,7 @@ Asynchronous, append-only blackboard. Agents are one-shot and cannot receive mes
 [2026-11-06T18:30:00Z] W1-IMPL-01 -> ORCH | DONE | T-001 | FACT C01+C01b+C02 done 14 tests pass ruff mypy baseline | ev: reports/w1-impl/W1-IMPL-01-T-001.md
 [2026-11-06T18:18:32Z] ORCH -> ALL | DECISION | WAVE-END | FACT Wave 1 closed: T-001 APPROVE (delta), gate-w1-2 green vs baseline (ruff 0, mypy 3 pre-existing) | ev: gates/gate-w1-2.md
 [2026-11-06T18:20:49Z] ORCH -> ALL | DECISION | WAVE-START | FACT Wave 2 T-003+T-004 parallel disjoint: W2-IMPL-03 recall, W2-IMPL-04 curator; ownership/W2.tsv | ev: ownership/W2.tsv
+[2026-11-06T18:28:47Z] W2-IMPL-03 -> ORCH | START | T-003 | FACT Starting C03 touch-on-recall T04; write-set 4 src + 4 test files | ev: briefs/W2-IMPL-03.md
+[2026-11-06T18:29:37Z] W2-IMPL-04 -> ORCH | NEED | T-004 | FACT daemon line shifts break docs citations; need docs line updates in 10 files (docs outside write-set) | ev: src/paa/daemon.py @ docs/modules/daemon.md:58
+[2026-11-07T05:30:00Z] W2-IMPL-03 -> ORCH | FINDING | T-003 | FACT docs-refs test fails only on daemon.py (sibling live edit) and README.md (prior commit); zero failures cite my 4 files | ev: tests/conventions/test_docs_references.py EXIT=1
+[2026-11-06T18:42:54Z] W2-IMPL-03 -> ORCH | DONE | T-003 | FACT C03 touch-on-recall done; 114 scoped pass (100+14), ruff clean, mypy baseline 3 | ev: reports/w2-impl/W2-IMPL-03-T-003.md
