@@ -26,7 +26,7 @@
 ## Waves
 
 - Wave 0 — Investigation (read-only, 3 investigators). Status: DONE (3 reports, all DONE, confidence high).
-- Wave 1 — T-001+T-002 (`runtime.py`, `memory/creator.py` incl. C01b payload alignment). Status: ready to dispatch.
+- Wave 1 — T-001+T-002 (`runtime.py`, `memory/creator.py` incl. C01b payload alignment). Status: CLOSED. Code c5766c8 + improve e966b68 + docs-fix 5b8d6ee. Reviews: REV APPROVE-WITH-CHANGES (1 MAJOR), TREV APPROVE-WITH-CHANGES (3 MAJOR) → improver FIXED 13/REJECTED 2/DEFERRED 1 (+R-W1-DOCS fix 17 citations) → delta APPROVE (0 BLOCKER/MAJOR). Gate gate-w1-2 green vs baseline. Operator docs commits f8c12a6/aee3810 on-branch during run (docs only, no source conflict); VISION.md has uncommitted operator edit at wave close (left untouched).
 - Wave 2 — T-003+T-004 (recall paths + `daemon.py`). Status: pending Wave 1 review.
 - Wave 3 — T-005+T-006 (`creator.py` extractor + `config.py`/`decay.py`). Status: pending.
 - Wave 4 — T-007 e2e + observability. Status: pending.

@@ -25,3 +25,4 @@ Asynchronous, append-only blackboard. Agents are one-shot and cannot receive mes
 [2026-11-06T17:40:12Z] ORCH -> ALL | DECISION | T-004 | FACT Q1 confirmed: no deploy cron schedules MemoryCurator; daemon wiring has no double-run risk | ev: reports/w0-investigation/INV-decay-curator-config.md Q1
 [2026-11-06T18:01:00Z] W1-IMPL-01 -> ORCH | START | T-001 | FACT Starting C01+C01b+C02 implementation | ev: briefs/W1-IMPL-01.md
 [2026-11-06T18:30:00Z] W1-IMPL-01 -> ORCH | DONE | T-001 | FACT C01+C01b+C02 done 14 tests pass ruff mypy baseline | ev: reports/w1-impl/W1-IMPL-01-T-001.md
+[2026-11-06T18:18:32Z] ORCH -> ALL | DECISION | WAVE-END | FACT Wave 1 closed: T-001 APPROVE (delta), gate-w1-2 green vs baseline (ruff 0, mypy 3 pre-existing) | ev: gates/gate-w1-2.md
