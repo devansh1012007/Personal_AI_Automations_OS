@@ -1,0 +1,73 @@
+﻿........................................................................ [  1%]
+...............................................x........................ [  3%]
+........................................................................ [  5%]
+.......................................................................F [  7%]
+........................................................................ [  9%]
+........................................................................ [ 11%]
+........................................................................ [ 13%]
+........................................................................ [ 15%]
+........................................................................ [ 17%]
+........................................................................ [ 19%]
+........................................................................ [ 21%]
+........................................................................ [ 23%]
+........................................................................ [ 25%]
+..............................................ssssssssssssssssssssssssss [ 26%]
+ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss...... [ 28%]
+.....................................F.................................. [ 30%]
+........................................................................ [ 32%]
+.......................................s................................ [ 34%]
+........................................................................ [ 36%]
+........................................................................ [ 38%]
+........................................................................ [ 40%]
+........................................................................ [ 42%]
+........................................................................ [ 44%]
+........................................................................ [ 46%]
+........................................................................ [ 48%]
+........................................................................ [ 50%]
+........................................................................ [ 51%]
+........................................................................ [ 53%]
+........................................................................ [ 55%]
+..........F..............................................FFFFF..FFF..... [ 57%]
+................................................s................sss.... [ 59%]
+........................................................................ [ 61%]
+........................................................................ [ 63%]
+........................................................................ [ 65%]
+........................................................................ [ 67%]
+................................................ssssssssssssssssssssssss [ 69%]
+ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss [ 71%]
+ssssssssssssssssssssssssssssssssss...................................... [ 73%]
+..................................................ssssss........s.s.s.s. [ 75%]
+s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s..s.................. [ 76%]
+........................................................................ [ 78%]
+......................s............ssssssssssssssssssssssssss........... [ 80%]
+...............................s.ssss................................... [ 82%]
+.................s..s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s. [ 84%]
+s.s.s.s.s.s.s.s.s.s.ss..s...........................s..ss............... [ 86%]
+......................F................................................. [ 88%]
+........................................................................ [ 90%]
+........................................................................ [ 92%]
+.........................x.............x................................ [ 94%]
+.......................x................................................ [ 96%]
+........................................................................ [ 98%]
+.........................................................F......F....... [100%]
+============================== warnings summary ===============================
+tests/api/test_api.py::TestHealth::test_health_reports_ok_and_backends
+  D:\dev work\coding\Projects\Personal_AI_Automations_OS\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/cli/test_cli.py::TestAgentSessions::test_continue_resumes_the_most_recent_transcript
+FAILED tests/improvement/test_reflection_wiring_p013.py::TestReflectionTick::test_start_launches_four_supervised_loops
+FAILED tests/sandbox/test_docker_backend.py::test_user_is_the_workspace_owner_not_root
+FAILED tests/sandbox/test_docker_backend.py::test_host_path_translates_the_containers_view
+FAILED tests/sandbox/test_docker_backend.py::test_host_path_leaves_unmapped_paths_alone
+FAILED tests/sandbox/test_docker_backend.py::test_host_path_prefers_the_longest_matching_prefix
+FAILED tests/sandbox/test_docker_backend.py::test_host_path_does_not_match_a_prefix_that_is_not_a_path_boundary
+FAILED tests/sandbox/test_docker_backend.py::test_host_path_normalises_before_matching
+FAILED tests/sandbox/test_docker_backend.py::test_a_root_mapping_is_expressible
+FAILED tests/sandbox/test_docker_backend.py::test_volume_argument_uses_the_host_path
+FAILED tests/sandbox/test_docker_backend.py::test_home_and_tmpdir_name_the_containers_workspace
+FAILED tests/tui/test_dashboard.py::test_ledger_with_events - ValueError: Inv...
+FAILED tests/validation/test_workspace.py::test_crlf_and_lf_hash_differently
+FAILED tests/validation/test_workspace.py::test_an_unreadable_file_is_skipped_not_fatal

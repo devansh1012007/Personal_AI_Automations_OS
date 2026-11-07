@@ -349,11 +349,11 @@ class TestReflectionTick:
         assert result is True
         assert _anti_pattern_count(runtime) == 1
 
-    async def test_start_launches_four_supervised_loops(self, runtime: Runtime) -> None:
+    async def test_start_launches_five_supervised_loops(self, runtime: Runtime) -> None:
         daemon = Daemon(runtime)
         await daemon.start()
         try:
-            assert len(daemon._tasks) == 4
+            assert len(daemon._tasks) == 5  # 5th loop = allocator tick (W5 T-007b)
         finally:
             await daemon.stop()
 
