@@ -191,6 +191,42 @@ class EventType(str, enum.Enum):
     TIER_DEMOTED = "TIER_DEMOTED"
     TIER_ARCHIVED = "TIER_ARCHIVED"
 
+    # -- attention allocator (PLAN:integration-fix:P007) -------------------
+    # ADR-0036: allocator decisions are ledger events, not side effects. An
+    # allocation decision is information about a task, not a move of the
+    # task's lifecycle, so both members map to `_NO_PHASE_CHANGE` in
+    # ledger/replay.py (never `_PHASE_MAP`) and sit outside
+    # TERMINAL_EVENTS: neither closes a lineage nor advances its phase.
+    #
+    # ATTENTION_ALLOCATED is emitted by the allocator (context/allocator.py)
+    # BEFORE the controller notify, under the full ADR-0008 key
+    # (docs/adr/0008): `correlation_id` is the queue message's lineage,
+    # `attempt` is always 0 (re-claims dedupe by discriminator, never by
+    # bumping), and `discriminator` is the scored `item_id` — so a
+    # visibility-lapse redelivery of the same message produces the same key
+    # and the store's dedupe makes the decision exactly-once.
+    # Payload contract:
+    #   {item_id: str, score: float, inputs: {K, I, F, P, R},
+    #    message_id: str, top_n: [str, ...]}
+    # `inputs` records the ADR-0036 derivation of the five score inputs (K
+    # default 0.5, I from density else relevance*confidence, F from
+    # planning_cost else 1.0, P from the packet's pollution_ratio else 0.0,
+    # R default 0.0), so the answer to "why was this retrieved?" is in the
+    # ledger even after the queue message is acked. The gatherer is never
+    # gated on these events; it compiles packets with or without them.
+    #
+    # DRAIN_THROTTLED is the drain-throttle telemetry member. The throttle
+    # itself lives in MemoryCreator.drain_pending_embeddings (windowed
+    # `drain_max_per_second` cap, ADR-0036) and its observable channel this
+    # wave is the `memory.embedding_drain_throttled` log line — the creator
+    # holds no ledger handle, and emitting a ledger event requires one, so
+    # this member is vocabulary + replay wiring (replay stays total for any
+    # lineage carrying it), with the emitter deferred to a wave that owns a
+    # creator-side ledger path. It is deliberately never emitted here
+    # rather than inventing a handle the creator does not have.
+    ATTENTION_ALLOCATED = "ATTENTION_ALLOCATED"
+    DRAIN_THROTTLED = "DRAIN_THROTTLED"
+
 
 #: Events after which a correlation is closed and needs no recovery sweep.
 #: Used by the recovery engine to decide which lineages are still in flight.

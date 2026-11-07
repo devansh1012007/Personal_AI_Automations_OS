@@ -376,6 +376,14 @@ def apply_tier_event(state: dict[str, str], event: LedgerEvent) -> dict[str, str
 #: never in TERMINAL_EVENTS: a tier move neither closes a task lineage nor
 #: advances its phase. The tier state itself is folded by `apply_tier_event`
 #: above, keyed by fact_id — TaskProjection gains no tier fields.
+#: PLAN:integration-fix:P007 — ATTENTION_ALLOCATED / DRAIN_THROTTLED are
+#: allocator + drain telemetry, not task phases (ADR-0036). They live here,
+#: never in `_PHASE_MAP`, and never in TERMINAL_EVENTS: an allocation
+#: decision (or a throttle trip) neither closes a task lineage nor advances
+#: its phase. The auditable record itself is the ledger event payload — the
+#: fold carries no allocator state into TaskProjection, exactly as the tier
+#: fold carries none (tiers fold via apply_tier_event; allocator decisions
+#: fold to nothing because the decision IS the record).
 _NO_PHASE_CHANGE = frozenset(
     {
         EventType.HUMAN_GATE_CLEARED,
@@ -385,6 +393,8 @@ _NO_PHASE_CHANGE = frozenset(
         EventType.RECOVERY_REPLAY_COMPLETED,
         EventType.TIER_DEMOTED,
         EventType.TIER_ARCHIVED,
+        EventType.ATTENTION_ALLOCATED,
+        EventType.DRAIN_THROTTLED,
     }
 )
 

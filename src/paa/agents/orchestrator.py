@@ -1113,3 +1113,34 @@ class ChiefOrchestrator:
         report = await self._recovery.boot_sweep()
         log.info("orchestrator.boot_recovery", **report.summary())
         return report
+
+    async def run_allocation(self, *, limit: int = 25) -> Any:
+        """Run one attention-allocation pass and return its result.
+
+        PLAN:integration-fix:P007 (ADR-0036) — the only orchestrator
+        callsite for the allocator. The loop itself lives in
+        :mod:`paa.context.allocator` (claim ``workers:alloc``, score via
+        the ADR-0012 formula, ledger event before notify, ack after
+        persist); this method is its wiring: the store is the
+        orchestrator's ledger, the settings are the process
+        `AllocatorSettings`, and the imports are lazy so the orchestrator
+        keeps no queue/allocator/settings import at module scope (the queue
+        may be absent entirely, which the allocator treats as an underfed
+        no-op). Placed at the end of the class: a new method mid-file would
+        shift every `orchestrator.py:<line>` citation below it.
+
+        Never blocks the gatherer: it claims, scores, emits, and returns
+        an `AllocationResult` (``outcome`` is ``"disabled"`` when the
+        operator has not enabled the loop, ``"underfed"`` when there is
+        nothing to decide, else ``"allocated"``). The gatherer compiles
+        packets with or without this method ever running.
+        """
+        from paa.config import get_settings
+        from paa.context.allocator import allocate_attention
+
+        return await allocate_attention(
+            self._queue,
+            self._ledger,
+            settings=get_settings().allocator,
+            limit=limit,
+        )

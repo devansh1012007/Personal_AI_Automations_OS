@@ -1123,6 +1123,7 @@ class MemoryCreator:
         similarity_fn: SimilarityFn | None = None,
         max_write_retries: int = 3,
         retry_backoff_seconds: float = 0.05,
+        drain_max_per_second: int | None = None,
     ) -> None:
         from paa.memory.contradiction import ContradictionDetector as _Detector
 
@@ -1134,6 +1135,23 @@ class MemoryCreator:
         self._similarity = similarity_fn or trigram_similarity
         self._max_retries = max(0, max_write_retries)
         self._backoff = retry_backoff_seconds
+        # PLAN:integration-fix:P007 (ADR-0036): windowed drain-rate cap.
+        # `None` resolves from `MemorySettings.drain_max_per_second` (default
+        # 100 = the old batch size at the daemon's ~1 Hz cadence, so a
+        # deployment that never sets the field sees today's throughput); an
+        # explicit value wins for tests and embedders that know their budget.
+        # A rate below one would wedge the backlog, so it is rejected here
+        # rather than silently accepted. Lazy import (same posture as the
+        # detector import above) keeps the module surface unchanged.
+        if drain_max_per_second is None:
+            from paa.config import get_settings
+
+            drain_max_per_second = get_settings().memory.drain_max_per_second
+        if drain_max_per_second < 1:
+            raise ValueError(f"drain_max_per_second must be >= 1, got {drain_max_per_second}")
+        self._drain_max_per_second = drain_max_per_second
+        self._drain_window_started = 0.0
+        self._drain_window_indexed = 0
 
     # -- single signal -----------------------------------------------------
 
@@ -1520,10 +1538,47 @@ class MemoryCreator:
         so the count is 0 by definition and a query would buy nothing at
         the daemon's ~1 Hz drain cadence. No unbounded loop: one batch per
         call, daemon cadence drains progress iteratively.
+
+        Throttle (PLAN:integration-fix:P007, ADR-0036): a windowed rate
+        check runs *before* the pending fetch. The budget left in the
+        current window caps the fetch (`min(limit, remaining)`), and the
+        budget counts newly *indexed* facts — a failed batch consumed no
+        budget, so the next drain retries it immediately at the daemon's
+        cadence. On breach the drain defers and logs backpressure
+        (``memory.embedding_drain_throttled``); deferred facts stay
+        ``pending`` — the throttle never drops silently. At the default
+        cap of 100 the daemon's ~1 Hz batch of 100 never trips the check,
+        so default throughput is exactly the pre-throttle behaviour.
         """
         if limit <= 0:
             return 0
-        pending = await self._facts.pending_embeddings(limit)
+        now = asyncio.get_running_loop().time()
+        if now - self._drain_window_started >= _DRAIN_WINDOW_SECONDS:
+            self._drain_window_started = now
+            self._drain_window_indexed = 0
+        budget = self._drain_max_per_second - self._drain_window_indexed
+        if budget <= 0:
+            log.warning(
+                "memory.embedding_drain_throttled",
+                drain_max_per_second=self._drain_max_per_second,
+                indexed_this_window=self._drain_window_indexed,
+                window_seconds=_DRAIN_WINDOW_SECONDS,
+                limit=limit,
+                deferred=True,
+            )
+            return 0
+        effective_limit = min(limit, budget)
+        if effective_limit < limit:
+            log.warning(
+                "memory.embedding_drain_throttled",
+                drain_max_per_second=self._drain_max_per_second,
+                indexed_this_window=self._drain_window_indexed,
+                window_seconds=_DRAIN_WINDOW_SECONDS,
+                limit=limit,
+                deferred=True,
+                effective_limit=effective_limit,
+            )
+        pending = await self._facts.pending_embeddings(effective_limit)
         batch_size = len(pending)
         if self._sink is None or not pending:
             # R-W4-003: ``pending_embeddings`` and ``_pending_embedding_count``
@@ -1557,6 +1612,7 @@ class MemoryCreator:
         indexed_ids = list(indexed)
         if indexed_ids:
             await self._facts.mark_embedded(indexed_ids)
+        self._drain_window_indexed += len(indexed_ids)
         # Exact remaining-backlog gauge (bounded COUNT, see docstring).
         pending_count = await self._pending_embedding_count()
         backlog_remaining = pending_count > 0
@@ -1883,3 +1939,16 @@ def _challenger_of(candidate: CandidateFact, entity_id: str) -> dict[str, Any]:
 def _unparseable_guard(payload: Any, signal_id: str) -> None:
     if isinstance(payload, _Unparseable):
         raise MalformedSignalError("payload is not valid JSON", signal_id=signal_id)
+
+
+#: PLAN:integration-fix:P007 (ADR-0036) — the drain-throttle window.
+#: `MemorySettings.drain_max_per_second` is the rate: the cap is how many
+#: facts may be newly embedded per second, and the window is the second
+#: the budget is counted in. A per-instance window is enough here: the
+#: daemon paces drains at ~1 Hz per process, and a *best-effort* window
+#: (no lock) prefers a brief overshoot on concurrent drains over
+#: serialising them. At end of file, not module top: see the
+#: documentation-reference lock — a constant above the classes would shift
+#: every line citation below it, and Python resolves module globals at
+#: call time, so end placement costs nothing.
+_DRAIN_WINDOW_SECONDS: float = 1.0
