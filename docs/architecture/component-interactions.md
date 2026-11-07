@@ -84,7 +84,7 @@ flowchart TD
 | Component | Responsibility | Entry point | Key dependencies | Consumers | State / side effects |
 |---|---|---|---|---|---|
 | `Runtime` (`runtime.py:152`) | Composition root; builds and closes the whole runtime; drives tasks | `Runtime.build()` (`runtime.py:271`) | `Database`, `LedgerStore`, agents, model router, storage substrates, recovery engine | CLI, API, daemon, coder agent | Opens DB; creates directories; runs boot recovery |
-| `ChiefOrchestrator` (`agents/orchestrator.py:188`) | Task lifecycle: hydrate → plan → policy → execute → commit; owns delegation graph and backpressure | `ChiefOrchestrator.run()` (`orchestrator.py:396`) | `LedgerStore`, all agents, queue, backpressure, recovery | `Runtime`, API (`/tasks`), daemon dispatch loop | Writes ledger events; enqueues tasks |
+| `ChiefOrchestrator` (`agents/orchestrator.py:189`) | Task lifecycle: hydrate → plan → policy → execute → commit; owns delegation graph and backpressure | `ChiefOrchestrator.run()` (`orchestrator.py:397`) | `LedgerStore`, all agents, queue, backpressure, recovery | `Runtime`, API (`/tasks`), daemon dispatch loop | Writes ledger events; enqueues tasks |
 | `LedgerStore` (`ledger/store.py:108`) | Append-only event log; idempotency, state_version, hash chain, head projection | `LedgerStore.append()` (`ledger/store.py:116`) | `Database` | Orchestrator, recovery, replay, API (`/ledger/{id}`), CLI (`paa ledger`) | Appends rows to `system_state_ledger`; updates `system_state_correlation_head` |
 | `Database` (`storage/relational/database.py:110`) | Async SQLite access layer; single writer + read pool; WAL | `Database.connect()` (`storage/relational/database.py:168`) | `aiosqlite`, `sqlite3` | Nearly every storage-writing/reading module | Creates/mutates `paa.db`; applies schema on connect |
 | `StrategicPlanner` (`agents/reasoning.py:62`) | Compiles a goal + context into ordered execution steps | `StrategicPlanner.handle()` (`reasoning.py:78`) | `ModelLike` (model adapter); `MODALITY_PROFILES` | Orchestrator (`_plan`) | Emits no events directly; returns plan dict |
@@ -95,7 +95,7 @@ flowchart TD
 | `BoundedContextGatherer` (`context/gatherer.py`) | Enforces hard token ceiling on context packet | `compile()` | `TokenBudget`, `CharEstimator` | Context builders | Pure computation; no persistence |
 | `EscalatingModelRouter` (`models/router.py:165`) | Local-first routing with explicit, logged escalation to frontier | `complete()` / `complete_structured()` | Local provider, optional frontier provider, `LedgerStore` | `RouterModelAdapter` (via agents) | Writes `MODEL_ESCALATED` ledger event before frontier call |
 | `RouterModelAdapter` (`runtime.py:109`) | Bridges agents' `ModelLike` protocol to the escalation router | `complete_structured()` (`runtime.py:132`) | `EscalatingModelRouter` | All reasoning agents | No persistence (router logs escalations) |
-| `RecoveryEngine` (`ledger/recovery.py:150`) | Post-crash boot sweep: replay, reconcile workspace, re-queue | `RecoveryEngine.boot_sweep()` (`recovery.py:226`) | `LedgerStore`, `Database`, optional `WorkspaceSnapshotter`, optional queue requeuer | `ChiefOrchestrator.boot()` (`orchestrator.py:1104`) | Writes `RECOVERY_REPLAY_COMPLETED`/`STATE_ROLLBACK_TRIGGERED`/`TASK_ABANDONED` events; restores workspace |
+| `RecoveryEngine` (`ledger/recovery.py:150`) | Post-crash boot sweep: replay, reconcile workspace, re-queue | `RecoveryEngine.boot_sweep()` (`recovery.py:226`) | `LedgerStore`, `Database`, optional `WorkspaceSnapshotter`, optional queue requeuer | `ChiefOrchestrator.boot()` (`orchestrator.py:1105`) | Writes `RECOVERY_REPLAY_COMPLETED`/`STATE_ROLLBACK_TRIGGERED`/`TASK_ABANDONED` events; restores workspace |
 | `Daemon` (`daemon.py:45`) | Background loops: dispatch, ingestion, maintenance | `Daemon.start()` (`daemon.py:70`) | `Runtime`, `MemoryCreator`, `DecaySweeper` | `paa serve` (`cli/main.py:293`) | Claims queue messages; runs decay sweep; ingests signals |
 | `MemoryCreator` (`memory/creator.py`) | Ingests unprocessed signals into hot-serving facts | `MemoryCreator.run_batch()` | `Database`, `FactRepository` | Daemon ingestion loop | Writes entities/facts |
 | `DecaySweeper` (`memory/decay.py`) | Evicts stale facts via `C(t)=C₀·e⁻ˡᵃᵐᵇᵈᵃ·t` | `DecaySweeper.sweep()` | `Database`, `DomainPolicy` | Daemon maintenance loop | Deletes/archives stale fact rows |
@@ -212,12 +212,12 @@ paa agent "prompt" (cli/coder.py:44)
 
 - **Ledger before side effect:** Every orchestrator phase writes its event
   (`_emit`) before calling the agent or doing the work
-  (`orchestrator.py:467`–`:811`).
+  (`orchestrator.py:468`–`:812`).
 - **No model in control path:** `PolicyRiskAgent` has no provider dependency
   (`policy.py:7`); routing/gating are pure Python.
 - **Orchestrator mediates all delegation:** Agents call `self.delegate()` which
   routes through `ChiefOrchestrator.mediate_delegation` (`agents/base.py:373`,
-  `orchestrator.py:833`); the `DelegationGraph` enforces depth/cycle/node
+  `orchestrator.py:834`); the `DelegationGraph` enforces depth/cycle/node
   bounds (`delegation.py:87`).
 - **Storage substrates degrade, never raise:** `_try_vector/_try_graph/_try_queue`
   catch all exceptions and return `None` with a warning (`runtime.py:387`).

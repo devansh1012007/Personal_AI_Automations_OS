@@ -15,18 +15,18 @@ outcome through the backend. It reflects the actual execution order in
 | Daemon dispatch loop | `daemon.py:127` | `_claim_and_run()` → `Runtime.run(cid)` |
 | Recovery requeue | `recovery.py:437` | `_requeue()` → queue → daemon dispatch |
 
-All converge on `ChiefOrchestrator.run()` (`orchestrator.py:292`).
+All converge on `ChiefOrchestrator.run()` (`orchestrator.py:397`).
 
 ## Phase 1 — Project existing state
 
 `run(correlation_id)` calls `project(self._ledger, correlation_id)`
-(`orchestrator.py:396`). If the projection is terminal, it returns immediately
-(`orchestrator.py:295`). Otherwise it builds an `AgentContext` from the
+(`orchestrator.py:397`). If the projection is terminal, it returns immediately
+(`orchestrator.py:400`). Otherwise it builds an `AgentContext` from the
 modality profile (`_context_for`, `orchestrator.py:327`).
 
 ## Phase 2 — Hydrate context
 
-`_hydrate()` (`orchestrator.py:467`):
+`_hydrate()` (`orchestrator.py:468`):
 - If a context packet already exists, skip.
 - Emits `CONTEXT_HYDRATION_REQUESTED` (`orchestrator.py:357`).
 - Sends `CONTEXT_REQUEST` to the planner context builder
@@ -39,7 +39,7 @@ Every emit re-projects (`project()`) so the next phase reads current state.
 
 ## Phase 3 — Plan
 
-`_plan()` (`orchestrator.py:542`):
+`_plan()` (`orchestrator.py:543`):
 - If steps already exist or no planner, skip.
 - SIMPLE modality bypasses the model: emits `PLAN_COMPILED` with a single
   step (`execution_steps: [{action: goal, agent: worker}]`) and
@@ -50,7 +50,7 @@ Every emit re-projects (`project()`) so the next phase reads current state.
   `required_permissions`, `path`, `risk_profile`, `always_human_gate`) which
   are preserved by `_normalise` (`reasoning.py:155`).
 - Validates `len(steps) <= profile.max_plan_nodes()`; raises
-  `RecursionGuardError` if exceeded (`orchestrator.py:441`).
+  `RecursionGuardError` if exceeded (`orchestrator.py:581`).
 - Emits `PLAN_COMPILED` (`orchestrator.py:448`).
 
 ## Phase 4 — Policy check
@@ -63,14 +63,14 @@ Every emit re-projects (`project()`) so the next phase reads current state.
     (`orchestrator.py:474`).
   - Returns; phase becomes `BLOCKED` (terminal).
 - On `requires_human_gate`: emits `AWAITING_HUMAN_ATTESTATION`; phase parks
-  (`orchestrator.py:494`). Never auto-clears across restart
+  (`orchestrator.py:910`). Never auto-clears across restart
   (`replay.py:62`).
 - Otherwise emits `POLICY_CLEARED` with `risk_score` (`orchestrator.py:505`);
   phase becomes `EXECUTING`.
 
 ## Phase 5 — Execute steps
 
-`_execute_steps()` (`orchestrator.py:515`). For each step not already in
+`_execute_steps()` (`orchestrator.py:718`). For each step not already in
 `completed_steps` (resume support):
 
 ```
@@ -93,7 +93,7 @@ else (budget exhausted):
 
 `EXECUTION_COMPLETED` fires **per step**, not per task, and is not terminal
 (`ADR-0010`). After each step, the orchestrator re-projects
-(`orchestrator.py:577`).
+(`orchestrator.py:780`).
 
 ## Phase 6 — Commit
 

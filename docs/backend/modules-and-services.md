@@ -116,9 +116,9 @@ boots recovery (`boot`).
 
 **Key logic:**
 - `submit()` writes `TASK_REQUESTED` then `TASK_QUEUED`, applies backpressure,
-  enqueues to `StreamName.ORCHESTRATOR_CORE` (`orchestrator.py:188`).
+  enqueues to `StreamName.ORCHESTRATOR_CORE` (`orchestrator.py:293`).
 - `run()` drives a submitted task to terminal; returns early if already
-  terminal (`orchestrator.py:292`).
+  terminal (`orchestrator.py:397`).
 - `_execute_steps` retries each step up to `max_step_retries` (default 2)
   (`orchestrator.py:523`).
 - Delegation graph enforces depth/cycle/node bounds per correlation

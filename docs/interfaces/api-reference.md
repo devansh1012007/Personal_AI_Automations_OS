@@ -58,7 +58,7 @@ minimal install.
    (`api/app.py:295`).
 2. `runtime.submit(goal, modality, required_slots, workspace_path,
    target_agent)` → writes `TASK_REQUESTED` + `TASK_QUEUED`, enqueues to the
-   queue, returns `correlation_id` (`runtime.py:189`, `orchestrator.py:188`).
+   queue, returns `correlation_id` (`runtime.py:189`, `orchestrator.py:293`).
 3. If `body.run` is true: `runtime.run(cid)` drives to terminal; returns
    `queued=False` and the final phase. Otherwise returns `queued=True`,
    `phase="QUEUED"`.
@@ -98,7 +98,7 @@ for the projection. Invalid UUID → 400.
 updated task status.
 
 Only an external caller reaches this; nothing in the automated path can clear
-its own gate (`orchestrator.py:1015`).
+its own gate (`orchestrator.py:1016`).
 
 ### `POST /tasks/{correlation_id}/correction`
 **Handler:** `api/app.py:149`

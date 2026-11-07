@@ -19,9 +19,9 @@ No tracked files were modified during this audit.
 
 | Capability | Status | Evidence and conclusion |
 |---|---|---|
-| Built-in task lifecycle | **Working** | `src/paa/agents/orchestrator.py:292-324`, `ChiefOrchestrator.run()` directly owns hydrate → plan → policy → execute/critique/retry → commit. |
+| Built-in task lifecycle | **Working** | `src/paa/agents/orchestrator.py:397-440`, `ChiefOrchestrator.run()` directly owns hydrate → plan → policy → execute/critique/retry → commit. |
 | Runtime composition | **Partially supported** | `src/paa/runtime.py:232-345` wires the built-in runtime, but `Runtime.build()` accepts no pipeline registry, pipeline implementation, or arbitrary loop host. |
-| Planner/worker/policy/critic chain | **Working** | `src/paa/agents/orchestrator.py:542-811`; tests in `tests/agents/test_orchestrator.py:64-210` cover ordering, policy blocking, retry, gates, and resumed steps. |
+| Planner/worker/policy/critic chain | **Working** | `src/paa/agents/orchestrator.py:543-812`; tests in `tests/agents/test_orchestrator.py:64-210` cover ordering, policy blocking, retry, gates, and resumed steps. |
 | Deterministic permissions and risk checks | **Working** | `src/paa/agents/policy.py:122-183`; policy is model-independent and covers permissions, lockdown/network, irreversible operations, protected paths, operator rules, and anti-goals. |
 | Worker sandbox and validation | **Working on the built-in path** | `src/paa/runtime.py:479-524` composes `CriticValidatorAdapter`, `DeterministicValidationEngine`, sandbox, and `WorkerCell`. |
 | Append-only ledger | **Working** | `src/paa/ledger/store.py:102-166` performs idempotency, state versioning, hash chaining, event insertion, and head projection atomically. |
@@ -51,7 +51,7 @@ A developer can add tools/skills or build a separate application around the code
 
 ### Critical: the orchestrator is the execution strategy, not a host
 
-`ChiefOrchestrator.run()` directly invokes `_hydrate`, `_plan`, `_check_policy`, `_execute_steps`, `_critique`, and `_commit` (`src/paa/agents/orchestrator.py:292-324`). There is no injected loop interface or dispatch boundary. Replacing the strategy requires changing that source or bypassing `Runtime.run()`.
+`ChiefOrchestrator.run()` directly invokes `_hydrate`, `_plan`, `_check_policy`, `_execute_steps`, `_critique`, and `_commit` (`src/paa/agents/orchestrator.py:397-440`). There is no injected loop interface or dispatch boundary. Replacing the strategy requires changing that source or bypassing `Runtime.run()`.
 
 ### Critical: the proposed capability facade does not exist
 

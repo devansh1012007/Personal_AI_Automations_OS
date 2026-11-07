@@ -8,7 +8,7 @@ and what happens on failure. All paths are verified against source where cited.
 
 ### Creation
 A task originates from a caller (CLI, API, daemon, or coder agent tool).
-`ChiefOrchestrator.submit()` (`orchestrator.py:188`) mints a `CorrelationId`
+`ChiefOrchestrator.submit()` (`orchestrator.py:293`) mints a `CorrelationId`
 and writes `TASK_REQUESTED` then `TASK_QUEUED` to `system_state_ledger` before
 enqueuing to `queue_messages` (`StreamName.ORCHESTRATOR_CORE`). Submission is
 deliberately cheap and always succeeds so the request is durable before any

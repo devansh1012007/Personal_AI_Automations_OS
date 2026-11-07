@@ -15,12 +15,12 @@ to `MUTATION_COMMITTED`. All paths verified against `src/paa/agents/orchestrator
 
 ### 1. Submit — durable intake
 
-`ChiefOrchestrator.submit()` (`orchestrator.py:188`):
+`ChiefOrchestrator.submit()` (`orchestrator.py:293`):
 1. Mint `CorrelationId` (`new_correlation_id()`, `core/types.py:50`).
-2. Classify modality (`_classify()`, `orchestrator.py:247`) — heuristic: keywords
+2. Classify modality (`_classify()`, `orchestrator.py:352`) — heuristic: keywords
    (`refactor`, `implement`, `build`, `debug`, `fix`) → `COMPLEX`; `migrate`/`redesign`
    → `MAX`; target agent + short goal → `SIMPLE`; else `STANDARD`.
-3. Emit `TASK_REQUESTED` (`_emit()`, `orchestrator.py:263`) → `LedgerStore.append()`
+3. Emit `TASK_REQUESTED` (`_emit()`, `orchestrator.py:264`) → `LedgerStore.append()`
    (`ledger/store.py:116`) → row in `system_state_ledger`, head projection upserted.
 4. Apply backpressure (`_apply_backpressure()` — may degrade modality if queue
    deep, `orchestrator.py:264`; `backpressure.py:77`).
@@ -33,7 +33,7 @@ is durable before any work (`orchestrator.py` docstring).
 
 ### 2. Run — project existing state
 
-`ChiefOrchestrator.run(cid)` (`orchestrator.py:292`):
+`ChiefOrchestrator.run(cid)` (`orchestrator.py:397`):
 1. `project(ledger, cid)` (`replay.py:422`) → `TaskProjection`.
 2. If `state.is_terminal`, return immediately (`:295`).
 3. Build `AgentContext` from `MODALITY_PROFILES[state.modality]` (`_context_for`,
@@ -41,7 +41,7 @@ is durable before any work (`orchestrator.py` docstring).
 
 ### 3. Hydrate — build context packet
 
-`_hydrate()` (`orchestrator.py:467`):
+`_hydrate()` (`orchestrator.py:468`):
 1. Skip if `context_packet` already present (resume).
 2. Emit `CONTEXT_HYDRATION_REQUESTED`.
 3. `PlannerContextBuilder.run(message, ctx)` (`context_agents.py:377`):
@@ -57,7 +57,7 @@ is durable before any work (`orchestrator.py` docstring).
 
 ### 4. Plan — compile execution steps
 
-`_plan()` (`orchestrator.py:542`):
+`_plan()` (`orchestrator.py:543`):
 1. Skip if `plan_steps` already present (resume).
 2. SIMPLE: emit `PLAN_COMPILED` with one step (`{action: goal, agent: worker}`,
    `bypassed_planner: true`) (`:408`).
@@ -87,7 +87,7 @@ is durable before any work (`orchestrator.py` docstring).
 
 ### 6. Execute steps — per step in sandbox
 
-`_execute_steps()` (`orchestrator.py:515`). For each step not in
+`_execute_steps()` (`orchestrator.py:718`). For each step not in
 `completed_steps`:
 
 ```
@@ -109,7 +109,7 @@ on budget exhausted: raise PaaError → EXECUTION_FAILED (terminal)
 
 `EXECUTION_COMPLETED` fires **per step**, not per task; phase stays `EXECUTING`
 until all steps done (`replay.py:240`, ADR-0010). Re-project after each step
-(`orchestrator.py:577`).
+(`orchestrator.py:780`).
 
 ### 7. Commit — terminal
 

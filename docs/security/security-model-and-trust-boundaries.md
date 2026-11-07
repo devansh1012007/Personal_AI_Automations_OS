@@ -150,7 +150,7 @@ backend.py` `_read_capped`).
 
 `AWAITING_HUMAN_ATTESTATION` parks a task; recovery explicitly never clears it
 (`replay.py:62`, `recovery.py:274`). Only an external caller
-(`clear_human_gate`, `orchestrator.py:1015`) can approve/reject.
+(`clear_human_gate`, `orchestrator.py:1016`) can approve/reject.
 
 ## Trust boundaries
 

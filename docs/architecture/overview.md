@@ -146,7 +146,7 @@ TASK_REQUESTED → TASK_QUEUED → CONTEXT_HYDRATED → PLAN_COMPILED
 `README.md:194`. `EXECUTION_COMPLETED` fires **per step**, not per task, and is
 not terminal (`docs/adr/0010`).
 
-Orchestrator phases (`src/paa/agents/orchestrator.py:292`):
+Orchestrator phases (`src/paa/agents/orchestrator.py:397`):
 
 1. `run` — project the lineage; if terminal, return immediately.
 2. `_hydrate` — build the context packet (planner context builder); may park on
@@ -158,7 +158,7 @@ Orchestrator phases (`src/paa/agents/orchestrator.py:292`):
    `max_step_retries`).
 6. `_commit` — `MUTATION_COMMITTED` (terminal).
 
-`src/paa/agents/orchestrator.py:467`–`:811`.
+`src/paa/agents/orchestrator.py:468`–`:812`.
 
 ## Delegation safety
 
@@ -169,7 +169,7 @@ waiters can exist — the RFC's safety property is preserved by construction,
 not by prohibiting peer calls.
 
 `src/paa/agents/base.py:22`, `src/paa/agents/delegation.py:48`,
-`src/paa/agents/orchestrator.py:833`.
+`src/paa/agents/orchestrator.py:834`.
 
 ## Configuration philosophy
 

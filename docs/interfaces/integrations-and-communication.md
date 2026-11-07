@@ -100,7 +100,7 @@ Non-blocking at the topology level: the wait graph is a DAG
 ### Orchestrator → agents
 The orchestrator sends `CONTEXT_REQUEST`, `PLAN_PROPOSAL`, `POLICY_CHECK`,
 `EXECUTION_REQUEST`, `REVIEW_RESULT` messages and reads `AgentResult`
-(`orchestrator.py:467`–`:811`).
+(`orchestrator.py:468`–`:812`).
 
 ## 4. Synchronous vs asynchronous communication
 

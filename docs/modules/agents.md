@@ -42,15 +42,15 @@ model (`orchestrator.py:9`, `policy.py:7`).
 
 ### `orchestrator.py` — Chief Orchestrator
 `run(cid)` projects the lineage; if terminal, returns immediately
-(`orchestrator.py:295`). Phases:
-- `_hydrate` (`:467`) — context builder; parks on `AWAITING_HUMAN_ATTESTATION`
-  if density insufficient (`:379`).
-- `_plan` (`:542`) — planner; SIMPLE bypasses model (`:408`); validates
-  `max_plan_nodes()` (`:441`).
+(`orchestrator.py:400`). Phases:
+- `_hydrate` (`:468`) — context builder; parks on `AWAITING_HUMAN_ATTESTATION`
+  if density insufficient (`:527`).
+- `_plan` (`:543`) — planner; SIMPLE bypasses model (`:548`); validates
+  `max_plan_nodes()` (`:581`).
 - `_check_policy` (`:461`) — policy agent; blocked → `POLICY_BLOCKED`/
   `SECURITY_VIOLATION`; human gate → `AWAITING_HUMAN_ATTESTATION`; else
   `POLICY_CLEARED` (`:505`).
-- `_execute_steps` (`:515`) — per step: `EXECUTION_STARTED` → worker → critic
+- `_execute_steps` (`:718`) — per step: `EXECUTION_STARTED` → worker → critic
   → `EXECUTION_COMPLETED`/`VALIDATION_FAILED`; retry up to `max_step_retries`
   (default 2, `:108`).
 - `_commit` (`:609`) — `MUTATION_COMMITTED` (terminal).
@@ -106,8 +106,8 @@ from DB (`:234`), anti-goals (cosine ≥0.82 or phrase match, `:262`). Risk scor
 
 | Component | Relationship | Why | Source |
 |---|---|---|---|
-| `ChiefOrchestrator` → all agents | calls `agent.run(message, ctx)` | Drive lifecycle phases | `orchestrator.py:374`, `:434`, `:471`, `:538`, `:594` |
-| `Agent` → `DelegationRegistry` | `delegate()` | Orchestrator owns delegation graph | `agents/base.py:373`, `orchestrator.py:833` |
+| `ChiefOrchestrator` → all agents | calls `agent.run(message, ctx)` | Drive lifecycle phases | `orchestrator.py:512`, `:574`, `:667`, `:741`, `:797` |
+| `Agent` → `DelegationRegistry` | `delegate()` | Orchestrator owns delegation graph | `agents/base.py:373`, `orchestrator.py:834` |
 | `Reasoning agents` → `ModelLike` | `complete_structured()` | Model seam | `reasoning.py:95`, `:246`, `:353` |
 | `RouterModelAdapter` | wraps `EscalatingModelRouter` | Bridge `ModelLike` → router | `runtime.py:98` |
 | `PolicyRiskAgent` → `Database` | `fetch_all(hot_serving_policy_rules)` | Operator rules | `policy.py:255` |
@@ -138,7 +138,7 @@ from DB (`:234`), anti-goals (cosine ≥0.82 or phrase match, `:262`). Risk scor
 - Changing an agent's `handle()` signature breaks the `Agent` ABC contract
   (`agents/base.py:296`).
 - Adding a delegation requires `can_delegate = True` and orchestrator
-  registration (`agents/base.py:308`, `orchestrator.py:247`).
+  registration (`agents/base.py:308`, `orchestrator.py:248`).
 - Changing `TERMINAL_EVENTS` affects recovery scanning (`core/types.py:187`,
   `ledger/store.py:304`).
 - Tests: `tests/agents/` (70 tests per README).
@@ -147,7 +147,7 @@ from DB (`:234`), anti-goals (cosine ≥0.82 or phrase match, `:262`). Risk scor
 
 - `src/paa/agents/specialists/` is an empty package (`AGENTS.md:146`).
 - Router is optional; when absent, `_classify()` heuristic picks modality
-  (`orchestrator.py:247`).
+  (`orchestrator.py:352`).
 - Deterministic planner fallback is crude (splits on conjunctions).
 
 ## Related documents
