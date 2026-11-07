@@ -15,6 +15,10 @@ boot recovery:
 4. **The maintenance loop** runs memory curation on its interval.
 5. **The reflection loop** runs the weekly reflection pass when due, serialized
    after the maintenance prune by a shared lock (never parallel to it).
+6. **The allocation loop** (PLAN:integration-fix:P007, ADR-0036) runs one
+   attention-allocation pass per interval when ``allocator.enabled``, also
+   serialized after the maintenance prune by the same lock; disabled (the
+   default) the tick returns without touching the ``workers:alloc`` queue.
 
 Each loop is independent and supervised: one loop raising does not stop the
 others, because a stalled maintenance pass must not take ingestion down with it.
@@ -36,6 +40,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from datetime import datetime
 
+    from paa.context.allocator import AllocationResult
     from paa.memory.creator import MemoryCreator
     from paa.memory.curator import CurationPhase, CurationReport
     from paa.runtime import Runtime
@@ -56,6 +61,7 @@ class Daemon:
         ingestion_interval: float = 1.0,
         maintenance_interval: float = 6 * 3600.0,
         reflection_poll_interval: float = 3600.0,
+        allocation_interval: float = 60.0,
         claim_batch: int = 4,
     ) -> None:
         self._rt = runtime
@@ -63,6 +69,12 @@ class Daemon:
         self._ingestion_interval = ingestion_interval
         self._maintenance_interval = maintenance_interval
         self._reflection_poll_interval = reflection_poll_interval
+        # PLAN:integration-fix:P007 (ADR-0036) — the allocation tick cadence.
+        # DECISION: 60s, between the ingestion cadence (1s, claim-based) and
+        # the reflection poll (1h). It is advisory only — the gatherer ranks
+        # without it — so a minute-scale cadence costs nothing and a hot
+        # 1 Hz claim over an operator-fed queue would wake the loop needlessly.
+        self._allocation_interval = allocation_interval
         self._claim_batch = claim_batch
         # PLAN:integration-fix:P013: serialises the curator prune tick
         # (maintenance loop) against the weekly reflection pass (reflection
@@ -85,6 +97,7 @@ class Daemon:
             asyncio.create_task(self._supervise("ingestion", self._ingestion_loop)),
             asyncio.create_task(self._supervise("maintenance", self._maintenance_loop)),
             asyncio.create_task(self._supervise("reflection", self._reflection_loop)),
+            asyncio.create_task(self._supervise("allocation", self._allocation_loop)),
         ]
         log.info("daemon.started", loops=len(self._tasks))
 
@@ -249,6 +262,51 @@ class Daemon:
             rules_written=len(report.rules_written),
         )
         return True
+
+    async def _allocation_loop(self) -> None:
+        # PLAN:integration-fix:P007 — the attention-allocation loop, supervised
+        # like the reflection loop. The tick itself is gated by
+        # ``AllocatorSettings.enabled`` (default ``False``), so a deployment
+        # that never sets the field pays only one early-return per interval
+        # and the ``workers:alloc`` queue is never claimed.
+        while not self._stop.is_set():
+            try:
+                await self._run_allocation_tick()
+            except Exception as exc:
+                log.error("daemon.allocation_failed", error=redact(str(exc)))
+            await self._sleep(self._allocation_interval)
+
+    async def _run_allocation_tick(self) -> AllocationResult | None:
+        """Run one attention-allocation pass; return its result or ``None``.
+
+        Gated by ``AllocatorSettings.enabled`` and delegated to
+        :meth:`ChiefOrchestrator.run_allocation` (chain: daemon ->
+        orchestrator -> :func:`paa.context.allocator.allocate_attention`),
+        which guards the queue claim itself: a down queue degrades to an
+        ``underfed`` result, never a raise (R-W4-007), and claim-failure
+        underfed semantics are preserved here because the result is logged,
+        never reinterpreted. The curation lock serialises the pass after the
+        maintenance prune exactly like the reflection tick (never parallel
+        to it). A tick failure propagates to :meth:`_allocation_loop`, which
+        logs ``daemon.allocation_failed`` and keeps the daemon alive.
+        """
+        settings = self._rt.settings
+        if not settings.allocator.enabled:
+            return None
+        async with self._curation_lock:
+            result = await self._rt.orchestrator.run_allocation()
+        log.info(
+            "daemon.allocation_completed",
+            outcome=result.outcome,
+            claimed=result.claimed,
+            scored=result.scored,
+            poisoned=result.poisoned,
+            emitted=result.emitted,
+            notified=result.notified,
+            acked=result.acked,
+            nacked=result.nacked,
+        )
+        return result
 
     def _reflection_delay_seconds(self, *, now: datetime | None = None) -> float:
         """How long the reflection loop sleeps before its next check.

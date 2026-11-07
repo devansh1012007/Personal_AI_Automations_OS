@@ -48,13 +48,13 @@ from collections.abc import Iterable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 import structlog
 
 from paa.agents.reasoning import ModelLike
 from paa.core.errors import PaaError
-from paa.ledger.events import canonical_json
+from paa.ledger.events import LedgerEvent, canonical_json
 from paa.memory.domains import MemoryDomain
 from paa.memory.facts import Fact, FactRepository, trigram_similarity
 from paa.models.base import ModelUnavailableError, redact
@@ -1124,6 +1124,7 @@ class MemoryCreator:
         max_write_retries: int = 3,
         retry_backoff_seconds: float = 0.05,
         drain_max_per_second: int | None = None,
+        ledger: _LedgerAppender | None = None,
     ) -> None:
         from paa.memory.contradiction import ContradictionDetector as _Detector
 
@@ -1150,6 +1151,12 @@ class MemoryCreator:
         if drain_max_per_second < 1:
             raise ValueError(f"drain_max_per_second must be >= 1, got {drain_max_per_second}")
         self._drain_max_per_second = drain_max_per_second
+        # PLAN:integration-fix:P007b (R-W4-006): the DRAIN_THROTTLED emitter
+        # needs a ledger handle the creator never had. Optional so every
+        # existing default construction keeps the pre-emit behaviour (the
+        # log line alone); when a store is supplied, a breach appends one
+        # DRAIN_THROTTLED event per window (see _emit_drain_throttled_event).
+        self._ledger = ledger
         self._drain_window_started = 0.0
         self._drain_window_indexed = 0
 
@@ -1566,6 +1573,14 @@ class MemoryCreator:
                 limit=limit,
                 deferred=True,
             )
+            await _emit_drain_throttled_event(
+                self._ledger,
+                drain_max_per_second=self._drain_max_per_second,
+                indexed_this_window=self._drain_window_indexed,
+                window_started=self._drain_window_started,
+                limit=limit,
+                effective_limit=0,
+            )
             return 0
         effective_limit = min(limit, budget)
         if effective_limit < limit:
@@ -1576,6 +1591,14 @@ class MemoryCreator:
                 window_seconds=_DRAIN_WINDOW_SECONDS,
                 limit=limit,
                 deferred=True,
+                effective_limit=effective_limit,
+            )
+            await _emit_drain_throttled_event(
+                self._ledger,
+                drain_max_per_second=self._drain_max_per_second,
+                indexed_this_window=self._drain_window_indexed,
+                window_started=self._drain_window_started,
+                limit=limit,
                 effective_limit=effective_limit,
             )
         pending = await self._facts.pending_embeddings(effective_limit)
@@ -1952,3 +1975,90 @@ def _unparseable_guard(payload: Any, signal_id: str) -> None:
 #: every line citation below it, and Python resolves module globals at
 #: call time, so end placement costs nothing.
 _DRAIN_WINDOW_SECONDS: float = 1.0
+
+
+class _LedgerAppender(Protocol):
+    """The single store capability the throttle emitter needs: append one event.
+
+    Structural (not the concrete :class:`~paa.ledger.store.LedgerStore`),
+    mirroring the allocator's seam, so the creator keeps its no-ledger-
+    import posture: :meth:`MemoryCreator.__init__` accepts any object with
+    an ``append`` coroutine, and a creator built without one stays
+    log-only exactly as before this wave. Dedupe by full ADR-0008 key is
+    the store's contract, not the emitter's to re-implement.
+    """
+
+    async def append(self, event: LedgerEvent) -> LedgerEvent: ...
+
+
+#: All drain-throttle telemetry shares one deterministic lineage, mirroring
+#: ``TIER_SWEEPER_CORRELATION_ID`` in :mod:`paa.memory.tier`: ADR-0008
+#: idempotency needs the key stable across ticks, and the throttle is a
+#: daemon-global fact, not a task-lineage one. Breaches within one window
+#: are distinguished by the discriminator (window + cap), so the store
+#: returns the existing event instead of a duplicate.
+_DRAIN_THROTTLED_CORRELATION_ID: Final[uuid.UUID] = uuid.uuid5(
+    uuid.NAMESPACE_URL, "paa:memory:drain-throttled"
+)
+
+#: Payload `reason` for every throttle event (tier uses `"ttl"` the same
+#: way): one reason keeps the payload shape fixed for every event emitted.
+_REASON_DRAIN_THROTTLE: Final[str] = "drain_throttle"
+
+
+async def _emit_drain_throttled_event(
+    ledger: _LedgerAppender | None,
+    *,
+    drain_max_per_second: int,
+    indexed_this_window: int,
+    window_started: float,
+    limit: int,
+    effective_limit: int,
+) -> None:
+    """Append one ``DRAIN_THROTTLED`` event for a throttle breach (R-W4-006).
+
+    PLAN:integration-fix:P007b — emitted only on breach (the two throttle
+    log sites in :meth:`MemoryCreator.drain_pending_embeddings`), never on
+    the log-only/idle paths, and only when a ledger handle was supplied
+    (``None`` preserves the pre-emit behaviour exactly). The payload mirrors
+    the tier-throttle shape (``{fact/threshold}`` + ``reason``,
+    ADR-0008 discriminator) because ADR-0036 is silent on its fields; the
+    ADR-0008 key is ``(correlation_id, event_type, attempt=0,
+    discriminator=window+cap)``, so a second breach inside the same window
+    dedupes in the store. An emitter failure is logged and swallowed —
+    telemetry must never break the drain's defer semantics.
+    """
+
+    if ledger is None:
+        return
+    from paa.core.types import EventType
+
+    try:
+        await ledger.append(
+            LedgerEvent.create(
+                _DRAIN_THROTTLED_CORRELATION_ID,
+                EventType.DRAIN_THROTTLED,
+                payload={
+                    "fact": "embedding_drain",
+                    "threshold": drain_max_per_second,
+                    "drain_max_per_second": drain_max_per_second,
+                    "indexed_this_window": indexed_this_window,
+                    "window_seconds": _DRAIN_WINDOW_SECONDS,
+                    "limit": limit,
+                    "effective_limit": effective_limit,
+                    "reason": _REASON_DRAIN_THROTTLE,
+                },
+                discriminator=(
+                    f"drain_throttled:{int(window_started * 1000)}:"
+                    f"{drain_max_per_second}"
+                ),
+                attempt=0,
+            )
+        )
+    except Exception as exc:
+        log.error(
+            "memory.drain_throttled_emit_failed",
+            error=redact(str(exc)),
+            drain_max_per_second=drain_max_per_second,
+            indexed_this_window=indexed_this_window,
+        )

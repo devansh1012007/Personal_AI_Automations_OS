@@ -32,7 +32,7 @@ import structlog
 from rich.console import Console
 from rich.text import Text
 
-from paa.core.types import ComplexityModality, CorrelationId
+from paa.core.types import ComplexityModality, CorrelationId, EventType
 from paa.improvement.reflection import reflection_health
 from paa.ledger.replay import TaskPhase
 from paa.ledger.replay import project as project_lineage
@@ -168,6 +168,57 @@ async def _memory_browser_counts(rt: Any) -> dict[str, Any]:
     return await FactRepository(rt.db).count_facts_by_domain()
 
 
+async def _attention_top(settings: Any, rt: Any) -> list[dict[str, Any]] | None:
+    """Live allocator decisions (``ATTENTION_ALLOCATED`` events) ranked by score.
+
+    PLAN:integration-fix:P007b (P-006 -> P-007 fill) — the panel is the
+    ledger's own record of what the allocator decided, read back from the
+    open lineages (bounded by ``_PANEL_SCAN_LIMIT``, same scan shape as
+    :func:`_decision_tracker`). The allocator folds to nothing in
+    ``TaskProjection`` (the decision IS the record, ADR-0036), so this reads
+    the raw events, not the projection. Rank is the allocator's total order
+    (score descending, ``item_id`` ascending); the bound is
+    ``AllocatorSettings.max_results`` (default 5). No events -> ``None``,
+    which renders "No data yet": an empty allocator is honest-null, never
+    a synthesised score. Per-lineage read failures skip that lineage only.
+    """
+    allocator_settings = getattr(settings, "allocator", None)
+    bound = getattr(allocator_settings, "max_results", 5) if allocator_settings else 5
+    bound = int(bound) if isinstance(bound, int) and bound >= 1 else 5
+    entries: list[dict[str, Any]] = []
+    heads = await rt.ledger.open_correlations()
+    for head in heads[:_PANEL_SCAN_LIMIT]:
+        cid = _correlation_id_of(head)
+        try:
+            events = await rt.ledger.read_correlation(cid)
+        except Exception as exc:
+            log.warning(
+                "tui.project_failed", correlation_id=str(cid), error=redact(str(exc))
+            )
+            continue
+        for event in events:
+            if getattr(event, "event_type", None) != EventType.ATTENTION_ALLOCATED:
+                continue
+            payload = getattr(event, "payload", None)
+            if not isinstance(payload, dict):
+                continue
+            score = payload.get("score")
+            if not isinstance(score, (int, float)) or isinstance(score, bool):
+                continue
+            entries.append(
+                {
+                    "item_id": str(payload.get("item_id")),
+                    "score": float(score),
+                    "correlation_id": str(cid),
+                    "inputs": payload.get("inputs"),
+                }
+            )
+    if not entries:
+        return None
+    entries.sort(key=lambda entry: (-entry["score"], str(entry["item_id"])))
+    return entries[:bound]
+
+
 async def _decision_tracker(rt: Any) -> list[dict[str, Any]]:
     """Recent raw POLICY_* decisions from open lineages.
 
@@ -259,11 +310,13 @@ async def build_panel_fields(settings: Any, rt: Any) -> dict[str, Any]:
     same runtime fact — the same one-source pattern ``sandbox_report_rows``
     uses for the doctor panel.
 
-    ``attention_top`` is always ``None`` this wave: the P-07 allocator (W4)
-    has not landed, and a null that renders "No data yet" is correct while a
-    computed score would be a fake. Each other field is collected under its
-    own try/except: a raising source empties only its panel (logged, not
-    silent) and never kills the 2s tick loop or the health response.
+    ``attention_top`` reads the allocator's own ledger decisions
+    (``ATTENTION_ALLOCATED`` events; see :func:`_attention_top`) and is
+    ``None`` exactly when the allocator has decided nothing — a null that
+    renders "No data yet" is correct while a computed score would be a
+    fake. Each field is collected under its own try/except: a raising
+    source empties only its panel (logged, not silent) and never kills
+    the 2s tick loop or the health response.
     """
     fields: dict[str, Any] = {
         "attention_top": None,
@@ -272,6 +325,12 @@ async def build_panel_fields(settings: Any, rt: Any) -> dict[str, Any]:
         "autonomy_state": None,
         "agent_monitor": None,
     }
+    try:
+        fields["attention_top"] = await _attention_top(settings, rt)
+    except Exception as exc:
+        log.warning(
+            "tui.panel_failed", panel="attention_top", error=redact(str(exc))
+        )
     try:
         fields["memory_browser_counts"] = await _memory_browser_counts(rt)
     except Exception as exc:

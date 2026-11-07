@@ -39,6 +39,16 @@ before this module, so its semantics are defensive on purpose:
   so poison terminates instead of looping. The score itself is only ever
   evaluated with the ADR-0012 guards — never raw ``P*R``.
 
+Producer decision (PLAN:integration-fix:P007b; ADR-0036 is silent on the
+producer): **operator-fed**. No code in the tree enqueues to
+``workers:alloc`` (the only enqueue site is the ``paa.storage.queue``
+docstring example) — inventing a poll-loop producer that fabricates work
+items would be worse than honest: the queue is fed by operator ingress
+(CLI/signal): an external enqueue of the payload dict below, and until
+one exists the daemon tick below is an ``underfed`` no-op (plus a log
+line), never "live". A future ingress producer must enqueue that shape;
+nothing here fabricates the work items it scores.
+
 Producer payload contract (one claimed message = one dict):
 ``item_id: str | int`` (required identity; discriminator), optionally
 ``priority`` (task-request priority -> K, default 0.5; ``criticality``

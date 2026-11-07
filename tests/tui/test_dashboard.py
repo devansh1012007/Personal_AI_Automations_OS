@@ -492,3 +492,66 @@ async def test_runner_build_info_without_a_marker_reports_unknown(tmp_path: Any)
     assert info["reflection_last_run_age_days"] is None
     assert info["reflection_stale"] is False
 
+
+# ---------------------------------------------------------------------------
+# attention_top fill (P007b — P-006 -> P-007)
+# ---------------------------------------------------------------------------
+# The panel reads the allocator's own ATTENTION_ALLOCATED ledger events
+# from open lineages, ranked score-desc, bounded by allocator.max_results.
+# Empty allocator -> None ("No data yet") so the W3 honest-null pins stay.
+
+
+async def test_attention_top_ranked_from_allocator_events(db: Any, ledger: Any) -> None:
+    from types import SimpleNamespace
+
+    from paa.core.types import EventType, new_correlation_id
+    from paa.ledger.events import LedgerEvent
+    from paa.tui.runner import build_panel_fields
+
+    cid = new_correlation_id()
+    await ledger.append(LedgerEvent.create(cid, EventType.TASK_REQUESTED, payload={}))
+    for item_id, score in (("low-item", 0.1), ("high-item", 0.9), ("mid-item", 0.5)):
+        await ledger.append(
+            LedgerEvent.create(
+                cid,
+                EventType.ATTENTION_ALLOCATED,
+                payload={
+                    "item_id": item_id,
+                    "score": score,
+                    "inputs": {"K": 0.5},
+                    "message_id": f"m-{item_id}",
+                    "top_n": [item_id],
+                },
+                discriminator=item_id,
+            )
+        )
+    settings = SimpleNamespace(
+        policy=SimpleNamespace(mode=SimpleNamespace(value="ask")),
+        allocator=SimpleNamespace(max_results=2),
+    )
+    rt = SimpleNamespace(db=db, ledger=ledger, agents={})
+    panels = await build_panel_fields(settings, rt)
+    top = panels["attention_top"]
+    assert isinstance(top, list) and len(top) == 2
+    assert [row["item_id"] for row in top] == ["high-item", "mid-item"]
+    assert [row["score"] for row in top] == [0.9, 0.5]
+    assert top[0]["correlation_id"] == str(cid)
+
+
+async def test_attention_top_empty_allocator_stays_null(db: Any, ledger: Any) -> None:
+    from types import SimpleNamespace
+
+    from paa.core.types import EventType, new_correlation_id
+    from paa.ledger.events import LedgerEvent
+    from paa.tui.runner import build_panel_fields
+
+    cid = new_correlation_id()
+    await ledger.append(LedgerEvent.create(cid, EventType.TASK_REQUESTED, payload={}))
+    settings = SimpleNamespace(
+        policy=SimpleNamespace(mode=SimpleNamespace(value="ask")),
+        allocator=SimpleNamespace(max_results=5),
+    )
+    rt = SimpleNamespace(db=db, ledger=ledger, agents={})
+    panels = await build_panel_fields(settings, rt)
+    assert panels["attention_top"] is None
+
