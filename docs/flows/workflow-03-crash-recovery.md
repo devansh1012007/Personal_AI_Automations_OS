@@ -36,7 +36,7 @@ messages; the ledger is not.
 
 For each head:
 
-a. `project(store, cid)` → `TaskProjection` (replay from ledger, `ledger/replay.py:412`).
+a. `project(store, cid)` → `TaskProjection` (replay from ledger, `ledger/replay.py:422`).
 b. If `projection.is_terminal` → head projection lagged (crash between ledger
    insert and head upsert); `_mark_head_terminal()`; outcome `ALREADY_TERMINAL`
    (`:270`).

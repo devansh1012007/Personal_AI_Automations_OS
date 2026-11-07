@@ -88,7 +88,7 @@ attempts, completed steps, tokens) applied in the `match` block.
 stays `EXECUTING` until all steps are done (`replay.py:240`). This is ADR-0010
 — treating `EXECUTION_COMPLETED` as terminal would skip remaining steps.
 
-`project()` (`replay.py:412`) loads a snapshot (if compatible) then replays
+`project()` (`replay.py:422`) loads a snapshot (if compatible) then replays
 from that version.
 
 ### `recovery.py` — crash recovery
@@ -127,7 +127,7 @@ from that version.
 | `ChiefOrchestrator` | calls `LedgerStore.append` | Emits every state transition | `orchestrator.py:276` |
 | `Runtime.build` | constructs `LedgerStore`, `RecoveryEngine` | Composition root | `runtime.py:288`, `:326` |
 | `RecoveryEngine` | uses `LedgerStore`, `Database` | Replay and reconcile | `recovery.py:150` |
-| `replay.project` | reads `LedgerStore.read_correlation` | Build TaskProjection | `replay.py:437` |
+| `replay.project` | reads `LedgerStore.read_correlation` | Build TaskProjection | `replay.py:447` |
 | `API /ledger/{id}` | calls `read_correlation` | Explainability endpoint | `api/app.py:156` |
 | `CLI paa ledger` | calls `read_correlation` + `verify_chain` | Terminal explainability | `cli/main.py:148` |
 | `Database` | used by `LedgerStore` | SQLite persistence | `storage/relational/database.py:110` |

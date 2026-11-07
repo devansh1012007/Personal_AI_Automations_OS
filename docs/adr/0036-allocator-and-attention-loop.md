@@ -28,7 +28,7 @@ the allocator is the first substantive pair the stream will ever carry.
 
 Two of the formula's five inputs have no live producer, and the drain that
 would feed the loop is unthrottled. `drain_pending_embeddings` in
-`src/paa/memory/creator.py:1497` embeds a batch of 100 per call on three
+`src/paa/memory/creator.py:1515` embeds a batch of 100 per call on three
 call sites, with no rate cap and no backpressure log.
 
 **What the redaction item (§P01) leaves behind.** The two unredacted
@@ -74,7 +74,7 @@ shows K or R pinned at default on every run, the derivation — not the formula
 
 **Allocator decisions are ledger events, not side effects.** The run emits an
 allocator-decision `EventType` (name chosen by the P-007 implementer) that
-maps to `_NO_PHASE_CHANGE` in `src/paa/ledger/replay.py:379`, never to
+maps to `_NO_PHASE_CHANGE` in `src/paa/ledger/replay.py:387`, never to
 `_PHASE_MAP`, and is not named in `TERMINAL_EVENTS`. The reasoning is the
 same as the tier precedent's: an allocation decision is information about a
 task, not a move of the task's lifecycle. Idempotency uses the full ADR-0008
@@ -95,7 +95,7 @@ the ignore if the convention ever changes.
 in `src/paa/config.py` (the memory domain owns the drain) and enforced by
 P-007, its sole owner. The plan names the Setting but no default; the
 default here is **100**, the current batch size
-(`src/paa/memory/creator.py:1497`) at the daemon's ~1 Hz drain cadence, so a
+(`src/paa/memory/creator.py:1515`) at the daemon's ~1 Hz drain cadence, so a
 deployment that never sets the field sees exactly today's throughput. Above
 the cap the drain defers and logs backpressure — never drops silently.
 

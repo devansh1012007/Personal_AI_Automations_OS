@@ -45,7 +45,7 @@ skipped regardless of any explicit floor.
 
 ### `facts.py` — FactRepository
 `upsert_entity` (idempotent on canonical_name; aliases unioned; importance max)
-(`memory/facts.py:347`). `add_fact` appends a new version, never overwrites; `supersede`
+(`memory/facts.py:363`). `add_fact` appends a new version, never overwrites; `supersede`
 links versions (refuses cycles) (`memory/facts.py:789`, `:860`). `supersession_chain` walks
 back with visited-set guard (`memory/facts.py:892`). `query_facts` filters decayed confidence
 in Python (derived, can't push to SQL), bounded `max_scan=10_000`
@@ -53,9 +53,9 @@ in Python (derived, can't push to SQL), bounded `max_scan=10_000`
 
 `resolve_entity` (`memory/facts.py:466`) is a three-rung ladder — exact → alias → fuzzy —
 and the **gate is the authority**: a Python character-trigram Jaccard
-similarity (`trigram_similarity`, `memory/facts.py:157`) decides, and the database only
+similarity (`trigram_similarity`, `memory/facts.py:158`) decides, and the database only
 decides *which rows the gate gets to look at*. The gate's gram model is
-FTS5's — the 3-grams of the raw, case-folded text (`memory/facts.py:213`), no padding and
+FTS5's — the 3-grams of the raw, case-folded text (`memory/facts.py:214`), no padding and
 no whitespace-run collapsing — so a pair the gate accepts is a pair the
 index can hold.
 
@@ -87,8 +87,8 @@ ADR-0025.
 
 ### `creator.py` — MemoryCreator
 Ingests unprocessed signals into hot-serving facts/entities. Called by daemon
-ingestion loop (`src/paa/memory/creator.py:1225`). Also owns the
-pending-embedding backlog drain (`src/paa/memory/creator.py:1497`),
+ingestion loop (`src/paa/memory/creator.py:1243`). Also owns the
+pending-embedding backlog drain (`src/paa/memory/creator.py:1515`),
 called after each ingestion batch (`src/paa/daemon.py:165`). The creator is
 deterministic and replay-stable — every field is a pure function of the
 signal payload — so re-running it over a persisted signal recreates the

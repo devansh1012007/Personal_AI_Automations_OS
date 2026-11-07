@@ -157,7 +157,7 @@ have accepted was never scored.
 ## Decision
 
 **1. The gate is the authority, and its gram model is FTS5's.**
-`paa.memory.facts._trigrams` (`facts.py:203`) returns the 3-grams of the
+`paa.memory.facts._trigrams` (`facts.py:214`) returns the 3-grams of the
 **raw, case-folded** text: no padding, no whitespace-run collapsing. The
 gate has to be decidable from what the index can see — a gate that scores a
 pair the index cannot hold accepts a row that no candidate query over the
@@ -298,7 +298,7 @@ the seam returned.
 
 **7. The FTS5 quoting lives in the seam.** `MATCH` is a *query language*,
 and quoting a term for it is an engine difference, so `_fts_phrase`
-(`dialect.py:563`) and `_fts_broad` (`dialect.py:588`) moved out of
+(`dialect.py:550`) and `_fts_broad` (`dialect.py:575`) moved out of
 `paa.memory.facts` and into `dialect.py`. They are the only place in the
 repository that quotes for FTS5: a second quoting is a second place for the
 injection barrier to be wrong.

@@ -99,7 +99,7 @@ Embeddings (`models/embeddings.py` → `storage/vector/embeddings.py`):
 Collections (`store.py`): `ACTIVE_FACTS` and `RFC_COLLECTIONS`.
 
 Consumers: `Runtime._try_vector` (`runtime.py:351`), `MemoryCreator` (embeds
-new facts, `creator.py:1462`), context gatherer semantic search
+new facts, `creator.py:1480`), context gatherer semantic search
 (`context_agents.py:183`).
 
 ## 4. Graph — `src/paa/storage/graph/`
@@ -131,7 +131,7 @@ Configuration: `StorageSettings.backend_queue`, `StorageSettings.redis_url`
 SHEDDING decision on queue depth; control-plane streams always accepted.
 
 Consumers: `Runtime` (`runtime.py:373`), `ChiefOrchestrator.submit` enqueues
-(`orchestrator.py:233`), daemon dispatch claims (`daemon.py:130`),
+(`orchestrator.py:233`), daemon dispatch claims (`daemon.py:146`),
 recovery requeue (`recovery.py:437`), API backpressure gate
 (`api/app.py:200`).
 
@@ -157,7 +157,7 @@ dependencies installed (`AGENTS.md:60`).
 Degradation impact:
 - No vector → context gatherer semantic search returns `[]` (`context_agents.py:184`).
 - No graph → graph neighbours returns `[]` (`context_agents.py:215`).
-- No queue → orchestrator submit skips enqueue (`orchestrator.py:230`); daemon dispatch sleeps (`daemon.py:123`).
+- No queue → orchestrator submit skips enqueue (`orchestrator.py:230`); daemon dispatch sleeps (`daemon.py:133`).
 - No S3 → cold lake uses local CAS (`storage/coldlake/__init__.py:68`).
 
 ## 8. Consistency and parity

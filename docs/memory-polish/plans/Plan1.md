@@ -63,7 +63,7 @@
 **Entry points and execution flow today, with `[FACT file:line]`:**
 - Signal lands: `POST /signals` → `SignalRepository.record` → `cold_lake_signals` row `[FACT src/paa/api/app.py:173-197]`.
 - Daemon drains: `_ingestion_loop` → `creator.run_batch(limit=25)` → `process_signal` per signal `[FACT src/paa/daemon.py:142-152]`.
-- Creator extracts: `RuleBasedExtractor.extract` (rule-based, no model) → entity resolution → contradiction check → one transaction commit → embedding enqueue `[FACT src/paa/memory/creator.py:1133-1212]`.
+- Creator extracts: `RuleBasedExtractor.extract` (rule-based, no model) → entity resolution → contradiction check → one transaction commit → embedding enqueue `[FACT src/paa/memory/creator.py:1134-1230]`.
 - Context builds: `ContextGatherer` packs facts mechanically under token budget `[FACT src/paa/context/gatherer.py]`.
 
 **Data model and persistence touched:** `cold_lake_signals`, `hot_serving_entity_index`, `hot_serving_active_facts`. No schema change.
@@ -93,7 +93,7 @@ Add a `paa memory` CLI command group and four memory API routes (`GET /memory/fa
 1. Operator POSTs to `/signals` → row in `cold_lake_signals` `[api/app.py:175]`.
 2. Daemon `_ingestion_loop` claims row → `MemoryCreator.run_batch` `[daemon.py:142]`.
 3. `RuleBasedExtractor` produces candidates (no model) `[creator.py:455]`.
-4. Entity resolution + contradiction check + one-transaction commit `[creator.py:1305-1451]`.
+4. Entity resolution + contradiction check + one-transaction commit `[creator.py:1323-1469]`.
 5. Fact visible via direct DB query only — no CLI, no API.
 
 *After:*
@@ -195,12 +195,12 @@ Add a `paa memory` CLI command group and four memory API routes (`GET /memory/fa
 
 | Case | Where it bites | Expected behavior | Handled by |
 |---|---|---|---|
-| Poison signal in drain batch | `creator.py:1216-1271` (`run_batch`) | One signal fails; batch continues; error logged | C01, C03 (existing) |
+| Poison signal in drain batch | `creator.py:1234-1289` (`run_batch`) | One signal fails; batch continues; error logged | C01, C03 (existing) |
 | LLM returns malformed triples | `creator.py:LLMFactExtractor` | `MalformedSignalError`, signal quarantined, zero facts | C03, T10 |
 | OpenRouter key in exception chain | `models/router.py` | Key scrubbed; errors carry no chain | existing `test_key_secrecy` |
 | No vector store attached | `creator.py:1034` (`VectorEmbeddingSink`) | Facts stay `pending`; recall degrades, never dies | existing |
 | Memory command with no DB | `cli/main.py` | Clean refusal via `_settings_or_refuse` | C01 |
-| Concurrent drain + daemon drain | `creator.py:1282-1309` (`_claim`) | Atomic claim; second caller gets none | existing |
+| Concurrent drain + daemon drain | `creator.py:1300-1327` (`_claim`) | Atomic claim; second caller gets none | existing |
 | LLM summarizer raises | `world_model.py:210-220` | Falls back to deterministic path | C06 |
 
 ---
@@ -211,7 +211,7 @@ Add a `paa memory` CLI command group and four memory API routes (`GET /memory/fa
 
 **Backward compatibility:** Fully backward compatible — all changes additive; rule-based extractor remains default; no config fields change meaning; no CLI commands removed.
 
-**Concurrency and error-handling:** Daemon ingestion loop already isolates one poison signal per batch `[daemon.py:142-152]`; LLM extractor runs inside the same one-transaction-per-signal boundary `[creator.py:1400-1451]`.
+**Concurrency and error-handling:** Daemon ingestion loop already isolates one poison signal per batch `[daemon.py:142-152]`; LLM extractor runs inside the same one-transaction-per-signal boundary `[creator.py:1418-1469]`.
 
 **Performance and cost:** LLM extraction is opt-in; default path unchanged (zero cost, zero latency addition). LLM context ranking bounded by existing token budget.
 
@@ -227,7 +227,7 @@ Add a `paa memory` CLI command group and four memory API routes (`GET /memory/fa
 
 **Rollback:** Remove the `memory` command block from `cli/main.py`, remove the four routes from `api/app.py`, revert `creator.py`/`config.py`/`runtime.py`/`compaction.py`/`gatherer.py` to pre-change state. All changes are additive and independently removable.
 
-**Observability:** `memory.signal_processed` / `memory.signal_quarantined` / `memory.signal_malformed` structlog events already exist `[creator.py:1198, 1181, 1652]`. New: log LLM extraction usage and cost-relevant tokens.
+**Observability:** `memory.signal_processed` / `memory.signal_quarantined` / `memory.signal_malformed` structlog events already exist `[creator.py:1216, 1199, 1743]`. New: log LLM extraction usage and cost-relevant tokens.
 
 ---
 

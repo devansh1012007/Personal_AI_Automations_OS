@@ -37,7 +37,7 @@ updated in the same transaction. `state_version` is per-correlation and dense;
 
 ### Retrieval
 `LedgerStore.read_correlation()` returns all events for a lineage ordered by
-`state_version` (`ledger/store.py:149`). `project()` (`replay.py:412`) folds them into
+`state_version` (`ledger/store.py:149`). `project()` (`replay.py:422`) folds them into
 a `TaskProjection`. `LedgerStore.head()` reads the head projection for status
 (`ledger/store.py:341`).
 
@@ -77,8 +77,8 @@ scheme (which made retries impossible under a UNIQUE constraint).
 ### Creation
 `MemoryCreator.run_batch()` (`memory/creator.py`) claims unprocessed signals
 (`SignalRepository.claim_unprocessed`, `signals.py:212`) and writes entities
-and facts via `FactRepository.upsert_entity` / `add_fact` (`memory/facts.py:347`,
-`:789`) into `hot_serving_entity_index` and `hot_serving_active_facts`.
+and facts via `FactRepository.upsert_entity` / `add_fact` (`memory/facts.py:363`,
+`:823`) into `hot_serving_entity_index` and `hot_serving_active_facts`.
 
 Facts are **never overwritten**: `add_fact` appends a new version; `supersede`
 links `old → new` (`memory/facts.py:860`, refuses cycles). `supersession_chain`
@@ -96,7 +96,7 @@ Confidence stored is `initial_confidence` (C₀); the effective confidence
 - `resolve_entity()` (`facts.py:456`): a three-rung ladder — exact → alias →
   fuzzy — in which the **Python gate is the authority**. The gate is a
   character-trigram Jaccard similarity over the 3-grams of the raw,
-  case-folded text (`facts.py:157`, `:203`) — FTS5's own gram model, so a
+  case-folded text (`facts.py:158`, `:214`) — FTS5's own gram model, so a
   pair the gate accepts is a pair the index can hold. The database only
   decides *which rows the gate gets to look at*, and it returns a candidate
   set that is a **superset** of the gate's acceptance set for **ASCII**
@@ -223,7 +223,7 @@ re-enqueues recovered lineages (`recovery.py:437`).
 ### Consumption
 Daemon `_claim_and_run()` claims messages (`queue.claim`), runs each via
 `Runtime.run(cid)`, then `ack` on success or `nack` on failure
-(`daemon.py:128`).
+(`daemon.py:137`).
 
 ### Failure / dead letter
 `max_delivery_attempts` (default 3); exhausted messages go to

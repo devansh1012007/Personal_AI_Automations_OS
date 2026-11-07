@@ -22,7 +22,7 @@ cooperative via an `asyncio.Event`.
 ### Loops (`src/paa/daemon.py:119`–`:182`)
 - **Dispatch** (0.5s interval): `claim_batch=4` messages from
   `StreamName.ORCHESTRATOR_CORE`; runs each via `runtime.run(cid)`; `ack` on
-  success, `nack` on failure (`src/paa/daemon.py:136`). If `runtime.queue is None`, sleeps
+  success, `nack` on failure (`src/paa/daemon.py:146`). If `runtime.queue is None`, sleeps
   (`src/paa/daemon.py:121`).
 - **Ingestion** (1.0s): `MemoryCreator.run_batch(limit=25)` drains unprocessed
   signals into hot serving (`src/paa/daemon.py:156`); also drains the
@@ -31,7 +31,7 @@ cooperative via an `asyncio.Event`.
   consolidate, orphans, reconcile-vectors, analyze — after one initial
   interval (`src/paa/daemon.py:200`). The first tick is a dry-run preview;
   only a clean complete preview consumes the flag so the next tick deletes
-  (`src/paa/daemon.py:265`, `src/paa/daemon.py:312`). Curator construction
+  (`src/paa/daemon.py:356`, `src/paa/daemon.py:403`). Curator construction
   failure falls back to a bare `DecaySweeper.sweep()` honouring the same
   preview discipline (`src/paa/daemon.py:286`). The operator runbook —
   first-tick preview, snapshot-before-delete, cold-lake replay restore —
@@ -78,10 +78,10 @@ to `None` (ingestion skipped).
 
 ## Failure behavior
 
-- Loop exception → logged, restarted after 1s (`src/paa/daemon.py:111`).
+- Loop exception → logged, restarted after 1s (`src/paa/daemon.py:121`).
 - Task run exception → logged, message nacked (redelivery up to
   `max_delivery_attempts`) (`src/paa/daemon.py:146`).
-- Ingestion failure → logged, skipped (`src/paa/daemon.py:159`).
+- Ingestion failure → logged, skipped (`src/paa/daemon.py:169`).
 - Maintenance failure → logged, skipped (`src/paa/daemon.py:181`).
 - Recovery enqueue failure → logged, non-fatal (`recovery.py:444`).
 
