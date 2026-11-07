@@ -431,3 +431,124 @@ jobs:
 
       - name: test (pytest)
         run: .venv/bin/python -m pytest tests/ -o addopts="--strict-markers --strict-config" -q
+
+  embed-image:
+    name: embed image separation
+    runs-on: ubuntu-latest
+    # The embed path downloads torch (~2 GB) a second time — once into
+    # the base image's wheelhouse, once into the derived image — so
+    # this job gets the same generous bound the gate's `all` shape
+    # has: a timeout that fires during a download is a red build that
+    # says nothing about the code.
+    timeout-minutes: 45
+
+    # The image names are defined once, here — not in compose. The
+    # embed image is a CI artefact, never a compose service (ADR-0042:
+    # built in CI, not deployed by default), so it must not appear in
+    # docker-compose.yml. The base tag is the compose pin itself:
+    # `image: paa/runtime:4.1` (docker-compose.yml:67) — and the
+    # derived image's FROM pins the same tag (Dockerfile.embed), so
+    # the two cannot drift apart without one of the grep assertions
+    # below going red.
+    env:
+      PAA_BASE_IMAGE: paa/runtime:4.1
+      PAA_EMBED_IMAGE: paa/runtime:embed
+
+    steps:
+      - name: check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The job builds and runs the images; it does not need the
+          # history — the same posture as the gate job.
+          fetch-depth: 1
+
+      - name: assert Dockerfile.embed pins the base tag (never latest)
+        run: |
+          set -eu
+          # The pin is the contract (ADR-0042): `FROM paa/runtime:4.1`,
+          # exactly, on its own line. A `latest` or an unpinned FROM
+          # would make the two builds below measure different images
+          # than the compose file runs.
+          grep -q '^FROM paa/runtime:4.1$' Dockerfile.embed
+          echo "pin held: Dockerfile.embed starts from ${{ env.PAA_BASE_IMAGE }}"
+
+      - name: build the base runtime image
+        run: |
+          set -eu
+          # The outer retry loop is the repo's network-fragility
+          # convention, in the same shape the gate job uses for apt
+          # and pip. The Dockerfile's own steps already retry their
+          # network operations; this loop additionally covers the
+          # base-image pull (python:3.12-slim by digest), which no
+          # Dockerfile step can retry from inside the build.
+          retry() {
+            attempt=0;
+            until "$@"; do
+              attempt=$((attempt + 1));
+              if [ "$attempt" -ge 5 ]; then
+                echo "giving up after $attempt attempts: $*" >&2;
+                return 1;
+              fi;
+              echo "attempt $attempt failed: $* — retrying in $((attempt * 10))s" >&2;
+              sleep $((attempt * 10));
+            done;
+          }
+          retry docker build -t "$PAA_BASE_IMAGE" -f Dockerfile .
+
+      - name: build the derived embeddings image
+        run: |
+          set -eu
+          # Same retry posture as the base build above. The derived
+          # image's own install step carries its own retry loop and
+          # pip budget; this loop covers the build invocation itself.
+          retry() {
+            attempt=0;
+            until "$@"; do
+              attempt=$((attempt + 1));
+              if [ "$attempt" -ge 5 ]; then
+                echo "giving up after $attempt attempts: $*" >&2;
+                return 1;
+              fi;
+              echo "attempt $attempt failed: $* — retrying in $((attempt * 10))s" >&2;
+              sleep $((attempt * 10));
+            done;
+          }
+          retry docker build -t "$PAA_EMBED_IMAGE" -f Dockerfile.embed .
+
+      - name: assert the base image stays torch-free
+        run: |
+          set -eu
+          # The separation this whole file exists to assert: the base
+          # image must NOT contain the real embedder. The import
+          # failing here is the pass condition (ADR-0042). The `if`
+          # — not `set -e` alone — is what makes a non-zero exit the
+          # expected outcome rather than a script abort.
+          if docker run --rm "$PAA_BASE_IMAGE" python -c "import sentence_transformers"; then
+            echo "::error::the base image must stay torch-free (ADR-0042) but sentence_transformers imported" >&2
+            exit 1
+          fi
+          echo "base image torch-free: sentence_transformers is absent"
+
+      - name: assert the base image serves the hash-fallback degraded marker
+        run: |
+          set -eu
+          # The degraded marker is the log event
+          # `embeddings.hash_fallback_active`, emitted unconditionally
+          # on the exact branch that returns HashEmbedder
+          # (storage/vector/embeddings.py). Asserting the returned
+          # type therefore asserts the marker path ran, without
+          # depending on structlog's unconfigured output plumbing.
+          docker run --rm "$PAA_BASE_IMAGE" python -c "from paa.config import Settings; from paa.storage.vector.embeddings import HashEmbedder, get_embedder; embedder = get_embedder(Settings()); assert isinstance(embedder, HashEmbedder), type(embedder).__name__; print('degraded marker served: embeddings.hash_fallback_active ->', embedder.model_name)"
+
+      - name: assert sentence_transformers imports inside the embed image (T06)
+        run: |
+          set -eu
+          docker run --rm "$PAA_EMBED_IMAGE" python -c "import sentence_transformers; print(sentence_transformers.__version__)"
+
+      - name: pip check inside the embed image
+        run: |
+          set -eu
+          # ADR-0042's last line, checked where it matters: the
+          # derived install is internally consistent inside the
+          # delivered image, not just on the build line.
+          docker run --rm "$PAA_EMBED_IMAGE" pip check

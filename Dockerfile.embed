@@ -1,0 +1,105 @@
+# syntax=docker/dockerfile:1
+# =====================================================================
+# PAA embeddings image — DERIVED from paa/runtime:4.1 (ADR-0042).
+#
+# PLAN:integration-fix:P005
+#
+# This file is the pre-approved answer to the hash embedder's recall
+# gap: the base image stays torch-free (see Dockerfile:27-30 — the
+# heavyweight embeddings extra is left out deliberately so the base
+# image stays lean, and the hash-embedder fallback keeps it
+# functional), and a deployment that wants real embeddings builds
+# THIS image on top of it. The embed image is opt-in and built in CI;
+# it is never deployed by default (plan §K).
+#
+# The base tag is pinned to `paa/runtime:4.1` — the tag
+# docker-compose.yml builds and runs (`image: paa/runtime:4.1` at
+# docker-compose.yml:67 and :86) — never `latest`, never a digest.
+# A digest here would be the wrong pin: the base image is a local
+# build on that tag, not a pull, so ADR-0030's digest-pin rule for
+# pulled images does not apply (ADR-0042 records the reasoning). The
+# tag is the contract: re-pointing the tag re-points this image by
+# construction.
+#
+# The install runs ONLINE, with the full retry convention — and that
+# is deliberate, not a shortcut. The plan's P05 sentence claimed a
+# `pip install --no-index` from the wheelhouse, but a derived image
+# FROM the runtime stage has no wheelhouse to install from: the base
+# runtime stage carries only the virtualenv (Dockerfile:246), and
+# extending the base wheelhouse with torch would bloat every cold
+# base build for deployments that never embed. ADR-0042 resolved the
+# contradiction on this evidence; this Dockerfile follows the ADR.
+# Every network operation here retries (AGENTS.md network-fragility
+# convention); only a persistent failure stops the build.
+#
+# The extra's requirements are read from pyproject.toml — the single
+# source of truth for the `embeddings` extra — so a version bump
+# there propagates here with no second list to forget to update.
+# That is the same principle the base Dockerfile applies to its
+# installer list (Dockerfile:44-56). `--no-build-isolation` keeps pip
+# from creating an isolated build environment and reaching the
+# network for the build backend: hatchling and setuptools are
+# already in /opt/venv from the base builder stage.
+#
+# `pip check` is the last line, and it is also the last line of the
+# build: it verifies the installed set is internally consistent
+# before the image is considered built. The build context copy
+# (/build) is removed after the install so the derived image's
+# filesystem carries no build leftovers; the COPY layer itself
+# remains in the image history — that is the price of installing
+# from source in a single stage, and it is text files next to
+# ~2 GB of torch.
+#
+# This image inherits the base runtime stage wholesale — the paa
+# user, the /data volume, the Docker client, the healthcheck and
+# the `paa serve` command. Do not re-stage.
+# =====================================================================
+
+FROM paa/runtime:4.1
+
+# pip's own retry budget, for the same reason the base wheelhouse
+# sets them (Dockerfile:39-42): a slow index gets a long timeout and
+# many attempts before the outer loop below decides failure is real.
+# The cache is off and the version check is off so the install adds
+# no cache layer content and no unretried version-check request.
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_RETRIES=10 \
+    PIP_TIMEOUT=120
+
+# The install runs from the project itself, so it reads the
+# `embeddings` extra's own requirements (pyproject.toml) rather than
+# carrying a second copy of the version spec. Only what the build
+# needs is copied: metadata, the readme hatchling validates, and src.
+COPY pyproject.toml README.md /build/
+COPY src /build/src/
+
+# The retry loop is the outer defence, and it is the repo's
+# network-fragility convention in its usual shape (compare
+# Dockerfile:91-106): pip's own budget covers a request that failed
+# mid-flight, and this loop covers a download pip considered
+# complete and turned out not to be. Backoff grows, so a mirror that
+# is down stays down for a while rather than being hammered.
+#
+# `--no-build-isolation` keeps the build backend local (hatchling in
+# /opt/venv) so the only network the install touches is the
+# dependency index it is supposed to touch. Like the base builder's
+# own install of the local project (Dockerfile:140), no
+# --only-binary constraint is applied to the local build.
+RUN set -eux; \
+    cd /build; \
+    retry() { \
+        attempt=0; \
+        until "$@"; do \
+            attempt=$((attempt + 1)); \
+            if [ "$attempt" -ge 5 ]; then \
+                echo "giving up after $attempt attempts: $*" >&2; \
+                return 1; \
+            fi; \
+            echo "attempt $attempt failed: $* — retrying in $((attempt * 10))s" >&2; \
+            sleep $((attempt * 10)); \
+        done; \
+    }; \
+    retry /opt/venv/bin/pip install --no-build-isolation ".[embeddings]"; \
+    /opt/venv/bin/pip check; \
+    rm -rf /build
