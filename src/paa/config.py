@@ -23,13 +23,20 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from paa.core.types import ComplexityModality, PermissionMode
 
 __all__ = [
+    "AllocatorSettings",
+    "CodingSettings",
     "ContextSettings",
+    "CostGateSettings",
     "MemorySettings",
     "ModelSettings",
     "PolicySettings",
+    "ReflectionSettings",
     "SandboxSettings",
     "Settings",
+    "SpecialistsSettings",
     "StorageSettings",
+    "TierSettings",
+    "VaultSyncSettings",
     "dotenv_value",
     "get_settings",
     "reset_dotenv_cache",
@@ -277,6 +284,20 @@ class MemorySettings(BaseModel):
     #: is resolved through the router's ``model_adapter``; no vendor is
     #: hardcoded.
     extraction_model: str = ""
+
+    #: Rate cap on the pending-embedding drain (PLAN:integration-fix:P07,
+    #: ADR-0036): how many facts ``drain_pending_embeddings`` may embed per
+    #: second. Declared here (the memory domain owns the drain) and enforced
+    #: by the P07 wiring in ``memory/creator.py`` — this setting is the
+    #: declaration, not the throttle itself.
+    #:
+    #: The plan names the setting but no default. ``100`` is the current
+    #: batch size (``drain_pending_embeddings(limit=100)``) at the daemon's
+    #: ~1 Hz drain cadence, so a deployment that never sets the field sees
+    #: exactly today's throughput; the cap only bites when the cadence or
+    #: batch size grows. Must be positive: a zero or negative rate would
+    #: wedge the backlog rather than throttle it.
+    drain_max_per_second: int = Field(default=100, ge=1)
 
     def explicit_prune_floor(self) -> float | None:
         """Return the operator-set eviction floor, or ``None`` when unset.
@@ -656,6 +677,116 @@ class ObservabilitySettings(BaseModel):
     trace_retention_days: int = Field(default=30, ge=1)
 
 
+class AllocatorSettings(BaseModel):
+    """Ledger-wired attention allocation. PLAN:integration-fix:P07, ADR-0036.
+
+    The allocator consumes the ``workers:alloc`` stream and scores it with
+    the ADR-0012 attention formula. Off by default (plan rollout §K): the
+    gatherer ranks without it, so enabling is an operator choice, never a
+    prerequisite.
+    """
+
+    #: Master switch for the allocator loop. ``False`` keeps today's
+    #: gatherer-local ranking; ``True`` hands the controller the top
+    #: ``max_results`` scored items per run.
+    enabled: bool = False
+
+    #: How many scored items the controller is notified about per run —
+    #: top ``max_results`` by ADR-0012 score (plan P07: top 3-5). A zero
+    #: would notify nobody, so the minimum is one.
+    max_results: int = Field(default=5, ge=1)
+
+
+class TierSettings(BaseModel):
+    """T0-T4 retention tier layer. PLAN:integration-fix:P09, ADR-0037.
+
+    Tier moves are ledger events before hot-row moves, so the layer is
+    replayable; the sweep starts in dry-run (log only) until the first
+    deleting tick is gated on the R3 snapshot-restore check.
+    """
+
+    #: When True (the default), the tier sweeper logs the moves it would
+    #: make and writes nothing — no events, no row moves. The one-way
+    #: column and the deterministic T2 backfill ship regardless; this flag
+    #: gates only the deleting ticks.
+    dry_run: bool = True
+
+
+class CostGateSettings(BaseModel):
+    """Advisory memory-cost gate. PLAN:integration-fix:P08, ADR-0040.
+
+    The curator emits a deprecation *suggestion* when the advisory total
+    cost crosses the threshold; it never auto-deletes (the
+    never-auto-resolve invariant), so this gate cannot hide a fact — the
+    fact stays in the hot set either way.
+    """
+
+    #: Master switch for the advisory suggestion. ``False`` (the default)
+    #: means the curator never computes or logs the suggestion.
+    enabled: bool = False
+
+    #: Cost scale at or above which a suggestion is emitted. Positive:
+    #: a zero or negative threshold would suggest on every tick.
+    threshold: float = Field(default=1.0, gt=0)
+
+
+class VaultSyncSettings(BaseModel):
+    """Dual-vault sync. PLAN:integration-fix:P10, ADR-0038.
+
+    Sync copies human-edited governance into the managed vault blocks under
+    fence precedence. Off by default until one supervised manual sync has
+    passed; a fence conflict is a named-path error, never a silent
+    overwrite.
+    """
+
+    #: Master switch for vault sync. ``False`` (the default) leaves the
+    #: vault files untouched by the runtime.
+    enabled: bool = False
+
+
+class CodingSettings(BaseModel):
+    """The ``coding`` pilot specialist's toggle. ADR-0041.
+
+    Only the coding pilot exists: research/writing/data-analysis/ops are
+    gated behind the pilot's routing-precision gate, so there is exactly
+    one nested toggle today. The nesting is deliberate — each gated
+    specialist grows its own sub-model with the same shape
+    (``PAA_SPECIALISTS__<NAME>__ENABLED``), instead of a flat field that
+    has to be renamed when the second specialist ships.
+    """
+
+    #: Master switch for the coding specialist. ``False`` (the default)
+    #: means delegation to the coding specialist is not registered.
+    enabled: bool = False
+
+
+class SpecialistsSettings(BaseModel):
+    """Specialist agents. PLAN:integration-fix:P11, ADR-0041.
+
+    Pilot-first: one specialist (``coding``) ships, the rest are gated.
+    See :class:`CodingSettings` for why the pilot is a nested sub-model
+    rather than a flat field.
+    """
+
+    coding: CodingSettings = Field(default_factory=CodingSettings)
+
+
+class ReflectionSettings(BaseModel):
+    """Weekly reflection wiring. PLAN:integration-fix:P13.
+
+    The reflection engine analyzes the last 7 days of ledger history and
+    writes anti-patterns into the playbook. The plan names this flag but
+    no default; ``False`` (the conservative, opt-in value) means a
+    deployment that never sets the field sees no new daemon loop and no
+    playbook writes, matching the rollout rule that every new loop is
+    operator-enabled first.
+    """
+
+    #: Master switch for the scheduled weekly reflection. ``False`` (the
+    #: default) leaves ``run_weekly`` callable manually only.
+    enabled: bool = False
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -681,6 +812,12 @@ class Settings(BaseSettings):
     models: ModelSettings = Field(default_factory=ModelSettings)
     queue: QueueSettings = Field(default_factory=QueueSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
+    allocator: AllocatorSettings = Field(default_factory=AllocatorSettings)
+    tier: TierSettings = Field(default_factory=TierSettings)
+    cost_gate: CostGateSettings = Field(default_factory=CostGateSettings)
+    vault_sync: VaultSyncSettings = Field(default_factory=VaultSyncSettings)
+    specialists: SpecialistsSettings = Field(default_factory=SpecialistsSettings)
+    reflection: ReflectionSettings = Field(default_factory=ReflectionSettings)
 
     #: Bind address for the ingestion API. Loopback only — the RFC's "no public
     #: edge ingestion" constraint is enforced here rather than documented.

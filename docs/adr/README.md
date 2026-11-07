@@ -53,9 +53,17 @@ The records fall into four classes:
 | [0033](0033-s3-live-server-suite.md) | The S3 substrate is tested against two S3 servers, not against a mock | **Correctness** |
 | [0034](0034-hard-stop-escalation-parks-the-task.md) | A hard stop parks the task until a human rules | **Correctness** |
 | [0035](0035-unqualified-delete-rule-and-the-plan-s-position.md) | The unqualified-delete rule's answer must not depend on where the step sits | **Correctness** |
+| [0036](0036-allocator-and-attention-loop.md) | The allocator is a ledger-wired loop around the ADR-0012 score, off by default | **Correctness** |
+| [0037](0037-tier-layer-and-replay.md) | The T0–T4 tier layer is fact state folded by a tier-dict helper, never by TaskProjection | **Correctness** |
+| [0038](0038-dual-vault-and-fence-precedence.md) | The dual vault is 15 managed files plus 2 governance files, fenced by conflict error, never last-writer | Direction |
+| [0039](0039-coder-semantic-fallback.md) | Coder recall falls back to vectors on a keyword miss, and the four touch copies become one | **Correctness** |
+| [0040](0040-cost-gate-advisory-only.md) | The memory-cost gate advises and never deletes | **Correctness** |
+| [0041](0041-coding-specialist-pilot.md) | One coding specialist first; the depth-block emits the existing rollback event | Direction |
+| [0042](0042-embeddings-derived-image.md) | The embeddings image is derived, installs online with retries, and pins the runtime tag | Hardware |
+| [0043](0043-graph-edge-count-reconciliation.md) | The graph has 12 edge types; "9 extra" is a phantom | **Correctness** |
 
 **Which of these records have a body.** The files on disk are 0008, 0010, 0015,
-0019–0026 and 0028–0035. The other rows are **index-only**: the decision was taken
+0019–0026, 0028–0035 and 0036–0043. The other rows are **index-only**: the decision was taken
 and is recorded — in `README.md`'s account of the RFC's departures, and, for 0001–0014,
 0016 and 0018, in the source's own `SPEC DEVIATION (docs/adr/NNNN)` citation — but the
 record itself is still to be written, which the ROADMAP's cross-cutting *Docs* item
