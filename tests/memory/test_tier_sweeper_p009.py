@@ -402,3 +402,109 @@ class TestObservability:
         with structlog.testing.capture_logs() as logs:
             await _sweeper(db, ledger).sweep(now=EPOCH + timedelta(hours=1))
         assert any(entry["event"] == "tier.moves" for entry in logs)
+
+
+class TestCuratorSweepFailure:
+    """TREV-W3 P2 pin: a raising tier sweep is a phase error, not a crash.
+
+    ``MemoryCurator.run_maintenance`` isolates per-phase failures
+    (``errors += 1``, loop continues; ``_phase_decay`` itself has no
+    inner guard). An exploding tier sweeper injected at the curator
+    seam must therefore be counted, the DECAY phase left uncompleted,
+    later phases still run, and no exception escape the pass.
+    """
+
+    async def test_exploding_tier_sweeper_is_counted_and_maintenance_completes(
+        self, db: Database, ledger
+    ) -> None:
+        from paa.memory.curator import CurationPhase
+
+        class _ExplodingSweeper:
+            dry_run = False
+
+            async def sweep(
+                self, *, now: datetime | None = None, dry_run: bool | None = None
+            ) -> None:
+                raise RuntimeError("tier sweep on fire")
+
+        curator = MemoryCurator(db, tier_sweeper=_ExplodingSweeper())
+        report = await curator.run_maintenance(now=EPOCH + timedelta(hours=1))
+
+        assert report.errors == 1
+        assert CurationPhase.DECAY not in report.completed_phases
+        assert CurationPhase.PRUNE_EDGES in report.completed_phases
+        assert CurationPhase.ANALYZE in report.completed_phases
+
+
+class TestDryRunOverride:
+    """TREV-W3 P2 pin: per-call ``sweep(dry_run=True)`` previews on a live sweeper.
+
+    The curator composes preview flags via this override
+    (``dry_run or sweeper.dry_run``); the constructor-flag tests alone
+    cannot pin that a live sweeper's explicit ``True`` writes nothing.
+    """
+
+    async def test_per_call_dry_run_true_on_live_sweeper_writes_nothing(
+        self, db: Database, ledger
+    ) -> None:
+        fid = await _insert_fact(db, stamp=EPOCH - timedelta(hours=5))
+        before = await db.fetch_one(
+            "SELECT tier, tier_updated_at FROM hot_serving_active_facts WHERE id = ?",
+            (fid,),
+        )
+        sweeper = TierSweeper(db, ledger, dry_run=False)
+        report = await sweeper.sweep(now=EPOCH + timedelta(hours=5), dry_run=True)
+
+        assert report.moved == 1  # the would-be move is counted
+        assert await ledger.count() == 0
+        after = await db.fetch_one(
+            "SELECT tier, tier_updated_at FROM hot_serving_active_facts WHERE id = ?",
+            (fid,),
+        )
+        assert dict(after) == dict(before)
+        assert after["tier"] == "T0"
+        # Control: without the override the same sweeper does move.
+        live_report = await sweeper.sweep(now=EPOCH + timedelta(hours=5))
+        assert live_report.moved == 1
+        assert await ledger.count() == 1
+
+
+class TestInvalidTier:
+    """TREV-W3 P2 pin: what the sweeper does with ``tier='TX'``.
+
+    The schema CHECK forbids the value on real rows, so the row is
+    unreachable — pinned here as a refusal. ``TierPolicy.resolve``
+    folds unknown tiers to ``T2`` (never raises), so ``_due_move`` on
+    such a row resolves to a ``T2 -> T3`` move when due. Both halves
+    pin the truth so neither can drift silently.
+    """
+
+    async def test_schema_refuses_an_invalid_tier_row(self, db: Database) -> None:
+        with pytest.raises(Exception, match="constraint violated"):
+            await _insert_fact(db, tier="TX", stamp=EPOCH)
+        assert await db.fetch_value("SELECT COUNT(*) FROM hot_serving_active_facts") == 0
+
+    async def test_due_move_resolves_an_invalid_tier_to_t2(self, db: Database, ledger) -> None:
+        from paa.memory.domains import TierPolicy
+        from paa.storage.relational.database import from_iso
+
+        assert TierPolicy().resolve("TX") == "T2"
+        sweeper = _sweeper(db, ledger)
+        row = {
+            "tier": "TX",
+            "tier_updated_at": to_iso(EPOCH - timedelta(hours=5000)),
+            "created_at": to_iso(EPOCH),
+        }
+        move = sweeper._due_move(row, EPOCH + timedelta(hours=1), from_iso)
+        assert move == ("T2", "T3", EventType.TIER_DEMOTED)
+
+    async def test_due_move_for_invalid_tier_not_due_when_fresh(self, db: Database, ledger) -> None:
+        from paa.storage.relational.database import from_iso
+
+        sweeper = _sweeper(db, ledger)
+        row = {
+            "tier": "TX",
+            "tier_updated_at": to_iso(EPOCH),
+            "created_at": to_iso(EPOCH),
+        }
+        assert sweeper._due_move(row, EPOCH + timedelta(hours=1), from_iso) is None

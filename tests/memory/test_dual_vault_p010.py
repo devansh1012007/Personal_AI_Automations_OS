@@ -402,3 +402,119 @@ class TestAntiGoalsAgreement:
         # prose as anti-goals once the block is governed. Pinned here so a
         # fence-aware fix must update this test deliberately.
         assert "<!-- paa:managed:BEGIN state -->" in goals
+
+
+class TestRunWeeklyConflictHandling:
+    """R-W3-003: a human edit inside playbooks.md must not crash run_weekly.
+
+    The fence surfaces the conflict (named path, human edit stands,
+    system write skipped); the weekly loop logs the skip per domain and
+    keeps the accumulated report. Two shapes: the real in-block edit
+    (both domains skip, two warnings — proving per-domain isolation,
+    not a loop-level catch), and a failure-injected first domain whose
+    conflict does not stop the second domain landing.
+    """
+
+    async def test_run_weekly_survives_in_block_edit(
+        self, ledger: LedgerStore, tmp_path: Path
+    ) -> None:
+        import structlog.testing
+
+        from paa.core.types import EventType, new_correlation_id
+        from paa.improvement.reflection import ReflectionEngine
+        from paa.ledger.events import LedgerEvent
+
+        engine = ReflectionEngine(ledger, vault_path=tmp_path)
+        engine.apply_to_playbook("seed rule")
+        path = tmp_path / "playbooks.md"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace("seed rule", "HUMAN-INSIDE"),
+            encoding="utf-8",
+        )
+
+        for goal in ("deploy the service", "docker container restart"):
+            cid = new_correlation_id()
+            await ledger.append(
+                LedgerEvent.create(
+                    cid,
+                    EventType.TASK_REQUESTED,
+                    payload={"request": {"goal": goal}},
+                )
+            )
+            await ledger.append(LedgerEvent.create(cid, EventType.USER_CORRECTION))
+
+        with structlog.testing.capture_logs() as logs:
+            report = await engine.run_weekly()
+
+        assert report.high_friction_domains, "both domains must be high-friction"
+        assert {df.domain for df in report.domains} == {"deploy", "docker"}
+        # Both rules skipped: nothing counted as written.
+        assert report.rules_written == []
+        final = path.read_text(encoding="utf-8")
+        assert "HUMAN-INSIDE" in final
+        assert "Anti-pattern" not in final
+        skipped = [
+            entry
+            for entry in logs
+            if entry.get("event") == "reflection.playbook_conflict_skipped"
+        ]
+        assert len(skipped) == 2
+        assert {entry["domain"] for entry in skipped} == {"deploy", "docker"}
+        assert all(str(path) in entry["error"] for entry in skipped)
+
+    async def test_run_weekly_continues_to_next_domain_after_conflict(
+        self, ledger: LedgerStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Failure injection: first domain conflicts, second lands.
+
+        The real-file test above proves both domains skip against one
+        conflicted playbook. This one proves the loop does not abort:
+        the conflicted rule is logged and skipped while the next
+        domain's rule is written to the playbook and counted.
+        """
+        import structlog.testing
+
+        from paa.core.types import EventType, new_correlation_id
+        from paa.improvement.reflection import ReflectionEngine
+        from paa.ledger.events import LedgerEvent
+
+        engine = ReflectionEngine(ledger, vault_path=tmp_path)
+        for goal in ("deploy the service", "docker container restart"):
+            cid = new_correlation_id()
+            await ledger.append(
+                LedgerEvent.create(
+                    cid,
+                    EventType.TASK_REQUESTED,
+                    payload={"request": {"goal": goal}},
+                )
+            )
+            await ledger.append(LedgerEvent.create(cid, EventType.USER_CORRECTION))
+
+        original = engine.apply_to_playbook
+
+        def _flaky(rule: str, *, filename: str = "playbooks.md") -> None:
+            if rule.startswith("### Anti-pattern: deploy"):
+                raise VaultConflictError(
+                    tmp_path / "playbooks.md",
+                    "reflections",
+                    "simulated in-block edit",
+                )
+            original(rule, filename=filename)
+
+        monkeypatch.setattr(engine, "apply_to_playbook", _flaky)
+        with structlog.testing.capture_logs() as logs:
+            report = await engine.run_weekly()
+
+        assert len(report.rules_written) == 1
+        assert report.rules_written[0].startswith("### Anti-pattern: docker")
+        final = (tmp_path / "playbooks.md").read_text(encoding="utf-8")
+        assert "Anti-pattern: docker" in final
+        assert "Anti-pattern: deploy" not in final
+        skipped = [
+            entry
+            for entry in logs
+            if entry.get("event") == "reflection.playbook_conflict_skipped"
+        ]
+        assert len(skipped) == 1
+        assert skipped[0]["domain"] == "deploy"
+        assert "playbooks.md" in skipped[0]["error"]

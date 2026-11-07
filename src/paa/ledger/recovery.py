@@ -98,6 +98,16 @@ class RecoveryOutcome(str, enum.Enum):
     ALREADY_TERMINAL = "ALREADY_TERMINAL"
     """Head projection was stale; the lineage had in fact finished."""
 
+    SKIPPED_SYSTEM_LINEAGE = "SKIPPED_SYSTEM_LINEAGE"
+    """The tier sweeper's deterministic TIER-only lineage.
+
+    PLAN:integration-fix:P009 — the sweeper's one lineage carries only
+    ``TIER_*`` events (non-terminal) by design, so it is permanently open
+    and is never a resumable task. Recovery leaves it open without
+    re-queuing and without a sweep audit event; it is skipped, not
+    resumed, rolled back, abandoned or marked terminal (it must stay
+    open to receive the next tick's moves)."""
+
 
 @dataclass(slots=True)
 class CorrelationRecovery:
@@ -274,6 +284,17 @@ class RecoveryEngine:
             # insert and the head upsert. Repair it rather than reprocessing.
             await self._mark_head_terminal(cid)
             return CorrelationRecovery(cid, RecoveryOutcome.ALREADY_TERMINAL, projection.phase)
+
+        if await _is_system_tier_lineage(self._store, cid):
+            # PLAN:integration-fix:P009 (R-W3-002): the tier sweeper's one
+            # deterministic lineage is permanently open by design and is
+            # never a resumable task. Leave it open without re-queuing and
+            # without a sweep audit event (an audit event would grow the
+            # ledger by one per boot on a lineage that never progresses).
+            log.info("recovery.skipped_system_lineage", correlation_id=str(cid))
+            return CorrelationRecovery(
+                cid, RecoveryOutcome.SKIPPED_SYSTEM_LINEAGE, projection.phase
+            )
 
         if projection.phase is TaskPhase.AWAITING_HUMAN:
             # Never auto-clear a human gate. A crash must not be interpretable
@@ -476,6 +497,34 @@ class RecoveryEngine:
 
 def _utc(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+
+async def _is_system_tier_lineage(store: LedgerStore, cid: uuid.UUID) -> bool:
+    """Whether ``cid`` is the sweeper's deterministic TIER-only lineage.
+
+    The match is **exact** — one UUID, never a prefix or pattern — so no
+    real task can be exempted by a near-miss id. The TIER-only half
+    guards the other direction: the sweeper CID with any non-``TIER_*``
+    event is not exempted (that history would mean the id was reused
+    for task work, which must stay recoverable).
+
+    The CID constant is imported function-locally: ``memory.tier`` writes
+    through ``ledger.store``, and keeping ``ledger.recovery`` importable
+    without the tier module on the path mirrors the deferred-import
+    precedent in :meth:`RecoveryEngine._requeue` (``StreamName``). The
+    constant is a leaf ``uuid5`` of a fixed namespace, so deferring the
+    import costs nothing at call time.
+    """
+    from paa.memory.tier import TIER_SWEEPER_CORRELATION_ID
+
+    if cid != TIER_SWEEPER_CORRELATION_ID:
+        return False
+    events = await store.read_correlation(cid)
+    return bool(events) and all(
+        event.event_type
+        in (EventType.TIER_DEMOTED, EventType.TIER_ARCHIVED)
+        for event in events
+    )
 
 
 def _session_uuid(projection: TaskProjection) -> uuid.UUID | None:

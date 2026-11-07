@@ -1279,6 +1279,40 @@ class TestRecallVectorFallback:
         finally:
             await store.close()
 
+    async def test_vector_limit_one_truncates_when_two_facts_exist(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """R-W3-001: the clamp is discriminated by two facts, not vacuous.
+
+        The bounded-limit test above seeds one fact, so an unclamped
+        search also returns 1 and cannot tell a clamp from no clamp.
+        With two ``swift`` facts, ``limit=1`` must truncate to 1 while
+        ``limit=50`` returns both — a clamp that ignored the limit
+        would return 2 at ``limit=1`` and fail here.
+        """
+        from paa.memory.creator import MemoryCreator, VectorEmbeddingSink
+
+        store, embedder, _ = await self._seed(db, tmp_path)
+        try:
+            # Second decoy fact on a different entity (same subject would
+            # quarantine). Same store/embedder, so both vectors are live.
+            creator = MemoryCreator(
+                db, embedding_sink=VectorEmbeddingSink(store, embedder)
+            )
+            second = await creator.process_signal(
+                _vector_signal(
+                    {"facts": [{"subject": "Borealis", "predicate": "status", "object": "swift"}]}
+                )
+            )
+            assert second.outcome is ProcessingOutcome.PROCESSED
+            tool = self._tool(db, vector_store=store, embedder=embedder)
+            one = json.loads(str(await tool.run({"query": "rapid", "limit": 1})))
+            assert one["count"] == 1
+            two = json.loads(str(await tool.run({"query": "rapid", "limit": 50})))
+            assert two["count"] == 2
+        finally:
+            await store.close()
+
     async def test_vector_failure_degrades_to_the_keyword_result(
         self, db: Database, tmp_path: Path
     ) -> None:

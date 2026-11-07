@@ -35,6 +35,7 @@ from rich.text import Text
 from paa.core.types import ComplexityModality, CorrelationId
 from paa.ledger.replay import TaskPhase
 from paa.ledger.replay import project as project_lineage
+from paa.models.base import redact
 from paa.sandbox.base import collect_sandbox_facts
 from paa.tui.dashboard import (
     render_dashboard,
@@ -171,7 +172,9 @@ async def _decision_tracker(rt: Any) -> list[dict[str, Any]]:
         try:
             proj = await project_lineage(rt.ledger, cid)
         except Exception as exc:
-            log.warning("tui.project_failed", correlation_id=str(cid), error=str(exc))
+            log.warning(
+                "tui.project_failed", correlation_id=str(cid), error=redact(str(exc))
+            )
             continue
         if proj.policy_decision is None:
             continue
@@ -195,7 +198,9 @@ async def _autonomy_state(settings: Any, rt: Any) -> dict[str, Any]:
         try:
             proj = await project_lineage(rt.ledger, cid)
         except Exception as exc:
-            log.warning("tui.project_failed", correlation_id=str(cid), error=str(exc))
+            log.warning(
+                "tui.project_failed", correlation_id=str(cid), error=redact(str(exc))
+            )
             continue
         if proj.phase == TaskPhase.AWAITING_HUMAN:
             awaiting_ids.append(str(cid))
@@ -222,7 +227,9 @@ async def _agent_monitor(rt: Any) -> dict[str, Any]:
         try:
             events = await rt.ledger.read_correlation(cid)
         except Exception as exc:
-            log.warning("tui.ledger_failed", correlation_id=str(cid), error=str(exc))
+            log.warning(
+                "tui.ledger_failed", correlation_id=str(cid), error=redact(str(exc))
+            )
             continue
         label = getattr(events[-1], "agent_role", None) if events else None
         if label and label not in recent_roles:
@@ -255,19 +262,29 @@ async def build_panel_fields(settings: Any, rt: Any) -> dict[str, Any]:
     try:
         fields["memory_browser_counts"] = await _memory_browser_counts(rt)
     except Exception as exc:
-        log.warning("tui.panel_failed", panel="memory_browser_counts", error=str(exc))
+        log.warning(
+            "tui.panel_failed",
+            panel="memory_browser_counts",
+            error=redact(str(exc)),
+        )
     try:
         fields["decision_tracker"] = await _decision_tracker(rt)
     except Exception as exc:
-        log.warning("tui.panel_failed", panel="decision_tracker", error=str(exc))
+        log.warning(
+            "tui.panel_failed", panel="decision_tracker", error=redact(str(exc))
+        )
     try:
         fields["autonomy_state"] = await _autonomy_state(settings, rt)
     except Exception as exc:
-        log.warning("tui.panel_failed", panel="autonomy_state", error=str(exc))
+        log.warning(
+            "tui.panel_failed", panel="autonomy_state", error=redact(str(exc))
+        )
     try:
         fields["agent_monitor"] = await _agent_monitor(rt)
     except Exception as exc:
-        log.warning("tui.panel_failed", panel="agent_monitor", error=str(exc))
+        log.warning(
+            "tui.panel_failed", panel="agent_monitor", error=redact(str(exc))
+        )
     return fields
 
 

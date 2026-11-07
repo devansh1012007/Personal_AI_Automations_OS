@@ -22,7 +22,8 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from paa.core.types import EventType
-from paa.memory.world_model import BeliefDocument, WorldModel
+from paa.memory.world_model import BeliefDocument, VaultConflictError, WorldModel
+from paa.models.base import redact
 
 if TYPE_CHECKING:
     from paa.ledger.store import LedgerStore
@@ -177,9 +178,25 @@ class ReflectionEngine:
 
         for df in report.high_friction_domains:
             rule = self.synthesize_rule(df)
-            report.rules_written.append(rule)
-            if self._vault is not None:
+            if self._vault is None:
+                report.rules_written.append(rule)
+                continue
+            try:
                 self.apply_to_playbook(rule)
+            except VaultConflictError as exc:
+                # R-W3-003: the fence exists to surface a human edit inside
+                # the playbook block, not to abort the weekly learning loop.
+                # Skip this domain's rule, keep the accumulated report, and
+                # try the next domain. `rules_written` only counts rules
+                # that actually landed, so a skipped rule is not listed.
+                log.warning(
+                    "reflection.playbook_conflict_skipped",
+                    domain=df.domain,
+                    path=str(exc.path),
+                    error=redact(str(exc)),
+                )
+            else:
+                report.rules_written.append(rule)
         return report
 
     def synthesize_rule(self, friction: DomainFriction) -> str:
