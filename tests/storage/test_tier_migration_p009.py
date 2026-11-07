@@ -48,7 +48,11 @@ import pytest
 
 from paa.storage.relational.database import Database
 from paa.storage.relational.errors import CheckViolation
-from paa.storage.relational.migrations import SCHEMA_VERSION, description_for
+from paa.storage.relational.migrations import (
+    MIGRATIONS,
+    SCHEMA_VERSION,
+    description_for,
+)
 
 # ---------------------------------------------------------------------------
 # The PostgreSQL gate (mirroring test_postgres_migrations.py, applied only
@@ -247,6 +251,44 @@ async def test_running_the_migration_again_changes_nothing(tmp_path: Path) -> No
     await db.connect()
     try:
         assert await _versions(db) == list(range(1, SCHEMA_VERSION + 1))
+        assert await _tier_rows(db) == [(_FACT, "T2", None), (f"{_FACT[:-1]}2", "T2", None)]
+    finally:
+        await db.close()
+
+
+async def test_v5_step_guards_are_satisfied_on_a_v5_database(tmp_path: Path) -> None:
+    """R-W2-106: guard-level idempotency, not just runner-level.
+
+    ``test_running_the_migration_again_changes_nothing`` reconnects at v5,
+    where the runner has no pending steps — it would pass even if every
+    step guard were broken (e.g. always-true). This test evaluates every
+    v5 step's guards directly against a v5 database: each guard must
+    return no row, which is exactly the runner's ``_still_needed == False``
+    condition, so re-running the steps would execute nothing. The guards
+    are read from the step API (``MIGRATIONS``) and evaluated with a raw
+    connection — the same tmp-database construction the other tests use —
+    rather than through the runner's transport-bound ``_run_step``.
+    """
+    path = tmp_path / "paa.db"
+    await _v4_database_with_rows(path)
+
+    db = Database(path)
+    await db.connect()
+    await db.close()
+
+    migration = next(m for m in MIGRATIONS if m.version == 5)
+    conn = _raw(path)
+    try:
+        for step in migration.steps:
+            for guarded in step.for_engine("sqlite").guarded:
+                row = conn.execute(guarded.guard, guarded.guard_params).fetchone()
+                assert row is None, (step.description, guarded.guard)
+    finally:
+        conn.close()
+
+    db = Database(path)
+    await db.connect()
+    try:
         assert await _tier_rows(db) == [(_FACT, "T2", None), (f"{_FACT[:-1]}2", "T2", None)]
     finally:
         await db.close()

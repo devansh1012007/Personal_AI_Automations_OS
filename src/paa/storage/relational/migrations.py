@@ -945,10 +945,17 @@ def _tier_step(table: str, column: str) -> MigrationStep:
     ``schema_scoped=True`` on PostgreSQL, following ``_arrival_seq_step``.
     The backfill's guard is a data guard, not a catalog guard — it asks
     whether any row still lacks a tier — so it carries no schema placeholder
-    on either engine, exactly like ``_arrival_seq_step``'s. On both engines
-    the unqualified name in a data guard resolves through the same
-    ``search_path`` the runner resolved the schema through and the statement
-    is placeholder-qualified, so guard and statement act on the same table.
+    on either engine. That is *not* the ``_arrival_seq_step`` PostgreSQL
+    shape: that step has a single ``schema_scoped`` catalog guard covering
+    all of its statements, with no separate data guard. On PostgreSQL the
+    backfill guard's unqualified name resolves through the ``search_path``
+    the runner resolved the schema through, while the backfill statement
+    itself is placeholder-qualified — guard and statement act on the same
+    table for the single-schema deployments this migration targets. A
+    multi-schema ``search_path`` with a same-named table elsewhere could
+    in principle guard one schema and write another; ``_guard_for`` only
+    renders ``schema_scoped`` guards, so a qualified data guard is not
+    constructible today, and no behaviour is changed by this note.
 
     The named CHECK lands in the same position on a migrated table as in
     the ``.sql`` files: SQLite splices a new column's definition before the

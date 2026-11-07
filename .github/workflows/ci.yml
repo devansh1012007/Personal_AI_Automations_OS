@@ -435,11 +435,12 @@ jobs:
   embed-image:
     name: embed image separation
     runs-on: ubuntu-latest
-    # The embed path downloads torch (~2 GB) a second time — once into
-    # the base image's wheelhouse, once into the derived image — so
-    # this job gets the same generous bound the gate's `all` shape
-    # has: a timeout that fires during a download is a red build that
-    # says nothing about the code.
+    # The embed path downloads torch (~2 GB) a second time — once for
+    # the base build (the gate's `all` shape; the base image's
+    # wheelhouse itself excludes embeddings, Dockerfile:65), and once
+    # into the derived image — so this job gets the same generous
+    # bound the gate's `all` shape has: a timeout that fires during a
+    # download is a red build that says nothing about the code.
     timeout-minutes: 45
 
     # The image names are defined once, here — not in compose. The

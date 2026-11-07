@@ -74,6 +74,17 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
 COPY pyproject.toml README.md /build/
 COPY src /build/src/
 
+# The inherited-user trap (R-W2-002): the base runtime stage ends with
+# `USER paa` (Dockerfile:249) while /opt/venv stays root-owned — the
+# builder creates it as root and `COPY --from=builder /opt/venv`
+# (Dockerfile:246) preserves that ownership. A derived image that
+# inherits `paa` therefore cannot write site-packages for its install
+# or `rm -rf /build` (root-owned), and the build fails deterministically
+# under `set -eux`. The install must run as root; the runtime stage
+# must never ship as root, so `USER paa` is restored after it. Do not
+# "tidy" either line away.
+USER root
+
 # The retry loop is the outer defence, and it is the repo's
 # network-fragility convention in its usual shape (compare
 # Dockerfile:91-106): pip's own budget covers a request that failed
@@ -103,3 +114,7 @@ RUN set -eux; \
     retry /opt/venv/bin/pip install --no-build-isolation ".[embeddings]"; \
     /opt/venv/bin/pip check; \
     rm -rf /build
+
+# Restore the runtime user the base stage declares (Dockerfile:249):
+# the shipped image must never run as root.
+USER paa

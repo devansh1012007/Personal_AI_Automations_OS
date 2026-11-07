@@ -1043,3 +1043,23 @@ def test_qdrant_store_requires_exactly_one_location() -> None:
         QdrantVectorStore()
     with pytest.raises(StorageError):
         QdrantVectorStore(path="/tmp/x", url="http://localhost:6333")
+
+
+@pytest.mark.requires_embeddings
+@pytest.mark.skipif(
+    not HAS_SENTENCE_TRANSFORMERS, reason="sentence-transformers is not installed"
+)
+def test_get_embedder_selects_the_real_encoder_when_installed() -> None:
+    """A5b (ADR-0042): with the extra installed, get_embedder returns the
+    real SentenceTransformerEmbedder, not the hash fallback.
+
+    Must fail on a base image (no extra): get_embedder returns
+    HashEmbedder there. The import is function-local so a minimal install
+    (extra absent) never imports sentence-transformers at module scope —
+    the skip above is what keeps this test collection-safe there.
+    """
+    from paa.storage.vector import SentenceTransformerEmbedder
+
+    embedder = get_embedder(ModelSettings())
+    assert isinstance(embedder, SentenceTransformerEmbedder)
+    assert embedder.dimensions == 384

@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from paa.core.types import ComplexityModality, EventType
 from paa.ledger.events import LedgerEvent
+from paa.memory.domains import TierPolicy
 
 __all__ = ["TaskPhase", "TaskProjection", "apply_event", "apply_tier_event", "project", "replay"]
 
@@ -306,9 +307,13 @@ def apply_tier_event(state: dict[str, str], event: LedgerEvent) -> dict[str, str
     (mirrors :func:`apply_event`). Tier writes come only from tier events:
 
     - ``TIER_DEMOTED`` / ``TIER_ARCHIVED`` set ``state[fact_id]`` to the
-      payload ``to_tier`` (violations of the ``{fact_id, from_tier, to_tier,
-      reason}`` contract in :class:`~paa.core.types.EventType` fall back to
-      :data:`DEFAULT_TIER`, never a raise);
+      payload ``to_tier`` validated against the canonical tier vocabulary
+      (:meth:`~paa.memory.domains.TierPolicy.resolve` — sharing that one
+      validator is what keeps the rebuilt tier identical to the live column,
+      whose CHECK forbids any tier outside ``T0``-``T4``; violations of the
+      ``{fact_id, from_tier, to_tier, reason}`` contract in
+      :class:`~paa.core.types.EventType` fall back to :data:`DEFAULT_TIER`,
+      never a raise);
     - any other event naming a ``fact_id`` defaults that fact to
       :data:`DEFAULT_TIER` *only if the fact has no tier yet* — the
       old-events path (lineages written before the tier existed never emitted
@@ -316,9 +321,12 @@ def apply_tier_event(state: dict[str, str], event: LedgerEvent) -> dict[str, str
       e.g. an archived fact is never resurrected to T2 by an unrelated event
       that happens to carry its ``fact_id``.
 
-    Events without a ``fact_id`` (all task-lineage events) return an unchanged
-    copy. The fold is total: it never raises, so replay over any stream —
-    hostile, malformed, or future — completes. In particular
+    Events without a usable ``fact_id`` (all task-lineage events, plus a
+    falsy ``fact_id`` — ``None``, ``""``, ``0``, ``False`` — or a
+    non-scalar one such as a list or dict) return an unchanged copy, so a
+    malformed payload never becomes a junk dict key. The fold is total: it
+    never raises, so replay over any stream — hostile, malformed, or
+    future — completes. In particular
     :func:`replay` over a stream containing ``TIER_*`` never records them in
     ``TaskProjection.unknown_events`` (they are members of
     ``_NO_PHASE_CHANGE``) and never raises.
@@ -333,16 +341,28 @@ def apply_tier_event(state: dict[str, str], event: LedgerEvent) -> dict[str, str
     updated = dict(state)
     payload = event.payload
     fact_id = payload.get("fact_id")
-    if fact_id is None:
+    # Falsy fact_ids are treated as absent, and a non-scalar fact_id (a
+    # list, dict, ...) is malformed input — both are a no-op rather than a
+    # junk dict key. ``bool`` is excluded explicitly because it subclasses
+    # ``int`` and ``str(True)`` would be a junk key. Scalar ids (strings,
+    # and integer ids coerced for compatibility with older payloads) still
+    # fold normally. Totality holds either way: this never raises.
+    if (
+        not fact_id
+        or isinstance(fact_id, bool)
+        or not isinstance(fact_id, (str, int, float))
+    ):
         return updated
     key = str(fact_id)
     to_tier = payload.get("to_tier")
     if event.event_type in (EventType.TIER_DEMOTED, EventType.TIER_ARCHIVED):
-        if isinstance(to_tier, str) and to_tier:
-            updated[key] = to_tier
-        else:
-            # Old tier events lacking tier fields (or a malformed to_tier) -> T2.
-            updated[key] = DEFAULT_TIER
+        # Validate against the canonical vocabulary — a `to_tier` outside
+        # T0-T4 (`"T9"`, `"not-a-tier"`, `""`, a non-string) falls back to
+        # T2, exactly as TierPolicy resolves it, so the rebuilt tier can
+        # never hold a value the DB CHECK forbids. A fresh instance per
+        # call: resolve() only reads the tier set, and TierPolicy's table
+        # is mutable (R-W2-006, do-later), so no shared instance is kept.
+        updated[key] = TierPolicy().resolve(to_tier if isinstance(to_tier, str) else None)
     elif key not in updated:
         # Any other event naming a fact defaults an unseen fact to T2.
         updated[key] = DEFAULT_TIER

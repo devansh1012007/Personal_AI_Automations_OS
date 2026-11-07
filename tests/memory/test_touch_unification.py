@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+import structlog
 
 from paa.memory import touch_recalled
 from paa.memory.decay import DecaySweeper
@@ -50,6 +51,51 @@ def test_touch_recalled_exists_with_contract_signature() -> None:
 def test_exactly_one_touch_helper_definition_in_src() -> None:
     defs = _touch_defs()
     assert defs == [(SRC_ROOT / "memory" / "touch.py", "touch_recalled")]
+
+
+#: The four recall surfaces that must call the one helper (R-W2-101).
+_TOUCH_CONSUMERS = (
+    SRC_ROOT / "api" / "app.py",
+    SRC_ROOT / "cli" / "main.py",
+    SRC_ROOT / "coder" / "runtime_tools.py",
+    SRC_ROOT / "agents" / "context_agents.py",
+)
+
+
+def _touch_import_and_call(path: Path) -> tuple[bool, bool]:
+    """Whether ``path`` imports ``touch_recalled`` from ``paa.memory.touch`` and calls it."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    has_import = False
+    has_call = False
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.module == "paa.memory.touch"
+            and any(alias.name == "touch_recalled" for alias in node.names)
+        ):
+            has_import = True
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "touch_recalled"
+        ):
+            has_call = True
+    return has_import, has_call
+
+
+def test_every_recall_surface_imports_and_calls_the_one_helper() -> None:
+    """R-W2-101: the definition count alone does not pin the call sites.
+
+    A surface that inlined ``DecaySweeper.touch_many`` again (behavior-
+    identical today, drift tomorrow — the failure mode this suite exists
+    to prevent) would pass the definition-count lock, so each of the four
+    consumers must both import ``touch_recalled`` from ``paa.memory.touch``
+    and call it.
+    """
+    for path in _TOUCH_CONSUMERS:
+        has_import, has_call = _touch_import_and_call(path)
+        assert has_import, f"{path.relative_to(SRC_ROOT)} does not import touch_recalled"
+        assert has_call, f"{path.relative_to(SRC_ROOT)} does not call touch_recalled"
 
 
 @pytest.mark.parametrize(
@@ -96,3 +142,26 @@ async def test_touch_failure_is_tolerated(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(DecaySweeper, "touch_many", failing)
     # Must not raise: a touch failure degrades to a warning, never a recall failure.
     await touch_recalled(cast(RelationalBackend, object()), ["a", "b"])
+
+
+async def test_touch_failure_log_is_redacted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """R-W2-102: the failure warning's ``error`` is redacted, not verbatim.
+
+    ``touch_recalled`` logs ``error=redact(str(exc))``; a secret-shaped
+    exception must reach the log as ``***REDACTED***``. Removing
+    ``redact()`` at that line must fail this test (mirrors the W2-GEN-01
+    redaction pin for the semantic hydration path).
+    """
+
+    async def failing(self: DecaySweeper, ids: list[str]) -> None:
+        raise RuntimeError("sk-ABCDEF1234567890")
+
+    monkeypatch.setattr(DecaySweeper, "touch_many", failing)
+    with structlog.testing.capture_logs() as captured:
+        await touch_recalled(cast(RelationalBackend, object()), ["a", "b"])
+    entries = [e for e in captured if e.get("event") == "memory.recall_touch_failed"]
+    assert entries
+    for entry in entries:
+        error_text = str(entry.get("error", ""))
+        assert "***REDACTED***" in error_text
+        assert "sk-ABCDEF1234567890" not in error_text

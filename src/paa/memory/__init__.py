@@ -53,6 +53,7 @@ from paa.memory.domains import (
     MemoryDomain,
     MemoryMechanism,
     RetrievalProtocol,
+    TierPolicy,
     domain_policy,
     narrative_domains,
 )
@@ -86,6 +87,7 @@ __all__ = [
     "RetrievalProtocol",
     "RuleBasedExtractor",
     "SignalEnvelope",
+    "TierPolicy",
     "WorldModel",
     "conflict_score",
     "domain_policy",

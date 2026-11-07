@@ -146,6 +146,36 @@ class TestTierHostileInput:
         )
         assert apply_tier_event({}, event) == {"f-1": "T2"}
 
+    @pytest.mark.parametrize("to_tier", ["T9", "not-a-tier", ""])
+    def test_unknown_or_empty_to_tier_defaults_to_t2(self, to_tier: str) -> None:
+        """R-W2-003: a valid-format but unknown tier is not recorded verbatim.
+
+        The fold shares TierPolicy.resolve, so `"T9"`/`"not-a-tier"`/`""`
+        resolve to T2 — the same answer the DB CHECK enforces on the live
+        column. Recording them verbatim would make rebuilt != live.
+        """
+        cid = new_correlation_id()
+        event = _tier_event(EventType.TIER_DEMOTED, cid, 1, "f-1", to_tier)
+        assert apply_tier_event({}, event) == {"f-1": "T2"}
+
+    @pytest.mark.parametrize("fact_id", ["", 0, False])
+    def test_falsy_fact_id_is_a_noop(self, fact_id: object) -> None:
+        """R-W2-103: falsy fact_ids are absent — no junk dict key, no raise."""
+        cid = new_correlation_id()
+        event = _event(
+            EventType.TIER_DEMOTED, cid, 1, fact_id=fact_id, to_tier="T1", reason="x"
+        )
+        assert apply_tier_event({"keep": "T0"}, event) == {"keep": "T0"}
+
+    @pytest.mark.parametrize("fact_id", [["x"], {"bad": 1}, True])
+    def test_non_scalar_fact_id_is_a_noop(self, fact_id: object) -> None:
+        """A non-scalar (or boolean) fact_id is malformed input: no-op, never raise."""
+        cid = new_correlation_id()
+        event = _event(
+            EventType.TIER_DEMOTED, cid, 1, fact_id=fact_id, to_tier="T1", reason="x"
+        )
+        assert apply_tier_event({}, event) == {}
+
 
 class TestTierPolicy:
     def test_ttl_hours_exact_mapping(self) -> None:
@@ -168,3 +198,22 @@ class TestTierPolicy:
         policy = TierPolicy()
         assert policy.resolve(tier) == "T2"
         assert policy.ttl_for(tier) == 2160.0
+
+    def test_default_tier_is_not_settable_via_the_constructor(self) -> None:
+        """R-W2-104: DEFAULT_TIER is a ClassVar, not a field — it cannot be moved."""
+        with pytest.raises(TypeError):
+            TierPolicy(**{"DEFAULT_TIER": "T0"})
+
+    def test_ttl_hours_is_isolated_per_instance(self) -> None:
+        """R-W2-104: mutating one instance's table must not leak into the next."""
+        policy = TierPolicy()
+        policy.ttl_hours["T2"] = 999.0
+        assert TierPolicy().ttl_hours["T2"] == 2160.0
+
+    def test_instance_is_frozen(self) -> None:
+        """R-W2-104: TierPolicy is a frozen dataclass — attribute assignment raises."""
+        from dataclasses import FrozenInstanceError
+
+        policy = TierPolicy()
+        with pytest.raises(FrozenInstanceError):
+            policy.ttl_hours = {"T0": 1.0}

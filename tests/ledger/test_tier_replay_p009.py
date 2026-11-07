@@ -92,7 +92,10 @@ class TestTierRebuild:
 
 
 class TestDiscriminatorContract:
-    """Pin the W3 sweeper contract: discriminator = fact_id + to_tier.
+    """W3 PLACEHOLDER (R-W2-105): pins compute_idempotency_key's shape, not a
+    sweeper construction site — the W3 sweeper does not exist yet, so there
+    is no production `LedgerEvent(discriminator=fact_id + to_tier)` site to
+    test against. The real sweeper-side assertion lands with the sweeper.
 
     The ledger dedupe derives its key from (correlation_id, event_type,
     attempt, discriminator) — see ledger/events.py. The sweeper must construct
