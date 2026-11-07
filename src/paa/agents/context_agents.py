@@ -43,6 +43,7 @@ retrieval — it is a reason to keep the retrieval literal, which is what
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Any, Protocol
 
 import structlog
@@ -238,7 +239,9 @@ class _BaseContextBuilder(Agent):
             )
         return elements
 
-    async def _semantic(self, goal: str, *, limit: int = 30) -> list[ContextElement]:
+    async def _semantic(
+        self, goal: str, *, limit: int = 30, now: datetime | None = None
+    ) -> list[ContextElement]:
         if self._vectors is None or self._embedder is None:
             return []
         try:
@@ -248,18 +251,76 @@ class _BaseContextBuilder(Agent):
             log.warning("context.vector_search_failed", error=str(exc))
             return []
 
-        return [
-            ContextElement(
-                id=str(hit.id),
-                content=str(hit.payload.get("object_value", "")),
-                relevance=float(hit.score),
-                confidence=float(hit.payload.get("confidence", 0.8)),
-                importance=float(hit.payload.get("importance", 0.5)),
-                slot=hit.payload.get("predicate"),
-                memory_domain=str(hit.payload.get("memory_domain", "semantic")),
+        if not hits:
+            return []
+
+        # PLAN:integration-fix:P002 (D13: derive at query, never store). The Qdrant
+        # payload `confidence` is an enqueue-time provenance snapshot only (written
+        # in VectorEmbeddingSink.enqueue) and is never ranking truth: it freezes
+        # the decayed value at ingest and every touch advances `last_queried_at`,
+        # so trusting it ranks paraphrase recall by a stale snapshot. Batch-hydrate
+        # the hit fact ids in ONE query and derive each confidence with live
+        # `last_queried_at` via `effective_confidence`, exactly like `_hot_facts`
+        # and `_to_fact`. Hydrated `importance`/`memory_domain` likewise win over
+        # payload values so the 0.8/0.5 reader defaults never resurrect as ranking
+        # truth for hydrated hits. If hydration fails (or db is absent, or a hit
+        # has no live row such as a deleted fact), that hit falls back to its
+        # payload snapshot and the semantic tier still serves — hydration failure
+        # must never empty the tier. Unknown `memory_domain` follows `_to_fact`:
+        # stored passthrough + `memory.fact_unknown_domain` warning, never crash.
+        hydrated: dict[str, Any] = {}
+        if self._db is not None:
+            try:
+                ids = list(dict.fromkeys(str(hit.id) for hit in hits))
+                placeholders = ",".join("?" for _ in ids)
+                rows = await self._db.fetch_all(
+                    "SELECT id, initial_confidence, last_queried_at, memory_domain, importance "
+                    f"FROM hot_serving_active_facts WHERE id IN ({placeholders})",
+                    ids,
+                )
+                hydrated = {str(row["id"]): row for row in rows}
+            except Exception as exc:
+                log.warning("context.vector_search_failed", error=str(exc))
+                hydrated = {}
+
+        from paa.storage.relational.database import from_iso
+
+        elements: list[ContextElement] = []
+        for hit in hits:
+            row = hydrated.get(str(hit.id))
+            if row is not None:
+                initial = float(row["initial_confidence"])
+                domain = str(row["memory_domain"])
+                try:
+                    confidence = effective_confidence(
+                        initial,
+                        from_iso(row["last_queried_at"]),
+                        domain,
+                        now=now,
+                    )
+                except KeyError:
+                    log.warning(
+                        "memory.fact_unknown_domain", fact_id=str(hit.id), domain=domain
+                    )
+                    confidence = initial
+                importance = float(row["importance"])
+                memory_domain = domain
+            else:
+                confidence = float(hit.payload.get("confidence", 0.8))
+                importance = float(hit.payload.get("importance", 0.5))
+                memory_domain = str(hit.payload.get("memory_domain", "semantic"))
+            elements.append(
+                ContextElement(
+                    id=str(hit.id),
+                    content=str(hit.payload.get("object_value", "")),
+                    relevance=float(hit.score),
+                    confidence=confidence,
+                    importance=importance,
+                    slot=hit.payload.get("predicate"),
+                    memory_domain=memory_domain,
+                )
             )
-            for hit in hits
-        ]
+        return elements
 
     async def _graph_neighbours(
         self, entity_ids: list[str], ctx: AgentContext

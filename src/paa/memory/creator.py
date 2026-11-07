@@ -1070,6 +1070,13 @@ class VectorEmbeddingSink:
         # confidence/importance for ranking; without them every hit returned
         # empty content. Old points without the new keys still read with
         # reader defaults (0.8/0.5).
+        # PLAN:integration-fix:P002 (D13: derive at query, never store): the
+        # `confidence` written here is an enqueue-time provenance snapshot only
+        # (the decayed value at ingest) and is never ranking truth — _semantic
+        # batch-hydrates the live row and derives with live `last_queried_at`
+        # via `effective_confidence`. Do not enrich this payload with
+        # `last_queried_at` (INV-01 Fix B rejected): every touch advances that
+        # clock, so any frozen timestamp goes stale on the first recall.
         points = [
             VectorPoint(
                 id=fact.id,
