@@ -20,8 +20,8 @@ The alternative — 18 bespoke pipelines — would be 18 places to fix every bug
 from __future__ import annotations
 
 import enum
-from dataclasses import dataclass
-from typing import Final
+from dataclasses import dataclass, field
+from typing import ClassVar, Final
 
 __all__ = [
     "DOMAINS",
@@ -29,6 +29,7 @@ __all__ = [
     "MemoryDomain",
     "MemoryMechanism",
     "RetrievalProtocol",
+    "TierPolicy",
     "domain_policy",
     "narrative_domains",
 ]
@@ -265,3 +266,70 @@ def narrative_domains() -> frozenset[str]:
     that would inflate its packet and leak strategy into an execution cell.
     """
     return frozenset(d.value for d, p in DOMAINS.items() if p.narrative)
+
+
+# ---------------------------------------------------------------------------
+# Tier ladder (PLAN:integration-fix:P009)
+# ---------------------------------------------------------------------------
+#
+# ADR-0037 (docs/adr/0037-tier-layer-and-replay.md) decides the T0-T4 ladder as
+# a *layer over* the domain matrix above, not a replacement for it: retention
+# (tier TTL) decides *survival*, `DomainPolicy.prune_floor` decides *hot-set
+# membership*, and neither may shorten the other's guarantee. This module owns
+# the pure policy data; the W3 sweeper is the sole writer of tier moves and the
+# sole enforcer of that composition — nothing here reads settings, the clock,
+# or the hot table, and `DomainPolicy` gains no tier field (the sweeper SELECTs
+# the tier column itself).
+
+
+@dataclass(frozen=True, slots=True)
+class TierPolicy:
+    """Retention ladder T0-T4 (ADR-0037).
+
+    ``ttl_hours`` maps each tier to its retention TTL in hours; ``T4`` is
+    ``float("inf")`` — the permanent tier, never TTL-expired (ADR-0037 writes
+    it as "infinity"; ``float("inf")`` is its faithful float representation).
+    The dict is copied per instance via ``default_factory`` so no caller can
+    mutate the canonical table through a shared reference.
+    """
+
+    ttl_hours: dict[str, float] = field(
+        default_factory=lambda: {
+            "T0": 4.0,
+            "T1": 24.0,
+            "T2": 2160.0,
+            "T3": 17520.0,
+            "T4": float("inf"),
+        }
+    )
+
+    #: The backfill/default tier. The v5 migration backfills existing rows to
+    #: T2 (ADR-0037); any tier value that is unknown, absent, or unrecognised
+    #: (a NULL from an old row, a casing mismatch, a future tier this build
+    #: does not know) resolves here. Resolution never raises.
+    #:
+    #: DECISION: `ClassVar`, not a dataclass field — the default tier is
+    #: policy, fixed by ADR-0037, not per-instance configuration. A field
+    #: would let a caller construct `TierPolicy(DEFAULT_TIER="T0")` and
+    #: silently move the default.
+    DEFAULT_TIER: ClassVar[str] = "T2"
+
+    def resolve(self, tier: str | None) -> str:
+        """Resolve a stored tier to a known tier, defaulting to ``T2``.
+
+        Unknown, absent (``None``), or unrecognised values fall back to the
+        default tier rather than raising — a fact written before the tier
+        layer existed must remain readable, not become unclassifiable.
+        """
+        if isinstance(tier, str) and tier in self.ttl_hours:
+            return tier
+        return self.DEFAULT_TIER
+
+    def ttl_for(self, tier: str | None) -> float:
+        """Retention TTL in hours for a tier, defaulting unknown/absent to T2's.
+
+        The final ``2160.0`` is unreachable with the canonical table — it
+        keeps the answer a float (never a raise) even for a hand-built
+        instance whose ``ttl_hours`` omits the default tier.
+        """
+        return self.ttl_hours.get(self.resolve(tier), 2160.0)

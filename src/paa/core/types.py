@@ -172,6 +172,25 @@ class EventType(str, enum.Enum):
     # -- lifecycle ---------------------------------------------------------
     TASK_ABANDONED = "TASK_ABANDONED"
 
+    # -- memory tiers (PLAN:integration-fix:P009) --------------------------
+    # Fact-scoped lifecycle, NOT task lifecycle (ADR-0037). Tier state is
+    # folded by the tier-dict helper `apply_tier_event` in ledger/replay.py,
+    # never by TaskProjection. Payload contract for both members:
+    #   {fact_id: str, from_tier: str, to_tier: str, reason: str}
+    # where tiers are "T0".."T4" and `from_tier` is the tier before the move
+    # (informational; the fold trusts `to_tier`).
+    #
+    # ADR-0008 idempotency (docs/adr/0037-tier-layer-and-replay.md): the
+    # sweeper (W3) MUST construct the event with
+    #   discriminator = fact_id + to_tier
+    # so `compute_idempotency_key(correlation_id, event_type, attempt,
+    # discriminator)` in ledger/events.py dedupes a double emit of the same
+    # tier move into one logical event. No new dedupe mechanism is
+    # introduced here; the sweeper passes `discriminator` on the
+    # LedgerEvent it appends before its hot-row move.
+    TIER_DEMOTED = "TIER_DEMOTED"
+    TIER_ARCHIVED = "TIER_ARCHIVED"
+
 
 #: Events after which a correlation is closed and needs no recovery sweep.
 #: Used by the recovery engine to decide which lineages are still in flight.

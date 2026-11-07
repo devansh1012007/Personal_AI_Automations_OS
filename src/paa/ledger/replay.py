@@ -26,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from paa.core.types import ComplexityModality, EventType
 from paa.ledger.events import LedgerEvent
 
-__all__ = ["TaskPhase", "TaskProjection", "apply_event", "project", "replay"]
+__all__ = ["TaskPhase", "TaskProjection", "apply_event", "apply_tier_event", "project", "replay"]
 
 log = structlog.get_logger(__name__)
 
@@ -287,7 +287,75 @@ def apply_event(state: TaskProjection, event: LedgerEvent) -> TaskProjection:
     return state.model_copy(update=updates)
 
 
+#: The default tier for any fact whose history predates the tier layer.
+#: PLAN:integration-fix:P009 — the v5 migration backfills existing rows to T2
+#: (ADR-0037), and any event lacking tier fields defaults the fact it names
+#: to T2, so old lineages replay identically.
+DEFAULT_TIER: str = "T2"
+
+
+def apply_tier_event(state: dict[str, str], event: LedgerEvent) -> dict[str, str]:
+    """Fold one event into the tier-dict projection, returning a new dict.
+
+    PLAN:integration-fix:P009 — ADR-0037's decided shape: tier state is fact-
+    scoped and keyed by ``fact_id``, so it lives in this dict, never in
+    ``TaskProjection`` (task-lineage state folds the wrong entity; ADR-0037
+    rejects that explicitly).
+
+    Pure: ``state`` is not mutated; the caller must assign the return value
+    (mirrors :func:`apply_event`). Tier writes come only from tier events:
+
+    - ``TIER_DEMOTED`` / ``TIER_ARCHIVED`` set ``state[fact_id]`` to the
+      payload ``to_tier`` (violations of the ``{fact_id, from_tier, to_tier,
+      reason}`` contract in :class:`~paa.core.types.EventType` fall back to
+      :data:`DEFAULT_TIER`, never a raise);
+    - any other event naming a ``fact_id`` defaults that fact to
+      :data:`DEFAULT_TIER` *only if the fact has no tier yet* — the
+      old-events path (lineages written before the tier existed never emitted
+      tier fields). A non-tier event never *overwrites* an existing tier, so
+      e.g. an archived fact is never resurrected to T2 by an unrelated event
+      that happens to carry its ``fact_id``.
+
+    Events without a ``fact_id`` (all task-lineage events) return an unchanged
+    copy. The fold is total: it never raises, so replay over any stream —
+    hostile, malformed, or future — completes. In particular
+    :func:`replay` over a stream containing ``TIER_*`` never records them in
+    ``TaskProjection.unknown_events`` (they are members of
+    ``_NO_PHASE_CHANGE``) and never raises.
+
+    Union precedence (ADR-0037: "retention decides survival, ``prune_floor``
+    decides hot-set membership") is *sweeper policy* — the decision of whether
+    a tier TTL expiry may move a fact, and how it composes with the curator's
+    DECAY phase. It is deliberately NOT implemented here: this helper only
+    records where a fact's tier is; the W3 sweeper is the sole writer of tier
+    moves and the sole place the composition must live.
+    """
+    updated = dict(state)
+    payload = event.payload
+    fact_id = payload.get("fact_id")
+    if fact_id is None:
+        return updated
+    key = str(fact_id)
+    to_tier = payload.get("to_tier")
+    if event.event_type in (EventType.TIER_DEMOTED, EventType.TIER_ARCHIVED):
+        if isinstance(to_tier, str) and to_tier:
+            updated[key] = to_tier
+        else:
+            # Old tier events lacking tier fields (or a malformed to_tier) -> T2.
+            updated[key] = DEFAULT_TIER
+    elif key not in updated:
+        # Any other event naming a fact defaults an unseen fact to T2.
+        updated[key] = DEFAULT_TIER
+    return updated
+
+
 #: Events that carry information but do not move the lifecycle phase.
+#:
+#: PLAN:integration-fix:P009 — TIER_DEMOTED / TIER_ARCHIVED are fact-scoped,
+#: not task phases (ADR-0037). They live here, never in `_PHASE_MAP`, and
+#: never in TERMINAL_EVENTS: a tier move neither closes a task lineage nor
+#: advances its phase. The tier state itself is folded by `apply_tier_event`
+#: above, keyed by fact_id — TaskProjection gains no tier fields.
 _NO_PHASE_CHANGE = frozenset(
     {
         EventType.HUMAN_GATE_CLEARED,
@@ -295,6 +363,8 @@ _NO_PHASE_CHANGE = frozenset(
         EventType.USER_CORRECTION,
         EventType.MODEL_ESCALATED,
         EventType.RECOVERY_REPLAY_COMPLETED,
+        EventType.TIER_DEMOTED,
+        EventType.TIER_ARCHIVED,
     }
 )
 
