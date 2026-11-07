@@ -64,7 +64,7 @@ These were traced against actual source (file:line cited in the documents):
 6. **Coder agent tool loop** (`cli/coder.py:53` → `coder/agent.py:105` → `loop.py:142` → `model_adapter.py:161` → `runtime_tools.py` tools).
 7. **Validation pipeline** schema→AST→patch→drift→tests (`validation/engine.py:208`, `validation/patch.py:270`).
 8. **Delegation safety** depth/cycle/node bounds (`delegation.py:87`, `orchestrator.py:837`).
-9. **Sandbox degradation** 5s probe → subprocess fallback (`runtime.py:511`).
+9. **Sandbox degradation** 5s probe → subprocess fallback (`runtime.py:517`).
 10. **Backpressure** NORMAL/DEGRADED/SHEDDING with control-plane always accepted (`backpressure.py:115`).
 
 ## Cross-document inconsistencies found and resolved

@@ -34,11 +34,11 @@ Programmatic: `Runtime.build()` (`src/paa/runtime.py:271`):
 4. Model router built (or a `model_adapter` injected); `RouterModelAdapter`
    wraps it.
 5. Optional backends: `_try_vector`, `_try_graph`, `_try_queue` — degrade, never
-   raise (`runtime.py:414`–`:424`).
+   raise (`runtime.py:419`–`:429`).
 6. `_build_agents()` constructs planner, policy, worker, critic, context
-   builders, router (`runtime.py:554`).
-7. `_acquire_sandbox()` — 5s probe, falls back to subprocess (`runtime.py:511`).
-8. `ChiefOrchestrator` assembled with all collaborators (`runtime.py:363`).
+   builders, router (`runtime.py:560`).
+7. `_acquire_sandbox()` — 5s probe, falls back to subprocess (`runtime.py:517`).
+8. `ChiefOrchestrator` assembled with all collaborators (`runtime.py:368`).
 9. `boot_recovery()` runs `RecoveryEngine.boot_sweep()` before accepting work
    (`runtime.py:264`).
 
@@ -57,7 +57,7 @@ FastAPI app over it (`cli/main.py:293`).
   the pending-embedding backlog (`src/paa/daemon.py:188`).
 - Maintenance loop (6h): `MemoryCurator.run_maintenance` — decay, prune-edges,
   consolidate, orphans, reconcile-vectors, analyze (`src/paa/daemon.py:193`,
-  `src/paa/memory/curator.py:160`). This is the **runbook home** for the
+  `src/paa/memory/curator.py:175`). This is the **runbook home** for the
   curator: first-tick preview, snapshot, and rollback live here (see
   *Memory curation* below); `docs/modules/daemon.md` and
   `docs/modules/memory.md` link to it.
@@ -67,7 +67,7 @@ FastAPI app over it (`cli/main.py:293`).
 ## Memory curation (authoritative runbook)
 
 The daemon maintenance loop runs the full curator
-(`src/paa/daemon.py:193`, `src/paa/memory/curator.py:160`), not a bare decay
+(`src/paa/daemon.py:193`, `src/paa/memory/curator.py:175`), not a bare decay
 sweep. It fires once per `maintenance_interval` (6h default): the loop sleeps
 one interval first, so the first tick runs ~6h after boot
 (`src/paa/daemon.py:199`).
@@ -98,20 +98,20 @@ changes future behaviour; it does not bring deleted facts back. To restore a
 deleted fact, re-run the creator over its persisted signal: facts carry
 `source_signal_id` into `cold_lake_signals` (`src/paa/memory/facts.py:295`),
 and `MemoryCreator.run_batch` claims `unprocessed` signals
-(`src/paa/memory/creator.py:1300`). The operator steps are: set the affected
+(`src/paa/memory/creator.py:1268`). The operator steps are: set the affected
 signal(s) back to `unprocessed`, then `paa memory drain` (or
 `POST /memory/drain`, `src/paa/api/app.py:274`). The creator is
-deterministic and replay-stable (`src/paa/memory/creator.py:185`), so the
+deterministic and replay-stable (`src/paa/memory/creator.py:196`), so the
 fact is recreated from the same payload; contradiction and quarantine rules
 still apply on replay. Code revert restores neither the facts nor the
 retention clocks — `use_count`/`last_queried_at` reset on replay.
 
 **Backlog watch (no throttle dial).** `drain_pending_embeddings` moves one
-batch of 100 per call (`src/paa/memory/creator.py:1515`) and the daemon
+batch of 100 per call (`src/paa/memory/creator.py:1533`) and the daemon
 drain-calls back-to-back while signals keep arriving
 (`src/paa/daemon.py:188`), so a large backlog drains at embedder speed with
 no rate dial — observe `memory.embedding_drain` `pending_count`
-(`src/paa/memory/creator.py:1620`) for backlog size and batch/indexed
+(`src/paa/memory/creator.py:1631`) for backlog size and batch/indexed
 progress. If ingestion starves under a backlog, the backlog size and the
 embedder speed bound the drain time; there is currently no sleep/backoff
 knob to turn.

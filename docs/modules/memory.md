@@ -87,19 +87,19 @@ ADR-0025.
 
 ### `creator.py` — MemoryCreator
 Ingests unprocessed signals into hot-serving facts/entities. Called by daemon
-ingestion loop (`src/paa/memory/creator.py:1243`). Also owns the
-pending-embedding backlog drain (`src/paa/memory/creator.py:1515`),
+ingestion loop (`src/paa/memory/creator.py:1268`). Also owns the
+pending-embedding backlog drain (`src/paa/memory/creator.py:1533`),
 called after each ingestion batch (`src/paa/daemon.py:188`). The creator is
 deterministic and replay-stable — every field is a pure function of the
 signal payload — so re-running it over a persisted signal recreates the
-fact (`src/paa/memory/creator.py:185`).
+fact (`src/paa/memory/creator.py:196`).
 
 ### `curator.py` — MemoryCurator
 The full nightly consolidation, run by the daemon maintenance loop on its
-6h cadence (`src/paa/memory/curator.py:160`). Phases in order
+6h cadence (`src/paa/memory/curator.py:175`). Phases in order
 (`src/paa/memory/curator.py:64`): decay, prune-edges, consolidate,
 orphans, reconcile-vectors, analyze. Delete phases count-only under
-`dry_run` (`src/paa/memory/curator.py:160`), which is what makes the
+`dry_run` (`src/paa/memory/curator.py:175`), which is what makes the
 daemon's first-tick preview safe. Authoritative operator runbook —
 snapshot before first delete, cold-lake replay restore — in
 `docs/operations/deployment-and-runtime.md` (*Memory curation*).
@@ -140,11 +140,11 @@ callable`.
 | `DecaySweeper` → `Database`, `domains` | decay policy + SQL DELETE | Evict stale facts | `decay.py` |
 | `MemoryCreator` → `SignalRepository`, `FactRepository` | claim signals → facts | Ingest signals | `creator.py`, `daemon.py:173` |
 | `Context builders` → `Database` | hand-rolled `LIKE` over the fact tables | Read context | `context_agents.py:190` |
-| `PolicyRiskAgent` → anti-goals (vault) | read `anti_goals.md` | Semantic block | `runtime.py:474`, `policy.py:280` |
+| `PolicyRiskAgent` → anti-goals (vault) | read `anti_goals.md` | Semantic block | `runtime.py:571`, `policy.py:280` |
 
 ## Runtime behavior
 
-- Decay sweep runs as the first curator phase on the daemon's 6h maintenance interval (`src/paa/memory/curator.py:248`).
+- Decay sweep runs as the first curator phase on the daemon's 6h maintenance interval (`src/paa/memory/curator.py:263`).
 - Confidence computed lazily at read time (not stored) — a two-year-old fact is
   not treated as freshly verified (`context_agents.py:222`).
 - Facts are immutable: supersede links versions; chain walkable backwards.

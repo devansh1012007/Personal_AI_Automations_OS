@@ -220,10 +220,10 @@ paa agent "prompt" (cli/coder.py:44)
   `orchestrator.py:837`); the `DelegationGraph` enforces depth/cycle/node
   bounds (`delegation.py:87`).
 - **Storage substrates degrade, never raise:** `_try_vector/_try_graph/_try_queue`
-  catch all exceptions and return `None` with a warning (`runtime.py:387`).
+  catch all exceptions and return `None` with a warning (`runtime.py:419`).
 - **Sandbox probe is bounded at 5s:** `_acquire_sandbox` uses
   `asyncio.wait_for(..., timeout=5.0)` then falls back to subprocess
-  (`runtime.py:497`).
+  (`runtime.py:517`).
 - **API is an edge layer only:** `create_app` parses/validates and delegates to
   `Runtime`; it holds no application state and makes no model calls
   (`api/app.py:54`).
