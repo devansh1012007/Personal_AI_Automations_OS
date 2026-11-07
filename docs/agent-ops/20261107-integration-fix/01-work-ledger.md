@@ -54,15 +54,19 @@
 - Gate results: orchestrator gate ruff 0 / mypy 3 / W1 scoped 47 green; REV-W1 REJECT (BLOCKER docs 3→63, MAJOR unredacted hydration log) + TREV-W1 APPROVE-WITH-CHANGES → fixes 10989e1 + 789f501 → re-review REV-W1b/TREV-W1b both APPROVE-WITH-CHANGES, 0 blocker/major; orchestrator re-gate ruff 0 / mypy 3 / docs-lock 5 passed (63→0) / W1 tests 52 green.
 - Status: DONE
 
-### Wave 2 (in progress)
+### Wave 2 (DONE)
 - WAVE_BASE_SHA: `32b3138` (run HEAD at open)
 - Agents: W2-IMPL-01 (T-004a touch), W2-IMPL-02 (T-009a vocab), W2-IMPL-03 (T-009b DDL v5), W2-IMPL-04 (T-005 embed image), W2-GEN-01 (minor P-002 tests) — parallel, disjoint write-sets (ownership/W2.tsv)
 - Pre-mortem: (a) blind +N docs shifts again this wave → post-wave docs re-point is a standing gate item (T-004a/T-009b/T-005 all insert mid-file); (b) DDL backfill silent-skip (single guard) → separate guards enforced in brief; (c) Docker build claimed locally → brief forces NOT-RUN honesty; (d) tier EventTypes in _PHASE_MAP/TERMINAL → brief forbids, _NO_PHASE_CHANGE only.
+- Gate results: orchestrator gate ruff 0 / mypy 3 / W2 scoped green (1 PG skip) / docs-lock 44 broken → REV-W2 REJECT (BLOCKER Dockerfile USER, BLOCKER docs, MAJOR fold validation) + TREV-W2 APPROVE-WITH-CHANGES → fixes f009484 + 8d39e5c → re-review REV-W2b/TREV-W2b both APPROVE-WITH-CHANGES, 0 blocker/major → orchestrator re-gate ruff 0 / mypy 3 / lock 5 passed.
+- Status: done
+
+### Wave 3 (in progress)
+- WAVE_BASE_SHA: `492d4b2` (run HEAD at open)
+- Agents: W3-IMPL-01 (T-009c sweeper), W3-IMPL-02 (T-010 vault), W3-IMPL-03 (T-006 panels), W3-IMPL-04 (T-004b fallback) — parallel, disjoint write-sets (ownership/W3.tsv)
+- Pre-mortem: (a) dry_run bypass (sweeper hardcodes flag) → brief forces injection; (b) fence silent-overwrite → conflict error is the contract; (c) fake attention score → null enforced; (d) second touch copy at fallback site → T05 lock must stay green; (e) docs lock re-break (standing gate item).
 - Gate results: pending
 - Status: in progress
-
-### Wave 3 (planned)
-- T-009c sweeper · T-010 vault (reflection delegation) · T-006 panels (attention_top null until P-007) · T-004b coder fallback (after T-002 derivation + Runtime.embedder field + ADR-0039). `reflection.py` sequenced by function. `api/app.py` sequenced touch vs panels.
 
 ### Wave 4 (planned)
 - T-007 allocator+drain · T-013 reflection wiring (after vault fence delegation) · T-003 stored-normalisation (migration v6, after v5 parity).
