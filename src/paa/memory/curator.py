@@ -32,7 +32,9 @@ from typing import Any
 import structlog
 
 from paa.config import MemorySettings
+from paa.ledger.store import LedgerStore
 from paa.memory.decay import DecaySweeper
+from paa.memory.tier import TierSweeper
 from paa.storage.relational.base import RelationalBackend
 
 __all__ = ["CurationPhase", "CurationReport", "MemoryCurator"]
@@ -115,6 +117,7 @@ class MemoryCurator:
         *,
         settings: MemorySettings | None = None,
         sweeper: DecaySweeper | None = None,
+        tier_sweeper: TierSweeper | None = None,
         vector_store: Any = None,
         archive_writer: Any = None,
         batch_size: int = 500,
@@ -133,6 +136,16 @@ class MemoryCurator:
             db,
             archive_writer=archive_writer,
             prune_confidence_floor=self._settings.explicit_prune_floor(),
+            batch_size=batch_size,
+        )
+        # Tier sweep runs inside the DECAY phase (ADR-0037: same tick,
+        # strictly after eviction, no parallel prune race). The dry-run
+        # flag is the W1-declared `TierSettings.dry_run` (default True),
+        # read the same lazy way DecaySweeper reads the operator floor.
+        self._tier_sweeper = tier_sweeper or TierSweeper(
+            db,
+            LedgerStore(db),
+            dry_run=get_settings().tier.dry_run,
             batch_size=batch_size,
         )
         self._vectors = vector_store
@@ -231,6 +244,13 @@ class MemoryCurator:
     ) -> None:
         result = await self._sweeper.sweep(now=now, dry_run=dry_run)
         report.facts_evicted = result.evicted
+        # Tier sweep after eviction in the same tick (ADR-0037 §P09). The
+        # tick is dry unless BOTH the curator preview flag and the
+        # injected TierSettings flag are off: production starts dry and
+        # the first live tick waits for the R3 gate, never this callsite.
+        await self._tier_sweeper.sweep(
+            now=now, dry_run=dry_run or self._tier_sweeper.dry_run
+        )
 
     async def _phase_prune_edges(
         self, report: CurationReport, *, now: datetime, dry_run: bool = False
