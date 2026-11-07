@@ -18,6 +18,7 @@ fails the allocated and the claim-failure test for the right reason.
 
 from __future__ import annotations
 
+import sys
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -28,6 +29,17 @@ import structlog.testing
 
 from paa.agents.orchestrator import ChiefOrchestrator
 from paa.config import AllocatorSettings
+
+# R-W4b-001 (shape (a)): importing allocate_attention at MODULE scope runs
+# paa.context.__init__ (gatherer, budget) and the allocator module at
+# COLLECTION time — before any monkeypatch above/below is active — so those
+# modules bind the REAL paa.config.get_settings. Without this, run_allocation's
+# lazy import would be the first context import and would bind the _enable
+# stub's lambda in gatherer/budget/allocator, poisoning every later test in
+# the process (SimpleNamespace has no attribute 'context'). The name is used
+# by the gatherer-binding pin test below, which is what keeps this import
+# from being unused.
+from paa.context.allocator import allocate_attention
 from paa.core.types import new_correlation_id
 from paa.ledger.store import LedgerStore
 from paa.storage.queue.base import QueueMessage, StreamName
@@ -121,6 +133,15 @@ def _enable(monkeypatch: pytest.MonkeyPatch, *, enabled: bool) -> None:
     ``run_allocation`` reads the process settings by lazy import, so the
     seam here is the settings object itself — the same one production
     reads.
+
+    INVARIANT (R-W4b-001): the ``paa.context`` modules are already bound
+    at collection time (module-scope ``allocate_attention`` import
+    above), so this patch never coincides with a first-time context
+    import and can never rebind ``paa.context.gatherer`` /
+    ``paa.context.budget`` / ``paa.context.allocator`` to the lambda
+    below. The stub stays intentionally narrow (only ``.allocator``):
+    widening it to a full Settings object would hide, not fix, a
+    reintroduced first-import-during-patch.
     """
     settings = SimpleNamespace(
         allocator=AllocatorSettings(
@@ -185,3 +206,29 @@ async def test_run_allocation_disabled_leaves_the_queue_untouched(
     assert result.outcome == "disabled"
     assert queue.claim_calls == []
     assert queue.acked == []
+
+
+async def test_gatherer_binding_survives_enable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R-W4b-001 pin: the patched window must not poison the gatherer.
+
+    Reversal: removing the module-scope ``allocate_attention`` import
+    makes this construction raise
+    ``AttributeError: 'types.SimpleNamespace' object has no attribute
+    'context'`` — the gatherer bound the ``_enable`` lambda on its first
+    import, performed by ``run_allocation``'s lazy import inside the
+    patched window, and the binding outlived monkeypatch teardown. With
+    the early import the gatherer keeps the real process settings, so
+    construction inside the patched window succeeds.
+    """
+    _enable(monkeypatch, enabled=True)
+    from paa.context.gatherer import BoundedContextGatherer
+
+    # The exact poisoned path (gatherer.py reads process settings via its
+    # own module binding, not via the patched paa.config attribute).
+    assert BoundedContextGatherer().settings is not None
+    # The module-scope import is the object the lazy import resolves to:
+    # run_allocation's `from paa.context.allocator import allocate_attention`
+    # is a sys.modules hit, not a re-execution.
+    assert sys.modules["paa.context.allocator"].allocate_attention is allocate_attention
