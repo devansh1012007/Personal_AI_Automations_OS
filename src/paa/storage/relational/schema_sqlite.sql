@@ -278,6 +278,16 @@ CREATE TABLE IF NOT EXISTS hot_serving_active_facts (
     created_at         TEXT NOT NULL,
     last_queried_at    TEXT NOT NULL,
     superseded_by      TEXT REFERENCES hot_serving_active_facts(id) ON DELETE SET NULL,
+    -- PLAN:integration-fix:P009 — tier layer (ADR-0037). NULL tier_updated_at
+    -- on a backfilled row means "never moved"; the sweep writes it when it
+    -- moves a fact. tier NOT NULL because a NULL tier would bypass the CHECK
+    -- and the sweeper would have no ladder position to read.
+    -- The tier CHECK is a column-level named constraint so a migrated table
+    -- (whose ADD COLUMN text lands before the table constraints in the stored
+    -- CREATE statement) and a fresh one expose the same CHECK order.
+    tier               TEXT NOT NULL DEFAULT 'T2'
+                       CONSTRAINT ck_fact_tier CHECK (tier IN ('T0', 'T1', 'T2', 'T3', 'T4')),
+    tier_updated_at    TEXT,
 
     CONSTRAINT ck_fact_conf CHECK (initial_confidence BETWEEN 0.0 AND 1.0),
     CONSTRAINT ck_fact_imp CHECK (importance BETWEEN 0.0 AND 1.0),

@@ -235,6 +235,14 @@ CREATE TABLE IF NOT EXISTS hot_serving_active_facts (
     created_at         TIMESTAMPTZ NOT NULL,
     last_queried_at    TIMESTAMPTZ NOT NULL,
     superseded_by      UUID REFERENCES hot_serving_active_facts(id) ON DELETE SET NULL,
+    -- PLAN:integration-fix:P009 — tier layer (ADR-0037). TIMESTAMPTZ matches
+    -- the timestamp columns above; NULL tier_updated_at on a backfilled row
+    -- means "never moved". tier NOT NULL (a NULL tier bypasses the CHECK).
+    -- Column-level named CHECK, mirroring the SQLite file, so a migrated
+    -- database records the same constraint under the same name.
+    tier               TEXT NOT NULL DEFAULT 'T2'
+                       CONSTRAINT ck_fact_tier CHECK (tier IN ('T0', 'T1', 'T2', 'T3', 'T4')),
+    tier_updated_at    TIMESTAMPTZ,
 
     CONSTRAINT ck_fact_conf CHECK (initial_confidence BETWEEN 0.0 AND 1.0),
     CONSTRAINT ck_fact_imp CHECK (importance BETWEEN 0.0 AND 1.0),

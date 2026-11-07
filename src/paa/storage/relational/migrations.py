@@ -913,6 +913,165 @@ def _trace_id_step(table: str, column: str) -> MigrationStep:
     )
 
 
+def _tier_step(table: str, column: str) -> MigrationStep:
+    """The step that gives ``table`` its tier ladder position (ADR-0037).
+
+    PLAN:integration-fix:P009 — the columns exist only on
+    ``hot_serving_active_facts``, in both schemas. The migration backfills
+    every pre-existing row to **T2**, the 90-day default, deterministically
+    and in the migration itself: no Settings flag, because a flag would let
+    two deployments backfill differently under one schema version.
+
+    Two guarded blocks per engine, one per effect. The order matters:
+
+    1. add the column — ``TEXT NOT NULL DEFAULT 'T2'`` with the named CHECK
+       ``ck_fact_tier`` so a hostile tier is refused by the schema, not by
+       the sweeper's goodwill.
+    2. backfill — ``UPDATE ... SET tier = 'T2' WHERE tier IS NULL``.
+
+    The backfill assigns *only* rows that never got a tier: pre-existing
+    rows already read ``'T2'`` through the column default the moment the
+    add commits, and a row already at T0-T4 (moved by the sweeper) must
+    never be reset to T2 by a repaired hole in the migration. Its part in
+    the step is to repair the one state the add cannot reach — the column
+    exists but the rows were never assigned a tier, which is exactly the
+    crash-mid-step state the guard-on-effect rule exists for. A single
+    guard over both effects would be satisfied by the add, and the backfill
+    would never run. ``tier_updated_at`` is deliberately left NULL on
+    backfilled rows: NULL is the "never moved" mark the sweeper reads.
+
+    The add uses the ``pragma_table_info`` guard on SQLite (which has no
+    ``ADD COLUMN IF NOT EXISTS``) and the ``information_schema`` guard with
+    ``schema_scoped=True`` on PostgreSQL, following ``_arrival_seq_step``.
+    The backfill's guard is a data guard, not a catalog guard — it asks
+    whether any row still lacks a tier — so it carries no schema placeholder
+    on either engine, exactly like ``_arrival_seq_step``'s. On both engines
+    the unqualified name in a data guard resolves through the same
+    ``search_path`` the runner resolved the schema through and the statement
+    is placeholder-qualified, so guard and statement act on the same table.
+
+    The named CHECK lands in the same position on a migrated table as in
+    the ``.sql`` files: SQLite splices a new column's definition before the
+    table constraints in the stored statement, so a column-level constraint
+    reads first on a migrated database too — which is why the schemas
+    declare it on the column rather than as a trailing table constraint.
+    """
+    return MigrationStep(
+        description=f"{table} gains the T0-T4 tier ladder position (ADR-0037)",
+        table=table,
+        column=column,
+        sqlite=EngineStep(
+            guarded=(
+                GuardedStatement(
+                    guard=(
+                        "SELECT 1 WHERE NOT EXISTS ("
+                        "  SELECT 1 FROM pragma_table_info(?) WHERE name = ?"
+                        ")"
+                    ),
+                    guard_params=(table, column),
+                    statements=(
+                        f"ALTER TABLE {table} "
+                        f"ADD COLUMN {column} TEXT NOT NULL DEFAULT 'T2' "
+                        f"CONSTRAINT ck_fact_tier "
+                        f"CHECK ({column} IN ('T0', 'T1', 'T2', 'T3', 'T4'))",
+                    ),
+                ),
+                GuardedStatement(
+                    guard=f"SELECT 1 FROM {table} WHERE {column} IS NULL LIMIT 1",  # noqa: S608
+                    guard_params=(),
+                    statements=(f"UPDATE {table} SET {column} = 'T2' WHERE {column} IS NULL",),  # noqa: S608
+                ),
+            )
+        ),
+        postgres=EngineStep(
+            guarded=(
+                GuardedStatement(
+                    guard=(
+                        "SELECT 1 WHERE NOT EXISTS ("  # noqa: S608
+                        "  SELECT 1 FROM information_schema.columns "
+                        "  WHERE table_name = ? AND column_name = ? "
+                        f"    AND table_schema = {SCHEMA_PLACEHOLDER}"
+                        ")"
+                    ),
+                    guard_params=(table, column),
+                    schema_scoped=True,
+                    statements=(
+                        f"ALTER TABLE {SCHEMA_PLACEHOLDER}.{table} "
+                        f"ADD COLUMN {column} TEXT NOT NULL DEFAULT 'T2' "
+                        f"CONSTRAINT ck_fact_tier "
+                        f"CHECK ({column} IN ('T0', 'T1', 'T2', 'T3', 'T4'))",
+                    ),
+                ),
+                GuardedStatement(
+                    # A data guard: the finished effect is "no row lacks a
+                    # tier", asked the same way on both engines. It carries
+                    # no schema placeholder — unqualified resolution follows
+                    # the search path the runner resolved — so _render never
+                    # turns it into a quoted literal in name position.
+                    guard=f"SELECT 1 FROM {table} WHERE {column} IS NULL LIMIT 1",  # noqa: S608
+                    guard_params=(),
+                    statements=(
+                        f"UPDATE {SCHEMA_PLACEHOLDER}.{table} "  # noqa: S608
+                        f"SET {column} = 'T2' WHERE {column} IS NULL",
+                    ),
+                ),
+            )
+        ),
+    )
+
+
+def _tier_updated_at_step(table: str, column: str) -> MigrationStep:
+    """The step that adds the tier-move timestamp column (ADR-0037).
+
+    ``tier_updated_at`` is nullable by design: NULL is the mark of a fact
+    that has never moved, which is what every backfilled row is. It is its
+    own step, with its own guard, so a crashed first half of the migration
+    never silently skips it behind the tier column's guard. In the schema
+    files this column is declared last so the fresh column order and the
+    migrated one agree — the same discipline the ``arrival_seq`` steps
+    follow.
+    """
+    return MigrationStep(
+        description=f"{table} records when a fact last moved tiers (ADR-0037)",
+        table=table,
+        column=column,
+        sqlite=EngineStep(
+            guarded=(
+                GuardedStatement(
+                    guard=(
+                        "SELECT 1 WHERE NOT EXISTS ("
+                        "  SELECT 1 FROM pragma_table_info(?) WHERE name = ?"
+                        ")"
+                    ),
+                    guard_params=(table, column),
+                    statements=(
+                        f"ALTER TABLE {table} ADD COLUMN {column} TEXT",
+                    ),
+                ),
+            )
+        ),
+        postgres=EngineStep(
+            guarded=(
+                GuardedStatement(
+                    guard=(
+                        "SELECT 1 WHERE NOT EXISTS ("  # noqa: S608
+                        "  SELECT 1 FROM information_schema.columns "
+                        "  WHERE table_name = ? AND column_name = ? "
+                        f"    AND table_schema = {SCHEMA_PLACEHOLDER}"
+                        ")"
+                    ),
+                    guard_params=(table, column),
+                    schema_scoped=True,
+                    statements=(
+                        f"ALTER TABLE {SCHEMA_PLACEHOLDER}.{table} "
+                        f"ADD COLUMN {column} TIMESTAMPTZ",
+                    ),
+                ),
+            )
+        ),
+    )
+
+
 def _span_parent_id_step(table: str, column: str) -> MigrationStep:
     """The step that makes a parent *span* id storable on the server.
 
@@ -976,6 +1135,14 @@ MIGRATIONS: tuple[Migration, ...] = (
         steps=(
             _trace_id_step("hot_serving_execution_runs", "trace_id"),
             _span_parent_id_step("hot_serving_execution_runs", "span_parent_id"),
+        ),
+    ),
+    Migration(
+        version=5,
+        description="the T0-T4 tier layer on the fact row (ADR-0037)",
+        steps=(
+            _tier_step("hot_serving_active_facts", "tier"),
+            _tier_updated_at_step("hot_serving_active_facts", "tier_updated_at"),
         ),
     ),
 )
