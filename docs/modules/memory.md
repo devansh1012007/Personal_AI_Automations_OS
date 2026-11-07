@@ -88,7 +88,7 @@ ADR-0025.
 ### `creator.py` — MemoryCreator
 Ingests unprocessed signals into hot-serving facts/entities. Called by daemon
 ingestion loop (`src/paa/memory/creator.py:1225`). Also owns the
-pending-embedding backlog drain (`src/paa/memory/creator.py:1490`),
+pending-embedding backlog drain (`src/paa/memory/creator.py:1497`),
 called after each ingestion batch (`src/paa/daemon.py:165`). The creator is
 deterministic and replay-stable — every field is a pure function of the
 signal payload — so re-running it over a persisted signal recreates the

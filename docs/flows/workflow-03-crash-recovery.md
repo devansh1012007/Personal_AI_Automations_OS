@@ -71,7 +71,7 @@ g. `_record_sweep()` (`:306`): append `RECOVERY_REPLAY_COMPLETED` audit event,
 | `ALREADY_TERMINAL` | Head projection lagged; task actually finished | No |
 
 `RecoveryReport` aggregates `started_at`, `finished_at`, `scanned`,
-`recoveries[]`, `chain_problems` (`recovery.py:115`).
+`recoveries[]`, `chain_problems` (`recovery.py:125`).
 
 ## Idempotency
 
