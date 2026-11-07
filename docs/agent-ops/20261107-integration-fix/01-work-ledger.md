@@ -51,11 +51,15 @@
 - WAVE_BASE_SHA: `c15b665` (run HEAD at open)
 - Agents: W1-IMPL-01 (T-014), W1-IMPL-02 (T-001), W1-IMPL-03 (T-002) — parallel, disjoint write-sets (ownership/W1.tsv)
 - Pre-mortem: (a) P-014 ADR texts copied from plan without resolving INV-05 offline-vs-derived contradiction → gate: reviewer checks ADR-0042 resolves it explicitly; (b) P-001 Fix B temptation (new helper) → forbidden by brief; (c) P-002 payload-enrichment temptation → Fix A enforced, creator.py comment-only; (d) siblings colliding on config.py/runtime.py → disjoint ownership + COMMS CLAIM required.
-- Gate results: pending (orchestrator gate → REV+TREV independent review → improvement per skill §9)
-- Status: in progress
+- Gate results: orchestrator gate ruff 0 / mypy 3 / W1 scoped 47 green; REV-W1 REJECT (BLOCKER docs 3→63, MAJOR unredacted hydration log) + TREV-W1 APPROVE-WITH-CHANGES → fixes 10989e1 + 789f501 → re-review REV-W1b/TREV-W1b both APPROVE-WITH-CHANGES, 0 blocker/major; orchestrator re-gate ruff 0 / mypy 3 / docs-lock 5 passed (63→0) / W1 tests 52 green.
+- Status: DONE
 
-### Wave 2 (planned, sequenced by W1 gate)
-- T-004a touch unification (SURFACE, 4 sites) · T-009a tier vocab/policy/replay · T-009b tier DDL v5 (single-writer migrations+SQL) · T-005 Dockerfile.embed (after ADR-0042). `migrations.py` + both SQL files single writer (v5); `core/types.py`+`replay.py` single writer; `config.py` re-entered only for TierSettings (P14 already declared it — use only, no new declaration).
+### Wave 2 (in progress)
+- WAVE_BASE_SHA: `32b3138` (run HEAD at open)
+- Agents: W2-IMPL-01 (T-004a touch), W2-IMPL-02 (T-009a vocab), W2-IMPL-03 (T-009b DDL v5), W2-IMPL-04 (T-005 embed image), W2-GEN-01 (minor P-002 tests) — parallel, disjoint write-sets (ownership/W2.tsv)
+- Pre-mortem: (a) blind +N docs shifts again this wave → post-wave docs re-point is a standing gate item (T-004a/T-009b/T-005 all insert mid-file); (b) DDL backfill silent-skip (single guard) → separate guards enforced in brief; (c) Docker build claimed locally → brief forces NOT-RUN honesty; (d) tier EventTypes in _PHASE_MAP/TERMINAL → brief forbids, _NO_PHASE_CHANGE only.
+- Gate results: pending
+- Status: in progress
 
 ### Wave 3 (planned)
 - T-009c sweeper · T-010 vault (reflection delegation) · T-006 panels (attention_top null until P-007) · T-004b coder fallback (after T-002 derivation + Runtime.embedder field + ADR-0039). `reflection.py` sequenced by function. `api/app.py` sequenced touch vs panels.
@@ -81,6 +85,7 @@
 - C7: `migrations.py` v5 step number — T-009b confirms v5 is next (INV-01: SCHEMA_VERSION=4; INV-02: same) before writing.
 
 ## Deferred / open items
+- W1 residuals (REV-W1b/TREV-W1b, all minor/non-gating): hostile payload scalar crash in fallback `float()` (pre-existing class, 2 branches — DO LATER hardening); ~200 non-broken docs citations off-by-one (lock-blind, pre-existing); R-W1-005 ANSI residual (DO LATER, needs rendering-policy decision); R-W1-008 `inf` threshold (DO LATER, bundle if config touched again); TREV R-W1b-03 TypeError-path test (NIT, seen-and-skipped); pre-existing unredacted `str(exc)` siblings at `context_agents.py:137/:252/:367` + INV-04's 5 further siblings (FINDINGs — revisit as one harden task before final review).
 - RSK3 (vault precedence overwrite) — closed by T-010 fence conflict semantics (ADR-0038); verify at W3 gate.
 - RSK4 (first deleting tick before R3 verified) — dry_run=True default enforced by T-014 flag; R3 drill is operator-gated manual (plan §H Manual) — flagged for final report.
 - RS2 Docker availability UNKNOWN on host (INV-05: docker absent on Windows host) — P-005 T06 runs in CI/embed-image only; not a W1 blocker.
