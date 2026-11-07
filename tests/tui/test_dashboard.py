@@ -555,3 +555,129 @@ async def test_attention_top_empty_allocator_stays_null(db: Any, ledger: Any) ->
     panels = await build_panel_fields(settings, rt)
     assert panels["attention_top"] is None
 
+
+# ---------------------------------------------------------------------------
+# attention_top freshness (REV R-W5-003): dedupe by item, latest wins, the
+# scan window is the most recent lineages, and a closed lineage drops out
+# (documented by design in _attention_top's docstring).
+# ---------------------------------------------------------------------------
+
+
+async def _alloc(ledger: Any, cid: Any, item_id: str, score: float) -> None:
+    from paa.core.types import EventType
+    from paa.ledger.events import LedgerEvent
+
+    await ledger.append(
+        LedgerEvent.create(
+            cid,
+            EventType.ATTENTION_ALLOCATED,
+            payload={"item_id": item_id, "score": score, "inputs": {}},
+            discriminator=f"{item_id}-{score}",
+        )
+    )
+
+
+async def test_attention_top_same_item_twice_keeps_latest(
+    db: Any, ledger: Any
+) -> None:
+    """Same item allocated twice: one row, and the LATER score wins (not
+    the best score)."""
+    from types import SimpleNamespace
+
+    from paa.core.types import EventType, new_correlation_id
+    from paa.ledger.events import LedgerEvent
+    from paa.tui.runner import _attention_top
+
+    cid = new_correlation_id()
+    await ledger.append(LedgerEvent.create(cid, EventType.TASK_REQUESTED, payload={}))
+    await _alloc(ledger, cid, "dup-item", 0.8)
+    await _alloc(ledger, cid, "dup-item", 0.2)
+    settings = SimpleNamespace(allocator=SimpleNamespace(max_results=5))
+    rt = SimpleNamespace(db=db, ledger=ledger, agents={})
+    top = await _attention_top(settings, rt)
+    assert top is not None and len(top) == 1
+    assert top[0]["item_id"] == "dup-item"
+    assert top[0]["score"] == 0.2
+
+
+async def test_attention_top_later_lineage_wins_across_lineages(
+    db: Any, ledger: Any
+) -> None:
+    """The same item on a newer lineage supersedes the older lineage's
+    entry — later events win, even with a lower score."""
+    from types import SimpleNamespace
+
+    from paa.core.types import EventType, new_correlation_id
+    from paa.ledger.events import LedgerEvent
+    from paa.tui.runner import _attention_top
+
+    cid_old = new_correlation_id()
+    await ledger.append(
+        LedgerEvent.create(cid_old, EventType.TASK_REQUESTED, payload={})
+    )
+    await _alloc(ledger, cid_old, "shared-item", 0.9)
+    cid_new = new_correlation_id()
+    await ledger.append(
+        LedgerEvent.create(cid_new, EventType.TASK_REQUESTED, payload={})
+    )
+    await _alloc(ledger, cid_new, "shared-item", 0.3)
+    settings = SimpleNamespace(allocator=SimpleNamespace(max_results=5))
+    rt = SimpleNamespace(db=db, ledger=ledger, agents={})
+    top = await _attention_top(settings, rt)
+    assert top is not None and len(top) == 1
+    assert top[0]["score"] == 0.3
+    assert top[0]["correlation_id"] == str(cid_new)
+
+
+async def test_attention_top_window_is_most_recent_lineages(
+    db: Any, ledger: Any, monkeypatch: Any
+) -> None:
+    """A stale oldest lineage must not crowd out a fresh one: with the
+    window at 2 and 3 open lineages, the freshest two show, the oldest
+    (highest score) does not."""
+    from types import SimpleNamespace
+
+    from paa.core.types import EventType, new_correlation_id
+    from paa.ledger.events import LedgerEvent
+    from paa.tui.runner import _attention_top
+
+    monkeypatch.setattr("paa.tui.runner._PANEL_SCAN_LIMIT", 2)
+    cids = [new_correlation_id() for _ in range(3)]
+    for cid, item, score in (
+        (cids[0], "stale-item", 1.0),
+        (cids[1], "mid-item", 0.5),
+        (cids[2], "fresh-item", 0.1),
+    ):
+        await ledger.append(
+            LedgerEvent.create(cid, EventType.TASK_REQUESTED, payload={})
+        )
+        await _alloc(ledger, cid, item, score)
+    settings = SimpleNamespace(allocator=SimpleNamespace(max_results=5))
+    rt = SimpleNamespace(db=db, ledger=ledger, agents={})
+    top = await _attention_top(settings, rt)
+    assert top is not None
+    assert [row["item_id"] for row in top] == ["mid-item", "fresh-item"]
+
+
+async def test_attention_top_terminal_lineage_drops_out(
+    db: Any, ledger: Any
+) -> None:
+    """Documented behavior: once the lineage closes (terminal event), its
+    decisions vanish from the panel, which shows in-flight attention only."""
+    from types import SimpleNamespace
+
+    from paa.core.types import EventType, new_correlation_id
+    from paa.ledger.events import LedgerEvent
+    from paa.tui.runner import _attention_top
+
+    cid = new_correlation_id()
+    await ledger.append(LedgerEvent.create(cid, EventType.TASK_REQUESTED, payload={}))
+    await _alloc(ledger, cid, "closed-item", 0.7)
+    await ledger.append(
+        LedgerEvent.create(cid, EventType.MUTATION_COMMITTED, payload={})
+    )
+    settings = SimpleNamespace(allocator=SimpleNamespace(max_results=5))
+    rt = SimpleNamespace(db=db, ledger=ledger, agents={})
+    top = await _attention_top(settings, rt)
+    assert top is None
+

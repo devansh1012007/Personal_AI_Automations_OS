@@ -344,7 +344,12 @@ class Runtime:
             sandbox=sandbox,
         )
         memory_creator = _build_memory_creator(
-            settings, db, model_adapter, vector_store=vector_store, embedder=embedder
+            settings,
+            db,
+            model_adapter,
+            vector_store=vector_store,
+            embedder=embedder,
+            ledger=ledger,
         )
 
         recovery = RecoveryEngine(
@@ -451,6 +456,7 @@ def _build_memory_creator(
     *,
     vector_store: Any = None,
     embedder: Any = None,
+    ledger: Any = None,
 ) -> Any:
     """Build the Memory Creator with its extractor wired from configuration.
 
@@ -505,7 +511,7 @@ def _build_memory_creator(
     if embedding_sink is not None:
         embedder_name = getattr(embedder, "model_name", type(embedder).__name__)
         log.info("memory.embedding_sink", status="wired", embedder=embedder_name)
-    return MemoryCreator(db, extractor=extractor, embedding_sink=embedding_sink)
+    return MemoryCreator(db, extractor=extractor, embedding_sink=embedding_sink, ledger=ledger)
 
 
 async def _acquire_sandbox(settings: Settings) -> Any:

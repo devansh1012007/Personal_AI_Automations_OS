@@ -31,7 +31,7 @@ from typing import Any
 
 import structlog
 
-from paa.config import MemorySettings
+from paa.config import CostGateSettings, MemorySettings
 from paa.ledger.store import LedgerStore
 from paa.memory.decay import DecaySweeper
 from paa.memory.tier import TierSweeper
@@ -69,6 +69,15 @@ _PHASE_ORDER: tuple[CurationPhase, ...] = (
     CurationPhase.RECONCILE_VECTORS,
     CurationPhase.ANALYZE,
 )
+
+#: Cap on advisory cost-gate suggestions kept per pass (REV R-W5-007).
+#: With derivations a large fraction of facts crosses the default
+#: threshold, so an uncapped pass appends O(N) suggestions and emits O(N)
+#: log lines — log flooding at 100x facts. The pass still reports the full
+#: cross count via one ``cost_gate.suggestion_summary`` line; only the
+#: highest-cost entries (total order: total desc, then fact_id) are kept,
+#: and the per-fact log line fires only for kept entries.
+_COST_GATE_SUGGESTION_LIMIT: int = 100
 
 
 @dataclass(slots=True)
@@ -127,11 +136,17 @@ class MemoryCurator:
         vector_store: Any = None,
         archive_writer: Any = None,
         batch_size: int = 500,
+        cost_gate: CostGateSettings | None = None,
     ) -> None:
         from paa.config import get_settings
 
         self._db = db
         self._settings = settings or get_settings().memory
+        # REV R-W5-008: the cost gate follows the same injection pattern as
+        # the memory settings above. An unset gate still defers to the
+        # process-wide read inside _phase_analyze, so default deployments
+        # are byte-identical; an injected gate wins over the global.
+        self._cost_gate = cost_gate or get_settings().cost_gate
         # Forward the injected settings' explicit floor: without this, an
         # operator-supplied (non-global) MemorySettings never reaches the
         # sweep -- the sweeper would fall back to the global singleton and
@@ -455,9 +470,7 @@ class MemoryCurator:
         ``analyze()`` refresh below remains suppressed in ``dry_run``.
         """
         # Gate first: disabled -> zero suggestions, zero cost calls.
-        from paa.config import get_settings
-
-        gate = get_settings().cost_gate
+        gate = self._cost_gate
         if gate.enabled:
             from paa.context.metrics import total_memory_cost
             # DECISION D-DERIVATIONS: named derivations from stored columns
@@ -474,17 +487,33 @@ class MemoryCurator:
             )
             if live_count > 0:
                 storage = 1.0 / live_count
-                cursor = ""
+                # REV R-W5-002: the first page carries NO id predicate.
+                # SQLite ids are TEXT so a "" sentinel sorts below every
+                # id, but Postgres ids are UUID and '' is not a valid uuid
+                # param — the old cursor="" raised on the first page and
+                # the gate never ran on the Postgres substrate. Subsequent
+                # pages keep the total-order keyset cursor (id > cursor,
+                # ORDER BY id), which both engines order identically.
+                cursor: str | None = None
+                collected: list[dict[str, Any]] = []
                 while True:
-                    rows = await self._db.fetch_all(
-                        "SELECT id, importance, initial_confidence, use_count "
-                        "FROM hot_serving_active_facts "
-                        "WHERE superseded_by IS NULL AND id > ? ORDER BY id LIMIT ?",
-                        (cursor, self._batch),
-                    )
+                    if cursor is None:
+                        rows = await self._db.fetch_all(
+                            "SELECT id, importance, initial_confidence, use_count "
+                            "FROM hot_serving_active_facts "
+                            "WHERE superseded_by IS NULL ORDER BY id LIMIT ?",
+                            (self._batch,),
+                        )
+                    else:
+                        rows = await self._db.fetch_all(
+                            "SELECT id, importance, initial_confidence, use_count "
+                            "FROM hot_serving_active_facts "
+                            "WHERE superseded_by IS NULL AND id > ? ORDER BY id LIMIT ?",
+                            (cursor, self._batch),
+                        )
                     if not rows:
                         break
-                    cursor = rows[-1]["id"]
+                    cursor = str(rows[-1]["id"])
                     for row in rows:
                         try:
                             importance = float(row["importance"])
@@ -503,20 +532,37 @@ class MemoryCurator:
                             report.errors += 1
                             continue
                         if total >= threshold:
-                            suggestion = {
-                                "fact_id": row["id"],
-                                "total_cost": total,
-                                "threshold": threshold,
-                            }
-                            report.cost_gate_suggestions.append(suggestion)
-                            log.info(
-                                "cost_gate.suggestions",
-                                fact_id=row["id"],
-                                total_cost=total,
-                                threshold=threshold,
+                            collected.append(
+                                {
+                                    "fact_id": row["id"],
+                                    "total_cost": total,
+                                    "threshold": threshold,
+                                }
                             )
                     if len(rows) < self._batch:
                         break
+                # REV R-W5-007: bound the pass output. Keep the
+                # highest-cost entries (deterministic total order) and one
+                # count line; per-fact log lines fire only for kept rows.
+                collected.sort(
+                    key=lambda s: (-s["total_cost"], str(s["fact_id"]))
+                )
+                kept = collected[:_COST_GATE_SUGGESTION_LIMIT]
+                report.cost_gate_suggestions.extend(kept)
+                for suggestion in kept:
+                    log.info(
+                        "cost_gate.suggestions",
+                        fact_id=suggestion["fact_id"],
+                        total_cost=suggestion["total_cost"],
+                        threshold=suggestion["threshold"],
+                    )
+                if collected:
+                    log.info(
+                        "cost_gate.suggestion_summary",
+                        total=len(collected),
+                        kept=len(kept),
+                        threshold=threshold,
+                    )
         if dry_run:
             return
         analyze = getattr(self._db, "analyze", None)

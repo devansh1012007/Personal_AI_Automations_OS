@@ -35,6 +35,17 @@ On contradiction the creator writes **nothing**. Both records are quarantined by
 caller to park the task on ``AWAITING_HUMAN_ATTESTATION``. Absorbing the
 non-conflicting half of a contradictory signal would leave memory in a state no
 human ever attested to.
+
+Two throttle facts are worth stating once here rather than rediscovering
+per call site. A drain-throttle breach appends one ``DRAIN_THROTTLED``
+telemetry event per window when a ledger handle was supplied (the handle
+is threaded from ``Runtime.build``; without one the breach stays log-only).
+Idempotency on that event is *per-process*: the discriminator mixes a
+process nonce (``_DRAIN_PROCESS_ID``) with the window and cap, so a
+restarted process records its own breach rather than colliding with the
+previous process's monotonic-relative window stamps. The cost is a bounded
+number of duplicate telemetry events — one per process per window — never a
+lost breach.
 """
 
 from __future__ import annotations
@@ -2005,6 +2016,17 @@ _DRAIN_THROTTLED_CORRELATION_ID: Final[uuid.UUID] = uuid.uuid5(
 #: way): one reason keeps the payload shape fixed for every event emitted.
 _REASON_DRAIN_THROTTLE: Final[str] = "drain_throttle"
 
+#: Process-unique nonce mixed into the ``DRAIN_THROTTLED`` discriminator
+#: (REV R-W5-004). The window half of the key is process-relative monotonic
+#: time, so a restarted process's early windows collided with the previous
+#: process's and a genuinely new breach could dedupe against a pre-restart
+#: event; two processes sharing one ledger suppressed each other the same
+#: way. With this nonce idempotency is per-process: breaches within one
+#: process and window still dedupe exactly as before, while a breach in a
+#: fresh process records its own event instead of being silently dropped.
+#: (INVARIANT: the nonce is constant for the life of the process.)
+_DRAIN_PROCESS_ID: Final[str] = uuid.uuid4().hex
+
 
 async def _emit_drain_throttled_event(
     ledger: _LedgerAppender | None,
@@ -2024,9 +2046,12 @@ async def _emit_drain_throttled_event(
     the tier-throttle shape (``{fact/threshold}`` + ``reason``,
     ADR-0008 discriminator) because ADR-0036 is silent on its fields; the
     ADR-0008 key is ``(correlation_id, event_type, attempt=0,
-    discriminator=window+cap)``, so a second breach inside the same window
-    dedupes in the store. An emitter failure is logged and swallowed —
-    telemetry must never break the drain's defer semantics.
+    discriminator=process+window+cap)``, so a second breach inside the same
+    window dedupes in the store — but only within one process: the
+    discriminator mixes :data:`_DRAIN_PROCESS_ID` so a fresh process (or a
+    restart) records its own event instead of colliding with a previous
+    process's monotonic-relative window stamps. An emitter failure is logged
+    and swallowed — telemetry must never break the drain's defer semantics.
     """
 
     if ledger is None:
@@ -2049,8 +2074,8 @@ async def _emit_drain_throttled_event(
                     "reason": _REASON_DRAIN_THROTTLE,
                 },
                 discriminator=(
-                    f"drain_throttled:{int(window_started * 1000)}:"
-                    f"{drain_max_per_second}"
+                    f"drain_throttled:{_DRAIN_PROCESS_ID}:"
+                    f"{int(window_started * 1000)}:{drain_max_per_second}"
                 ),
                 attempt=0,
             )

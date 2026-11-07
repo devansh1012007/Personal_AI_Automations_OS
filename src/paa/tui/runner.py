@@ -181,13 +181,31 @@ async def _attention_top(settings: Any, rt: Any) -> list[dict[str, Any]] | None:
     ``AllocatorSettings.max_results`` (default 5). No events -> ``None``,
     which renders "No data yet": an empty allocator is honest-null, never
     a synthesised score. Per-lineage read failures skip that lineage only.
+
+    Freshness (REV R-W5-003): the scan window is the *most recent*
+    ``_PANEL_SCAN_LIMIT`` open lineages (``open_correlations`` is
+    ``updated_at`` ASC, so the freshest sit at the tail — taking the head
+    of the list as before would let the oldest lineages crowd out every
+    fresh decision once more than 50 lineages are open). Events within a
+    lineage are read in replay order (``state_version`` ASC) and entries
+    are deduped by ``item_id`` with later events winning, so an item
+    re-allocated on a later tick appears once, with its latest score (not
+    its best score).
+
+    Terminal lineages are *not* scanned: only ``is_terminal = 0`` heads are
+    returned, so a decision whose lineage later closes (e.g.
+    ``MUTATION_COMMITTED``) vanishes from this panel. That is accepted by
+    design — the panel shows in-flight attention, not history — and this
+    sentence is the contract; read the ledger for the full record.
     """
     allocator_settings = getattr(settings, "allocator", None)
     bound = getattr(allocator_settings, "max_results", 5) if allocator_settings else 5
     bound = int(bound) if isinstance(bound, int) and bound >= 1 else 5
-    entries: list[dict[str, Any]] = []
+    by_item: dict[str, dict[str, Any]] = {}
     heads = await rt.ledger.open_correlations()
-    for head in heads[:_PANEL_SCAN_LIMIT]:
+    # Most recent window: open_correlations is updated_at ASC, so the
+    # freshest lineages are the tail of the list.
+    for head in heads[-_PANEL_SCAN_LIMIT:]:
         cid = _correlation_id_of(head)
         try:
             events = await rt.ledger.read_correlation(cid)
@@ -205,16 +223,18 @@ async def _attention_top(settings: Any, rt: Any) -> list[dict[str, Any]] | None:
             score = payload.get("score")
             if not isinstance(score, (int, float)) or isinstance(score, bool):
                 continue
-            entries.append(
-                {
-                    "item_id": str(payload.get("item_id")),
-                    "score": float(score),
-                    "correlation_id": str(cid),
-                    "inputs": payload.get("inputs"),
-                }
-            )
-    if not entries:
+            item_id = str(payload.get("item_id"))
+            # Scan order is oldest -> newest, so overwriting keeps the
+            # latest event per item (later events win).
+            by_item[item_id] = {
+                "item_id": item_id,
+                "score": float(score),
+                "correlation_id": str(cid),
+                "inputs": payload.get("inputs"),
+            }
+    if not by_item:
         return None
+    entries = list(by_item.values())
     entries.sort(key=lambda entry: (-entry["score"], str(entry["item_id"])))
     return entries[:bound]
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from typing import Any
 
 import pytest
 import structlog
@@ -188,3 +189,123 @@ class TestCostGateIdempotency:
             "SELECT COUNT(*) FROM hot_serving_active_facts WHERE id = ?", (fid,)
         )
         assert remaining == 1
+
+
+class TestCostGatePagination:
+    """R-W5-002: the cursor pagination must cross pages on both engines."""
+
+    async def test_scan_crosses_multiple_pages_no_duplicates(
+        self,
+        db: Database,
+        paa_home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _enable_gate(monkeypatch, "1.0")
+        repo = FactRepository(db)
+        ids: list[str] = []
+        for i in range(12):
+            ids.append(
+                await _fact(
+                    db, repo, f"Entity{i:02d}", "status", "fresh", importance=0.0
+                )
+            )
+        report = await MemoryCurator(db, batch_size=5).run_maintenance(
+            start_phase=CurationPhase.ANALYZE
+        )
+        suggested = [s["fact_id"] for s in report.cost_gate_suggestions]
+        assert sorted(suggested) == sorted(ids)
+        assert len(suggested) == len(set(suggested))
+
+    async def test_first_page_issues_no_id_param(
+        self,
+        db: Database,
+        paa_home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """PG-shape pin: the first page must not pass a ''-vs-UUID cursor —
+        no `id > ?` predicate and exactly one param (the batch size). The
+        id param arrives only from page 2 onward, as a real id value. (The
+        PG suite itself is NOT-RUN here; this pins the query shape the PG
+        driver would receive.)"""
+        _enable_gate(monkeypatch, "1.0")
+        repo = FactRepository(db)
+        for i in range(7):
+            await _fact(db, repo, f"Entity{i:02d}", "status", "fresh", importance=0.0)
+        calls: list[dict[str, Any]] = []
+        orig_fetch_all = db.fetch_all
+
+        async def spy_fetch_all(sql: str, params: Any = ()) -> Any:
+            calls.append({"sql": sql, "params": tuple(params)})
+            return await orig_fetch_all(sql, params)
+
+        monkeypatch.setattr(db, "fetch_all", spy_fetch_all)
+        await MemoryCurator(db, batch_size=3).run_maintenance(
+            start_phase=CurationPhase.ANALYZE
+        )
+        pages = [c for c in calls if "hot_serving_active_facts" in c["sql"]]
+        assert len(pages) >= 2
+        assert "id >" not in pages[0]["sql"]
+        assert pages[0]["params"] == (3,)
+        assert "id >" in pages[1]["sql"]
+
+
+class TestCostGateSuggestionCap:
+    """REV R-W5-007: the pass output is bounded — top-K kept, one count
+    line for the rest."""
+
+    async def test_suggestions_capped_at_k_with_summary_count(
+        self,
+        db: Database,
+        paa_home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _enable_gate(monkeypatch, "1.0")
+        monkeypatch.setattr(
+            "paa.memory.curator._COST_GATE_SUGGESTION_LIMIT", 5
+        )
+        repo = FactRepository(db)
+        for i in range(10):
+            await _fact(db, repo, f"Entity{i:02d}", "status", "fresh", importance=0.0)
+        with structlog.testing.capture_logs() as logs:
+            report = await MemoryCurator(db).run_maintenance(
+                start_phase=CurationPhase.ANALYZE
+            )
+        assert len(report.cost_gate_suggestions) == 5
+        summary = [
+            e for e in logs if e["event"] == "cost_gate.suggestion_summary"
+        ]
+        assert len(summary) == 1
+        assert summary[0]["total"] == 10
+        assert summary[0]["kept"] == 5
+        per_fact = [e for e in logs if e["event"] == "cost_gate.suggestions"]
+        assert len(per_fact) == 5
+
+
+class TestCostGateInjection:
+    """REV R-W5-008: an injected CostGateSettings wins over the global."""
+
+    async def test_injected_enabled_gate_suggests_with_global_disabled(
+        self, db: Database, paa_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from paa.config import CostGateSettings
+
+        _disable_gate(monkeypatch)
+        repo = FactRepository(db)
+        await _fact(db, repo, "Alpha", "status", "fresh", importance=0.0)
+        report = await MemoryCurator(
+            db, cost_gate=CostGateSettings(enabled=True, threshold=1.0)
+        ).run_maintenance(start_phase=CurationPhase.ANALYZE)
+        assert len(report.cost_gate_suggestions) == 1
+
+    async def test_injected_disabled_gate_overrides_global_enabled(
+        self, db: Database, paa_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from paa.config import CostGateSettings
+
+        _enable_gate(monkeypatch, "1.0")
+        repo = FactRepository(db)
+        await _fact(db, repo, "Alpha", "status", "fresh", importance=0.0)
+        report = await MemoryCurator(
+            db, cost_gate=CostGateSettings(enabled=False, threshold=1.0)
+        ).run_maintenance(start_phase=CurationPhase.ANALYZE)
+        assert report.cost_gate_suggestions == []

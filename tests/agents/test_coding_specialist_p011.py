@@ -107,12 +107,18 @@ class TestRoleAndRegistration:
         } <= values
 
     def test_specialist_package_exports_only_coding(self) -> None:
+        """The package ships exactly two files: `__init__` + `coding`.
+
+        A `hasattr` check cannot catch a stub module (the package never
+        imports submodules), so the lock is on the file set itself — a new
+        ``specialists/<name>.py`` for a gated specialist fails here until
+        the pilot gate admits it (TREV R-W5-005).
+        """
         import paa.agents.specialists as pkg
 
         assert pkg.CodingSpecialist is not None
-        # The four gated specialists are NOT built: no stubs, no empty modules.
-        for name in ("research", "writing", "data_analysis", "ops"):
-            assert not hasattr(pkg, name), f"gated specialist {name!r} must not exist yet"
+        files = sorted(p.name for p in Path(pkg.__file__).parent.glob("*.py"))
+        assert files == ["__init__.py", "coding.py"]
 
     def test_no_new_event_type_member(self) -> None:
         # The block path reuses the existing rollback event; adding a member
@@ -143,24 +149,29 @@ class TestRoleAndRegistration:
 
 class TestToolSurfacePolicy:
     def test_every_mutating_tool_is_covered_by_policy(self) -> None:
-        """A mutating tool matching neither the globs nor the build tuple
-        becomes read-only-by-accident (AGENTS.md coder rule)."""
-        from paa.agents.specialists.coding import CODING_TOOL_NAMES
+        """Pin the exact mutating set and the exact read-only half.
 
-        mutating = [
-            n for n in CODING_TOOL_NAMES if _matches_any_glob(n, DEFAULT_MUTATING_TOOLS)
-        ] + [n for n in CODING_TOOL_NAMES if n in MUTATING_RUNTIME_TOOLS]
-        covered = set(CODING_TOOL_NAMES) & set(mutating)
-        # Every tool the specialist offers that mutates must be either
-        # glob-matched or in the tuple CoderAgent.build passes.
-        for name in CODING_TOOL_NAMES:
-            if name in MUTATING_RUNTIME_TOOLS or _matches_any_glob(
-                name, DEFAULT_MUTATING_TOOLS
-            ):
-                assert _matches_any_glob(name, DEFAULT_MUTATING_TOOLS) or name in (
-                    MUTATING_RUNTIME_TOOLS
-                )
-        assert covered  # the surface really has a mutating half
+        A mutating tool matching neither the globs nor the build tuple
+        becomes read-only-by-accident (AGENTS.md coder rule). The two exact
+        pins make that failure loud: a *new* mutating tool anywhere in
+        ``CODING_TOOL_NAMES`` (glob-matched or not) fails until a human
+        classifies it — either by growing the expected mutating set here
+        or by the read-only half no longer equalling ``READ_ONLY_TOOLS``
+        (REV R-W5-005; the previous form was tautological and could not
+        fail for exactly this case).
+        """
+        from paa.agents.specialists.coding import CODING_TOOL_NAMES
+        from paa.coder.runtime_tools import READ_ONLY_TOOLS
+
+        mutating = {
+            n
+            for n in CODING_TOOL_NAMES
+            if _matches_any_glob(n, DEFAULT_MUTATING_TOOLS) or n in MUTATING_RUNTIME_TOOLS
+        }
+        assert mutating == {"submit_task", "run_task", "remember_fact"}
+        read_only = set(CODING_TOOL_NAMES) - mutating
+        assert read_only == set(READ_ONLY_TOOLS)
+        assert set(CODING_TOOL_NAMES) == read_only | mutating
 
     def test_tool_names_are_in_constrained_enum(self) -> None:
         from paa.agents.specialists.coding import CODING_TOOL_NAMES
@@ -172,14 +183,22 @@ class TestToolSurfacePolicy:
 
 
 class TestRoutingT12:
-    async def test_fifty_scripted_tasks_route_through_mediation(
+    async def test_fifty_scripted_tasks_delegate_successfully_over_50_lineages(
         self, ledger: LedgerStore
     ) -> None:
-        """T12: 50 scripted coding tasks routed >=90% through mediate_delegation.
+        """T12: 50 scripted coding tasks delegate successfully over 50 lineages.
 
-        ADR-0041 adopts the plan's 90%-over-50 gate as stated. Each task is
-        its own lineage (the delegation graph is per-correlation, so sharing
-        one correlation would trip the node ceiling before proving routing).
+        This proves *delegation success*, not routing precision: the target
+        is named ("coding") so the router is bypassed per ADR-0041 (the
+        router is bypassed when the target is named), and no classifier
+        exists anywhere in this path (correctly, per that ADR). A future
+        router change that misroutes coding work to another specialist
+        would leave this test green, and that is exactly why it is not
+        called a precision gate — do NOT invent a classifier to make it
+        one (TREV R-W5-002). When a classification path exists, its test
+        asserts the target *chosen*, not just success. Each task is its own
+        lineage (the delegation graph is per-correlation, so sharing one
+        correlation would trip the node ceiling).
         """
         orch = _orchestrator(ledger)
         routed = 0
@@ -196,7 +215,7 @@ class TestRoutingT12:
             )
             if result.ok:
                 routed += 1
-        assert routed >= 45, f"routing precision {routed}/50 below the 90% gate"
+        assert routed >= 45, f"delegation success {routed}/50 below the 90% gate"
 
     async def test_unknown_target_is_failure_not_crash(self, ledger: LedgerStore) -> None:
         orch = _orchestrator(ledger)
