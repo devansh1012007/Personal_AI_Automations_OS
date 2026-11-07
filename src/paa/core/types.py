@@ -477,7 +477,8 @@ MODALITY_PROFILES: Final[dict[ComplexityModality, ModalityProfile]] = {
 
 
 class AgentRole(str, enum.Enum):
-    """The nine core hierarchy roles plus the optional router.
+    """The nine core hierarchy roles, the optional router, and the pilot
+    coding specialist (ADR-0041).
 
     SPEC DEVIATION (docs/adr/0011): the RFC hardcodes a router into every task.
     Per explicit user direction the router is *optional* — it exists to
@@ -495,3 +496,4 @@ class AgentRole(str, enum.Enum):
     CRITIC = "critic"
     MEMORY_CREATOR = "memory_creator"
     MEMORY_CURATOR = "memory_curator"
+    CODING_SPECIALIST = "coding_specialist"  # pilot specialist, ADR-0041

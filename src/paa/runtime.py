@@ -36,6 +36,7 @@ from paa.agents.context_agents import PlannerContextBuilder, WorkerContextBuilde
 from paa.agents.orchestrator import ChiefOrchestrator, TaskRequest
 from paa.agents.policy import PolicyRiskAgent
 from paa.agents.reasoning import CriticReviewer, StrategicPlanner, TaskRouter, WorkerCell
+from paa.agents.specialists.coding import CodingSpecialist
 from paa.config import Settings, get_settings
 from paa.core.types import ComplexityModality, CorrelationId, PermissionMode
 from paa.ledger.recovery import RecoveryEngine
@@ -368,6 +369,7 @@ class Runtime:
             worker=agents["worker"],
             critic=agents["critic"],
             router=agents.get("router"),
+            coding=agents.get("coding"),
             queue=queue,
             backpressure=backpressure,
             recovery=recovery,
@@ -593,7 +595,7 @@ async def _build_agents(
     router = TaskRouter(model=model_adapter, min_agents=3)
 
     worker = WorkerCell(sandbox=sandbox)
-    return {
+    agents: dict[str, Agent] = {
         "context_builder_planner": planner_ctx,
         "context_builder_worker": worker_ctx,
         "strategic_planner": planner,
@@ -602,6 +604,13 @@ async def _build_agents(
         "router": router,
         "worker": worker,
     }
+    # ADR-0041 pilot: the coding specialist registers only when its nested
+    # toggle is on. Disabled means absent (not a placeholder): delegation to
+    # "coding" then returns the orchestrator's no-agent failure. The router is
+    # bypassed when the caller names the target (ADR-0011).
+    if settings.specialists.coding.enabled:
+        agents["coding"] = CodingSpecialist(model=model_adapter)
+    return agents
 
 
 def _load_anti_goals(settings: Settings) -> list[str]:

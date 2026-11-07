@@ -205,6 +205,7 @@ class ChiefOrchestrator:
         worker: Agent | None = None,
         critic: Agent | None = None,
         router: Agent | None = None,
+        coding: Agent | None = None,
         queue: Any = None,
         backpressure: BackpressureLike | None = None,
         recovery: Any = None,
@@ -229,6 +230,7 @@ class ChiefOrchestrator:
             worker,
             critic,
             router,
+            coding,
         ):
             if agent is not None:
                 self.register(agent)
@@ -240,6 +242,7 @@ class ChiefOrchestrator:
         self._worker = worker
         self._critic = critic
         self._router = router
+        self._coding = coding
 
         self._delegations = DelegationRegistry()
 
@@ -867,6 +870,29 @@ class ChiefOrchestrator:
                 target=target,
                 reason=exc.message,
                 cycle=exc.cycle,
+            )
+            # ADR-0041: the block emits the EXISTING STATE_ROLLBACK_TRIGGERED
+            # (resumable ROLLED_BACK, never terminal) BEFORE returning the
+            # failure — ledger-before-side-effect. Additive fields only
+            # (reason/depth/ceiling alongside the recovery drift keys); the
+            # full ADR-0008 key (attempt=0, discriminator naming sender/target/
+            # depth) makes a redelivered block idempotent.
+            await self._emit(
+                ctx.correlation_id,
+                EventType.STATE_ROLLBACK_TRIGGERED,
+                session_id=ctx.session_id,
+                payload={
+                    "reason": "delegation_recursion_block",
+                    "depth": exc.depth,
+                    "ceiling": exc.ceiling,
+                    "cycle": exc.cycle,
+                    "sender": sender,
+                    "target": target,
+                },
+                modality=ctx.modality,
+                role=AgentRole.ORCHESTRATOR,
+                attempt=0,
+                discriminator=f"delegation-block:{sender}->{target}:depth{exc.depth}",
             )
             return AgentResult.failure(exc)
 
