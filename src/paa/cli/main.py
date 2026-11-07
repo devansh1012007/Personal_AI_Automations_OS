@@ -272,6 +272,20 @@ def doctor() -> None:
             else:
                 table.add_row("sandbox", "none (dry-run)")
             table.add_row("open tasks", str(len(await rt.ledger.open_correlations())))
+            # PLAN:integration-fix:P013 — weekly reflection staleness (T14):
+            # the same health format the TUI mirror renders, computed from
+            # the live home + enabled flag, not from a setting readout alone.
+            from paa.improvement.reflection import (
+                format_reflection_health,
+                reflection_health,
+            )
+
+            table.add_row(
+                "reflection.last_run_age_days",
+                format_reflection_health(
+                    reflection_health(settings.home, enabled=settings.reflection.enabled)
+                ),
+            )
             console.print(table)
         finally:
             await rt.close()

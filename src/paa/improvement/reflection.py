@@ -14,8 +14,12 @@ full friction rather than crashing or vanishing.
 
 from __future__ import annotations
 
+import json
+import os
+import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -29,10 +33,18 @@ if TYPE_CHECKING:
     from paa.ledger.store import LedgerStore
 
 __all__ = [
+    "REFLECTION_INTERVAL_DAYS",
+    "REFLECTION_LAST_RUN_FILENAME",
     "DomainFriction",
     "ReflectionEngine",
     "ReflectionReport",
+    "format_reflection_health",
     "operational_friction",
+    "read_reflection_last_run",
+    "reflection_health",
+    "reflection_last_run_age_days",
+    "reflection_last_run_path",
+    "write_reflection_last_run",
 ]
 
 log = structlog.get_logger(__name__)
@@ -98,6 +110,147 @@ class ReflectionReport:
             key=lambda d: d.score,
             reverse=True,
         )
+
+
+# ---------------------------------------------------------------------------
+# Last-run tracking (PLAN:integration-fix:P013). File-based on purpose: no
+# REFLECTION_* EventType exists, and inventing one for this SURFACE task would
+# drag in core/types.py, ledger/replay.py and the replay/TERMINAL_EVENTS
+# checklist. The marker is a small JSON file under PAA_HOME holding
+# {"last_run_at": <iso>}; it is bookkeeping, not truth — losing it only costs
+# one early (idempotent-gated) re-run, and a corrupt one degrades to
+# unknown/due the same way WorldModel._load_hashes degrades its write record.
+# ---------------------------------------------------------------------------
+
+#: Weekly cadence: a last run strictly older than this is stale and due.
+#: Exactly 7 days is not stale (the T14 boundary pair); 7 days + 1s is.
+REFLECTION_INTERVAL_DAYS = 7.0
+
+#: Marker filename under PAA_HOME (Settings.home, not the vault: the vault is
+#: human-editable markdown, this is machine bookkeeping).
+REFLECTION_LAST_RUN_FILENAME = "reflection_last_run.json"
+
+
+def reflection_last_run_path(home: Path | str) -> Path:
+    """The last-run marker path for a runtime home."""
+    return Path(home) / REFLECTION_LAST_RUN_FILENAME
+
+
+def read_reflection_last_run(home: Path | str) -> datetime | None:
+    """The last completed reflection run, or ``None`` when unknown.
+
+    ``None`` covers a missing marker (first boot — due immediately), an
+    unreadable/corrupt file, and a wrong-shaped payload. Every degraded case
+    behaves identically (due, never a crash, never "fresh"), so a damaged
+    marker costs at most one extra gated re-run.
+    """
+    from paa.storage.relational.database import from_iso
+
+    path = reflection_last_run_path(home)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError) as exc:
+        # ValueError covers both JSONDecodeError and UnicodeDecodeError.
+        log.warning("reflection.last_run_unreadable", error=redact(str(exc)))
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("last_run_at"), str):
+        log.warning("reflection.last_run_unreadable", error="not a last_run_at object")
+        return None
+    try:
+        return from_iso(data["last_run_at"])
+    except (TypeError, ValueError) as exc:
+        log.warning("reflection.last_run_unreadable", error=redact(str(exc)))
+        return None
+
+
+def write_reflection_last_run(home: Path | str, when: datetime) -> Path:
+    """Record a completed run, atomically (temp file + os.replace).
+
+    Same idiom as WorldModel._atomic_write: a crash mid-write leaves the old
+    marker intact (trailing re-run) rather than a truncated one (false fresh).
+    Naive ``when`` is treated as UTC like every other stored timestamp.
+    """
+    from paa.storage.relational.database import to_iso
+
+    path = reflection_last_run_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_text(json.dumps({"last_run_at": to_iso(when)}), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
+    return path
+
+
+def reflection_last_run_age_days(home: Path | str, *, now: datetime | None = None) -> float | None:
+    """Days since the last run, or ``None`` when unknown.
+
+    A negative result means the marker is in the future (clock skew); it is
+    returned raw and treated as fresh by :func:`reflection_health` — the
+    marker claims a run happened, so the loop waits rather than re-running.
+    """
+    last = read_reflection_last_run(home)
+    if last is None:
+        return None
+    if now is None:
+        from paa.storage.relational.database import utc_now
+
+        now = utc_now()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    return (now - last).total_seconds() / 86400.0
+
+
+def reflection_health(
+    home: Path | str, *, enabled: bool, now: datetime | None = None
+) -> dict[str, Any]:
+    """The /doctor health view of the weekly reflection.
+
+    ``due`` is gated on ``enabled`` (a disabled loop never fires); ``stale``
+    describes the data alone (known age strictly over 7 days). Unknown (no
+    marker) is due but not stale: unknown is not a claim of staleness.
+    """
+    last = read_reflection_last_run(home)
+    age: float | None = None
+    if last is not None:
+        if now is None:
+            from paa.storage.relational.database import utc_now
+
+            now = utc_now()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=UTC)
+        age = (now - last).total_seconds() / 86400.0
+    stale = age is not None and age > REFLECTION_INTERVAL_DAYS
+    due = bool(enabled and (age is None or age > REFLECTION_INTERVAL_DAYS))
+    return {
+        "enabled": enabled,
+        "last_run_at": last,
+        "last_run_age_days": age,
+        "due": due,
+        "stale": stale,
+    }
+
+
+def format_reflection_health(health: Mapping[str, Any]) -> str:
+    """The one-string doctor value for a :func:`reflection_health` dict.
+
+    The CLI doctor and the TUI mirror render this exact rule, so the two
+    surfaces cannot disagree about the same home.
+    """
+    if not health.get("enabled"):
+        return "disabled"
+    age = health.get("last_run_age_days")
+    if age is None:
+        return "unknown (due)"
+    if health.get("stale"):
+        return f"{float(age):.1f}d (stale)"
+    return f"{float(age):.1f}d"
 
 
 class ReflectionEngine:

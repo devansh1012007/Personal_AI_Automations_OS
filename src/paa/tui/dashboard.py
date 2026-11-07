@@ -403,7 +403,24 @@ def render_doctor(info: dict[str, Any]) -> Panel:
         table.add_row("sandbox", "[dim]none (dry-run)[/dim]")
     open_tasks = len(info.get("open_tasks", []))
     table.add_row("open tasks", str(open_tasks))
+    # PLAN:integration-fix:P013 — the TUI mirror of the CLI doctor's
+    # reflection row, fed by the runner's info dict (same label, same value
+    # strings as format_reflection_health). Missing keys render disabled,
+    # which matches the ReflectionSettings default.
+    table.add_row("reflection.last_run_age_days", _reflection_doctor_value(info))
     return Panel(table, border_style="cyan")
+
+
+def _reflection_doctor_value(info: dict[str, Any]) -> str:
+    """The doctor reflection value from a runner info dict (P013 mirror)."""
+    if not info.get("reflection_enabled", False):
+        return "disabled"
+    age = info.get("reflection_last_run_age_days")
+    if age is None:
+        return "unknown (due)"
+    if info.get("reflection_stale", False):
+        return f"{float(age):.1f}d (stale)"
+    return f"{float(age):.1f}d"
 
 
 def render_transcript(lines: list[str], hint: str | None = None) -> Group:

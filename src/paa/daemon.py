@@ -1,6 +1,6 @@
 """The background daemon — what makes the runtime *ambient* rather than one-shot.
 
-A single :class:`Runtime` is driven by three cooperating loops plus a one-time
+A single :class:`Runtime` is driven by four cooperating loops plus a one-time
 boot recovery:
 
 1. **Boot recovery** runs first, before any new work is accepted, so a task that
@@ -13,6 +13,8 @@ boot recovery:
 3. **The ingestion loop** drains raw signals into hot serving via the memory
    creator, isolating one poison signal from the batch.
 4. **The maintenance loop** runs memory curation on its interval.
+5. **The reflection loop** runs the weekly reflection pass when due, serialized
+   after the maintenance prune by a shared lock (never parallel to it).
 
 Each loop is independent and supervised: one loop raising does not stop the
 others, because a stalled maintenance pass must not take ingestion down with it.
@@ -32,6 +34,7 @@ from paa.models.base import redact
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+    from datetime import datetime
 
     from paa.memory.creator import MemoryCreator
     from paa.memory.curator import CurationPhase, CurationReport
@@ -52,13 +55,19 @@ class Daemon:
         dispatch_interval: float = 0.5,
         ingestion_interval: float = 1.0,
         maintenance_interval: float = 6 * 3600.0,
+        reflection_poll_interval: float = 3600.0,
         claim_batch: int = 4,
     ) -> None:
         self._rt = runtime
         self._dispatch_interval = dispatch_interval
         self._ingestion_interval = ingestion_interval
         self._maintenance_interval = maintenance_interval
+        self._reflection_poll_interval = reflection_poll_interval
         self._claim_batch = claim_batch
+        # PLAN:integration-fix:P013: serialises the curator prune tick
+        # (maintenance loop) against the weekly reflection pass (reflection
+        # loop), so the playbook write never runs parallel to a prune.
+        self._curation_lock = asyncio.Lock()
         self._curate_next_phase: CurationPhase | None = None
         # First-tick preview flag (REV R-W2-002): the first curator tick is a
         # dry-run preview; later ticks delete. In-memory only — a daemon
@@ -75,6 +84,7 @@ class Daemon:
             asyncio.create_task(self._supervise("dispatch", self._dispatch_loop)),
             asyncio.create_task(self._supervise("ingestion", self._ingestion_loop)),
             asyncio.create_task(self._supervise("maintenance", self._maintenance_loop)),
+            asyncio.create_task(self._supervise("reflection", self._reflection_loop)),
         ]
         log.info("daemon.started", loops=len(self._tasks))
 
@@ -176,10 +186,91 @@ class Daemon:
         await self._sleep(self._maintenance_interval)
         while not self._stop.is_set():
             try:
-                await self._run_curation_tick()
+                # PLAN:integration-fix:P013: the curation lock serialises
+                # the prune tick against the weekly reflection pass (which
+                # acquires the same lock) — never parallel; reflection runs
+                # after the prune completes.
+                async with self._curation_lock:
+                    await self._run_curation_tick()
             except Exception as exc:
                 log.error("daemon.maintenance_failed", error=redact(str(exc)))
             await self._sleep(self._maintenance_interval)
+
+    async def _reflection_loop(self) -> None:
+        # PLAN:integration-fix:P013 — the weekly reflection loop, supervised
+        # like the others. Unlike maintenance it does not sleep first: with
+        # no last-run marker the pass is due immediately, so the first
+        # iteration checks (and on first boot, runs) before any sleep. The
+        # delay after each check is then the time until the next due point
+        # (or the poll interval while disabled / after a failure), so the
+        # loop fires once per weekly interval instead of tight-looping.
+        while not self._stop.is_set():
+            try:
+                await self._run_reflection_tick()
+            except Exception as exc:
+                log.error("daemon.reflection_failed", error=redact(str(exc)))
+            await self._sleep(self._reflection_delay_seconds())
+
+    async def _run_reflection_tick(self, *, now: datetime | None = None) -> bool:
+        """Run one weekly reflection pass if due; return whether it ran.
+
+        The pass is gated by ``ReflectionSettings.enabled`` and the
+        file-based last-run marker (see :mod:`paa.improvement.reflection`).
+        ``run_weekly`` itself guards each domain's playbook write against
+        ``VaultConflictError`` (skipped + logged per rule), so a fenced
+        human edit never aborts the tick; any other failure propagates to
+        the loop, which logs it and keeps the daemon alive. The marker is
+        written only after the pass completes, so a crash mid-pass leaves
+        no marker and the next tick re-runs.
+        """
+        settings = self._rt.settings
+        if not settings.reflection.enabled:
+            return False
+        from paa.improvement.reflection import (
+            ReflectionEngine,
+            reflection_health,
+            write_reflection_last_run,
+        )
+        from paa.storage.relational.database import utc_now
+
+        when = now or utc_now()
+        if not reflection_health(settings.home, enabled=True, now=when)["due"]:
+            return False
+        # Ordering (plan §J): the pass acquires the curation lock the
+        # maintenance loop holds around its prune tick, so the weekly
+        # playbook write runs after the prune, never parallel to it.
+        async with self._curation_lock:
+            engine = ReflectionEngine(self._rt.ledger, vault_path=settings.storage.vault_path)
+            report = await engine.run_weekly(now=when)
+            write_reflection_last_run(settings.home, when)
+        log.info(
+            "daemon.reflection_completed",
+            domains=len(report.domains),
+            rules_written=len(report.rules_written),
+        )
+        return True
+
+    def _reflection_delay_seconds(self, *, now: datetime | None = None) -> float:
+        """How long the reflection loop sleeps before its next check.
+
+        Not due (fresh marker) -> the time remaining until the weekly due
+        point. Due (a failed tick left no marker, or the marker aged out
+        between checks) or disabled -> the poll interval, so a retry happens
+        within the hour and an operator enabling the flag takes effect
+        without a daemon restart.
+        """
+        settings = self._rt.settings
+        if not settings.reflection.enabled:
+            return self._reflection_poll_interval
+        from paa.improvement.reflection import (
+            REFLECTION_INTERVAL_DAYS,
+            reflection_last_run_age_days,
+        )
+
+        age = reflection_last_run_age_days(settings.home, now=now)
+        if age is None or age > REFLECTION_INTERVAL_DAYS:
+            return self._reflection_poll_interval
+        return max(0.0, (REFLECTION_INTERVAL_DAYS - age) * 86400.0)
 
     # -- collaborators -----------------------------------------------------
 
