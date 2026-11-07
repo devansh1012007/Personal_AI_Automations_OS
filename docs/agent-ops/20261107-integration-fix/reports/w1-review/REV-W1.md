@@ -1,0 +1,151 @@
+<!-- ORCH-DIGEST:START -->
+agent: REV-W1 | scope: wave 1 (T-014-P014, T-001-P001, T-002-P002) | verdict: REJECT
+findings: BLOCKER 1 | MAJOR 1 | MINOR 6 | NIT 2
+claims_audit: 21 claims checked / 5 unsupported or false
+band_aids_found: none (one new unredacted log line is a defect, not a band-aid; no error suppression, no test weakening)
+top_3_risks: docs-reference lock 3->63 broken citations breaks CI gate | new unredacted str(exc) log line in _semantic hydration re-opens P-001 class | ADR creator.py:1490 citation stale (def now 1497) + ADR-0036 §P01 wording vs runtime bound ambiguous
+optimizations: DO-NOW 2 | DO-LATER 1 | NOT-WORTH-IT 1
+reversal_check: reasoned-only (read-only reviewer; reversals not re-executed, logic-checked against pins)
+confidence: high (blind pass on full diff + surrounding code, scoped ruff/mypy/pytest re-run, docs-lock decomposition reproduced, claims audited vs reports after blind draft)
+last_comms_line_read: 2026-11-07T13:46:20Z W1-IMPL-02 -> ALL | DONE | T-001-P001
+<!-- ORCH-DIGEST:END -->
+
+# Code review — REV-W1 (independent, read-only)
+
+## 0. Method
+- Diff range: `294fb31..HEAD` (`d1278dd`, `298b2f2`, `f023b26` + 3 report commits). 21 files, +2534/-16.
+- Files read in context: full diff for `src/paa/config.py`, `runtime.py`, `cli/main.py`, `agents/context_agents.py`, `memory/creator.py`, `docs/adr/README.md`; all 8 new ADRs (0036-0043); all 4 new test files; surrounding code `memory/decay.py`, `memory/domains.py`, `memory/facts.py::_to_fact`, `models/base.py::redact`, `storage/relational/database.py::from_iso`, `storage/graph/base.py::EDGE_TYPES`, `storage/relational/postgres.py` placeholder translation, schema CHECK constraints; plan rev5 (P01/P02/P14, T01/T02/T13), W0-INV-01 §P-002, W0-INV-04 §P-001, W0-INV-05 §P-014.
+- Commands run (all scoped, Windows venv):
+  - [RAN ruff check on 5 changed src files + 4 new test files -> All checks passed]
+  - [RAN mypy on 5 changed src files -> Success: no issues found in 5 source files]
+  - [RAN pytest tests/test_config_settings.py tests/runtime/test_redaction_p001.py tests/cli/test_redaction_p001.py tests/agents/test_semantic_derivation_p002.py -q -> 47 passed]
+  - [RAN pytest tests/test_config_settings.py -q -> 31 passed]
+  - [RAN pytest tests/cli/test_memory.py tests/agents/test_context_agents.py tests/memory/test_decay.py -q -> passed (97)]
+  - [RAN pytest tests/context/test_gatherer.py tests/memory/test_e2e_remember_recall.py -q -> passed (81)]
+  - [RAN pytest tests/conventions/test_docs_references.py -q -> 1 failed (blank-line), others passed; reproduced broken list = 63 total, 60 new vs baseline 3]
+  - [RAN python probe PAA_COST_GATE__THRESHOLD=inf -> accepted (inf > 0); nan/-inf/1e999 handled as shown in §5]
+  - [RAN git show 294fb31:<file> comparisons for every broken docs citation -> all 60 were non-blank at base, blank now]
+  - Ad-hoc malformed-row probes attempted: SQLite CHECK `ck_fact_conf` rejects out-of-range confidence at write time (prevents the crash path); superseded_by FK requires a real superseder id (probe harness error, not a code result).
+- Order followed: blind pass drafted from diff + surrounding code + plan/W0 evidence BEFORE reading W1-IMPL-01/02/03 reports; claims audit (§2) done after.
+- NOT run: full suite (standing order 16), full `mypy src`, full import-conventions sweep (subprocess-per-module; timed out for implementer too), live Qdrant/Postgres/S3 (no DSN/server), reversal executions (read-only — reasoned only), Docker/CI.
+
+## 1. Blind-pass findings (before reading implementer reports)
+Blind draft, from diff alone:
+
+1. **Docs lock will break.** Every changed src file has mid-file insertions: config.py (+7 `__all__` at top, +14 in `MemorySettings`, +110 sub-models before `Settings`), cli/main.py (+1 top import), context_agents.py (+1 import), runtime.py (+1 comment at :481), creator.py (+7 comment at ~1070). Dozens of `path:line` docs citations point into these files; a mid-file insertion is exactly the rot pattern `tests/conventions/test_docs_references.py` exists to catch, and AGENTS.md warns documentation quotes these files by line number. Expect tens of new blank-line failures, not zero.
+2. **P-001 looks correct in order.** CLI redacts before slicing (no token-split leak), marker inside the 200 budget, `markup=False` fixes a real MarkupError crash on hostile `[/red]` text. Runtime site mirrors :474. Suspect: runtime site has NO 200 bound while ADR-0036 §P01 (as written in the same wave) says the two P-001 sites truncate to 200 — wording vs. code mismatch to check. ANSI/control bytes pass through console rendering (terminal-escape injection remains).
+3. **P-002 is the right root-cause fix (Fix A).** Batch hydrate in `_semantic` + `effective_confidence` with live `last_queried_at`, payload kept as provenance, creator comment-only. Matches the `_hot_facts`/`_to_fact` precedent and INV-01's recommendation. Gaps to probe: (a) hydration `SELECT` has no `superseded_by IS NULL` filter though the comment says "no live row"; (b) per-hit `float(row[...])`/`from_iso`/`effective_confidence` sit OUTSIDE the try — only `KeyError` (unknown domain) is caught, `ValueError`/`TypeError` from a corrupt row crashes the whole tier, contradicting "hydration failure must never empty the tier"; (c) the hydration-failure log reuses `context.vector_search_failed` with **unredacted** `str(exc)` — a NEW unredacted line of exactly the class P-001 was fixing, and a misleading event name; (d) `now` is never threaded from `handle()`, so production derivation uses wall-clock per hit (test-only injection); (e) SQLite IN-variable limit if `limit` is ever large (bounded at 30 in practice, and overflow does degrade via the except).
+4. **P-014 config surface matches plan defaults** (allocator off/5, tier dry_run, cost_gate off/1.0, vault off, specialists.coding nested off, reflection off, drain 100). `inf` threshold passes `gt=0` (gate never fires — minor). New flags are declaration-only (dead until W2-W5 wire them) — intended per ADR, but worth stating.
+5. **ADR citations need semantic checking, not just non-blank.** Spot-check: `creator.py:1490` is cited twice in ADR-0036 as the drain def; the P-002 comment (+7 lines at ~1070) moves the def to 1497, so the citation lands on a body line (`indexed = await self._sink.enqueue(facts)`) — non-blank, lock-green, wrong. This is the "wrong without being broken" half the lock cannot see.
+6. **Conventions look clean:** `__all__` updated and sorted, no new enum, `RelationalBackend` already runtime-imported in context_agents.py (no new TYPE_CHECKING block), `from_iso` function-local import matches `_hot_facts` precedent, no per-file noqa/type-ignore in the diff.
+
+## 2. Claims audit
+| Implementer claim | Verified? | Evidence / finding |
+|---|---|---|
+| IMPL-01: "9 citations to config.py broken by my +137-line shift; unavoidable (sub-models must precede Settings, __all__ must stay sorted)" | **False (undercount + overclaim)** | Reproduced broken list: config.py = **19 occurrences / 10 unique lines** (97, 59, 133, 137, 381, 450, 460, 491, 495, 630) — line **59** omitted from their list of 9. `__all__` expansion at top is what breaks :59/:97/:133/:137; an appended `__all__ += [...]` at EOF would not shift the top of file. "Unavoidable" is overstated for the early citations. |
+| IMPL-01: "My contribution is zero: none of the 60+ violations names docs/adr/*.md" | **False as stated** | True that no ADR file is a *citing* document in the broken list. But ADR-0036 cites `creator.py:1490` twice; post-P-002 that line is `indexed = await self._sink.enqueue(facts)`, def is now :1497 [VERIFIED]. Their stated method ("verified non-blank in a fresh read") cannot detect this. Contribution is not zero — it is invisible to the lock. |
+| IMPL-01: 31 tests green; ruff/mypy scoped 0 | Verified | [RAN pytest tests/test_config_settings.py -> 31 passed]; [RAN ruff/mypy scoped -> clean] |
+| IMPL-01: ADR-0042 resolves offline-vs-derived contradiction (gate (a)) | Verified | ADR-0042 chooses online install + retries, states wheelhouse absent in runtime stage, pins `paa/runtime:4.1` [VERIFIED docker-compose.yml:67, pyproject.toml:42] |
+| IMPL-01: reflection/drain defaults plan-unspecified, conservative + documented | Verified | Both documented in config comments + ADR-0036; drain 100 = current batch at ~1Hz [VERIFIED creator.py:1497 `limit: int = 100`] |
+| IMPL-01: "mypy total stays 3" (full src) | Not verified by me | Scoped mypy clean (mine); full `mypy src` not re-run per standing order 16. Implementer's word only. [ASSUMED] |
+| IMPL-02: "ADR-0036 §P01 all three spec bullets match; no divergence" | **False for runtime site** | ADR §P01: "When a call site has no secrets in scope — the two plan P-001 sites — … truncate the scrubbed text to 200 characters; append an explicit truncation marker." Runtime site does redact-only, no truncation [VERIFIED runtime.py:482]. Report argues bound is CLI-only per INV Fix A — a defensible reading, but it IS a divergence from the ADR text as written, and should have been flagged/ADR amended, not declared "no divergence". |
+| IMPL-02: redact-before-truncate closes token-split leak; marker-inside-200 reading | Verified (code) / interpretation | Code slices after redact [VERIFIED cli/main.py:665-668]; straddle test logic sound. Marker-inside is the safer reading of T01 "output ≤200" but the ADR says "truncate to 200; append marker" without stating marker is inside — ADR should say it (see R-W1-004). |
+| IMPL-02: `markup=False` renders "the same red line", "cannot raise on text content" | Mostly verified | Fixes MarkupError [VERIFIED test + code]; "same line" is visual, not textual (no `[red]` codes in capture). Lone-surrogate/encoding edge not covered — cannot-raise is slightly overstated. MINOR. |
+| IMPL-02: module-level `redact` import is cycle-safe (models/base imports stdlib+pydantic+paa.core only) | Verified | [VERIFIED models/base.py:67-78]; all my scoped test runs import cli.main successfully |
+| IMPL-02: 7 new tests green; reversal 5 fail/2 pass on revert | Partially verified | 7 tests green [RAN]. Reversal NOT re-executed (read-only); reasoned: reverting runtime line fails secret test, reverting CLI line fails secret/201/huge/hostile — consistent with test bodies. Reasoned-only. |
+| IMPL-02: ANSI passthrough disclosed as sibling FINDING | Verified, honest | Test pins no-crash/bounded only; raw escapes pass through [VERIFIED code]. Disclosure present in report §4. Not a false claim — but it remains an open terminal-injection residual (R-W1-005). |
+| IMPL-03: Fix A, one batched query, payload still provenance, gatherer untouched | Verified | [VERIFIED context_agents.py:271-323, creator.py comment-only]; batch/load tests [RAN green] |
+| IMPL-03: "limit > SQLite variable limit overflows and degrades to payload fallback" | Verified by reading | fetch_all raises -> except -> hydrated={} -> fallback [VERIFIED :282-284]. True for SQLite; Postgres limit far higher. |
+| IMPL-03: "ValueError left to propagate… DB CHECK prevents it" | Verified for confidence range; incomplete | `ck_fact_conf` CHECK + NOT NULL on `initial_confidence`/`last_queried_at` [VERIFIED schema_sqlite.sql:270-282] block the common corrupt cases. But `last_queried_at` TEXT has no format CHECK — a garbage string crashes `_semantic` (via `from_iso`) exactly as it crashes `_hot_facts`/`_to_fact`. Precedent-consistent, but the "never empty the tier" comment overpromises (R-W1-006). |
+| IMPL-03: Postgres `?` translation assumed | Verified (upgrade from ASSUMED) | `postgres.py:876-963` translates `?`->`%s` outside string literals [VERIFIED]. Code-reading only; no live Postgres run. |
+| IMPL-03: fail-before 7/9; 116 decay+gatherer; 23 context_agents green | Partially verified | Fail-before reasoned-only (read-only). Decay+gatherer+e2e [RAN green]; context_agents+decay+cli_memory [RAN green]. Counts consistent. |
+| IMPL-03: "hydration exception logs context.vector_search_failed" (presented as design) | Verified as code; **defect** | New unredacted `str(exc)` log line + wrong event name (R-W1-002). Test enshrines the wrong event. |
+| IMPL-03: semantic-tier floor nuance disclosed | Verified, honest | Gatherer applies floor to hot pool only; T02 demonstrates via hot pool + ranking demotion. Disclosure is accurate [VERIFIED gatherer usage in test]. |
+
+## 3. Long-run test (independent answers)
+- **Source:** P-002 derivation equals direct `effective_confidence` (test asserts approx 1e-6 against the real function on a real Numpy store); P-001 fixtures travel through real command/runtime paths, not `redact()` alone. Source of truth questions: config defaults are asserted against plan §K values, not read back from a second declaration — single declaration site holds.
+- **Load (100x, concurrency, partial failure):** P-002: 1 hydration query/search regardless of hits (pinned at 30 hits and 100 searches); no caching, no mutation — read-only, race only vs. concurrent touch (derivation uses pre-touch clock, which is correct for the current packet). P-001: O(1) extra work per failure. P-014: O(1) Settings construction. No unbounded loops/queues introduced. Partial failure: hydration DB error degrades to payload (but see R-W1-002/R-W1-006 for the two holes in that promise).
+- **Hostile input:** sk-/Bearer/api_key fixtures, 10KB exception, markup attack `[/red]`, NUL/ANSI, oversized/negative env values, unknown domain, missing payload keys — all covered by tests and passing. Residuals: ANSI/control passthrough (R-W1-005), corrupt-row crash (R-W1-006), `inf` threshold (R-W1-008).
+- **Operability (observe, roll back, migrate):** Flags are env-flippable with cache-reset pinned; rollback is flag-off / two-line revert / revert `_semantic` (no migration, no payload change). Observability regression: hydration DB failure is logged under the *vector* event name (R-W1-002) — operators grepping for vector outages will misread DB outages and vice versa. ADR-0036 §P01 wording (R-W1-004) will mislead the next reader about the runtime bound.
+- **Reversal (which test fails if the fix is reverted?):** Reverting CLI line -> 4/5 CLI redaction tests fail (reasoned + implementer-executed). Reverting runtime line -> secret test fails (reasoned). Reverting hydration block -> 7/9 semantic tests fail (reasoned; 2 pinning tests pass both ways by design). Changing any Settings default/constraint or EDGE_TYPES membership -> config tests fail [RAN green now, so pins are live]. Re-pointing docs citations is the only reversal that currently has NO failing test once fixed — it is the lock itself.
+
+## 4. Findings
+### R-W1-001 [BLOCKER] Docs-reference lock: 3 -> 63 broken citations (60 new), CI gate broken
+- Location: `tests/conventions/test_docs_references.py::test_every_referenced_line_is_not_blank` · Evidence: [RAN -> 63 broken: cli/main.py 28, config.py 19, context_agents.py 8, runtime.py 5, baseline 3 (w6-w7-w9)]. [RAN git show 294fb31 comparisons -> every one of the 60 new citations was non-blank at base, blank now.] Root cause: mid-file insertions (+1 cli import shifts all cli citations; +7 config `__all__` shifts early lines, +14 drain field shifts mid lines, +110 sub-models shift `Settings`; +1 runtime comment shifts :496; +1 context_agents import shifts :141/:187/:241/:285). Mission gate is "never grow" the baseline failures and CI enforces this lock — a wave that grows it 3->63 cannot merge as-is. The implementers reported this as a FINDING (correctly — docs outside their write-set), but the wave-level verdict must still be REJECT until a re-point task lands. · Why it matters: every broken citation is a reader sent to a blank line; 60 of them is the exact rot the lock exists to prevent, and CI is red. · Recommended fix (root-cause): a dedicated docs re-point task that re-reads each citing sentence and re-points to the line holding what the sentence claims (not a blind +N shift — several citations land on decorator lines and need the def line), across `docs/README.md`, `docs/architecture/*`, `docs/backend/*`, `docs/data/*`, `docs/flows/*`, `docs/modules/*`, `docs/operations/*`, `docs/runtime/*`, `docs/security/*`, `docs/reviews/*`, `docs/memory-polish/plans/Plan1.md`. Also fix ADR-0036's `creator.py:1490` -> :1497 in the same task (R-W1-003). Future waves: prefer append-at-EOF for new top-level code in heavily-cited files where the language allows it.
+
+### R-W1-002 [MAJOR] New unredacted `str(exc)` log line + wrong event name in _semantic hydration
+- Location: `src/paa/agents/context_agents.py:282-284` · Evidence: `log.warning("context.vector_search_failed", error=str(exc))` added by this wave for *relational hydration* failures. Two defects in one line: (1) unredacted — DB/driver errors are exactly the channel INV-04 identified for the CLI site (DSN echoes, constraint errors echoing stored fact values that can themselves contain `sk-…`); this wave fixed 2 such lines and added 1. (2) Wrong event: a DB outage is now indistinguishable from a vector outage in logs/dashboards. The test pins the wrong event name, enshrining both. · Why it matters: P-001's whole premise is that this defect class must not grow; it grew. · Recommended fix: `error=redact(str(exc))` and a distinct event (e.g. `context.hydration_failed`), update the degrade test to pin the new event + redaction. This is a 2-line root-cause fix inside the wave's own new code — no write-set obstacle.
+
+### R-W1-003 [MINOR] ADR-0036 cites creator.py:1490 (stale; def is now 1497)
+- Location: `docs/adr/0036-allocator-and-attention-loop.md:31,98` · Evidence: post-P-002, :1490 is `indexed = await self._sink.enqueue(facts)` (function body); `drain_pending_embeddings` def is at :1497 [VERIFIED]. Non-blank, so the lock is green, but the citation no longer points at what the sentence claims — the lock's documented blind spot. The +7 P-002 comment at creator.py:~1070 (landed in the same wave, different commit) is the cause; ADR author verified against the pre-P-002 tree. · Recommended fix: re-point both citations to :1497 in the docs task (R-W1-001).
+
+### R-W1-004 [MINOR] ADR-0036 §P01 wording vs. runtime bound + marker-inside-200 unstated
+- Location: `docs/adr/0036-allocator-and-attention-loop.md:102-117` vs `src/paa/runtime.py:482`, `src/paa/cli/main.py:635-640` · Evidence: ADR bullet list applies redact+truncate+marker to "the two plan P-001 sites"; code truncates only the CLI site (runtime log kwarg unbounded, mirroring :474). Marker-inside-200 (the code's strict reading) is nowhere stated in the ADR, so the next implementer can reasonably build 200+marker=238. INV-04 Fix A intended CLI-only bound — the code follows INV, the ADR text does not say so. · Recommended fix: amend §P01 to state (a) bound applies to rendered console text, structlog kwargs are redact-only, (b) marker is inside the 200. One paragraph; makes the next reader's implementation match this wave's.
+
+### R-W1-005 [MINOR] ANSI/control-byte passthrough at drain line (terminal injection residual)
+- Location: `src/paa/cli/main.py:665-671` · Evidence: `markup=False` stops Rich markup parsing but raw `\x1b` escapes and NUL reach the operator terminal verbatim; test asserts only no-crash/bounded/no-leak [VERIFIED]. A malicious error string can recolour/inject control sequences (cf. `registry_client._excerpt` ASCII-escaping precedent cited by IMPL-02). Acknowledged by implementer as a sibling FINDING — rate MINOR because it is pre-existing `redact()` scope, not introduced here, but it is the one hostile-input hole P-001 leaves open. · Recommended fix: strip/escape control chars (or unicode-escape non-printables) at the console boundary in a hardening task; keep the existing test as the seam.
+
+### R-W1-006 [MINOR] Per-hit derivation crash on corrupt row empties the tier (comment overpromises)
+- Location: `src/paa/agents/context_agents.py:291-311` · Evidence: `float(row["initial_confidence"])`, `from_iso(row["last_queried_at"])`, `float(row["importance"])` are outside any try; only `KeyError` from `effective_confidence` (unknown domain) is caught. A `ValueError` (out-of-range confidence — blocked by `ck_fact_conf` in practice) or `TypeError`/`ValueError` from a malformed `last_queried_at` string (TEXT column, no format CHECK) propagates out of `_semantic` and empties the semantic tier — contrary to the comment "hydration failure must never empty the tier" and to the batch-query degrade path two lines above. Same crash exists in `_hot_facts`/`_to_fact` (precedent), so this is consistency-with-a-flawed-precedent, not a new class — hence MINOR, not MAJOR. · Recommended fix: wrap per-hit derivation in try/except (ValueError/TypeError) falling back to the payload snapshot for that hit + warning, mirroring the batch degrade; add a corrupt-row test (UPDATE last_queried_at to garbage) pinning tier-non-empty.
+
+### R-W1-007 [MINOR] Hydration SELECT does not filter superseded rows (comment claims "live row")
+- Location: `src/paa/agents/context_agents.py:276-280` · Evidence: comment says a hit with "no live row such as a deleted fact" falls back; the query is `WHERE id IN (...)` with no `superseded_by IS NULL`, unlike `_hot_facts` (:200) which filters. A superseded fact whose vector point survives until the next reconcile will hydrate, derive, and rank as if live. Pre-existing vector-tier behaviour (old code also served it), and reconcile normally drops the point — hence MINOR. · Recommended fix: add `AND superseded_by IS NULL` to the hydration SELECT so "live" means the same thing in both tiers; add a superseded-fact test.
+
+### R-W1-008 [NIT] CostGate threshold accepts `inf`
+- Location: `src/paa/config.py:730` · Evidence: [RAN probe -> `PAA_COST_GATE__THRESHOLD=inf` loads as `inf`; `nan`/`-inf` correctly rejected]. An infinite threshold silently disables the gate. Same `gt=0` float pattern may exist elsewhere; not worth a bespoke validator for a disabled-by-default advisory flag. · Recommended fix (optional): `allow_inf_nan=False` on the float field, or leave — DO LATER at most.
+
+### R-W1-009 [NIT] Implementer report accuracy (IMPL-01 undercount; IMPL-02 "no divergence")
+- Location: `W1-IMPL-01.md:117-126,165-166`; `W1-IMPL-02.md:26,41` · Evidence: see §2. IMPL-01's "9 citations" omits config.py:59 (actual 10 unique / 19 occurrences); "unavoidable" overstates (top-of-file shift was avoidable via appended `__all__`); "contribution zero" misses the stale ADR creator citation. IMPL-02's "all three spec bullets match / no divergence" misses the ADR-vs-runtime-bound wording gap (R-W1-004). Neither affects code correctness; both matter because the next wave reads these reports as ground truth. · Recommended fix: orchestrator correction note in the wave record; no code action.
+
+## 5. Attempts to break it
+1. **Token straddling the truncation cut** (reasoned + test-read): redact-first replaces the whole `sk-…` run before slicing; a token starting at offset 140 with the cut at 162 is fully redacted in the kept region. Cannot leak. PASS (holds).
+2. **Markup attack `[/red]` in exception text**: old line raised MarkupError (exit 1); new line `markup=False` prints literally (test asserts exit 0). PASS (holds).
+3. **ANSI-interleaved secret** (`sk-<ESC>[0m<chars>`): pattern requires contiguous `[A-Za-z0-9_-]{12,}`, so interleaved escapes defeat `redact`; terminal renders the fragments joined. Residual bypass — R-W1-005. Same class as pre-existing redact scope.
+4. **Boundary 200/201 chars** [RAN via tests -> PASS]: 200 renders full, 201 renders exactly 200 incl. marker.
+5. **Out-of-range confidence row** (probe): SQLite `ck_fact_conf` CHECK rejects the UPDATE — crash path unreachable via SQL on this substrate. PASS (schema-guarded).
+6. **Superseded fact with surviving vector point** (code-reading): hydration returns it (no filter) — R-W1-007. Pre-existing, not a regression.
+7. **Hostile payload types** (`confidence: "not-a-float"`): `float()` raises — but this crash pre-exists in the old payload-only code; not introduced by Wave 1. Noted, not filed as new.
+8. **`inf` threshold** [RAN -> loads]: R-W1-008.
+9. **`nan` threshold** [RAN -> ValidationError]: PASS.
+10. **SQLite IN-variable overflow** (`limit` huge): fetch_all raises -> except -> payload fallback, tier serves. PASS (degrades, per code reading).
+11. **Docs citations re-checked at base** [RAN git show 294fb31 -> all 60 non-blank then, blank now]: confirms R-W1-001 causation is Wave 1 shifts, not pre-existing rot (except the 3 baseline w6-w7-w9 lines).
+12. **ADR line citations re-checked semantically** [RAN line reads -> all correct except creator.py:1490]: R-W1-003.
+
+## 6. Dimension checklist
+| Dimension | Verdict | Notes |
+|---|---|---|
+| Correctness | PASS with findings | Core fixes (redact+bound, hydrate+derive, Settings defaults) are correct; R-W1-002/006/007 are correctness holes at the edges |
+| Root cause vs symptom | PASS | P-002 is Fix A (root cause: frozen snapshot + stale clock), not Fix B/C; P-001 uses the single house redactor; ADR-0042 corrects the plan's wrong offline claim with evidence |
+| Regression / compat | PASS (scoped) | Scoped regression runs green [RAN]; additive only (`now` kwarg, new Settings fields, payload/ContextElement unchanged) |
+| Concurrency / idempotency | PASS | Read-only derivation; one query/search; duplicate ids deduped; touch race is benign (pre-touch derivation is correct for current packet) |
+| Error handling / degrade | **FAIL (R-W1-002, R-W1-006)** | Batch degrade works; per-hit crash + unredacted/mislabeled hydration log break the promise |
+| Security / abuse | **FAIL (R-W1-002)** + residual R-W1-005 | Two P-001 sites fixed correctly; wave adds one new unredacted line; ANSI residual pre-existing |
+| Performance / scalability | PASS | One batched IN query bounded by vector limit (30); no N+1; no new allocation growth |
+| Migration / rollback | PASS | No schema change; flags are the rollback; ADR rollback sections present and consistent |
+| Observability | MINOR FAIL | Hydration DB failures mislabeled as vector failures (R-W1-002); no new metrics needed for face-value flags |
+| Maintainability / conventions | PASS | __all__ sorted, runtime import of RelationalBackend unchanged, no new enum, house comment style, PLAN tags present |
+| Docs impact | **FAIL (R-W1-001, R-W1-003, R-W1-004)** | Lock broken; one semantically-stale ADR citation; §P01 wording gap |
+
+## 7. Optimization and simplification opportunities
+| # | Location | Evidence | Impact | Effort | Risk | Verdict |
+|---|---|---|---|---|---|---|
+| 1 | context_agents.py:282 | 2-line redact+rename (R-W1-002) | Closes the one new security hole; fixes log semantics | Trivial | None | DO NOW |
+| 2 | docs re-point sweep (R-W1-001) + ADR creator:1497 (R-W1-003) | 60 citations, mechanical but must be read per sentence | Restores CI gate | Medium (1 task) | Low (docs-only) | DO NOW (gate) |
+| 3 | context_agents.py:276 | Add `AND superseded_by IS NULL` (R-W1-007) | Tier-consistency; 1 line + test | Trivial | None | DO NOW (bundle with #1) |
+| 4 | Per-hit derivation wrap (R-W1-006) | try/except around derivation per hit | Tier survives corrupt rows | Small | Low | DO LATER (precedent-consistent crash today) |
+| 5 | ANSI/control sanitization at console boundary (R-W1-005) | Needs policy decision (strip vs escape) | Closes terminal-injection residual | Small | Medium (rendering policy) | DO LATER (assign owner) |
+| 6 | `.env.example` / config docs table for new flags | .env.example lists only selected overrides by design; ops config doc not updated | Operator discoverability | Small | None | DO LATER (with W2 wiring) |
+| 7 | `allow_inf_nan=False` on threshold (R-W1-008) | 1-line validator | Negligible (advisory, disabled default) | Trivial | None | NOT WORTH IT alone; bundle if touching config again |
+
+## 8. Cross-agent / cross-task interactions observed
+- **P-002 comment (+7 lines in creator.py) silently stale-dated ADR-0036** (R-W1-003): two W1 agents' correct-in-isolation edits compose into a wrong citation. Lesson for W2+: ADR citations to files another W1/W2 agent is editing in the same wave need a post-wave re-check, not a pre-write check. IMPL-01 verified citations at HEAD `294fb31`; IMPL-03's commit landed after and moved the target.
+- **Config line shift is wave-structural, not agent-specific**: all three implementers inserted mid-file (necessarily for Settings/gatherer-adjacent code). The docs lock therefore cannot stay green across *any* wave that touches these five files unless citations are re-pointed as part of the wave — the re-point task should be a standing wave-gate item, not a FINDING afterthought.
+- **ADR-0036 §P01 (IMPL-01) vs P-001 code (IMPL-02)**: same-wave ADR/code pair diverged in wording (R-W1-004) despite IMPL-02 reading the ADR at commit time — the divergence is in what the ADR *implies* for the runtime site, which neither agent owned jointly. ADR authors should state per-site applicability explicitly when a bound is site-specific.
+- **No write-set collisions**: disjoint ownership held (config/ADRs vs runtime/cli vs context_agents/creator); no COMMS conflicts posted. `context_agents.py` remains the W2 touch-unification site (T-004a) — the new `redact` import needed for R-W1-002 should be added at module level there now (it already imports `effective_confidence` at module level; `redact` is currently function-local in `_touch_recalled` — same drift INV-04 flagged, in the file W1 just edited).
+
+## 9. What I could not verify
+- Full test suite, full `mypy src` (baseline-3 claim), full import-conventions subprocess sweep — not run (standing order 16 / timeout precedent).
+- Live Qdrant, Postgres, S3, Docker/CI — no servers/DSN on this host; Postgres placeholder path verified by code reading only.
+- Reversal executions (implementers' revert-and-fail claims) — read-only constraint; reasoned against test bodies instead.
+- Whether the docs lock's other 4 tests + schema parity remain green on the *full* tree beyond the scoped runs above (docs lock file itself: 4/5 pass, blank-line fails as reported).
+- Linux behaviour of CLI redaction rendering (width-80 Rich folding, encoding) — tests assert whitespace-stripped reconstruction; verified on this Windows host only.
