@@ -218,7 +218,7 @@ nothing to "finish" — each is a clean additive task citing ADR-0041.
   trailers (one-line message used; `--amend` is forbidden, so it stands).
   The report commit below carries full trailers.
 - Report commit: separate docs-only commit listing `6e1819a`.
-- Report commit SHA: <REPORT_SHA> (docs-only, this file).
+- Report commit SHA: `c0e0dbb` (docs-only, this file).
 - Working tree: sibling W5 in-flight files (allocator/metrics/curator/
   daemon/runner/ADR-0029/docs) + COMMS.md (my 2 appends, ORCH-committed)
   left untouched/uncommitted by me.
