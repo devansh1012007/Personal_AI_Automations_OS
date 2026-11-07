@@ -93,7 +93,7 @@ Each is attempted inside `_try_vector` / `_try_graph` / `_try_queue` /
 in-process fallback with a logged warning. The runtime must boot on a laptop
 with only core dependencies installed.
 
-`src/paa/runtime.py:359`, `:372`, `:423`, `:496`.
+`src/paa/runtime.py:359`, `:372`, `:423`, `:497`.
 
 ### 3. No generative reasoning in the control path
 
@@ -184,7 +184,7 @@ not by prohibiting peer calls.
   `reset_settings_cache()`.
 - `api_host` is enforced loopback unless `PAA_ALLOW_NON_LOOPBACK=1`.
 
-`src/paa/config.py:1`, `:381`, `:460`, `:490`.
+`src/paa/config.py:1`, `:402`, `:481`, `:490`.
 
 ## Known deviations from the RFC (selected)
 
@@ -192,7 +192,7 @@ These are deliberate, documented, and cited in source:
 
 | Deviation | Where | Rationale |
 |---|---|---|
-| Embedded SQLite/Qdrant/Kuzu instead of Postgres/Redis/S3 | ADR-0001–0005, `config.py:59` | Target machine has ~3.5 GB free RAM, no Docker |
+| Embedded SQLite/Qdrant/Kuzu instead of Postgres/Redis/S3 | ADR-0001–0005, `config.py:66` | Target machine has ~3.5 GB free RAM, no Docker |
 | gVisor unavailable; pluggable sandbox | ADR-0006, `config.py:281` | Windows target, no runsc |
 | Provider-agnostic models; explicit escalation | ADR-0007/0015, `config.py:476` | vLLM needs CUDA + 8.5 GB VRAM |
 | Idempotency key includes `attempt` + `discriminator` | ADR-0008, `events.py:68` | Retries must be possible |

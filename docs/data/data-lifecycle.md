@@ -139,7 +139,7 @@ no user-facing fact deletion.
 ## 3. Context packet lifecycle
 
 ### Creation
-`PlannerContextBuilder.handle()` (`context_agents.py:241`):
+`PlannerContextBuilder.handle()` (`context_agents.py:376`):
 1. Expand goal → search terms + required slots (`QueryExpander`, deterministic
    `_KeywordExpander` fallback).
 2. `_hot_facts()` — relational candidates from `hot_serving_active_facts`,
@@ -165,7 +165,7 @@ Orchestrator `_hydrate()` reads `routing_directive`; on HARD_STOP it parks the
 task on `AWAITING_HUMAN_ATTESTATION` (`orchestrator.py:379`).
 
 ### Worker packet
-`WorkerContextBuilder.handle()` (`context_agents.py:285`) drops all narrative
+`WorkerContextBuilder.handle()` (`context_agents.py:427`) drops all narrative
 domains (`narrative_domains()` = `{narrative, reflection, strategic, identity}`)
 and fails with `hydration_required` if any required slot is vacant
 (`context_agents.py:303`). This is a security boundary: strategy/identity never
@@ -235,9 +235,9 @@ provided by ledger idempotency, not the queue.
 
 `Settings` is built once (`get_settings()`, `lru_cache`d, `config.py:490`).
 `.env` is read from CWD at construction; provider API keys resolved via
-`dotenv_value` without touching `os.environ` (`config.py:460`). `PAA_HOME`
+`dotenv_value` without touching `os.environ` (`config.py:896`). `PAA_HOME`
 changes require `reset_settings_cache()`. `ensure_directories()` creates all
-state directories (`config.py:450`).
+state directories (`config.py:886`).
 
 ## 8. Summary of persistence boundaries
 

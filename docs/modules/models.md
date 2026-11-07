@@ -135,7 +135,7 @@ resolution; the undocumented tolerance that fallback carried (a
 - Adding a provider = add a `ProviderSpec` row to `registry.py:_SPECS` (+ a
   provider class if new `kind`) — data, not code (`models/registry.py:148`).
 - Changing `escalate_at_or_above` changes when escalation occurs
-  (`config.py:491`).
+  (`config.py:611`).
 - Changing `canonical_json`/schema validation affects model output parsing
   (`base.py`).
 - Changing how the model configuration is *resolved* (which object counts as

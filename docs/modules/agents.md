@@ -111,7 +111,7 @@ from DB (`:234`), anti-goals (cosine ≥0.82 or phrase match, `:262`). Risk scor
 | `Reasoning agents` → `ModelLike` | `complete_structured()` | Model seam | `reasoning.py:95`, `:246`, `:353` |
 | `RouterModelAdapter` | wraps `EscalatingModelRouter` | Bridge `ModelLike` → router | `runtime.py:98` |
 | `PolicyRiskAgent` → `Database` | `fetch_all(hot_serving_policy_rules)` | Operator rules | `policy.py:255` |
-| `Context builders` → `Database`/vector/graph | fetch facts/semantic/graph | Build context packet | `context_agents.py:141`, `:241`, `:264` |
+| `Context builders` → `Database`/vector/graph | fetch facts/semantic/graph | Build context packet | `context_agents.py:143`, `:243`, `:340` |
 | `Runtime.build` | constructs all agents | Composition root | `runtime.py:407` |
 
 ## Runtime behavior

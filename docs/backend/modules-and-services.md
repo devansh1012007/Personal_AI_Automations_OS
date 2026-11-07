@@ -19,12 +19,12 @@ section cited. Pydantic-settings `Settings` with prefix `PAA_`, nested delimiter
 **Key behaviors:**
 - `dotenv_value` parses `.env` **without** writing to `os.environ` — provider
   API keys are named per registry row, not stored as settings fields
-  (`config.py:460`).
+  (`config.py:896`).
 - `_enforce_loopback` refuses non-loopback `api_host` unless
   `PAA_ALLOW_NON_LOOPBACK=1` (`config.py:410`).
 - `_propagate_home` re-roots storage paths when `home` is overridden directly
   (`config.py:425`).
-- `ensure_directories()` creates every directory the runtime needs (`config.py:450`).
+- `ensure_directories()` creates every directory the runtime needs (`config.py:886`).
 
 **Configuration precedence:** explicit kwargs > environment (`PAA_*`) >
 `.env` file > defaults (`config.py:7`).

@@ -28,7 +28,7 @@ the allocator is the first substantive pair the stream will ever carry.
 
 Two of the formula's five inputs have no live producer, and the drain that
 would feed the loop is unthrottled. `drain_pending_embeddings` in
-`src/paa/memory/creator.py:1490` embeds a batch of 100 per call on three
+`src/paa/memory/creator.py:1497` embeds a batch of 100 per call on three
 call sites, with no rate cap and no backpressure log.
 
 **What the redaction item (§P01) leaves behind.** The two unredacted
@@ -95,7 +95,7 @@ the ignore if the convention ever changes.
 in `src/paa/config.py` (the memory domain owns the drain) and enforced by
 P-007, its sole owner. The plan names the Setting but no default; the
 default here is **100**, the current batch size
-(`src/paa/memory/creator.py:1490`) at the daemon's ~1 Hz drain cadence, so a
+(`src/paa/memory/creator.py:1497`) at the daemon's ~1 Hz drain cadence, so a
 deployment that never sets the field sees exactly today's throughput. Above
 the cap the drain defers and logs backpressure — never drops silently.
 
@@ -111,6 +111,8 @@ in scope — the two plan P-001 sites — the posture is:
 * truncate the scrubbed text to **200 characters**;
 * append an explicit truncation marker so a truncated error is visibly
   truncated, never silently short.
+
+Per-site applicability, stated so the next implementer does not generalise it: the 200-character bound applies to the rendered operator-console text at the CLI drain site (`src/paa/cli/main.py:635`, `_MAX_DRAIN_ERROR_CHARS`), where the truncation marker is inside the 200-character budget — the rendered error is at most 200 characters including the marker. The runtime site (`src/paa/runtime.py:482`) is a structlog keyword argument, not rendered console text; it is redact-only and unbounded, mirroring the existing `src/paa/runtime.py:474` site, because truncating a structured log field would silently drop diagnostic detail without protecting a terminal.
 
 200 is the house excerpt bound (sibling constants in the tree use the same
 value), not a new invention; the point of this section is that the number is

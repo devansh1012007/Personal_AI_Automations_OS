@@ -83,7 +83,7 @@ reproducibility (`context_agents.py` module docstring).
 ## Modification impact
 
 - Changing `token_ceiling`/`worker_token_ceiling` affects packet size
-  (`config.py:133`, `:137`).
+  (`config.py:188`, `:192`).
 - Changing `density_proceed`/`density_hydrate` changes routing behavior
   (`config.py:150`, `:154`) with validator `density_hydrate < density_proceed`
   (`config.py:160`).

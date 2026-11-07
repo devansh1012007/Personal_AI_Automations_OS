@@ -8,7 +8,7 @@ outcome through the backend. It reflects the actual execution order in
 
 | Trigger | File | Function |
 |---|---|---|
-| `paa submit "goal"` | `cli/main.py:74` | `submit` → `Runtime.submit()` |
+| `paa submit "goal"` | `cli/main.py:76` | `submit` → `Runtime.submit()` |
 | `paa run <id>` | `cli/main.py:89` | `run` → `Runtime.run()` |
 | API `POST /tasks` (`?run=true`) | `api/app.py:85` | `submit_task` → `Runtime.submit()` then `Runtime.run()` |
 | API `POST /tasks` (`?run=false`) | `api/app.py:85` | Submit + queue only; daemon drains later |
@@ -30,7 +30,7 @@ modality profile (`_context_for`, `orchestrator.py:327`).
 - If a context packet already exists, skip.
 - Emits `CONTEXT_HYDRATION_REQUESTED` (`orchestrator.py:357`).
 - Sends `CONTEXT_REQUEST` to the planner context builder
-  (`context_agents.py:241`).
+  (`context_agents.py:376`).
 - If the result is `HARD_STOP_ESCALATE_TO_USER` (insufficient density), emits
   `AWAITING_HUMAN_ATTESTATION` and returns (`orchestrator.py:379`).
 - Otherwise emits `CONTEXT_HYDRATED` with the packet (`orchestrator.py:499`).

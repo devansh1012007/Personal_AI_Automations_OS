@@ -8,13 +8,13 @@ read from the current working directory.
 
 **explicit kwargs > environment (`PAA_*`) > `.env` file > defaults**
 (`config.py:7`). `get_settings()` is `lru_cache`d (`config.py:490`); callers
-that change `PAA_HOME` must call `reset_settings_cache()` (`config.py:495`).
+that change `PAA_HOME` must call `reset_settings_cache()` (`config.py:931`).
 
 ## Two-layer .env reading
 
 `.env` is read by **two** layers:
 1. **pydantic-settings** for `PAA_*` settings fields (`config.py:384`).
-2. **`dotenv_value(name)`** (`config.py:460`) for variables that are *not*
+2. **`dotenv_value(name)`** (`config.py:896`) for variables that are *not*
    settings fields — chiefly each provider's API key, named per registry row
    (`registry.ProviderSpec.api_key_env`). It parses `.env` **without** writing
    to `os.environ` (which would inject every `PAA_*` line into the process,
@@ -41,7 +41,7 @@ that change `PAA_HOME` must call `reset_settings_cache()` (`config.py:495`).
 
 `_propagate_home` re-roots storage paths when `home` is overridden directly
 (`config.py:425`). `ensure_directories()` creates all state dirs
-(`config.py:450`).
+(`config.py:886`).
 
 ### `StorageSettings`
 
@@ -219,7 +219,7 @@ Provider `api_key_env` tuples are defined per row in `registry.py:_SPECS`
 1. `uv venv --python 3.12 && uv pip install -e ".[dev]"` (`AGENTS.md:8`).
 2. Optionally `cp .env.example .env` and set provider keys.
 3. `.venv/bin/python -m pytest tests/ -q` (`AGENTS.md:11`).
-4. `paa doctor` to confirm which backends are actually live (`cli/main.py:225`).
+4. `paa doctor` to confirm which backends are actually live (`cli/main.py:227`).
 
 ## Deployment vs development
 

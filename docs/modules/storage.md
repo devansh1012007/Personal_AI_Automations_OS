@@ -72,7 +72,7 @@ DEGRADED/SHEDDING; 11 `StreamName`s; `ORCHESTRATOR_CORE` is control plane.
 | `LedgerStore` → `Database` | SQL INSERT/SELECT | Ledger persistence | `ledger/store.py:30` |
 | `RecoveryEngine` → `Database` | recovery marks SQL | Workspace checkpoints | `recovery.py:37` |
 | `PolicyRiskAgent` → `Database` | policy rules SQL | Operator rules | `policy.py:255` |
-| `Context builders` → `Database` | facts SQL | Context candidates | `context_agents.py:141` |
+| `Context builders` → `Database` | facts SQL | Context candidates | `context_agents.py:143` |
 | `Memory/*` → `Database` | entities/facts SQL | Memory persistence | `memory/facts.py:342` |
 | `SignalRepository` → `Database` + `CAS` | signal row + blob | Signal intake | `storage/coldlake/signals.py:114` |
 | `Observability runs` → `Database` | run rows | Execution traces | `runs.py` |
@@ -83,7 +83,7 @@ DEGRADED/SHEDDING; 11 `StreamName`s; `ORCHESTRATOR_CORE` is control plane.
 
 - Optional backends constructed in `Runtime._try_vector/_try_graph/_try_queue`
   — catch `Exception`, return `None`/fallback, log warning (`runtime.py:400`).
-- `_acquire_sandbox` 5s probe → subprocess fallback (`runtime.py:496`).
+- `_acquire_sandbox` 5s probe → subprocess fallback (`runtime.py:497`).
 - `Database` is single-writer; WAL allows concurrent readers.
 
 ## Failure behavior

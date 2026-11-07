@@ -45,7 +45,7 @@ Focused runs:
 - `snapshotter` is a byte-oriented fake on purpose — `write_text`/`read_text`
   would translate newlines on Windows and report phantom manifest drift.
 - Anything that changes `PAA_HOME` (tests) **must** call
-  `reset_settings_cache()` (`config.py:495`).
+  `reset_settings_cache()` (`config.py:931`).
 - Tests that chdir must call `reset_dotenv_cache()` (`config.py:502`).
 - `PAA_TEST_VERBOSE=1` un-silences structlog.
 

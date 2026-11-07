@@ -96,7 +96,7 @@ flowchart TD
 | `EscalatingModelRouter` (`models/router.py:165`) | Local-first routing with explicit, logged escalation to frontier | `complete()` / `complete_structured()` | Local provider, optional frontier provider, `LedgerStore` | `RouterModelAdapter` (via agents) | Writes `MODEL_ESCALATED` ledger event before frontier call |
 | `RouterModelAdapter` (`runtime.py:109`) | Bridges agents' `ModelLike` protocol to the escalation router | `complete_structured()` (`runtime.py:132`) | `EscalatingModelRouter` | All reasoning agents | No persistence (router logs escalations) |
 | `RecoveryEngine` (`ledger/recovery.py:140`) | Post-crash boot sweep: replay, reconcile workspace, re-queue | `RecoveryEngine.boot_sweep()` (`recovery.py:226`) | `LedgerStore`, `Database`, optional `WorkspaceSnapshotter`, optional queue requeuer | `ChiefOrchestrator.boot()` (`orchestrator.py:1104`) | Writes `RECOVERY_REPLAY_COMPLETED`/`STATE_ROLLBACK_TRIGGERED`/`TASK_ABANDONED` events; restores workspace |
-| `Daemon` (`daemon.py:45`) | Background loops: dispatch, ingestion, maintenance | `Daemon.start()` (`daemon.py:70`) | `Runtime`, `MemoryCreator`, `DecaySweeper` | `paa serve` (`cli/main.py:290`) | Claims queue messages; runs decay sweep; ingests signals |
+| `Daemon` (`daemon.py:45`) | Background loops: dispatch, ingestion, maintenance | `Daemon.start()` (`daemon.py:70`) | `Runtime`, `MemoryCreator`, `DecaySweeper` | `paa serve` (`cli/main.py:292`) | Claims queue messages; runs decay sweep; ingests signals |
 | `MemoryCreator` (`memory/creator.py`) | Ingests unprocessed signals into hot-serving facts | `MemoryCreator.run_batch()` | `Database`, `FactRepository` | Daemon ingestion loop | Writes entities/facts |
 | `DecaySweeper` (`memory/decay.py`) | Evicts stale facts via `C(t)=C₀·e⁻ˡᵃᵐᵇᵈᵃ·t` | `DecaySweeper.sweep()` | `Database`, `DomainPolicy` | Daemon maintenance loop | Deletes/archives stale fact rows |
 | `DeterministicValidationEngine` (`validation/engine.py:185`) | Binary PASS/FAIL: schema → AST → patch → drift → tests | `validate()` (`engine.py:208`) | `AstSecurityScanner`, `SchemaValidator`, `UnifiedDiffValidator`, `WorkspaceSnapshot`, optional `PytestRunner`/`Sandbox` | `CriticValidatorAdapter` (`runtime.py:76`) | Runs tests in sandbox (only check that executes code) |
@@ -223,7 +223,7 @@ paa agent "prompt" (cli/coder.py:44)
   catch all exceptions and return `None` with a warning (`runtime.py:387`).
 - **Sandbox probe is bounded at 5s:** `_acquire_sandbox` uses
   `asyncio.wait_for(..., timeout=5.0)` then falls back to subprocess
-  (`runtime.py:496`).
+  (`runtime.py:497`).
 - **API is an edge layer only:** `create_app` parses/validates and delegates to
   `Runtime`; it holds no application state and makes no model calls
   (`api/app.py:53`).

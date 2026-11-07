@@ -28,7 +28,7 @@ live-server run still needs a pass (parity + backend verification pending).
 
 Programmatic: `Runtime.build()` (`src/paa/runtime.py:260`):
 1. `Settings()` → `ensure_directories()` creates all state dirs
-   (`config.py:450`).
+   (`config.py:886`).
 2. `Database` connects + applies `schema_sqlite.sql`.
 3. `LedgerStore(db)`.
 4. Model router built (or a `model_adapter` injected); `RouterModelAdapter`
@@ -43,7 +43,7 @@ Programmatic: `Runtime.build()` (`src/paa/runtime.py:260`):
    (`runtime.py:331`).
 
 CLI one-shot commands build a `Runtime`, do one thing, print, and close
-(`cli/main.py:53`). `paa serve` builds one `Runtime`, starts the `Daemon` and
+(`cli/main.py:54`). `paa serve` builds one `Runtime`, starts the `Daemon` and
 FastAPI app over it (`cli/main.py:254`).
 
 ## Daemon loops
@@ -140,7 +140,7 @@ All state under `PAA_HOME` (default `~/.paa`, outside the repo):
 ## Health / observability
 
 - `paa doctor` reports live backends and sandbox isolation level
-  (`cli/main.py:225`).
+  (`cli/main.py:227`).
 - `GET /health` returns backend type names and open task count
   (`api/app.py:68`).
 - `src/paa/observability/` (logging, metrics, tracing, runs) is built but

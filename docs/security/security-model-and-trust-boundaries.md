@@ -137,7 +137,7 @@ correlations (`delegation.py:167`).
   call; `SecretValue.__str__`/`__repr__` return `"***"` (`secrets.py:106`).
 - `SecretBroker.lease()` invalidates the handle on exit
   (`secrets.py:503`).
-- Config stores secret *names*, never values (`config.py:97`).
+- Config stores secret *names*, never values (`config.py:115`).
 
 ### 13. Sandbox output capture cap
 
@@ -184,7 +184,7 @@ backend.py` `_read_capped`).
   but not verified to be emitted in all paths.
 - **Provider API keys in `.env`** are read by `dotenv_value` without
   `os.environ`, but the process environment may still contain them if exported
-  by the user (`config.py:460`).
+  by the user (`config.py:896`).
 - **`EvalProvider`/`EchoProvider` cannot drive a plan** — its minimal-schema
   output isn't a plan; this is a correctness property, not a security control
   (`AGENTS.md:215`).

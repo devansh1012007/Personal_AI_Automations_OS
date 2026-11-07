@@ -7,7 +7,7 @@ to `MUTATION_COMMITTED`. All paths verified against `src/paa/agents/orchestrator
 
 | Trigger | Entry | File |
 |---|---|---|
-| CLI | `paa submit "fix the login bug"` | `cli/main.py:74` → `Runtime.submit()` |
+| CLI | `paa submit "fix the login bug"` | `cli/main.py:76` → `Runtime.submit()` |
 | API | `POST /tasks?run=true` | `api/app.py:85` → `Runtime.submit()` + `Runtime.run()` |
 | Programmatic | `rt.submit_and_run("...")` | `runtime.py:241` |
 
@@ -44,7 +44,7 @@ is durable before any work (`orchestrator.py` docstring).
 `_hydrate()` (`orchestrator.py:467`):
 1. Skip if `context_packet` already present (resume).
 2. Emit `CONTEXT_HYDRATION_REQUESTED`.
-3. `PlannerContextBuilder.run(message, ctx)` (`context_agents.py:241`):
+3. `PlannerContextBuilder.run(message, ctx)` (`context_agents.py:376`):
    - Expand goal → terms + slots (`_KeywordExpander` or AI expander).
    - `_hot_facts()` — relational candidates, confidence decayed at read time
      (`effective_confidence`, `decay.py`).
