@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from paa.core.types import EventType
+from paa.memory.world_model import BeliefDocument, WorldModel
 
 if TYPE_CHECKING:
     from paa.ledger.store import LedgerStore
@@ -206,28 +207,34 @@ class ReflectionEngine:
     def apply_to_playbook(self, rule: str, *, filename: str = "playbooks.md") -> None:
         """Append an anti-pattern under a managed marker, preserving human text.
 
-        Same marker discipline as the world model: only the runtime's own
-        block is touched, so a user's hand-written playbook notes are never
-        overwritten (RFC §9).
+        PLAN:integration-fix:P010 (ADR-0038): the fence write is delegated to
+        :meth:`WorldModel.update_belief_state` for ``playbooks.md`` — one
+        fence implementation owns the markers, conflict detection and the
+        write record. The duplicate writer that used to live here had to
+        agree on marker spelling byte-for-byte to stay compatible; deleting
+        it kills that drift. A human edit inside the fence therefore raises
+        ``VaultConflictError`` (naming the path) instead of being silently
+        overwritten. ``BeliefDocument.PLAYBOOKS`` governs the file, so
+        ``filename`` must name it — anything else is rejected rather than
+        joined onto the vault (closed set, as for the CLI).
         """
         if self._vault is None:
             return
-        from paa.memory.world_model import WorldModel  # for its marker parser
-
-        self._vault.mkdir(parents=True, exist_ok=True)
-        path = self._vault / filename
+        if filename != BeliefDocument.PLAYBOOKS.value:
+            raise ValueError(f"not a governed playbook filename: {filename!r}")
+        wm = WorldModel(self._vault)
         # Read the current managed block (if any) and append to it, so successive
         # weekly runs accumulate anti-patterns rather than overwriting last
         # week's. WorldModel owns the marker-parsing regex; reuse it.
-        wm = WorldModel(self._vault)
-        existing_managed = ""
-        if path.exists():
-            existing_managed = (
-                wm._extract_block(path.read_text(encoding="utf-8"), "reflections") or ""
-            )
+        existing_managed = wm.read_managed(BeliefDocument.PLAYBOOKS, "reflections")
         combined = (existing_managed + "\n" + rule).strip()
-        _write_managed_block(path, "reflections", combined, title="Playbooks")
-        log.info("reflection.playbook_updated", path=str(path))
+        wm.update_belief_state(
+            BeliefDocument.PLAYBOOKS, combined, section="reflections", source="reflection"
+        )
+        log.info(
+            "reflection.playbook_updated",
+            path=str(wm.path_for(BeliefDocument.PLAYBOOKS)),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -243,28 +250,3 @@ def _domain_from_request(payload: dict[str, Any]) -> str:
             if kw in goal:
                 return kw
     return "unknown"
-
-
-def _write_managed_block(path: Path, section: str, content: str, *, title: str) -> None:
-    """Marker-fenced atomic write, mirroring WorldModel but for any vault file."""
-    import os
-    import re
-    import uuid
-
-    begin = f"<!-- paa:managed:BEGIN {section} -->"
-    end = f"<!-- paa:managed:END {section} -->"
-    managed = f"{begin}\n{content.strip()}\n{end}"
-
-    if path.exists():
-        text = path.read_text(encoding="utf-8")
-        pattern = re.compile(re.escape(begin) + r".*?" + re.escape(end), re.DOTALL)
-        new_text = pattern.sub(managed, text, count=1) if pattern.search(text) else (
-            text + ("" if text.endswith("\n") else "\n") + "\n" + managed + "\n"
-        )
-    else:
-        header = f"# {title}\n\n_Managed block below is maintained by the runtime._\n\n"
-        new_text = f"{header}{managed}\n"
-
-    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    tmp.write_text(new_text, encoding="utf-8")
-    os.replace(tmp, path)
