@@ -3,41 +3,99 @@
 ## Plan coverage
 | Plan item | Summary | Disposition (task / skip-reason / deferred-reason) |
 |---|---|---|
-| P-001 (plan P01) | Redact 2 unredacted `str(exc)` paths | pending |
-| P-002 (plan P02) | Derive confidence at query time (kill frozen payload) | pending |
-| P-003 (plan P03) | Non-ASCII parity convergence | pending |
-| P-004 (plan P04) | Unify touch helper + coder semantic fallback | pending |
-| P-005 (plan P05) | Derived `Dockerfile.embed` (pinned `paa/runtime:4.1`) | pending |
-| P-006 (plan P06) | 5 TUI panels + API snapshot fields | pending |
-| P-007 (plan P07) | Ledger-wired allocator + drain throttle owner | pending |
-| P-008 (plan P08) | `TOTAL_MEMORY_COST` advisory gate | pending |
-| P-009 (plan P09) | T0–T4 tier layer w/ migration + replay rule | pending |
-| P-010 (plan P10) | Dual vault 15-file + governance sync fence | pending |
-| P-011 (plan P11) | Pilot `coding` specialist (ADR-0041) | pending |
-| P-012 (plan P12) | Edge-count phantom closure (ADR-0043) | pending |
-| P-013 (plan P13) | Weekly reflection wiring + `/doctor` healthcheck | pending |
-| P-014 (plan P14) | ADRs 0036–0043 + Settings surface | pending |
+| P-001 (plan P01) | Redact 2 unredacted `str(exc)` paths | T-001-P001 (W1, in flight) |
+| P-002 (plan P02) | Derive confidence at query time (kill frozen payload) | T-002-P002 (W1, in flight) |
+| P-003 (plan P03) | Non-ASCII parity convergence | W4 (full plan); phrase-fold ALREADY DONE (fold done per INV-02) — stored-normalisation cols (v6) deferred to W4, ADR-0029 amendment in W2 |
+| P-004 (plan P04) | Unify touch helper + coder semantic fallback | W2 (touch unification 4a) + W3 (vector fallback 4b — needs Runtime.embedder + ADR-0039) |
+| P-005 (plan P05) | Derived `Dockerfile.embed` (pinned `paa/runtime:4.1`) | W2 (ADR-0042 first; INV-05 offline-vs-derived contradiction must be resolved in ADR) |
+| P-006 (plan P06) | 5 TUI panels + API snapshot fields | W3 (after P-001; attention_top null until P-007) |
+| P-007 (plan P07) | Ledger-wired allocator + drain throttle owner | W4 (DEEP; EventType checklist; P13 reflection shares drain Settings) |
+| P-008 (plan P08) | `TOTAL_MEMORY_COST` advisory gate | W5 (DEEP/borderline; advisory only) |
+| P-009 (plan P09) | T0–T4 tier layer w/ migration + replay rule | W2 (vocab/policy/replay 9a + DDL v5 9b) → W3 (sweeper 9c) |
+| P-010 (plan P10) | Dual vault 15-file + governance sync fence | W3 (DEEP; reflection delegation shared with P-013) |
+| P-011 (plan P11) | Pilot `coding` specialist (ADR-0041) | W5 (DEEP; rollback event ALREADY wired — ADR says so) |
+| P-012 (plan P12) | Edge-count phantom closure (ADR-0043) | W1 (ADR-0043 + T13 inside T-014-P014; no code change) |
+| P-013 (plan P13) | Weekly reflection wiring + `/doctor` healthcheck | W4 (daemon 4th loop + file-based last-run; reflection.py sequenced after P-010 fence delegation) |
+| P-014 (plan P14) | ADRs 0036–0043 + Settings surface | T-014-P014 (W1, in flight; single-writer config.py + ADR index) |
 
 ## Tasks
 | Task | Plan items | Domain | Class | Root cause (1 line) | Write-set | Contract-set | Env-set | Depends on | Conflicts (C#) | Wave | Agent | Status | Code commits | Report |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| T-014-P014 | P-014, P-012 | ADRs + Settings | DEEP (hotspot) | 8 ADRs + 8 flag sub-models unbuilt; every later wave consumes them | config.py, docs/adr/0036–0043, docs/adr/README.md, tests/test_config_settings.py | PAA_* env names (8 prefixes), specialists nested shape | PAA_ALLOCATOR__, PAA_TIER__, PAA_COST_GATE__, PAA_VAULT_SYNC__, PAA_SPECIALISTS__CODING__, PAA_REFLECTION__, PAA_MEMORY drain (TBD) | — | C1 ADR README (sole owner) | W1 | W1-IMPL-01 | in flight | — | reports/w1-implementation/W1-IMPL-01.md |
+| T-001-P001 | P-001 | redaction | SURFACE | C01/C02 wired two `str(exc)` sites by hand; F-02 remainder | runtime.py:481, cli/main.py:649, 2 new test files | log event names unchanged | none | — | none | W1 | W1-IMPL-02 | in flight | — | reports/w1-implementation/W1-IMPL-02.md |
+| T-002-P002 | P-002 | vector derivation | SURFACE | vector payload freezes confidence at enqueue; _semantic trusts it | agents/context_agents.py (_semantic only), memory/creator.py (comment), new test | ContextElement unchanged; payload keys unchanged | none | — | C5 context_agents.py (sequenced by function) | W1 | W1-IMPL-03 | in flight | — | reports/w1-implementation/W1-IMPL-03.md |
+| T-004a-P004a | P-004 touch | touch dedup | SURFACE | 4 copies of touch helper drifted (annotation/import/docstring) | memory/touch.py (new), 4 call sites, memory/__init__.py | touch_recalled(db: RelationalBackend \| None, fact_ids) | none | — | C5 (context_agents among the 4) | W2 | TBD | planned | — | — |
+| T-009a-P009a | P-009 vocab | tier vocab/policy/replay | DEEP | no tier columns/events/policy; replay target under-specified (INV-01 major finding) | core/types.py (+2 EventTypes), ledger/replay.py (_NO_PHASE_CHANGE + tier-dict helper), memory/domains.py (TierPolicy), docs/adr/0037* | EventType.TIER_DEMOTED/TIER_ARCHIVED non-terminal; _NO_PHASE_CHANGE +2 | — | ADR-0037 (W1) | C2 types/replay hotspot; C4 config | W2 | TBD | planned | — | — |
+| T-009b-P009b | P-009 DDL | tier DDL + v5 migration | DEEP (hotspot) | existing rows lack tier col; parity lock demands both files same commit | schema_sqlite.sql + schema_postgres.sql + migrations.py (v5: tier, tier_updated_at, T2 backfill) | 2 new cols both engines | — | ADR-0037 (W1) | C3 parity lock | W2 | TBD | planned | — | — |
+| T-005-P005 | P-005 | derived embed image | DEEP | base image torch-free by design; embeddings need isolated derived image | Dockerfile.embed (new), CI job, pyproject (verify only) | FROM paa/runtime:4.1 pinned; online-install resolution in ADR-0042 | none | ADR-0042 (W1) | C1 ADR (single-writer already done) | W2 | TBD | planned | — | — |
+| T-009c-P009c | P-009 sweeper | tier sweeper dry-run | DEEP | lifecycle binary (hot vs DELETE); tier moves need event-before-row-move | memory/decay.py or new memory/tier.py, config.py TierSettings use | TierSettings.dry_run=True; T10/T10b | PAA_TIER__DRY_RUN | T-009a + T-009b | C4 config | W3 | TBD | planned | — | — |
+| T-010-P010 | P-010 | dual vault | DEEP | 4-file vault; 11 RFC files absent; fence has no conflict detection; reflection shadow writer | memory/world_model.py, improvement/reflection.py (delegate), vault seed, config VaultSyncSettings | BeliefDocument +11 additive; conflict ValueError(path) | PAA_VAULT_SYNC__ENABLED | ADR-0038 (W1) | C6 reflection.py (shared with P-013) | W3 | TBD | planned | — | — |
+| T-006-P006 | P-006 | TUI/API panels | SURFACE | 5 named panels absent; 3 lack data sources (honest null) | tui/snapshot.py, dashboard.py, runner.py, api/app.py, api/schemas.py, memory/facts.py (counts query) | Snapshot +5 nullable fields; HealthResponse additive | none | T-001 (done W1) | C5 api/app.py (shared with touch) | W3 | TBD | planned | — | — |
+| T-004b-P004b | P-004 fallback | coder vector fallback | DEEP | recall_facts keyword-only; Runtime has no embedder field | coder/runtime_tools.py, runtime.py (embedder field), ADR-0039 | recall_facts payload; Runtime.embedder | none | T-002 (W1) + ADR-0039 (W1) | C5 runtime.py (shared) | W3 | TBD | planned | — | — |
+| T-007-P007 | P-007 | allocator + drain | DEEP | scorer pure with zero producers/consumers; workers:alloc unwired; drain no owner | context/allocator.py (new), core/types.py, ledger/replay.py, storage/queue/base.py (verify), memory/creator.py throttle, config AllocatorSettings | EventType pair + _PHASE_MAP; allocate_attention() | PAA_ALLOCATOR__*, PAA_MEMORY drain | T-004b (scorer correctness only) | C2 types/replay | W4 | TBD | planned | — | — |
+| T-013-P013 | P-013 | reflection wiring | SURFACE | engine tested, never scheduled; no last-run storage | improvement/reflection.py, daemon.py, cli/main.py (doctor row), config ReflectionSettings | run_weekly() unchanged; doctor additive row | PAA_REFLECTION__ENABLED | T-010 fence delegation first | C6 reflection.py | W4 | TBD | planned | — | — |
+| T-003-P003 | P-003 | non-ASCII convergence | DEEP | phrase-fold done; column-fold + alias-blob exact-rung open (INV-02) | storage/relational/like.py, entity paths, migrations v6, ADR-0029 amendment | like_pattern unchanged signature | none | — | C3 parity (v6 after v5) | W4 | TBD | planned | — | — |
+| T-008-P008 | P-008 | cost gate | DEEP/borderline | no cost function; curator has no advisory signal | context/metrics.py or curator.py, config CostGateSettings, ADR-0040 | total_memory_cost(...) pure | PAA_COST_GATE__* | T-007 (scorer lives) | — | W5 | TBD | planned | — | — |
+| T-011-P011 | P-011 | coding specialist | DEEP | specialists pkg empty; depth>2 returns failure without rollback event | agents/specialists/*, core/types.py (AgentRole), orchestrator, policy globs, ledger | AgentRole.CODING_SPECIALIST | PAA_SPECIALISTS__CODING__ENABLED | T-007 + ADR-0041 (W1) | C2 types.py | W5 | TBD | planned | — | — |
 
 ## Waves
 ### Wave 0 (investigation)
 - WAVE_BASE_SHA: 88e648bf88b187c9cb0007f07e4019a079daf2d5
-- Agents: INV-01..INV-05 (planned)
+- Agents: INV-01..INV-05 (all DONE)
 - Ownership file: ownership/W0.tsv
-- Pre-mortem: plan file:line claims may be stale vs HEAD 88e648b; investigators must re-verify, not copy. Watch P02 gatherer projection fields, P09 schema parity, P10 WorldModel API — all cited but never executed against.
-- Gate results: pending
+- Pre-mortem: plan file:line claims stale → investigators re-verified; plan PREFIX/HEAD drift found (HEAD `c15b665` = docs-only over `88e648b`; `src/` identical) — all claims hold.
+- Gate results: orchestrator spot-checks 10 claims (effective_confidence 11/5, workers:alloc 1 producer, STATE_ROLLBACK_TRIGGERED wired, _touch_recalled 4 defs/12 hits, total_memory_cost absent, ADR 0036–0043 free, Dockerfile.embed absent, redact :256/:278, runtime:481 unredacted, replay _NO_PHASE_CHANGE) — all held (see 00-mission.md).
+- Status: DONE (reports committed W1 boundary commit)
+
+### Wave 1 (foundation: Settings + ADRs + redaction + derivation)
+- WAVE_BASE_SHA: `c15b665` (run HEAD at open)
+- Agents: W1-IMPL-01 (T-014), W1-IMPL-02 (T-001), W1-IMPL-03 (T-002) — parallel, disjoint write-sets (ownership/W1.tsv)
+- Pre-mortem: (a) P-014 ADR texts copied from plan without resolving INV-05 offline-vs-derived contradiction → gate: reviewer checks ADR-0042 resolves it explicitly; (b) P-001 Fix B temptation (new helper) → forbidden by brief; (c) P-002 payload-enrichment temptation → Fix A enforced, creator.py comment-only; (d) siblings colliding on config.py/runtime.py → disjoint ownership + COMMS CLAIM required.
+- Gate results: pending (orchestrator gate → REV+TREV independent review → improvement per skill §9)
 - Status: in progress
+
+### Wave 2 (planned, sequenced by W1 gate)
+- T-004a touch unification (SURFACE, 4 sites) · T-009a tier vocab/policy/replay · T-009b tier DDL v5 (single-writer migrations+SQL) · T-005 Dockerfile.embed (after ADR-0042). `migrations.py` + both SQL files single writer (v5); `core/types.py`+`replay.py` single writer; `config.py` re-entered only for TierSettings (P14 already declared it — use only, no new declaration).
+
+### Wave 3 (planned)
+- T-009c sweeper · T-010 vault (reflection delegation) · T-006 panels (attention_top null until P-007) · T-004b coder fallback (after T-002 derivation + Runtime.embedder field + ADR-0039). `reflection.py` sequenced by function. `api/app.py` sequenced touch vs panels.
+
+### Wave 4 (planned)
+- T-007 allocator+drain · T-013 reflection wiring (after vault fence delegation) · T-003 stored-normalisation (migration v6, after v5 parity).
+
+### Wave 5 (planned)
+- T-008 cost gate · T-011 coding pilot. Final review on combined diff (Step 8).
 
 ## Deep dives
 | Task | Agent | Design approved by | Report | Reviewers |
 |---|---|---|---|---|
+| (none yet — ADR-0037 projection-target decision is recorded in ADR-0037 by T-014; tier-dict fold accepted per INV-01 §P-009) | — | — | — | — |
+
+## Conflicts (cross-task, decided)
+- C1: ADR README + ADR files — sole owner T-014 (W1). Later waves cite, never create ADRs in parallel.
+- C2: `core/types.py` + `ledger/replay.py` EventType surface — T-009a (W2) → T-007 (W4) → T-011 (W5) sequenced; each adds to the previous, never parallel.
+- C3: schema parity lock — T-009b owns both SQL files + `migrations.py` v5 (W2); T-003 v6 only after v5 lands (W4); same-commit both-files rule enforced.
+- C4: `config.py` — sole owner T-014 (W1) declares all 8 sub-models; later waves consume flags, do not declare new sub-models except via new task brief.
+- C5: `context_agents.py` / `api/app.py` / `runtime.py` shared files — sequenced by function (T-002 _semantic W1 → T-004a touch sites W2 → T-004b runtime.embedder W3); CLAIM via COMMS before editing.
+- C6: `reflection.py` — T-010 delegates `_write_managed_block` to WorldModel (W3) BEFORE T-013 weekly wiring (W4); no parallel edits.
+- C7: `migrations.py` v5 step number — T-009b confirms v5 is next (INV-01: SCHEMA_VERSION=4; INV-02: same) before writing.
 
 ## Deferred / open items
+- RSK3 (vault precedence overwrite) — closed by T-010 fence conflict semantics (ADR-0038); verify at W3 gate.
+- RSK4 (first deleting tick before R3 verified) — dry_run=True default enforced by T-014 flag; R3 drill is operator-gated manual (plan §H Manual) — flagged for final report.
+- RS2 Docker availability UNKNOWN on host (INV-05: docker absent on Windows host) — P-005 T06 runs in CI/embed-image only; not a W1 blocker.
+- Baseline category A–D failures (00-mission.md) — pre-existing; gate = never grow; category B strftime + category C docs-ref + category D stale test are NOT this run's fixes unless directed.
+- `datetime` — planned Wave sequencing above; no task may start until its upstream task's review passes (W1 gate before W2 briefs).
+
 ## Out-of-plan discoveries
 - A-001: mypy 3 pre-existing errors on Windows host at `src/paa/sandbox/subprocess_backend.py:548` (POSIX `os.killpg`/`os.getpgid`/`signal.SIGKILL` in `else` of `IS_WINDOWS`); CI Linux gate unaffected. Pre-existing, not this run's change.
+- INV-01: reflection shadow writer + private-method use (in T-010 scope via delegation refactor).
+- INV-01: `world_model.py _new_document(..., source)` ignores `source` (include header write in T-010).
+- INV-04: 5 further unredacted `str(exc)` siblings of P-001 (out of scope; FINDINGs, not fixes).
+- INV-04: `hot_serving_evaluation_results` + `hot_serving_agent_registry` tables never written by any code (P-006 honest-null context).
+- INV-05: CI `all` shape timeout — embed job would add second torch download path (scope to all-only/nightly — ADR-0042 should record).
 
 ## Temporary mitigations (user-approved)
+- A-005: operator authorized autonomous execution (no approval checkpoints mid-run); wave gates substitute for checkpoints. Recorded in 00-mission.md assumptions.
+
 ## Assumptions → see 00-mission.md

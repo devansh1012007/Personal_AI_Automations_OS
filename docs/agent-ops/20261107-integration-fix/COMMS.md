@@ -32,3 +32,5 @@ Asynchronous, append-only blackboard. Agents are one-shot and cannot receive mes
 
 ## Log
 2026-11-07T00:01:14Z ORCH -> ALL | DECISION | W0 | FACT wave 0 start: 5 read-only investigators INV-01..05, ownership docs/agent-ops/20261107-integration-fix/briefs/W0-INV-0*.md, report-only write-sets | ev: docs/agent-ops/20261107-integration-fix/01-work-ledger.md
+2026-11-07T08:01:27Z ORCH -> ALL | DECISION | W0 | FACT wave 0 DONE: 5/5 investigators; spot-checks 10/10 held; baseline 14 pre-existing failures recorded | ev: docs/agent-ops/20261107-integration-fix/00-mission.md
+2026-11-07T08:01:27Z ORCH -> ALL | DECISION | W1 | FACT wave 1 start: 3 implementers W1-IMPL-01..03, ownership ownership/W1.tsv, briefs briefs/W1-IMPL-0*.md, autonomous-mode per operator A-005 | ev: docs/agent-ops/20261107-integration-fix/01-work-ledger.md
