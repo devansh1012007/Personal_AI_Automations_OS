@@ -165,7 +165,8 @@ and in the DDL that upgrades one to the next. See
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+import json
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from functools import cache
@@ -174,6 +175,7 @@ from typing import Any, Final, Literal, Protocol
 
 from paa.core.errors import StorageError
 from paa.storage.relational.connection import TransactionConnection
+from paa.storage.relational.dialect import fold_case
 from paa.storage.relational.errors import QueryRejected, SchemaVersionError
 from paa.storage.relational.like import JSONB_DEFAULT_PATTERN
 from paa.storage.relational.schema_parser import (
@@ -378,6 +380,17 @@ class GuardedStatement:
     guard_params: tuple[Any, ...]
     statements: tuple[str, ...]
     schema_scoped: bool = False
+    #: An optional Python-executed action for effects no SQL can express.
+    #:
+    #: PLAN:integration-fix:P003 (ADR-0029): the stored normalisation
+    #: backfill folds in Python via :func:`fold_case` - an SQL
+    #: ``lower()`` backfill would reintroduce the engine fold this
+    #: migration exists to close. When set, the runner calls it with
+    #: the migration transaction connection after the guard fires,
+    #: before (and in addition to) any ``statements``. It must be
+    #: re-runnable: re-running it on a database the guard says is
+    #: finished changes nothing.
+    python: Callable[[TransactionConnection], Awaitable[None]] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1117,6 +1130,277 @@ def _span_parent_id_step(table: str, column: str) -> MigrationStep:
     )
 
 
+#: PLAN:integration-fix:P003 - name the FTS trigger step's triggers.
+#:
+#: The names match the schema file's triggers so a fresh database and a
+#: migrated one end up with the same triggers under the same names. They
+#: are literals here rather than read from the file, for the same reason
+#: the arrival triggers are: the schema file and the migration both
+#: create them, and the shape comparison holds the two together.
+_FTS_TRIGGERS: tuple[str, ...] = (
+    "trg_entity_fts_insert",
+    "trg_entity_fts_delete",
+    "trg_entity_fts_update",
+)
+
+
+def _entity_norm_column_step(table: str, column: str) -> MigrationStep:
+    """The step that adds one stored-normalisation column (ADR-0029).
+
+    PLAN:integration-fix:P003 - ``canonical_name_norm`` and
+    ``aliases_norm`` on ``hot_serving_entity_index``, in both schemas.
+    Nullable ``TEXT`` with no default and no CHECK: NULL is the
+    "unnormalised" mark the backfill guard asks for, and no folded
+    text can violate a constraint. ``NOT NULL`` would block the
+    ``ADD COLUMN`` on a non-empty table without a default, and a
+    default would be a lie about what the fold is.
+    """
+    return MigrationStep(
+        description=f"{table} gains the stored-normalisation column {column}",
+        table=table,
+        column=column,
+        sqlite=EngineStep(
+            guarded=(
+                GuardedStatement(
+                    guard=(
+                        "SELECT 1 WHERE NOT EXISTS ("
+                        "  SELECT 1 FROM pragma_table_info(?) WHERE name = ?"
+                        ")"
+                    ),
+                    guard_params=(table, column),
+                    statements=(
+                        f"ALTER TABLE {table} ADD COLUMN {column} TEXT",
+                    ),
+                ),
+            )
+        ),
+        postgres=EngineStep(
+            guarded=(
+                GuardedStatement(
+                    guard=(
+                        "SELECT 1 WHERE NOT EXISTS ("  # noqa: S608
+                        "  SELECT 1 FROM information_schema.columns "
+                        "  WHERE table_name = ? AND column_name = ? "
+                        f"    AND table_schema = {SCHEMA_PLACEHOLDER}"
+                        ")"
+                    ),
+                    guard_params=(table, column),
+                    schema_scoped=True,
+                    statements=(
+                        f"ALTER TABLE {SCHEMA_PLACEHOLDER}.{table} "
+                        f"ADD COLUMN {column} TEXT",
+                    ),
+                ),
+            )
+        ),
+    )
+
+
+def _entity_fts_norm_step(table: str, column: str) -> MigrationStep:
+    """The step that points the FTS5 sync at the normalised text.
+
+    PLAN:integration-fix:P003 - the SQLite FTS table keeps its
+    ``canonical_name, aliases`` column names, but the triggers now
+    insert the normalised values into them. The candidate query is
+    still ``MATCH`` over the same table; the tokens it searches are
+    now the grams of the Python-folded, non-escaped text, so the
+    SQLite candidate set is the same set PostgreSQL draws with
+    ``LIKE`` over the normalised columns. The backfill runs after
+    this step, so each backfilled row's ``UPDATE`` fires these
+    triggers and the index is rebuilt row by row - no separate
+    rebuild statement is needed. PostgreSQL has no FTS table;
+    its half is empty.
+    """
+    insert_trigger = "trg_entity_fts_insert"
+    delete_trigger = "trg_entity_fts_delete"
+    update_trigger = "trg_entity_fts_update"
+    return MigrationStep(
+        description=f"{table} FTS sync indexes the stored-normalised text",
+        table=table,
+        column=column,
+        sqlite=EngineStep(
+            guarded=(
+                GuardedStatement(
+                    guard=(
+                        "SELECT 1 WHERE NOT EXISTS ("
+                        "  SELECT 1 FROM sqlite_master "
+                        "  WHERE type = 'trigger' AND name = ? "
+                        "  AND sql LIKE '%canonical_name_norm%'"
+                        ")"
+                    ),
+                    guard_params=(insert_trigger,),
+                    statements=(
+                        f"DROP TRIGGER IF EXISTS {insert_trigger}",
+                        (
+                            f"CREATE TRIGGER {insert_trigger} "  # noqa: S608
+                            f"AFTER INSERT ON {table} "
+                            "BEGIN "
+                            "  INSERT INTO hot_serving_entity_fts"
+                            "(rowid, canonical_name, aliases) "
+                            "  VALUES "
+                            "(new.rowid, new.canonical_name_norm, "
+                            "new.aliases_norm); "
+                            "END"
+                        ),
+                    ),
+                ),
+                GuardedStatement(
+                    guard=(
+                        "SELECT 1 WHERE NOT EXISTS ("
+                        "  SELECT 1 FROM sqlite_master "
+                        "  WHERE type = 'trigger' AND name = ? "
+                        "  AND sql LIKE '%canonical_name_norm%'"
+                        ")"
+                    ),
+                    guard_params=(delete_trigger,),
+                    statements=(
+                        f"DROP TRIGGER IF EXISTS {delete_trigger}",
+                        (
+                            f"CREATE TRIGGER {delete_trigger} "  # noqa: S608
+                            f"AFTER DELETE ON {table} "
+                            "BEGIN "
+                            "  INSERT INTO hot_serving_entity_fts"
+                            "(hot_serving_entity_fts, rowid, "
+                            "canonical_name, aliases) "
+                            "  VALUES ('delete', old.rowid, "
+                            "old.canonical_name_norm, "
+                            "old.aliases_norm); "
+                            "END"
+                        ),
+                    ),
+                ),
+                GuardedStatement(
+                    guard=(
+                        "SELECT 1 WHERE NOT EXISTS ("
+                        "  SELECT 1 FROM sqlite_master "
+                        "  WHERE type = 'trigger' AND name = ? "
+                        "  AND sql LIKE '%canonical_name_norm%'"
+                        ")"
+                    ),
+                    guard_params=(update_trigger,),
+                    statements=(
+                        f"DROP TRIGGER IF EXISTS {update_trigger}",
+                        (
+                            f"CREATE TRIGGER {update_trigger} "  # noqa: S608
+                            f"AFTER UPDATE ON {table} "
+                            "BEGIN "
+                            "  INSERT INTO hot_serving_entity_fts"
+                            "(hot_serving_entity_fts, rowid, "
+                            "canonical_name, aliases) "
+                            "  VALUES ('delete', old.rowid, "
+                            "old.canonical_name_norm, "
+                            "old.aliases_norm); "
+                            "  INSERT INTO hot_serving_entity_fts"
+                            "(rowid, canonical_name, aliases) "
+                            "  VALUES "
+                            "(new.rowid, new.canonical_name_norm, "
+                            "new.aliases_norm); "
+                            "END"
+                        ),
+                    ),
+                ),
+            )
+        ),
+        postgres=EngineStep(),
+    )
+
+
+async def _backfill_entity_norm(conn: TransactionConnection) -> None:
+    """Fill the stored-normalisation columns, folding in Python.
+
+    PLAN:integration-fix:P003 - the backfill is Python-executed,
+    never an SQL ``lower()`` backfill: the two engines' ``lower()``
+    are the divergence this migration exists to close, and folding
+    here with :func:`fold_case` is the one place the fold is
+    decided. ``aliases_norm`` is the folded alias list as JSON
+    text with ``ensure_ascii=False`` so a non-ASCII alias is
+    visible to the count proxy; the raw ``aliases`` blob keeps
+    its escaped form via ``database.dumps``. A corrupt alias blob
+    (not JSON, or not a list) backfills to ``'[]'`` - the gate's
+    view via ``loads`` with its fail-soft default - so the alias
+    rung sees an empty list rather than an error.
+
+    Re-runnable by construction: only rows whose normalised
+    columns are ``NULL`` are read, and writing the same folded
+    values again changes nothing. A crash mid-backfill rolls
+    back with the migration transaction; a hand-built partial
+    state (some rows filled, some ``NULL``) is repaired on
+    re-run by filling the rest.
+    """
+    async with conn.execute(
+        "SELECT id, canonical_name, aliases "
+        "FROM hot_serving_entity_index "
+        "WHERE canonical_name_norm IS NULL OR aliases_norm IS NULL"
+    ) as cur:
+        rows = await cur.fetchall()
+    for row in rows:
+        canonical = str(row["canonical_name"])
+        canonical_norm = fold_case(canonical)
+        raw_aliases = row["aliases"]
+        try:
+            parsed = json.loads(raw_aliases) if isinstance(raw_aliases, str) else []
+            if not isinstance(parsed, list):
+                parsed = []
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            parsed = []
+        folded_aliases = [fold_case(str(alias)) for alias in parsed]
+        aliases_norm = json.dumps(
+            folded_aliases, ensure_ascii=False, separators=(",", ":")
+        )
+        await conn.execute(
+            "UPDATE hot_serving_entity_index "
+            "SET canonical_name_norm = ?, aliases_norm = ? WHERE id = ?",
+            (canonical_norm, aliases_norm, str(row["id"])),
+        )
+
+
+def _entity_norm_backfill_step(table: str, column: str) -> MigrationStep:
+    """The Python-executed backfill for the stored-normalisation columns.
+
+    PLAN:integration-fix:P003 - the guard asks about the finished
+    effect ("no row is unnormalised") and the action is the
+    Python loop above. Separate from the add-column guards so the
+    crash-mid-step state (column exists, rows never filled) is
+    repaired rather than skipped behind an add-column guard.
+    The guard is a data guard, unqualified, on both engines -
+    the same shape as the tier backfill's - so it never renders
+    the schema as a quoted literal in name position.
+    """
+    return MigrationStep(
+        description=f"{table} backfills the stored-normalisation columns",
+        table=table,
+        column=column,
+        sqlite=EngineStep(
+            guarded=(
+                GuardedStatement(
+                    guard=(
+                        "SELECT 1 FROM hot_serving_entity_index "
+                        "WHERE canonical_name_norm IS NULL "
+                        "OR aliases_norm IS NULL LIMIT 1"
+                    ),
+                    guard_params=(),
+                    statements=(),
+                    python=_backfill_entity_norm,
+                ),
+            )
+        ),
+        postgres=EngineStep(
+            guarded=(
+                GuardedStatement(
+                    guard=(
+                        "SELECT 1 FROM hot_serving_entity_index "
+                        "WHERE canonical_name_norm IS NULL "
+                        "OR aliases_norm IS NULL LIMIT 1"
+                    ),
+                    guard_params=(),
+                    statements=(),
+                    python=_backfill_entity_norm,
+                ),
+            )
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # The list
 # ---------------------------------------------------------------------------
@@ -1150,6 +1434,24 @@ MIGRATIONS: tuple[Migration, ...] = (
         steps=(
             _tier_step("hot_serving_active_facts", "tier"),
             _tier_updated_at_step("hot_serving_active_facts", "tier_updated_at"),
+        ),
+    ),
+    Migration(
+        version=6,
+        description=(
+            "stored normalisation on the entity row (ADR-0029 a-d, P003)"
+        ),
+        steps=(
+            _entity_norm_column_step(
+                "hot_serving_entity_index", "canonical_name_norm"
+            ),
+            _entity_norm_column_step("hot_serving_entity_index", "aliases_norm"),
+            _entity_fts_norm_step(
+                "hot_serving_entity_index", "canonical_name_norm"
+            ),
+            _entity_norm_backfill_step(
+                "hot_serving_entity_index", "canonical_name_norm"
+            ),
         ),
     ),
 )
@@ -1713,6 +2015,8 @@ class MigrationRunner:
         for guarded in step.guarded:
             if not await self._still_needed(conn, guarded):
                 continue
+            if guarded.python is not None:
+                await guarded.python(conn)
             for statement in self._statements_for(guarded):
                 await self._execute(conn, statement)
 

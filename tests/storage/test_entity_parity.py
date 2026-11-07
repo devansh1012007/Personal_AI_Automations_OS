@@ -118,16 +118,21 @@ belongs:
 * the two together make the two substrates answer **differently** for the
   same term and the same corpus.
 
-:class:`TestTheRecordedDivergence` records the one divergence that is
-**not** repaired: the case fold of the *column* is the engine's, and the
-two engines' folds are not the same fold outside ASCII. That test
-**passes while the divergence exists** — it is a measurement of what the
-two substrates do, and it is what says the limitation is still open.
+PLAN:integration-fix:P003 (ADR-0029 a-d): the stored normalisation
+(``canonical_name_norm`` / ``aliases_norm``, Python-folded at write
+time, backfilled by migration v6) closed the one divergence that was
+recorded rather than repaired — the column fold is no longer the
+engine's. ``TestTheRecordedDivergence`` moved into
+``TestTheRepairedDivergences`` in its repaired form: the three U+0130
+measurements now assert the same answer on both substrates (fuzzy
+0.625 for İstanbul, no match for İZMİR with the row visible to the
+broad query, and identical broad candidate sets).
 """
 
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -138,6 +143,7 @@ import pytest
 
 from paa.memory.facts import Entity, FactRepository, _trigrams, trigram_similarity
 from paa.storage.relational.database import Database, dumps, to_iso
+from paa.storage.relational.dialect import fold_case
 from paa.storage.relational.postgres import PostgresDatabase
 
 #: The server the tests run against, or ``None`` when there is none.
@@ -402,18 +408,31 @@ async def _seed(db: Database | PostgresDatabase, rows: Sequence[_Row]) -> None:
 
     Every value is written the same way on both substrates: the id and the
     timestamps as text, which each engine casts to its own type, and the
-    aliases as the same JSON text.
+    aliases as the same JSON text. PLAN:integration-fix:P003: the stored
+    fold is written alongside, computed with the same fold the write path
+    uses — ``fold_case`` of the canonical name and the folded alias list
+    as non-escaped JSON — so the corpus exercises the normalised columns
+    the candidate query now measures.
     """
     for row in rows:
+        canonical_norm = fold_case(row.canonical_name)
+        aliases_norm = json.dumps(
+            [fold_case(alias) for alias in row.aliases],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
         await db.execute(
             "INSERT INTO hot_serving_entity_index (id, class, canonical_name, aliases,"
+            " canonical_name_norm, aliases_norm,"
             " importance_weight, confidence_rating, attributes, created_at, updated_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?)",
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
                 row.id,
                 "person",
                 row.canonical_name,
                 dumps(list(row.aliases)),
+                canonical_norm,
+                aliases_norm,
                 0.5,
                 1.0,
                 "{}",
@@ -1269,100 +1288,60 @@ class TestTheRepairedDivergences:
         assert sqlite_answer.score == pytest.approx(0.9167, abs=1e-4)
         assert postgres_answer.score == pytest.approx(0.9167, abs=1e-4)
 
-
-# ---------------------------------------------------------------------------
-# The divergence this suite records rather than repairs
-# ---------------------------------------------------------------------------
-
-
-class TestTheRecordedDivergence:
-    """The case fold of the *column* is the engine's, and it is not the same.
-
-    **This test passes while the divergence exists.** It is a
-    *measurement*, not a contract: it records what the two substrates do
-    with a name carrying ``U+0130`` ``İ`` — the one code point the three
-    engines fold three ways — so that the limitation is a number somebody
-    measured rather than an assumption somebody made. The class is here
-    precisely because the divergence is **not** repaired: the repair
-    needs a stored, Python-computed normalisation (ADR-0029's limitation
-    (a)), which is a schema change in both DDL files plus a backfill.
-
-    The direction of the divergence matters, and it is **one-directional**:
-    PostgreSQL's locale-aware ``lower()`` folds ``İ`` to a single ``i``,
-    while SQLite's ASCII-only ``lower()`` and FTS5's simple fold leave it
-    alone. So **PostgreSQL sees rows the other substrate cannot see**, and
-    the two answers are not the same answer — sometimes one substrate
-    resolves and the other does not, and sometimes both resolve the
-    *same* entity with a different match kind and a different score.
-
-    A test that records a divergence is a test that has to be *moved*
-    when the divergence is repaired, not deleted: it becomes a member of
-    :class:`TestTheRepairedDivergences`, where a failure means the
-    repair is done.
-    """
-
-    async def test_the_two_substrates_answer_the_same_entity_differently(
+    async def test_the_two_substrates_answer_the_same_entity_identically(
         self, fold_substrates: _Substrates
     ) -> None:
-        """The same entity, two answers: a different match kind and score.
+        """The same entity, the same answer: fuzzy 0.625 on both.
 
-        The term ``"istanbul"`` against the stored name ``"İstanbul"``.
-        PostgreSQL's ``lower()`` folds the stored name to ``"istanbul"``,
-        so its *exact* rung answers — match kind ``exact``, score 1.0.
-        SQLite's ``lower()`` is ASCII-only and leaves ``İ`` alone, so the
-        exact rung does not answer, the fuzzy rung does, and it scores
-        0.625 (five of the term's six grams are shared, over the union of
-        the two gram sets).
-
-        The two substrates therefore disagree about *how* they found the
-        same entity — and the match kind is part of the cross-substrate
-        contract, so this is a divergence and not a rounding difference.
+        PLAN:integration-fix:P003 repaired this divergence. The stored
+        fold is ``fold_case`` of the canonical name, so the exact rung
+        misses the two-character mapping on both substrates and the
+        gate decides — and the gate scores ``"istanbul"`` against
+        ``"İstanbul"`` at 0.625 on both. Before the repair the two
+        substrates disagreed about match kind and score: PostgreSQL
+        answered exact 1.0 through its locale-aware ``lower()``,
+        SQLite answered fuzzy 0.625.
         """
         sqlite_answer = _triple(await _resolve(fold_substrates.sqlite, "istanbul"))
         postgres_answer = _triple(await _resolve(fold_substrates.postgres, "istanbul"))
 
         assert sqlite_answer == ("00000000-0000-4000-8000-000000000021", "fuzzy", 0.625)
-        assert postgres_answer == ("00000000-0000-4000-8000-000000000021", "exact", 1.0)
+        assert postgres_answer == sqlite_answer
 
-    async def test_the_divergence_can_hide_a_row_from_one_substrate(
+    async def test_both_substrates_agree_the_gate_rejects_izm(
         self, fold_substrates: _Substrates
     ) -> None:
-        """One substrate resolves the term; the other does not.
+        """Neither substrate resolves a pair the gate refuses.
 
-        The term ``"izmir"`` against the stored name ``"İZMİR"``.
-        PostgreSQL's exact rung answers (its ``lower()`` folds the stored
-        name to ``"izmir"``); SQLite's does not, and its fuzzy rung
-        cannot either — the gate scores the pair at 1/7, below the floor.
-
-        This is the direction of the divergence: the locale-aware fold
-        sees a row the ASCII-only fold cannot, so the answers differ in
-        *whether* they resolve, not only in how.
+        PLAN:integration-fix:P003 repaired this divergence. The term
+        ``"izmir"`` against ``"İZMİR"`` scores 1/7 at the gate, below
+        the floor, so the answer is no match on both — even though the
+        broad query offers the row on both (see the next test). Before
+        the repair PostgreSQL resolved it exactly through its
+        locale-aware fold while SQLite answered no match.
         """
         sqlite_answer = await _resolve(fold_substrates.sqlite, "izmir")
         postgres_answer = await _resolve(fold_substrates.postgres, "izmir")
 
         assert sqlite_answer is None, f"sqlite resolved {sqlite_answer!r}"
-        assert postgres_answer is not None
-        assert postgres_answer.id == "00000000-0000-4000-8000-000000000022"
-        assert postgres_answer.match == "exact"
+        assert postgres_answer is None, f"postgres resolved {postgres_answer!r}"
 
-    async def test_the_broad_candidate_sets_diverge(
+    async def test_the_broad_candidate_sets_agree(
         self, fold_substrates: _Substrates
     ) -> None:
-        """The candidate sets differ, so the gate is given different rows.
+        """The candidate sets agree: both offer the row the gate refuses.
 
-        The count proxy counts the term's grams in the *column*, and the
-        column is folded by the engine. For the term ``"izmir"`` and the
-        row ``"İZMİR"``: PostgreSQL's ``lower()`` gives ``"izmir"``, which
-        holds the term's grams, so the row is a candidate; SQLite's gives
-        ``"İZMİR"``, which holds none of them, so the row is not.
-
-        The count proxy is the *numerator* the gate counts with, so the
-        divergence is not a difference in ranking: it is a difference in
-        which rows the gate is shown at all.
+        PLAN:integration-fix:P003 repaired this divergence. The count
+        proxy now counts over the stored fold, so for the term
+        ``"izmir"`` and the row ``"İZMİR"`` (folded ``"i̇zmi̇r"``)
+        both substrates offer the row through the shared gram
+        ``"zmi"`` — and the gate refuses it on both, which is the
+        previous test. The sets are identical and non-empty. Before
+        the repair SQLite offered nothing and PostgreSQL offered the
+        row.
         """
         sqlite_candidates = await _candidates(fold_substrates.sqlite_db, "izmir", "broad")
         postgres_candidates = await _candidates(fold_substrates.postgres_db, "izmir", "broad")
 
-        assert sqlite_candidates == set()
-        assert postgres_candidates == {"00000000-0000-4000-8000-000000000022"}
+        assert sqlite_candidates == {"00000000-0000-4000-8000-000000000022"}
+        assert postgres_candidates == sqlite_candidates

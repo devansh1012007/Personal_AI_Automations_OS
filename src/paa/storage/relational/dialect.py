@@ -90,32 +90,24 @@ __all__ = [
     "fold_case",
 ]
 
-#: The two columns an entity's text lives in: the canonical name, and the
-#: alias blob (the JSON *text* of the alias array). Both are folded to
-#: lower case by the statement — the *column* is folded by the engine and
-#: the *term* is folded by :func:`fold_case`, and the two folds are not the
-#: same fold: SQLite's ``lower()`` is ASCII-only and PostgreSQL's is
-#: locale-aware. The divergence for non-ASCII text is a recorded
-#: limitation rather than an accident (see ``docs/plans/w3-w5.md`` §1.6).
+#: The two columns an entity's text lives in, in stored-normalised form.
+#: PLAN:integration-fix:P003 (ADR-0029 a-d): ``canonical_name_norm`` is
+#: ``fold_case(canonical_name)`` computed in Python at write time, and
+#: ``aliases_norm`` is the folded alias list as JSON text with
+#: ``ensure_ascii=False``. Both are folded by Python, not by the
+#: engine, so the count proxy, the phrase predicate and the FTS sync
+#: ask about the same folded text on both substrates. The raw
+#: ``aliases`` blob keeps ``ensure_ascii=True`` via ``database.dumps``
+#: and is no longer read by the candidate query: a non-ASCII alias is
+#: visible here and invisible there.
 #:
 #: The alias **blob** rather than the expanded aliases, and that is
 #: deliberate: the blob is the same text on both engines, so the two
 #: candidate queries are the same question asked the same way, and a row
 #: whose alias column is corrupt cannot break one engine's fuzzy rung and
 #: not the other's.
-#:
-#: **The blob is JSON text, and ``json.dumps`` escapes non-ASCII.** The
-#: column holds ``["\u00e9\u00e9\u00e9"]`` for the alias ``"ééé"``, so a
-#: non-ASCII alias is **invisible to the count proxy**: the proxy's
-#: pattern is built from the folded *text*, and the text is not in the
-#: escaped blob. The gate would score that alias 0.5 against the term
-#: ``"éééx"`` — over the floor — and the row is not in the candidate set,
-#: so the answer is "no match". The breakage is *symmetric*: the blob is
-#: the same text on both substrates, so both answer "no match" and the
-#: superset property fails on both rather than on one. Closing it needs a
-#: stored normalised form (ADR-0029's limitation (c)).
-_CANONICAL_COLUMN: Final[str] = "lower(e.canonical_name)"
-_ALIASES_COLUMN: Final[str] = "lower(e.aliases)"
+_CANONICAL_COLUMN: Final[str] = "e.canonical_name_norm"
+_ALIASES_COLUMN: Final[str] = "e.aliases_norm"
 
 
 def fold_case(text: str) -> str:
@@ -130,12 +122,12 @@ def fold_case(text: str) -> str:
     built from — is case-sensitive outright.
 
     That last one is the defect this function exists to close. The phrase
-    predicate folds the *column* (``lower(e.canonical_name)``) and compares
-    it with a bound pattern, and on the server the comparison is
-    case-sensitive, so a pattern bound with the **raw** term matches no row
-    there while FTS5 — which folds the term itself — matches it on SQLite:
-    the two engines running different queries over the same corpus, and
-    answering differently.
+    predicate folds the *column* and compares it with a bound pattern,
+    and on the server the comparison is case-sensitive, so a pattern
+    bound with the **raw** term matches no row there while FTS5 — which
+    folds the term itself — matches it on SQLite: the two engines
+    running different queries over the same corpus, and answering
+    differently.
 
     So the fold happens here, in Python, once, and both engines' phrase
     predicates are built from the text it produces.
@@ -153,16 +145,13 @@ def fold_case(text: str) -> str:
     ``İ`` to a single ``i``). Every other code point folds to the same
     token set, and the *fold itself* is idempotent everywhere.
 
-    **And the column is folded by the engine, not by this.** The gate
-    folds the row's text with Python; the candidate query folds it with
-    the engine's ``lower()`` — ASCII-only on SQLite, locale-aware on
-    PostgreSQL. So the *term* is folded the same way everywhere, and the
-    *column* is not: for text outside ASCII the two substrates can still
-    answer differently. That is the recorded limitation of
-    ``docs/plans/w3-w5.md`` §1.6, not a new one, and it is the reason
-    the fold is done here rather than by the engine. This is the same
-    fold the repository's gate uses (:func:`paa.memory.facts._trigrams`),
-    so the candidate query asks about the same *term* the gate scores.
+    **PLAN:integration-fix:P003:** the column is now folded by this
+    function at write time and stored (``canonical_name_norm`` /
+    ``aliases_norm``) - the candidate query reads the stored fold
+    rather than the engine's. This is the same fold the repository's
+    gate uses (:func:`paa.memory.facts._trigrams`), so the candidate
+    query asks about the same *term* the gate scores, and the same
+    *column* the gate scores.
     """
     return text.lower()
 
@@ -444,13 +433,14 @@ class PostgresDialect:
             # compiled into one.
             #
             # **The pattern is built from the folded term**, and that is the
-            # whole point of the fold: ``LIKE`` is case-sensitive on both
-            # engines while the *column* is folded by the engine, so a
-            # pattern bound with the raw term matches no row here while
-            # FTS5 — which folds the term itself — matches it on SQLite.
-            # The two engines would then run different queries over the
-            # same corpus and answer differently. Folded here, in Python,
-            # both engines' phrase predicates are built from the same text
+            # whole point of the fold: ``LIKE`` is case-sensitive on the
+            # server while the stored columns are already folded by
+            # :func:`fold_case`, so a pattern bound with the raw term
+            # matches no row here while FTS5 — which folds the term itself
+            # — matches it on SQLite. The two engines would then run
+            # different queries over the same corpus and answer
+            # differently. Folded here, in Python, both engines' phrase
+            # predicates are built from the same text
             # (see :func:`fold_case`).
             folded = fold_case(term)
             predicate = like_predicate(_CANONICAL_COLUMN, _ALIASES_COLUMN)
@@ -506,20 +496,20 @@ def _count_proxy(grams: tuple[str, ...]) -> tuple[str, tuple[str, ...]]:
     ``CASE`` per (gram, column) pair, and one bound pattern per
     expression, in the order the expressions appear. It is a count of
     the *row's text as the query sees it* — the canonical name plus the
-    alias **blob** — rather than an engine's relevance score, for three
-    reasons: it is the same measure on both engines, it is the measure
-    the broad predicate uses, and it is the measure the gate counts with
-    — so the rows the cut keeps are the rows that share the most with
-    the term.
+    alias **blob**, in stored-normalised form — rather than an engine's
+    relevance score, for three reasons: it is the same measure on both
+    engines, it is the measure the broad predicate uses, and it is the
+    measure the gate counts with — so the rows the cut keeps are the
+    rows that share the most with the term.
 
-    **"The same measure on both engines" is true for ASCII text, and only
-    for ASCII text.** The column is folded by the *engine* — SQLite's
-    ``lower()`` is ASCII-only, PostgreSQL's is locale-aware — and the two
-    folds are different folds, so outside ASCII the counts differ:
-    measured, the row ``"CAFÉ NOIR"`` against the term ``"café"`` counts
-    **1** on SQLite and **2** on PostgreSQL. The count is therefore
-    portable where the corpus is ASCII, and the divergence outside it is
-    the recorded limitation of ADR-0029, not a property of the proxy.
+    **PLAN:integration-fix:P003:** the columns are stored folded by
+    Python (``canonical_name_norm`` / ``aliases_norm``), so the count
+    is the same measure everywhere, including outside ASCII. Before,
+    the column was folded by the *engine* — SQLite's ``lower()`` is
+    ASCII-only, PostgreSQL's is locale-aware — and outside ASCII the
+    counts differed: measured, the row ``"CAFÉ NOIR"`` against the term
+    ``"café"`` counts **1** on SQLite and **2** on PostgreSQL. That
+    divergence is closed by the stored fold.
 
     **The count is not the score, and it is not the gate's own
     numerator either.** The gate scores the canonical name and each
@@ -540,11 +530,8 @@ def _count_proxy(grams: tuple[str, ...]) -> tuple[str, tuple[str, ...]]:
     two engines fold alike), and it is not a promise about which row the
     gate would have scored highest.
 
-    The two columns are the canonical name and the alias blob, both folded
-    to lower case by the statement (see :data:`_CANONICAL_COLUMN`). The
-    blob is **JSON text**, and ``json.dumps`` escapes non-ASCII, so a
-    non-ASCII alias is invisible to the count — see
-    :data:`_ALIASES_COLUMN`.
+    The two columns are the canonical name and the alias blob, in
+    stored-normalised form (see :data:`_CANONICAL_COLUMN`).
 
     :raises ValueError: if there are no grams. The proxy is a sum over the
         grams, and the sum of nothing cannot order a cut.

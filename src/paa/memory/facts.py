@@ -72,6 +72,7 @@ marker, because an unused marker is itself a finding.
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -243,6 +244,21 @@ def _trigrams(value: str) -> set[str]:
     return {folded[i : i + 3] for i in range(len(folded) - 2)}
 
 
+def _aliases_norm_value(aliases: Sequence[str]) -> str:
+    """PLAN:integration-fix:P003: the stored-normalised alias text.
+
+    The folded alias list as JSON text with ``ensure_ascii=False``:
+    the same JSON shape as the raw ``aliases`` column, but folded by
+    :func:`fold_case` and non-escaped, so a non-ASCII alias is
+    visible to the count proxy and to ``LIKE`` on both engines.
+    The raw blob stays escaped via ``database.dumps``; this is
+    the convergence mechanism, so the blob escape no longer
+    matters for the alias gate.
+    """
+    folded = [fold_case(alias) for alias in aliases]
+    return json.dumps(folded, ensure_ascii=False, separators=(",", ":"))
+
+
 # ---------------------------------------------------------------------------
 # Wire types
 # ---------------------------------------------------------------------------
@@ -372,17 +388,17 @@ class FactRepository:
         **The lookup is ordered, and it is the same order the read path
         uses.** The schema's ``UNIQUE`` on ``canonical_name`` is
         case-*sensitive*, so the table can hold ``café`` and ``Café`` as two
-        rows while this lookup's ``lower()`` comparison sees one key; an
+        rows while this lookup's stored-fold comparison sees one key; an
         unordered lookup would refresh whichever row the engine's scan
         reached first, and the two substrates would refresh *different*
         rows — while :meth:`resolve_entity`, which is ordered, reads one of
         them. The order is the unique ``id``, so the write path and the
         read path agree on which row the entity is.
 
-        (For text the two engines fold the same way. Outside ASCII their
-        ``lower()``\\ s are not the same fold, so they can hold different
-        key sets — the recorded limitation of ``docs/plans/w3-w5.md`` §1.6,
-        and the one this order does not address.)
+        PLAN:integration-fix:P003: the key is the stored fold
+        (``canonical_name_norm = fold_case(name)``), not the engine's
+        ``lower()`` — see ADR-0029 (a)(d). The fold is computed here and
+        written with the row, in the same transaction.
         """
         name = " ".join(canonical_name.split())
         if not name:
@@ -413,11 +429,16 @@ class FactRepository:
 
         stamp = to_iso(now or utc_now())
         incoming = _clean_aliases(aliases, exclude=name)
+        # PLAN:integration-fix:P003: the stored fold is computed once,
+        # here, and written in the same transaction as the row, so a
+        # crash cannot leave a row with one but not the other.
+        canonical_norm = fold_case(name)
+        aliases_norm = _aliases_norm_value(incoming)
 
         async with conn.execute(
             "SELECT id, aliases, importance_weight, attributes FROM hot_serving_entity_index "
-            "WHERE lower(canonical_name) = lower(?) ORDER BY id ASC LIMIT 1",
-            (name,),
+            "WHERE canonical_name_norm = ? ORDER BY id ASC LIMIT 1",
+            (canonical_norm,),
         ) as cur:
             row = await cur.fetchone()
 
@@ -425,13 +446,16 @@ class FactRepository:
             entity_id = str(uuid.uuid4())
             await conn.execute(
                 "INSERT INTO hot_serving_entity_index "
-                "(id, class, canonical_name, aliases, importance_weight, attributes,"
-                " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+                "(id, class, canonical_name, aliases, canonical_name_norm, aliases_norm,"
+                " importance_weight, attributes,"
+                " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (
                     entity_id,
                     class_,
                     name,
                     dumps(list(incoming)),
+                    canonical_norm,
+                    aliases_norm,
                     importance,
                     dumps(dict(attributes or {})),
                     stamp,
@@ -443,6 +467,7 @@ class FactRepository:
 
         entity_id = as_text(row["id"])
         merged = _merge_aliases(loads(row["aliases"], []) or [], incoming, exclude=name)
+        merged_norm = _aliases_norm_value(merged)
         attrs = dict(loads(row["attributes"], {}) or {})
         attrs.update(attributes or {})
         # The interpolated fragment is a dialect constant — a closed set of
@@ -450,10 +475,20 @@ class FactRepository:
         keep_max = self._db.dialect.scalar_max("importance_weight", "?")
         await conn.execute(
             "UPDATE hot_serving_entity_index SET class = ?, aliases = ?, "  # noqa: S608
+            "canonical_name_norm = ?, aliases_norm = ?, "
             f"importance_weight = {keep_max}, "
             "attributes = ?, updated_at = ? "
             "WHERE id = ?",
-            (class_, dumps(merged), importance, dumps(attrs), stamp, entity_id),
+            (
+                class_,
+                dumps(merged),
+                canonical_norm,
+                merged_norm,
+                importance,
+                dumps(attrs),
+                stamp,
+                entity_id,
+            ),
         )
         return entity_id
 
@@ -539,7 +574,7 @@ class FactRepository:
         # **The exact rung has a total order.** The schema's ``UNIQUE`` on
         # ``canonical_name`` is case-*sensitive* — SQLite's BINARY
         # collation, PostgreSQL's default — so the table can hold ``café``
-        # and ``Café`` as two rows while the rung's ``lower()`` comparison
+        # and ``Café`` as two rows while the rung's stored-fold comparison
         # sees them as *one* key. Without an order the answer was whichever
         # row the engine's scan reached first, and the two substrates
         # reached different rows over the same data.
@@ -551,17 +586,13 @@ class FactRepository:
         # ``ORDER BY id ASC`` is the same order on both engines, and the
         # answer is the same row on both.
         #
-        # The order is the part this fixes; the *key set* is the engine's
-        # ``lower()``, and the two engines' folds are the same for ASCII
-        # and not the same outside it — so for non-ASCII names the two
-        # substrates can still hold different keys, and can still answer
-        # differently. That is the recorded limitation of
-        # ``docs/plans/w3-w5.md`` §1.6, and it is not what this order
-        # addresses.
+        # PLAN:integration-fix:P003: the key is the stored fold
+        # (ADR-0029 (d)), so the two engines hold the same key set
+        # outside ASCII as well as inside it.
         exact = await self._db.fetch_one(
             "SELECT * FROM hot_serving_entity_index "
-            "WHERE lower(canonical_name) = lower(?) ORDER BY id ASC LIMIT 1",
-            (term,),
+            "WHERE canonical_name_norm = ? ORDER BY id ASC LIMIT 1",
+            (fold_case(term),),
         )
         if exact is not None:
             return _to_entity(exact)
@@ -599,7 +630,10 @@ class FactRepository:
         """
         from paa.storage.relational.errors import QueryRejected
 
-        alias_values = self._db.dialect.alias_values("e.aliases")
+        # PLAN:integration-fix:P003: the alias rung expands the
+        # stored-normalised alias text and compares each folded value
+        # to the folded term - the same fold on both substrates.
+        alias_values = self._db.dialect.alias_values("e.aliases_norm")
         try:
             # **The alias rung has a total order too**, for the same reason
             # the exact rung has one: the alias column can hold the same
@@ -625,8 +659,8 @@ class FactRepository:
             return await self._db.fetch_one(
                 "SELECT e.* FROM hot_serving_entity_index e, "  # noqa: S608
                 f"{alias_values} a "
-                "WHERE lower(a.value) = lower(?) ORDER BY e.id ASC",
-                (term,),
+                "WHERE a.value = ? ORDER BY e.id ASC",
+                (fold_case(term),),
             )
         except QueryRejected as exc:
             log.warning("memory.entity_alias_lookup_rejected", term=term, error=str(exc))

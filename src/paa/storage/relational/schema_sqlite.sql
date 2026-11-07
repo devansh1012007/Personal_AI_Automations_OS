@@ -218,6 +218,18 @@ CREATE TABLE IF NOT EXISTS hot_serving_entity_index (
     attributes        TEXT NOT NULL DEFAULT '{}',
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL,
+    -- PLAN:integration-fix:P003 - stored normalisation (ADR-0029 a-d).
+    -- Python-computed via dialect.fold_case at write time in
+    -- memory/facts.py upsert_entity; read paths measure against these
+    -- so both engines fold identically. aliases_norm is the folded
+    -- alias list as JSON text with ensure_ascii=False (non-escaped),
+    -- so a non-ASCII alias is visible to the count proxy; the raw
+    -- aliases blob keeps ensure_ascii=True via database.dumps.
+    -- Nullable by design: NULL is the "unnormalised" mark the v6
+    -- migration guard asks for (any unnormalised row). No CHECK: any
+    -- folded text is valid here; the fold has no constraint to check.
+    canonical_name_norm TEXT,
+    aliases_norm        TEXT,
     CONSTRAINT ck_entity_importance CHECK (importance_weight BETWEEN 0.0 AND 1.0),
     CONSTRAINT ck_entity_confidence CHECK (confidence_rating BETWEEN 0.0 AND 1.0),
     CONSTRAINT ck_entity_aliases_json CHECK (json_valid(aliases)),
@@ -235,21 +247,21 @@ CREATE VIRTUAL TABLE IF NOT EXISTS hot_serving_entity_fts
 CREATE TRIGGER IF NOT EXISTS trg_entity_fts_insert
 AFTER INSERT ON hot_serving_entity_index BEGIN
     INSERT INTO hot_serving_entity_fts(rowid, canonical_name, aliases)
-    VALUES (new.rowid, new.canonical_name, new.aliases);
+    VALUES (new.rowid, new.canonical_name_norm, new.aliases_norm);
 END;
 
 CREATE TRIGGER IF NOT EXISTS trg_entity_fts_delete
 AFTER DELETE ON hot_serving_entity_index BEGIN
     INSERT INTO hot_serving_entity_fts(hot_serving_entity_fts, rowid, canonical_name, aliases)
-    VALUES ('delete', old.rowid, old.canonical_name, old.aliases);
+    VALUES ('delete', old.rowid, old.canonical_name_norm, old.aliases_norm);
 END;
 
 CREATE TRIGGER IF NOT EXISTS trg_entity_fts_update
 AFTER UPDATE ON hot_serving_entity_index BEGIN
     INSERT INTO hot_serving_entity_fts(hot_serving_entity_fts, rowid, canonical_name, aliases)
-    VALUES ('delete', old.rowid, old.canonical_name, old.aliases);
+    VALUES ('delete', old.rowid, old.canonical_name_norm, old.aliases_norm);
     INSERT INTO hot_serving_entity_fts(rowid, canonical_name, aliases)
-    VALUES (new.rowid, new.canonical_name, new.aliases);
+    VALUES (new.rowid, new.canonical_name_norm, new.aliases_norm);
 END;
 
 -- ---------------------------------------------------------------------
