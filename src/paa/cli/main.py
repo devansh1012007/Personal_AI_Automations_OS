@@ -30,6 +30,7 @@ from rich.table import Table
 from paa import __version__
 from paa.cli.coder import register_agent
 from paa.core.types import ComplexityModality, PermissionMode
+from paa.models.base import redact
 from paa.sandbox.base import collect_sandbox_facts, sandbox_report_rows
 
 if TYPE_CHECKING:
@@ -625,6 +626,20 @@ def signals(
     _run(_run_with_runtime(_do))
 
 
+#: Max rendered chars for the drain error line (ADR-0036 §P01). The drain
+#: except block prints exception text to the operator console; exception text
+#: can carry secret-shaped values and is unbounded, so it is redacted via
+#: :func:`paa.models.base.redact` and cut to this many rendered chars, marker
+#: included. Truncation happens AFTER redaction: slicing first could split a
+#: ``sk-`` token and leak the remainder. PLAN:integration-fix:P001
+_MAX_DRAIN_ERROR_CHARS = 200
+
+#: Appended when the redacted drain error exceeded ``_MAX_DRAIN_ERROR_CHARS``.
+#: Carries the T01 "redaction best-effort" note (ADR-0036 §P01); bracket-free
+#: so the console's markup parser cannot consume it.
+_TRUNCATION_MARKER = "... [truncated; redaction best-effort]"
+
+
 @memory_app.command("drain")
 def drain(
     limit: int = typer.Option(
@@ -646,7 +661,14 @@ def drain(
         try:
             await creator.drain_pending_embeddings()
         except Exception as exc:
-            console.print(f"[red]embedding drain failed: {exc}[/red]")
+            # PLAN:integration-fix:P001
+            safe = redact(str(exc))
+            if len(safe) > _MAX_DRAIN_ERROR_CHARS:
+                safe = safe[: _MAX_DRAIN_ERROR_CHARS - len(_TRUNCATION_MARKER)]
+                safe = f"{safe}{_TRUNCATION_MARKER}"
+            # markup=False: the exception text is data, never console markup;
+            # a '[/red]' in it would otherwise crash the command (MarkupError).
+            console.print(f"embedding drain failed: {safe}", style="red", markup=False)
         summary = report.summary()
         table = Table(
             "claimed",
@@ -711,7 +733,6 @@ async def _touch_recalled(db: Any, fact_ids: list[str]) -> None:
     import structlog
 
     from paa.memory.decay import DecaySweeper
-    from paa.models.base import redact
 
     log = structlog.get_logger(__name__)
     ids = list(dict.fromkeys(fact_ids))

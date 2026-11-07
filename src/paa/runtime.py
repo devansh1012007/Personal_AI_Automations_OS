@@ -478,7 +478,8 @@ def _build_memory_creator(
         try:
             embedding_sink = _creator_mod.VectorEmbeddingSink(vector_store, embedder)
         except Exception as exc:  # degradation path: never crash boot on vectors
-            log.warning("memory.embedding_sink", status="degraded", error=str(exc))
+            # PLAN:integration-fix:P001
+            log.warning("memory.embedding_sink", status="degraded", error=redact(str(exc)))
             embedding_sink = None
     else:
         # Plain missing-backends case is expected on intentional minimal
