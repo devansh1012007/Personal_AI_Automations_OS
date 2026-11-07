@@ -198,8 +198,9 @@ async def test_hydration_db_failure_degrades_to_payload_snapshot(
 ) -> None:
     """Partial failure: DB explodes during hydration, tier still serves.
 
-    Fallback is the payload snapshot plus a ``context.vector_search_failed``
-    warning; the semantic tier must never be emptied by a hydration failure.
+    Fallback is the payload snapshot plus a ``context.hydration_failed``
+    warning whose error text is redacted (P-001 class); the semantic tier
+    must never be emptied by a hydration failure.
     """
     repo = FactRepository(db)
     entity_id = await repo.upsert_entity("concept", "Widget")
@@ -221,7 +222,7 @@ async def test_hydration_db_failure_degrades_to_payload_snapshot(
     )
 
     async def _boom(sql: str, params: Any = ()) -> Any:
-        raise RuntimeError("db exploded")
+        raise RuntimeError("db exploded: sk-ABCDEF1234567890")
 
     monkeypatch.setattr(db, "fetch_all", _boom)
     with structlog.testing.capture_logs() as captured:
@@ -230,7 +231,15 @@ async def test_hydration_db_failure_degrades_to_payload_snapshot(
     assert len(elements) == 1
     assert elements[0].confidence == pytest.approx(0.9, abs=1e-6)
     events = [e.get("event") for e in captured]
-    assert "context.vector_search_failed" in events
+    assert "context.hydration_failed" in events
+    assert "context.vector_search_failed" not in events
+    # The DB/driver error text is redacted before it reaches the log.
+    hydration_entries = [e for e in captured if e.get("event") == "context.hydration_failed"]
+    assert hydration_entries
+    for entry in hydration_entries:
+        error_text = str(entry.get("error", ""))
+        assert "***REDACTED***" in error_text
+        assert "sk-ABCDEF1234567890" not in error_text
 
 
 async def test_unknown_domain_passthrough_not_crash(db: Database) -> None:
@@ -450,3 +459,201 @@ async def test_vector_failure_still_returns_empty(db: Database) -> None:
     assert elements == []
     events = [e.get("event") for e in captured]
     assert "context.vector_search_failed" in events
+
+
+async def test_partial_hydration_missing_live_row_falls_back(db: Database) -> None:
+    """TREV P1-a: one hit's live row missing (deleted fact) mid-batch.
+
+    The live hit derives via ``effective_confidence``; the deleted hit falls
+    back to its payload snapshot exactly — both elements present.
+    """
+    repo = FactRepository(db)
+    entity_id = await repo.upsert_entity("concept", "Widget")
+    live_id = await repo.add_fact(
+        entity_id, "is", "foo_bar live", domain="semantic", confidence=1.0, importance=0.5
+    )
+    old_iso = await _age_fact(db, live_id, days=300)
+    now = utc_now()
+    live_hit = _Hit(
+        live_id,
+        payload={
+            "object_value": "foo_bar live",
+            "confidence": 1.0,
+            "importance": 0.5,
+            "predicate": "is",
+            "memory_domain": "semantic",
+        },
+    )
+    deleted_hit = _Hit(
+        "deadbeef-0000-0000-0000-000000000000",
+        payload={
+            "object_value": "foo_bar deleted",
+            "confidence": 0.42,
+            "importance": 0.33,
+            "predicate": "is",
+            "memory_domain": "semantic",
+        },
+    )
+    builder = PlannerContextBuilder(
+        db=db, vector_store=_FakeVectors([live_hit, deleted_hit]), embedder=_FakeEmbedder()
+    )
+    elements = await builder._semantic("widget foo_bar", now=now)
+    assert len(elements) == 2
+    by_id = {e.id: e for e in elements}
+    expected = effective_confidence(1.0, from_iso(old_iso), "semantic", now=now)
+    assert by_id[live_id].confidence == pytest.approx(expected, abs=1e-6)
+    assert by_id[deleted_hit.id].confidence == pytest.approx(0.42, abs=1e-6)
+    assert by_id[deleted_hit.id].importance == pytest.approx(0.33, abs=1e-6)
+    assert by_id[deleted_hit.id].confidence != pytest.approx(0.8, abs=1e-6)
+
+
+async def test_db_none_serves_payload_fallback() -> None:
+    """TREV P2-a: a db-less builder serves the payload fallback, no crash."""
+    hit = _Hit(
+        "deadbeef-0000-0000-0000-000000000001",
+        payload={
+            "object_value": "foo_bar",
+            "confidence": 0.9,
+            "importance": 0.6,
+            "predicate": "is",
+            "memory_domain": "semantic",
+        },
+    )
+    builder = PlannerContextBuilder(
+        db=None, vector_store=_FakeVectors([hit]), embedder=_FakeEmbedder()
+    )
+    elements = await builder._semantic("widget foo_bar")
+    assert len(elements) == 1
+    assert elements[0].confidence == pytest.approx(0.9, abs=1e-6)
+    assert elements[0].importance == pytest.approx(0.6, abs=1e-6)
+    assert elements[0].memory_domain == "semantic"
+
+
+async def test_empty_hits_returns_empty_without_hydration_query(
+    db: Database, monkeypatch: Any
+) -> None:
+    """TREV P2-b: zero hits → early ``[]``, zero hydration queries.
+
+    Guards the ``WHERE id IN ()`` syntax-error regression: with no hits the
+    batch query must never run.
+    """
+    builder = PlannerContextBuilder(
+        db=db, vector_store=_FakeVectors([]), embedder=_FakeEmbedder()
+    )
+    calls: list[str] = []
+    original = db.fetch_all
+
+    async def _counting(sql: str, params: Any = ()) -> Any:
+        calls.append(sql)
+        return await original(sql, params)
+
+    monkeypatch.setattr(db, "fetch_all", _counting)
+    elements = await builder._semantic("widget foo_bar", now=utc_now())
+    assert elements == []
+    assert calls == []
+
+
+async def test_corrupt_row_falls_back_to_payload_not_crash(db: Database) -> None:
+    """R-W1-006: a corrupt live row must never empty the tier.
+
+    ``last_queried_at`` is TEXT with no format CHECK, so a garbage string
+    makes ``from_iso`` raise ValueError. That hit falls back to its payload
+    snapshot; a healthy sibling hit still derives — the crash is per-hit,
+    not batch-wide.
+    """
+    repo = FactRepository(db)
+    entity_id = await repo.upsert_entity("concept", "Widget")
+    corrupt_id = await repo.add_fact(
+        entity_id, "is", "foo_bar corrupt", domain="semantic", confidence=1.0, importance=0.5
+    )
+    healthy_id = await repo.add_fact(
+        entity_id, "is", "foo_bar healthy", domain="semantic", confidence=1.0, importance=0.5
+    )
+    await db.execute(
+        "UPDATE hot_serving_active_facts SET last_queried_at = ? WHERE id = ?",
+        ("garbage-not-a-date", corrupt_id),
+    )
+    healthy_iso = await _age_fact(db, healthy_id, days=300)
+    now = utc_now()
+    corrupt_hit = _Hit(
+        corrupt_id,
+        payload={
+            "object_value": "foo_bar corrupt",
+            "confidence": 0.42,
+            "importance": 0.33,
+            "predicate": "is",
+            "memory_domain": "semantic",
+        },
+    )
+    healthy_hit = _Hit(
+        healthy_id,
+        payload={
+            "object_value": "foo_bar healthy",
+            "confidence": 1.0,
+            "importance": 0.5,
+            "predicate": "is",
+            "memory_domain": "semantic",
+        },
+    )
+    builder = PlannerContextBuilder(
+        db=db,
+        vector_store=_FakeVectors([corrupt_hit, healthy_hit]),
+        embedder=_FakeEmbedder(),
+    )
+    with structlog.testing.capture_logs() as captured:
+        elements = await builder._semantic("widget foo_bar", now=now)
+    assert elements, "a corrupt row must not empty the semantic tier"
+    assert len(elements) == 2
+    by_id = {e.id: e for e in elements}
+    # Corrupt hit: payload snapshot exactly, no derivation.
+    assert by_id[corrupt_id].confidence == pytest.approx(0.42, abs=1e-6)
+    assert by_id[corrupt_id].importance == pytest.approx(0.33, abs=1e-6)
+    # Healthy sibling: still derives from the live row, unaffected by the
+    # corrupt hit in the same batch.
+    expected = effective_confidence(1.0, from_iso(healthy_iso), "semantic", now=now)
+    assert by_id[healthy_id].confidence == pytest.approx(expected, abs=1e-6)
+    events = [e.get("event") for e in captured]
+    assert "context.hydration_failed" in events
+
+
+async def test_superseded_fact_hit_does_not_hydrate(db: Database) -> None:
+    """R-W1-007: a superseded fact's vector hit must not hydrate.
+
+    The hydration SELECT filters ``superseded_by IS NULL`` (mirroring
+    ``_hot_facts``), so a superseded hit takes the payload fallback — it is
+    never derived as if live.
+    """
+    repo = FactRepository(db)
+    entity_id = await repo.upsert_entity("concept", "Widget")
+    superseded_id = await repo.add_fact(
+        entity_id, "is", "foo_bar old", domain="semantic", confidence=1.0, importance=0.5
+    )
+    superseder_id = await repo.add_fact(
+        entity_id, "is", "foo_bar new", domain="semantic", confidence=1.0, importance=0.5
+    )
+    await db.execute(
+        "UPDATE hot_serving_active_facts SET superseded_by = ? WHERE id = ?",
+        (superseder_id, superseded_id),
+    )
+    old_iso = await _age_fact(db, superseded_id, days=300)
+    now = utc_now()
+    hit = _Hit(
+        superseded_id,
+        payload={
+            "object_value": "foo_bar old",
+            "confidence": 0.42,
+            "importance": 0.33,
+            "predicate": "is",
+            "memory_domain": "semantic",
+        },
+    )
+    builder = PlannerContextBuilder(
+        db=db, vector_store=_FakeVectors([hit]), embedder=_FakeEmbedder()
+    )
+    elements = await builder._semantic("widget foo_bar", now=now)
+    assert len(elements) == 1
+    # Payload fallback exactly — the row was not hydrated, so no derivation.
+    assert elements[0].confidence == pytest.approx(0.42, abs=1e-6)
+    assert elements[0].importance == pytest.approx(0.33, abs=1e-6)
+    derived = effective_confidence(1.0, from_iso(old_iso), "semantic", now=now)
+    assert elements[0].confidence != pytest.approx(derived, abs=1e-6)

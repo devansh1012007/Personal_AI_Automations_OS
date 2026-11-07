@@ -53,6 +53,7 @@ from paa.context.gatherer import BoundedContextGatherer, ContextElement
 from paa.core.types import AgentRole, as_text
 from paa.memory.decay import effective_confidence
 from paa.memory.domains import narrative_domains
+from paa.models.base import redact
 from paa.storage.relational.base import RelationalBackend
 from paa.storage.relational.like import like_pattern, like_predicate
 
@@ -275,12 +276,13 @@ class _BaseContextBuilder(Agent):
                 placeholders = ",".join("?" for _ in ids)
                 rows = await self._db.fetch_all(
                     "SELECT id, initial_confidence, last_queried_at, memory_domain, importance "
-                    f"FROM hot_serving_active_facts WHERE id IN ({placeholders})",
+                    f"FROM hot_serving_active_facts WHERE id IN ({placeholders}) "
+                    "AND superseded_by IS NULL",
                     ids,
                 )
                 hydrated = {str(row["id"]): row for row in rows}
             except Exception as exc:
-                log.warning("context.vector_search_failed", error=str(exc))
+                log.warning("context.hydration_failed", error=redact(str(exc)))
                 hydrated = {}
 
         from paa.storage.relational.database import from_iso
@@ -289,22 +291,35 @@ class _BaseContextBuilder(Agent):
         for hit in hits:
             row = hydrated.get(str(hit.id))
             if row is not None:
-                initial = float(row["initial_confidence"])
-                domain = str(row["memory_domain"])
                 try:
-                    confidence = effective_confidence(
-                        initial,
-                        from_iso(row["last_queried_at"]),
-                        domain,
-                        now=now,
-                    )
-                except KeyError:
+                    initial = float(row["initial_confidence"])
+                    domain = str(row["memory_domain"])
+                    try:
+                        confidence = effective_confidence(
+                            initial,
+                            from_iso(row["last_queried_at"]),
+                            domain,
+                            now=now,
+                        )
+                    except KeyError:
+                        log.warning(
+                            "memory.fact_unknown_domain", fact_id=str(hit.id), domain=domain
+                        )
+                        confidence = initial
+                    importance = float(row["importance"])
+                    memory_domain = domain
+                except (ValueError, TypeError) as exc:
+                    # A corrupt row must never empty the tier: fall back to the
+                    # payload snapshot for this hit only, exactly like a missing
+                    # live row, and keep serving the remaining hits.
                     log.warning(
-                        "memory.fact_unknown_domain", fact_id=str(hit.id), domain=domain
+                        "context.hydration_failed",
+                        fact_id=str(hit.id),
+                        error=redact(str(exc)),
                     )
-                    confidence = initial
-                importance = float(row["importance"])
-                memory_domain = domain
+                    confidence = float(hit.payload.get("confidence", 0.8))
+                    importance = float(hit.payload.get("importance", 0.5))
+                    memory_domain = str(hit.payload.get("memory_domain", "semantic"))
             else:
                 confidence = float(hit.payload.get("confidence", 0.8))
                 importance = float(hit.payload.get("importance", 0.5))
@@ -475,7 +490,6 @@ async def _touch_recalled(db: RelationalBackend | None, fact_ids: list[str]) -> 
     if db is None or not fact_ids:
         return
     from paa.memory.decay import DecaySweeper
-    from paa.models.base import redact
 
     ids = list(dict.fromkeys(fact_ids))
     try:
