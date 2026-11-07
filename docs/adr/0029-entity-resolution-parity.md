@@ -166,12 +166,12 @@ construction. On SQLite the containment is now *exact*: the gate's gram set
 is the FTS5 token set of the stored text, character for character.
 
 The fold is `paa.storage.relational.dialect.fold_case`
-(`dialect.py:121`) — the seam's fold, and the same function the candidate
+(`dialect.py:113`) — the seam's fold, and the same function the candidate
 query folds its term with, so one place decides what a fold is and the
 query asks about the same *term* the gate scores.
 **2. The database returns a candidate set that is a superset of the gate's
 acceptance set — over the corpora and terms the suites use.** The candidate
-query is built by the dialect seam (`dialect.py:196`), and it is asked one of
+query is built by the dialect seam (`dialect.py:185`), and it is asked one of
 two questions:
 
 | query | parameter | SQLite | PostgreSQL | set |
@@ -211,7 +211,7 @@ promise about which row the gate would have scored highest.
 
 **3. The phrase query is a precision pass; the broad query is the fallback,
 and the fallback is a *gate* decision.** `paa.memory.facts._fuzzy_resolve`
-(`facts.py:625`) runs the phrase query first, scores its rows with the
+(`facts.py:669`) runs the phrase query first, scores its rows with the
 gate, and runs the broad query when **the phrase rows did not produce a
 candidate that clears the floor** — not merely when the phrase query
 returned nothing. The two are different, and the difference was defect C
@@ -222,7 +222,7 @@ alone are the fallback; no union is needed.
 
 **4. The cut is made on a portable total order.** The candidate rows are
 ordered by the count proxy `DESC` and then by the unique `e.id ASC` — the
-same expression on both engines (`dialect.py:399` and `dialect.py:469`).
+same expression on both engines (`dialect.py:388` and `dialect.py:459`).
 `bm25` and `similarity` are not comparable, so a cut made on them is a cut
 that can change the answer; the count proxy is the same measure on both
 engines **for ASCII text**, and it is the measure the broad predicate uses,
@@ -233,9 +233,9 @@ is not guaranteed to keep the same rows; that is limitation (a) below.
 
 The gate's `>=` tie-break — the *last* maximum wins — is now deterministic
 rather than a function of the heap layout, because the candidates arrive in
-a total order (`facts.py:1117`). The exact rung (`facts.py:553`), the alias
-rung (`facts.py:618`) and the **write path's** lookup
-(`facts.py:409`) carry the same unique key, so the rungs that answer with a
+a total order (`facts.py:717`). The exact rung (`facts.py:594`), the alias
+rung (`facts.py:662`) and the **write path's** lookup
+(`facts.py:440`) carry the same unique key, so the rungs that answer with a
 row rather than a score agree on *which* row on both substrates.
 
 **The three rungs do not agree on the direction, and each is pinned.** The
@@ -305,7 +305,7 @@ injection barrier to be wrong.
 
 **8. A term the two engines refuse in different places is refused in
 Python, before any statement.** A NUL is refused in `resolve_entity`
-(`facts.py:482`), because SQLite truncates a string at a NUL when it reads
+(`facts.py:527`), because SQLite truncates a string at a NUL when it reads
 it through the C string API — so a NUL inside a pattern degrades it to a
 bare `%` that matches every row — while psycopg refuses the *bound
 parameter* outright, with a `DataError` that carries no SQLSTATE and
@@ -321,7 +321,7 @@ too large" — which is **not** a `QueryRejected`, so it escapes the
 fail-closed ladder and takes the caller with it, while the server substrate,
 which has no such limit, answers "no match". A divergence, and a crash.
 So the ceiling is in Python and it is the same on both substrates
-(`_MAX_TERM_GRAMS`, `facts.py:135`; the refusal, `facts.py:508`): a term
+(`_MAX_TERM_GRAMS`, `facts.py:136`; the refusal, `facts.py:553`): a term
 with more grams than the ceiling resolves to no match on both, rather than
 raising on one.
 
@@ -331,7 +331,7 @@ of one rung, and the exact and alias rungs bind the term as a *value* —
 they cannot hit the expression-depth limit. Refusing the term before the
 ladder starts means the two substrates cannot disagree about *how* they
 answer, and the answer is the same one on both. The term's grams are
-computed once, in `resolve_entity` (`facts.py:506`), and handed to the
+computed once, in `resolve_entity` (`facts.py:551`), and handed to the
 fuzzy rung, so one place decides what a gram is.
 
 **The refusal costs the exact rung a pathological case, and that is
@@ -345,7 +345,7 @@ substrate, "no match" on the other. Uniform refusal is the property worth
 having, and a name that long is not a name.
 
 **The alias de-duplication folds with the same function.** `_clean_aliases`
-(`facts.py:1091`) folds with `fold_case`, so "one place decides what a fold
+(`facts.py:1172`) folds with `fold_case`, so "one place decides what a fold
 is" holds for the alias column too: a change to the fold would otherwise
 split the gate from the alias de-duplication silently.
 

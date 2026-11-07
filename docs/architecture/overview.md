@@ -93,7 +93,7 @@ Each is attempted inside `_try_vector` / `_try_graph` / `_try_queue` /
 in-process fallback with a logged warning. The runtime must boot on a laptop
 with only core dependencies installed.
 
-`src/paa/runtime.py:412`, `:425`, `:435`, `:509`.
+`src/paa/runtime.py:414`, `:427`, `:437`, `:511`.
 
 ### 3. No generative reasoning in the control path
 
@@ -146,7 +146,7 @@ TASK_REQUESTED → TASK_QUEUED → CONTEXT_HYDRATED → PLAN_COMPILED
 `README.md:194`. `EXECUTION_COMPLETED` fires **per step**, not per task, and is
 not terminal (`docs/adr/0010`).
 
-Orchestrator phases (`src/paa/agents/orchestrator.py:397`):
+Orchestrator phases (`src/paa/agents/orchestrator.py:400`):
 
 1. `run` — project the lineage; if terminal, return immediately.
 2. `_hydrate` — build the context packet (planner context builder); may park on
@@ -158,7 +158,7 @@ Orchestrator phases (`src/paa/agents/orchestrator.py:397`):
    `max_step_retries`).
 6. `_commit` — `MUTATION_COMMITTED` (terminal).
 
-`src/paa/agents/orchestrator.py:468`–`:812`.
+`src/paa/agents/orchestrator.py:471`–`:815`.
 
 ## Delegation safety
 
@@ -169,7 +169,7 @@ waiters can exist — the RFC's safety property is preserved by construction,
 not by prohibiting peer calls.
 
 `src/paa/agents/base.py:22`, `src/paa/agents/delegation.py:48`,
-`src/paa/agents/orchestrator.py:834`.
+`src/paa/agents/orchestrator.py:837`.
 
 ## Configuration philosophy
 
@@ -197,7 +197,7 @@ These are deliberate, documented, and cited in source:
 | Provider-agnostic models; explicit escalation | ADR-0007/0015, `config.py:476` | vLLM needs CUDA + 8.5 GB VRAM |
 | Idempotency key includes `attempt` + `discriminator` | ADR-0008, `events.py:68` | Retries must be possible |
 | Head projection replaces partial recovery index | ADR-0010, `ledger/store.py:48` | Partial index never shrinks |
-| `EXECUTION_COMPLETED` is per-step, not terminal | ADR-0010, `core/types.py:187` | Treating it as terminal skips remaining steps |
+| `EXECUTION_COMPLETED` is per-step, not terminal | ADR-0010, `core/types.py:242` | Treating it as terminal skips remaining steps |
 | Optional router; bypassed when a target agent is named | ADR-0011, `reasoning.py:303` | Explicit user direction |
 | Peak RSS, not ∫Memory·dt | ADR-0009, `config.py:420` | The RFC's rule is dimensionally wrong |
 | 18 memory domains over 6 mechanisms | ADR-0014, `memory/domains.py:79` | Most RFC rows differ only by label |

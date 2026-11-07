@@ -46,12 +46,12 @@ skipped regardless of any explicit floor.
 ### `facts.py` — FactRepository
 `upsert_entity` (idempotent on canonical_name; aliases unioned; importance max)
 (`memory/facts.py:363`). `add_fact` appends a new version, never overwrites; `supersede`
-links versions (refuses cycles) (`memory/facts.py:789`, `:860`). `supersession_chain` walks
-back with visited-set guard (`memory/facts.py:892`). `query_facts` filters decayed confidence
+links versions (refuses cycles) (`memory/facts.py:894`, `:894`). `supersession_chain` walks
+back with visited-set guard (`memory/facts.py:926`). `query_facts` filters decayed confidence
 in Python (derived, can't push to SQL), bounded `max_scan=10_000`
-(`memory/facts.py:914`).
+(`memory/facts.py:948`).
 
-`resolve_entity` (`memory/facts.py:466`) is a three-rung ladder — exact → alias → fuzzy —
+`resolve_entity` (`memory/facts.py:501`) is a three-rung ladder — exact → alias → fuzzy —
 and the **gate is the authority**: a Python character-trigram Jaccard
 similarity (`trigram_similarity`, `memory/facts.py:158`) decides, and the database only
 decides *which rows the gate gets to look at*. The gate's gram model is
@@ -75,13 +75,13 @@ corpora; outside ASCII the parity is **bounded**, and the three mechanisms
 that bound it are named in the Known gaps below and in ADR-0029.
 
 A term carrying a NUL is refused before any statement is issued, on both
-substrates (`memory/facts.py:492`); so is a term with more than `_MAX_TERM_GRAMS` grams
-(`memory/facts.py:135`, `:518`), because the count proxy's `CASE` sum would otherwise hit
+substrates (`memory/facts.py:527`); so is a term with more than `_MAX_TERM_GRAMS` grams
+(`memory/facts.py:136`, `:553`), because the count proxy's `CASE` sum would otherwise hit
 SQLite's expression-depth limit and be refused as "expression tree is too
 large" — which is not a `QueryRejected` and would escape the fail-closed
 ladder. Recorded in
 [**ADR-0029**](../adr/0029-entity-resolution-parity.md); the case fold lives
-in the seam (`dialect.py::fold_case`, `storage/relational/dialect.py:121`) and the seam returns the
+in the seam (`dialect.py::fold_case`, `storage/relational/dialect.py:113`) and the seam returns the
 candidate query together with the parameters it takes, which amends
 ADR-0025.
 
@@ -89,17 +89,17 @@ ADR-0025.
 Ingests unprocessed signals into hot-serving facts/entities. Called by daemon
 ingestion loop (`src/paa/memory/creator.py:1243`). Also owns the
 pending-embedding backlog drain (`src/paa/memory/creator.py:1515`),
-called after each ingestion batch (`src/paa/daemon.py:165`). The creator is
+called after each ingestion batch (`src/paa/daemon.py:188`). The creator is
 deterministic and replay-stable — every field is a pure function of the
 signal payload — so re-running it over a persisted signal recreates the
 fact (`src/paa/memory/creator.py:185`).
 
 ### `curator.py` — MemoryCurator
 The full nightly consolidation, run by the daemon maintenance loop on its
-6h cadence (`src/paa/memory/curator.py:154`). Phases in order
+6h cadence (`src/paa/memory/curator.py:160`). Phases in order
 (`src/paa/memory/curator.py:64`): decay, prune-edges, consolidate,
 orphans, reconcile-vectors, analyze. Delete phases count-only under
-`dry_run` (`src/paa/memory/curator.py:154`), which is what makes the
+`dry_run` (`src/paa/memory/curator.py:160`), which is what makes the
 daemon's first-tick preview safe. Authoritative operator runbook —
 snapshot before first delete, cold-lake replay restore — in
 `docs/operations/deployment-and-runtime.md` (*Memory curation*).
@@ -138,13 +138,13 @@ callable`.
 |---|---|---|---|
 | `FactRepository` → `Database` | SQL INSERT/SELECT | Persist entities/facts | `facts.py` |
 | `DecaySweeper` → `Database`, `domains` | decay policy + SQL DELETE | Evict stale facts | `decay.py` |
-| `MemoryCreator` → `SignalRepository`, `FactRepository` | claim signals → facts | Ingest signals | `creator.py`, `daemon.py:148` |
+| `MemoryCreator` → `SignalRepository`, `FactRepository` | claim signals → facts | Ingest signals | `creator.py`, `daemon.py:173` |
 | `Context builders` → `Database` | hand-rolled `LIKE` over the fact tables | Read context | `context_agents.py:190` |
 | `PolicyRiskAgent` → anti-goals (vault) | read `anti_goals.md` | Semantic block | `runtime.py:474`, `policy.py:280` |
 
 ## Runtime behavior
 
-- Decay sweep runs as the first curator phase on the daemon's 6h maintenance interval (`src/paa/memory/curator.py:141`).
+- Decay sweep runs as the first curator phase on the daemon's 6h maintenance interval (`src/paa/memory/curator.py:248`).
 - Confidence computed lazily at read time (not stored) — a two-year-old fact is
   not treated as freshly verified (`context_agents.py:222`).
 - Facts are immutable: supersede links versions; chain walkable backwards.
@@ -157,7 +157,7 @@ callable`.
   barrier, so a term carrying `"`, `*`, `AND`, `OR`, `NEAR`, `(` or `)` is
   *answered* as text — it matches nothing and raises nothing.
 - A term carrying a NUL → no match, and **no statement is issued at all**
-  (`memory/facts.py:492`); the two substrates refuse a NUL in different places, so
+  (`memory/facts.py:527`); the two substrates refuse a NUL in different places, so
   the refusal has to be in one place.
 - Unknown memory domain → `KeyError`; never silently defaults to decaying
   (`memory/domains.py:251`, `facts.py::_to_fact`).

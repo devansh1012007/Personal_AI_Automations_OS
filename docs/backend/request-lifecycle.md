@@ -12,65 +12,65 @@ outcome through the backend. It reflects the actual execution order in
 | `paa run <id>` | `cli/main.py:106` | `run` → `Runtime.run()` |
 | API `POST /tasks` (`?run=true`) | `api/app.py:94` | `submit_task` → `Runtime.submit()` then `Runtime.run()` |
 | API `POST /tasks` (`?run=false`) | `api/app.py:94` | Submit + queue only; daemon drains later |
-| Daemon dispatch loop | `daemon.py:127` | `_claim_and_run()` → `Runtime.run(cid)` |
+| Daemon dispatch loop | `daemon.py:137` | `_claim_and_run()` → `Runtime.run(cid)` |
 | Recovery requeue | `recovery.py:437` | `_requeue()` → queue → daemon dispatch |
 
-All converge on `ChiefOrchestrator.run()` (`orchestrator.py:397`).
+All converge on `ChiefOrchestrator.run()` (`orchestrator.py:403`).
 
 ## Phase 1 — Project existing state
 
 `run(correlation_id)` calls `project(self._ledger, correlation_id)`
-(`orchestrator.py:397`). If the projection is terminal, it returns immediately
-(`orchestrator.py:400`). Otherwise it builds an `AgentContext` from the
-modality profile (`_context_for`, `orchestrator.py:327`).
+(`orchestrator.py:403`). If the projection is terminal, it returns immediately
+(`orchestrator.py:403`). Otherwise it builds an `AgentContext` from the
+modality profile (`_context_for`, `orchestrator.py:445`).
 
 ## Phase 2 — Hydrate context
 
-`_hydrate()` (`orchestrator.py:468`):
+`_hydrate()` (`orchestrator.py:471`):
 - If a context packet already exists, skip.
-- Emits `CONTEXT_HYDRATION_REQUESTED` (`orchestrator.py:357`).
+- Emits `CONTEXT_HYDRATION_REQUESTED` (`orchestrator.py:498`).
 - Sends `CONTEXT_REQUEST` to the planner context builder
   (`context_agents.py:377`).
 - If the result is `HARD_STOP_ESCALATE_TO_USER` (insufficient density), emits
-  `AWAITING_HUMAN_ATTESTATION` and returns (`orchestrator.py:379`).
-- Otherwise emits `CONTEXT_HYDRATED` with the packet (`orchestrator.py:499`).
+  `AWAITING_HUMAN_ATTESTATION` and returns (`orchestrator.py:936`).
+- Otherwise emits `CONTEXT_HYDRATED` with the packet (`orchestrator.py:538`).
 
 Every emit re-projects (`project()`) so the next phase reads current state.
 
 ## Phase 3 — Plan
 
-`_plan()` (`orchestrator.py:543`):
+`_plan()` (`orchestrator.py:546`):
 - If steps already exist or no planner, skip.
 - SIMPLE modality bypasses the model: emits `PLAN_COMPILED` with a single
   step (`execution_steps: [{action: goal, agent: worker}]`) and
-  `bypassed_planner: true` (`orchestrator.py:408`).
+  `bypassed_planner: true` (`orchestrator.py:551`).
 - Otherwise sends `PLAN_PROPOSAL` to the strategic planner
   (`reasoning.py:78`). The planner returns `execution_steps` (and
   `step_requirements`); each step may carry passthrough keys (`command`,
   `required_permissions`, `path`, `risk_profile`, `always_human_gate`) which
   are preserved by `_normalise` (`reasoning.py:155`).
 - Validates `len(steps) <= profile.max_plan_nodes()`; raises
-  `RecursionGuardError` if exceeded (`orchestrator.py:581`).
-- Emits `PLAN_COMPILED` (`orchestrator.py:448`).
+  `RecursionGuardError` if exceeded (`orchestrator.py:584`).
+- Emits `PLAN_COMPILED` (`orchestrator.py:593`).
 
 ## Phase 4 — Policy check
 
-`_check_policy()` (`orchestrator.py:461`):
+`_check_policy()` (`orchestrator.py:604`):
 - If a policy decision already exists or no policy agent, skip.
 - Sends `POLICY_CHECK` to `PolicyRiskAgent` (`policy.py:139`).
 - On blocked verdict (`STATUS_BLOCKED`) or `result.ok == False`:
   - anti-goal match → `SECURITY_VIOLATION`; else `POLICY_BLOCKED`
-    (`orchestrator.py:474`).
+    (`orchestrator.py:673`).
   - Returns; phase becomes `BLOCKED` (terminal).
 - On `requires_human_gate`: emits `AWAITING_HUMAN_ATTESTATION`; phase parks
-  (`orchestrator.py:910`). Never auto-clears across restart
+  (`orchestrator.py:936`). Never auto-clears across restart
   (`replay.py:62`).
-- Otherwise emits `POLICY_CLEARED` with `risk_score` (`orchestrator.py:505`);
+- Otherwise emits `POLICY_CLEARED` with `risk_score` (`orchestrator.py:711`);
   phase becomes `EXECUTING`.
 
 ## Phase 5 — Execute steps
 
-`_execute_steps()` (`orchestrator.py:718`). For each step not already in
+`_execute_steps()` (`orchestrator.py:721`). For each step not already in
 `completed_steps` (resume support):
 
 ```
@@ -93,11 +93,11 @@ else (budget exhausted):
 
 `EXECUTION_COMPLETED` fires **per step**, not per task, and is not terminal
 (`ADR-0010`). After each step, the orchestrator re-projects
-(`orchestrator.py:780`).
+(`orchestrator.py:783`).
 
 ## Phase 6 — Commit
 
-`_commit()` (`orchestrator.py:609`) emits `MUTATION_COMMITTED`
+`_commit()` (`orchestrator.py:815`) emits `MUTATION_COMMITTED`
 {steps_completed, tokens_consumed}; phase becomes `COMMITTED` (terminal).
 
 ## Alternative and failure paths
@@ -114,7 +114,7 @@ else (budget exhausted):
 | Human gate rejected | `HUMAN_GATE_REJECTED` | BLOCKED | Terminal |
 
 `EXECUTION_FAILED` is emitted by the `except PaaError` branch in `run()`
-(`orchestrator.py:310`), which re-projects and returns the error payload.
+(`orchestrator.py:428`), which re-projects and returns the error payload.
 
 ## Sequence diagram
 

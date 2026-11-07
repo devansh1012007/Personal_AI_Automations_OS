@@ -85,7 +85,7 @@ implementation (`AGENTS.md:108`).
 4. Note what is persisted (ledger event, recovery mark, queue message) vs
    derived (context packet, projection, indexes).
 5. Follow errors: every `PaaError` carries structured `details` written to the
-   ledger; `TERMINAL_EVENTS` close a lineage (`core/types.py:132`).
+   ledger; `TERMINAL_EVENTS` close a lineage (`core/types.py:242`).
 
 ## Conventions to follow
 

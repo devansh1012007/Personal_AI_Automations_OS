@@ -44,7 +44,7 @@ Major subsystems:
 Primary entry points:
 
 * `paa submit "goal"` — submit and run one task to completion (`src/paa/cli/main.py:77`)
-* `paa serve` — FastAPI API + background daemon (`src/paa/cli/main.py:293`)
+* `paa serve` — FastAPI API + background daemon (`src/paa/cli/main.py:307`)
 * `paa doctor` — report live backends/sandbox (`src/paa/cli/main.py:228`)
 * `paa recover` — post-crash boot sweep (`src/paa/cli/main.py:210`)
 * `paa ledger <id>` — walk a task's event chain (`src/paa/cli/main.py:148`)
@@ -150,7 +150,7 @@ Agent-ops run 20261106-memory-remembering-agent (run trail, excluded from the `p
 4. Note what is persisted (ledger event, recovery mark, queue message) and what is
    derived (context packet, projection, indexes).
 5. Follow errors: every `PaaError` subclass carries structured `details` written to the
-   ledger; terminal events close a lineage (`core/types.py:176`).
+   ledger; terminal events close a lineage (`core/types.py:242`).
 
 When modifying a component, check its [module page](modules) for upstream callers and
 downstream consumers, then update the corresponding flow trace and this index.

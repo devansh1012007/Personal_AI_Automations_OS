@@ -73,7 +73,7 @@ DEGRADED/SHEDDING; 11 `StreamName`s; `ORCHESTRATOR_CORE` is control plane.
 | `RecoveryEngine` → `Database` | recovery marks SQL | Workspace checkpoints | `recovery.py:37` |
 | `PolicyRiskAgent` → `Database` | policy rules SQL | Operator rules | `policy.py:255` |
 | `Context builders` → `Database` | facts SQL | Context candidates | `context_agents.py:144` |
-| `Memory/*` → `Database` | entities/facts SQL | Memory persistence | `memory/facts.py:342` |
+| `Memory/*` → `Database` | entities/facts SQL | Memory persistence | `memory/facts.py:363` |
 | `SignalRepository` → `Database` + `CAS` | signal row + blob | Signal intake | `storage/coldlake/signals.py:114` |
 | `Observability runs` → `Database` | run rows | Execution traces | `runs.py` |
 | `Skills registry` → `Database` | skill rows | Skill catalog | `skills/registry.py:95` |

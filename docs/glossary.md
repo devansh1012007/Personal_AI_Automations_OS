@@ -45,7 +45,7 @@ where a meaning is inferred rather than verified, it is labelled.
   recovery sweep: `MUTATION_COMMITTED`, `EXECUTION_FAILED`, `POLICY_BLOCKED`,
   `SECURITY_VIOLATION`, `HUMAN_GATE_REJECTED`, `TASK_ABANDONED`. Note
   `EXECUTION_COMPLETED` is deliberately *not* terminal (it fires per step).
-  `src/paa/core/types.py:132`.
+  `src/paa/core/types.py:242`.
 - **Task projection / TaskPhase** — The deterministic left-fold projection of a
   lineage's events into coarse lifecycle phase (`CREATED`, `QUEUED`,
   `PLANNING`, `POLICY_REVIEW`, `EXECUTING`, `VALIDATING`, `AWAITING_HUMAN`,
@@ -62,17 +62,17 @@ PLAN_COMPILED → POLICY_CLEARED → EXECUTION_STARTED → (per step)
 EXECUTION_COMPLETED / VALIDATION_FAILED → CRITIQUE_CONCLUDED → MUTATION_COMMITTED`.
 Branches: `POLICY_BLOCKED / SECURITY_VIOLATION` (terminal blocked),
 `AWAITING_HUMAN_ATTESTATION` (parks), `STATE_ROLLBACK_TRIGGERED` (drift → restore).
-`src/paa/core/types.py:67`; `src/paa/ledger/replay.py:150`.
+`src/paa/core/types.py:122`; `src/paa/ledger/replay.py:150`.
 
 ## Permission model
 
 - **Permission** — Capability tokens (`PERM_SANDBOX_RUN`, `PERM_WRITE_HOT`,
   `PERM_NET_EGRESS`, `PERM_EXTERNAL_WRITE`, `PERM_FILE_DELETE`,
   `PERM_SCHEMA_MIGRATE`, `PERM_SECRET_READ`, `PERM_MODEL_ESCALATE`,
-  `PERM_CROSS_SESSION_READ`). `src/paa/core/types.py:149`.
+  `PERM_CROSS_SESSION_READ`). `src/paa/core/types.py:259`.
 - **PermissionMode** — System-wide autonomy posture: `AUTO`, `ASK`,
   `SUPERVISED`, `LOCKDOWN`, `SAFE`, `HIGH_RISK`. Each grants a fixed permission
-  set without a human gate. `src/paa/core/types.py:169`.
+  set without a human gate. `src/paa/core/types.py:279`.
 - **coder PermissionMode** — Separate session posture for `paa agent`:
   `ask`, `accept_edits`, `plan` (read-only), `bypass`. Precedence: deny >
   allow > mode default. `src/paa/coder/permissions.py:40`.

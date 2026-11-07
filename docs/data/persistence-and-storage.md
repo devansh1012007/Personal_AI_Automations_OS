@@ -80,7 +80,7 @@ Write-once intake for raw external events:
   `release` (back to `unprocessed` only if currently `processing`).
 
 Consumers: API `POST /signals` (`api/app.py:175`), daemon ingestion loop
-(`daemon.py:139` → `MemoryCreator`).
+(`daemon.py:173` → `MemoryCreator`).
 
 ## 3. Vector — `src/paa/storage/vector/`
 
@@ -98,7 +98,7 @@ Embeddings (`models/embeddings.py` → `storage/vector/embeddings.py`):
 
 Collections (`store.py`): `ACTIVE_FACTS` and `RFC_COLLECTIONS`.
 
-Consumers: `Runtime._try_vector` (`runtime.py:351`), `MemoryCreator` (embeds
+Consumers: `Runtime._try_vector` (`runtime.py:414`), `MemoryCreator` (embeds
 new facts, `creator.py:1480`), context gatherer semantic search
 (`context_agents.py:183`).
 
@@ -109,7 +109,7 @@ new facts, `creator.py:1480`), context gatherer semantic search
 - Explicit `"kuzu"`: raises `ImportError` if kuzu absent.
 - `"sqlite"`: always succeeds (recursive CTE traversal).
 
-Consumers: `Runtime._try_graph` (`runtime.py:364`), context builder graph
+Consumers: `Runtime._try_graph` (`runtime.py:427`), context builder graph
 neighbours (`context_agents.py:206`, bounded by `graph_hops` from modality
 profile).
 
@@ -131,7 +131,7 @@ Configuration: `StorageSettings.backend_queue`, `StorageSettings.redis_url`
 SHEDDING decision on queue depth; control-plane streams always accepted.
 
 Consumers: `Runtime` (`runtime.py:373`), `ChiefOrchestrator.submit` enqueues
-(`orchestrator.py:233`), daemon dispatch claims (`daemon.py:146`),
+(`orchestrator.py:341`), daemon dispatch claims (`daemon.py:159`),
 recovery requeue (`recovery.py:437`), API backpressure gate
 (`api/app.py:200`).
 
@@ -151,13 +151,13 @@ recovery requeue (`recovery.py:437`), API backpressure gate
 Every optional-backend factory (`_try_vector`, `_try_graph`, `_try_queue`,
 `get_blob_store`) catches `Exception` and returns `None`/fallback with a logged
 warning — never raises for a missing optional backend in `auto` mode
-(`runtime.py:394`–`:400`). The runtime must boot on a laptop with only core
+(`runtime.py:414`–`:424`). The runtime must boot on a laptop with only core
 dependencies installed (`AGENTS.md:60`).
 
 Degradation impact:
 - No vector → context gatherer semantic search returns `[]` (`context_agents.py:184`).
 - No graph → graph neighbours returns `[]` (`context_agents.py:215`).
-- No queue → orchestrator submit skips enqueue (`orchestrator.py:230`); daemon dispatch sleeps (`daemon.py:133`).
+- No queue → orchestrator submit skips enqueue (`orchestrator.py:296`); daemon dispatch sleeps (`daemon.py:154`).
 - No S3 → cold lake uses local CAS (`storage/coldlake/__init__.py:68`).
 
 ## 8. Consistency and parity
@@ -175,7 +175,7 @@ Degradation impact:
 - Task projections are derived by replay; snapshots are a cache optimisation
   (`replay.py:93`).
 - Queue (Redis) is volatile; the ledger is authoritative for recovery
-  (`recovery.py:11`, `orchestrator.py:740`).
+  (`recovery.py:11`, `orchestrator.py:1131`).
 
 ## Related documents
 

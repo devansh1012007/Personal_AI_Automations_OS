@@ -62,7 +62,7 @@
 
 **Entry points and execution flow today, with `[FACT file:line]`:**
 - Signal lands: `POST /signals` → `SignalRepository.record` → `cold_lake_signals` row `[FACT src/paa/api/app.py:173-197]`.
-- Daemon drains: `_ingestion_loop` → `creator.run_batch(limit=25)` → `process_signal` per signal `[FACT src/paa/daemon.py:142-152]`.
+- Daemon drains: `_ingestion_loop` → `creator.run_batch(limit=25)` → `process_signal` per signal `[FACT src/paa/daemon.py:173-191]`.
 - Creator extracts: `RuleBasedExtractor.extract` (rule-based, no model) → entity resolution → contradiction check → one transaction commit → embedding enqueue `[FACT src/paa/memory/creator.py:1134-1230]`.
 - Context builds: `ContextGatherer` packs facts mechanically under token budget `[FACT src/paa/context/gatherer.py]`.
 
@@ -91,15 +91,15 @@ Add a `paa memory` CLI command group and four memory API routes (`GET /memory/fa
 
 *Before (signal ingestion → fact):*
 1. Operator POSTs to `/signals` → row in `cold_lake_signals` `[api/app.py:175]`.
-2. Daemon `_ingestion_loop` claims row → `MemoryCreator.run_batch` `[daemon.py:142]`.
+2. Daemon `_ingestion_loop` claims row → `MemoryCreator.run_batch` `[daemon.py:173]`.
 3. `RuleBasedExtractor` produces candidates (no model) `[creator.py:455]`.
 4. Entity resolution + contradiction check + one-transaction commit `[creator.py:1323-1469]`.
 5. Fact visible via direct DB query only — no CLI, no API.
 
 *After:*
 1. Steps 1-4 unchanged (rule-based default preserved).
-2. Operator runs `paa memory facts <entity>` or `GET /memory/facts?entity=...` → reads `hot_serving_active_facts` via `FactRepository.query_facts` `[facts.py:914]`.
-3. Operator runs `paa memory search <text>` or `GET /memory/search` → `FactRepository.search_facts_by_text` `[facts.py:969]`.
+2. Operator runs `paa memory facts <entity>` or `GET /memory/facts?entity=...` → reads `hot_serving_active_facts` via `FactRepository.query_facts` `[facts.py:948]`.
+3. Operator runs `paa memory search <text>` or `GET /memory/search` → `FactRepository.search_facts_by_text` `[facts.py:1003]`.
 4. Operator runs `paa memory drain` or `POST /memory/drain` → triggers `creator.run_batch` on demand.
 5. Opt-in: `PAA_MODELS__EXTRACTION_MODEL` → LLM-backed `FactExtractor` called by `MemoryCreator` instead of `RuleBasedExtractor` for placed facts.
 6. Context building: `ContextGatherer` uses LLM ranking within budget, mechanical fallback.
@@ -116,7 +116,7 @@ Add a `paa memory` CLI command group and four memory API routes (`GET /memory/fa
 | C02 | `src/paa/api/app.py` | Add `GET /memory/facts`, `GET /memory/search`, `GET /memory/signals`, `POST /memory/drain` routes | FastAPI routes reusing `_signal_repo`, `FactRepository`, `MemoryCreator`; same backpressure `_admit` gate | FastAPI is the ingestion edge; memory needs its own surface parallel to `/signals` | none | T02 | low | remove routes |
 | C03 | `src/paa/memory/creator.py` | Add `LLMFactExtractor` class implementing `FactExtractor`; call model router for structured triple extraction; keep `RuleBasedExtractor` default | New class in same file; async `extract` calls the router with a structured-output schema; containment rules (stop on suspicion, NUL, max candidates) still apply | The `FactExtractor` protocol already exists precisely for this (creator.py:321); no new file needed | C01, C02 | T03 | medium | config flag disables LLM path |
 | C04 | `src/paa/config.py` | Add `MemorySettings.extraction_model: str` and `extraction_model_provider: str` fields | Two pydantic fields with defaults (empty = rule-based default) | Config-driven; OpenRouter via existing `PAA_MODELS__*`; no vendor hardcode | C03 | T03 | low | remove fields |
-| C05 | `src/paa/runtime.py` | Wire extraction model into `MemoryCreator` construction in `_build_agents` / daemon builder | Pass `extract_model` / `extract_provider` to `MemoryCreator` when non-empty | Creator is built in daemon.py:189; needs the model handle | C04 | T03 | low | remove wiring |
+| C05 | `src/paa/runtime.py` | Wire extraction model into `MemoryCreator` construction in `_build_agents` / daemon builder | Pass `extract_model` / `extract_provider` to `MemoryCreator` when non-empty | Creator is built in daemon.py:335; needs the model handle | C04 | T03 | low | remove wiring |
 | C06 | `src/paa/context/compaction.py` | Add optional LLM summarizer (injected callable; mechanical fallback retained) | `compress` accepts `summarizer` param; if set, uses LLM; else mechanical | compaction.py:7-9 already notes LLM summariser is the desired path | none | T04 | low | remove param |
 | C07 | `src/paa/context/gatherer.py` | Use model for ranking/selection of facts within token budget | Inject embedder/model into gatherer; rank by LLM score when available, else confidence | RFC §15.1 decision-usable signal; LLM improves relevance | C06 | T04 | low | mechanical-only path remains |
 | C08 | `tests/cli/test_memory.py` (new) | CLI command tests against temp DB | Each subcommand asserts output table content and exit code | Prove CLI surface works | C01 | C01 | low | delete file |
@@ -211,7 +211,7 @@ Add a `paa memory` CLI command group and four memory API routes (`GET /memory/fa
 
 **Backward compatibility:** Fully backward compatible — all changes additive; rule-based extractor remains default; no config fields change meaning; no CLI commands removed.
 
-**Concurrency and error-handling:** Daemon ingestion loop already isolates one poison signal per batch `[daemon.py:142-152]`; LLM extractor runs inside the same one-transaction-per-signal boundary `[creator.py:1418-1469]`.
+**Concurrency and error-handling:** Daemon ingestion loop already isolates one poison signal per batch `[daemon.py:173-191]`; LLM extractor runs inside the same one-transaction-per-signal boundary `[creator.py:1418-1469]`.
 
 **Performance and cost:** LLM extraction is opt-in; default path unchanged (zero cost, zero latency addition). LLM context ranking bounded by existing token budget.
 

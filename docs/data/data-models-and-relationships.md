@@ -135,7 +135,7 @@ be fully established.
 `HEARTBEAT_PING`, `RETRY_FAILED`, `DEAD_LETTER_POISON`.
 
 `ORCHESTRATOR_CORE` is the control-plane stream the orchestrator and daemon use
-(`orchestrator.py:233`, `daemon.py:147`).
+(`orchestrator.py:341`, `daemon.py:159`).
 
 ## 4. Marketplace tables
 
@@ -167,7 +167,7 @@ Frozen pydantic model. Chain fields (`sequence_id`, `state_version`, `prev_hash`
 `recorded_at`. `idempotency_key` is a computed property; `is_terminal` checks
 membership in `TERMINAL_EVENTS`.
 
-### `EventType` (`core/types.py:67`)
+### `EventType` (`core/types.py:122`)
 22 members ordered along the canonical task lifecycle:
 `TASK_REQUESTED`, `TASK_QUEUED`, `CONTEXT_HYDRATION_REQUESTED`,
 `CONTEXT_HYDRATED`, `PLAN_COMPILED`, `POLICY_CLEARED`, `POLICY_BLOCKED`,
@@ -177,7 +177,7 @@ membership in `TERMINAL_EVENTS`.
 `MUTATION_COMMITTED`, `STATE_ROLLBACK_TRIGGERED`, `RECOVERY_REPLAY_COMPLETED`,
 `USER_CORRECTION`, `MODEL_ESCALATED`, `TASK_ABANDONED`.
 
-### `TERMINAL_EVENTS` (`core/types.py:132`)
+### `TERMINAL_EVENTS` (`core/types.py:242`)
 `MUTATION_COMMITTED`, `EXECUTION_FAILED`, `POLICY_BLOCKED`, `SECURITY_VIOLATION`,
 `HUMAN_GATE_REJECTED`, `TASK_ABANDONED`. Notably **not** `EXECUTION_COMPLETED`
 (per-step, non-terminal).
@@ -191,7 +191,7 @@ The derived read model of a lineage. Fields include `phase`, `modality`,
 `tokens_consumed`, `user_corrections`, `errors`, `awaiting_reason`,
 `created_at`, `updated_at`, `unknown_events`.
 
-### `Fact` / `Entity` (`memory/facts.py:278`, `:252`)
+### `Fact` / `Entity` (`memory/facts.py:294`, `:268`)
 `Fact`: id, entity_id, predicate, object_value, domain, scope,
 `initial_confidence` (C₀), `confidence` (decayed at read time), importance,
 use_count, source_signal_id, provenance, embedding_status, created_at,

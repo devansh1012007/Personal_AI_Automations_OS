@@ -58,7 +58,7 @@ minimal install.
    (`api/app.py:295`).
 2. `runtime.submit(goal, modality, required_slots, workspace_path,
    target_agent)` → writes `TASK_REQUESTED` + `TASK_QUEUED`, enqueues to the
-   queue, returns `correlation_id` (`runtime.py:189`, `orchestrator.py:293`).
+   queue, returns `correlation_id` (`runtime.py:189`, `orchestrator.py:296`).
 3. If `body.run` is true: `runtime.run(cid)` drives to terminal; returns
    `queued=False` and the final phase. Otherwise returns `queued=True`,
    `phase="QUEUED"`.

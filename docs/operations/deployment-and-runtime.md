@@ -34,13 +34,13 @@ Programmatic: `Runtime.build()` (`src/paa/runtime.py:271`):
 4. Model router built (or a `model_adapter` injected); `RouterModelAdapter`
    wraps it.
 5. Optional backends: `_try_vector`, `_try_graph`, `_try_queue` — degrade, never
-   raise (`runtime.py:394`–`:400`).
+   raise (`runtime.py:414`–`:424`).
 6. `_build_agents()` constructs planner, policy, worker, critic, context
-   builders, router (`runtime.py:407`).
-7. `_acquire_sandbox()` — 5s probe, falls back to subprocess (`runtime.py:382`).
-8. `ChiefOrchestrator` assembled with all collaborators (`runtime.py:302`).
+   builders, router (`runtime.py:554`).
+7. `_acquire_sandbox()` — 5s probe, falls back to subprocess (`runtime.py:511`).
+8. `ChiefOrchestrator` assembled with all collaborators (`runtime.py:363`).
 9. `boot_recovery()` runs `RecoveryEngine.boot_sweep()` before accepting work
-   (`runtime.py:331`).
+   (`runtime.py:264`).
 
 CLI one-shot commands build a `Runtime`, do one thing, print, and close
 (`cli/main.py:55`). `paa serve` builds one `Runtime`, starts the `Daemon` and
@@ -48,45 +48,45 @@ FastAPI app over it (`cli/main.py:293`).
 
 ## Daemon loops
 
-`Daemon(runtime)` (`src/paa/daemon.py:48`):
-- Boot recovery first, before any new work is accepted (`src/paa/daemon.py:72`).
+`Daemon(runtime)` (`src/paa/daemon.py:53`):
+- Boot recovery first, before any new work is accepted (`src/paa/daemon.py:91`).
 - Dispatch loop (0.5s): claims `StreamName.ORCHESTRATOR_CORE` messages, runs via
-  `runtime.run(cid)`, `ack`/`nack` (`src/paa/daemon.py:146`).
+  `runtime.run(cid)`, `ack`/`nack` (`src/paa/daemon.py:159`).
 - Ingestion loop (1.0s): `MemoryCreator.run_batch(limit=25)` drains signals
-  into hot serving (`src/paa/daemon.py:156`). After each batch it also drains
-  the pending-embedding backlog (`src/paa/daemon.py:165`).
+  into hot serving (`src/paa/daemon.py:173`). After each batch it also drains
+  the pending-embedding backlog (`src/paa/daemon.py:188`).
 - Maintenance loop (6h): `MemoryCurator.run_maintenance` — decay, prune-edges,
-  consolidate, orphans, reconcile-vectors, analyze (`src/paa/daemon.py:200`,
-  `src/paa/memory/curator.py:141`). This is the **runbook home** for the
+  consolidate, orphans, reconcile-vectors, analyze (`src/paa/daemon.py:193`,
+  `src/paa/memory/curator.py:160`). This is the **runbook home** for the
   curator: first-tick preview, snapshot, and rollback live here (see
   *Memory curation* below); `docs/modules/daemon.md` and
   `docs/modules/memory.md` link to it.
-- Supervised: one loop crashing doesn't stop others (`src/paa/daemon.py:102`).
-- Cooperative shutdown via `asyncio.Event` (`src/paa/daemon.py:81`).
+- Supervised: one loop crashing doesn't stop others (`src/paa/daemon.py:125`).
+- Cooperative shutdown via `asyncio.Event` (`src/paa/daemon.py:104`).
 
 ## Memory curation (authoritative runbook)
 
 The daemon maintenance loop runs the full curator
-(`src/paa/daemon.py:200`, `src/paa/memory/curator.py:141`), not a bare decay
+(`src/paa/daemon.py:193`, `src/paa/memory/curator.py:160`), not a bare decay
 sweep. It fires once per `maintenance_interval` (6h default): the loop sleeps
 one interval first, so the first tick runs ~6h after boot
-(`src/paa/daemon.py:176`).
+(`src/paa/daemon.py:199`).
 
 **First tick is a dry-run preview; the second deletes.** The first tick runs
 with `dry_run=True` — counts are logged, nothing is deleted — and only a
 clean, complete, error-free preview consumes the flag so the *next* tick
-actually deletes (`src/paa/daemon.py:356`,
-`src/paa/daemon.py:403`). Watch `daemon.curation_started` and
+actually deletes (`src/paa/daemon.py:414`,
+`src/paa/daemon.py:461`). Watch `daemon.curation_started` and
 `daemon.curation_completed(dry_run=True)` for the would-delete counts
-(`src/paa/daemon.py:393`, `src/paa/daemon.py:421`). A budget stop or a
+(`src/paa/daemon.py:451`, `src/paa/daemon.py:479`). A budget stop or a
 phase error keeps the daemon in preview (the safe direction) and logs
 `daemon.curation_preview_incomplete` loudly — that is not a stuck daemon,
 it is the liveness trap firing because one phase is erroring; fix the phase
-rather than disabling preview (`src/paa/daemon.py:321`).
+rather than disabling preview (`src/paa/daemon.py:379`).
 
 **Snapshot before the first deleting tick.** The curator's delete phases have
 no cold-lake summary in production — the daemon wires `archive_writer=None`
-(`src/paa/daemon.py:273`), so decay/prune/consolidate/orphan deletions write
+(`src/paa/daemon.py:422`), so decay/prune/consolidate/orphan deletions write
 no summary of their own. Before the second (deleting) tick, snapshot the
 cold lake: copy `PAA_HOME` (`state/paa.db` plus `cold_lake/`), or a
 Postgres dump plus the S3 bucket snapshot on the Docker topology. There is
@@ -109,7 +109,7 @@ retention clocks — `use_count`/`last_queried_at` reset on replay.
 **Backlog watch (no throttle dial).** `drain_pending_embeddings` moves one
 batch of 100 per call (`src/paa/memory/creator.py:1515`) and the daemon
 drain-calls back-to-back while signals keep arriving
-(`src/paa/daemon.py:165`), so a large backlog drains at embedder speed with
+(`src/paa/daemon.py:188`), so a large backlog drains at embedder speed with
 no rate dial — observe `memory.embedding_drain` `pending_count`
 (`src/paa/memory/creator.py:1620`) for backlog size and batch/indexed
 progress. If ingestion starves under a backlog, the backlog size and the

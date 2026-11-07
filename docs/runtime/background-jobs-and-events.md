@@ -9,41 +9,41 @@ default (Redis optional), and the ledger is authoritative over the queue
 
 ## 1. The Daemon
 
-`Daemon(runtime)` (`daemon.py:45`) runs three cooperating, independently
+`Daemon(runtime)` (`daemon.py:53`) runs three cooperating, independently
 supervised loops plus a one-time boot recovery:
 
 | Loop | Interval | What it does |
 |---|---|---|
-| Boot recovery | once at `start()` | `runtime.boot_recovery()` — replay open lineages, reconcile workspaces, re-queue (`daemon.py:64`) |
-| Dispatch | 0.5s | Claims queued tasks from `StreamName.ORCHESTRATOR_CORE` and runs each through `runtime.run(cid)`; `ack` on success, `nack` on failure (`daemon.py:127`) |
-| Ingestion | 1.0s | Drains unprocessed signals into hot serving via `MemoryCreator.run_batch(limit=25)`; isolates one poison signal from the batch (`daemon.py:139`) |
-| Maintenance | 6h | `DecaySweeper(db).sweep()` — evicts stale facts per domain decay policy (`daemon.py:151`) |
+| Boot recovery | once at `start()` | `runtime.boot_recovery()` — replay open lineages, reconcile workspaces, re-queue (`daemon.py:91`) |
+| Dispatch | 0.5s | Claims queued tasks from `StreamName.ORCHESTRATOR_CORE` and runs each through `runtime.run(cid)`; `ack` on success, `nack` on failure (`daemon.py:144`) |
+| Ingestion | 1.0s | Drains unprocessed signals into hot serving via `MemoryCreator.run_batch(limit=25)`; isolates one poison signal from the batch (`daemon.py:173`) |
+| Maintenance | 6h | `DecaySweeper(db).sweep()` — evicts stale facts per domain decay policy (`daemon.py:193`) |
 
 ### Supervision
-Each loop is wrapped in `_supervise()` (`daemon.py:94`): an unexpected error is
+Each loop is wrapped in `_supervise()` (`daemon.py:125`): an unexpected error is
 logged and the loop restarts after 1s — one failing loop cannot take down the
 others. `asyncio.CancelledError` propagates on shutdown.
 
 ### Shutdown
 Cooperative: `stop()` sets an `asyncio.Event`; loops check it between cycles
-and drain (`daemon.py:70`). `run_forever()` blocks on the event
-(`daemon.py:81`).
+and drain (`daemon.py:104`). `run_forever()` blocks on the event
+(`daemon.py:115`).
 
 ### Claim semantics
-`_claim_and_run()` (`daemon.py:127`) claims messages (not just reads), so a
+`_claim_and_run()` (`daemon.py:150`) claims messages (not just reads), so a
 crash mid-task leaves the message reclaimable — no task is silently dropped.
 On exception it `nack`s (with error) rather than `ack`, allowing redelivery up
-to `max_delivery_attempts` (`daemon.py:134`).
+to `max_delivery_attempts` (`daemon.py:170`).
 
 ### Queue dependency
 If `runtime.queue is None` (no queue backend), the dispatch loop sleeps out its
-interval and drains nothing (`daemon.py:121`).
+interval and drains nothing (`daemon.py:154`).
 
 ## 2. Recovery boot sweep
 
 `RecoveryEngine.boot_sweep()` (`recovery.py:222`), invoked by
 `ChiefOrchestrator.boot()` (`orchestrator.py:1105`) and by `Runtime.build()`
-(`runtime.py:331`) and `Daemon.start()` (`daemon.py:64`):
+(`runtime.py:331`) and `Daemon.start()` (`daemon.py:91`):
 
 1. `verify_all_chains()` — hash-chain integrity across all lineages; problems
    are **reported, never auto-repaired** (`recovery.py:231`).
@@ -73,7 +73,7 @@ Idempotent by design — running the sweep twice yields the same end state
 ## 3. Events as the job backbone
 
 There are no standalone "job" records. Work is represented by ledger event
-lineages. The event vocabulary (`src/paa/core/types.py:67`):
+lineages. The event vocabulary (`src/paa/core/types.py:122`):
 
 | Event | Meaning | Terminal? |
 |---|---|---|
@@ -89,7 +89,7 @@ lineages. The event vocabulary (`src/paa/core/types.py:67`):
 | `STATE_ROLLBACK_TRIGGERED` | Workspace drift restored | No |
 | `RECOVERY_REPLAY_COMPLETED` | Recovery audit | No |
 
-`TERMINAL_EVENTS` (`types.py:132`): `MUTATION_COMMITTED`, `EXECUTION_FAILED`,
+`TERMINAL_EVENTS` (`types.py:242`): `MUTATION_COMMITTED`, `EXECUTION_FAILED`,
 `POLICY_BLOCKED`, `SECURITY_VIOLATION`, `HUMAN_GATE_REJECTED`, `TASK_ABANDONED`.
 
 ## 4. Status tracking and retries
@@ -97,7 +97,7 @@ lineages. The event vocabulary (`src/paa/core/types.py:67`):
 - Task status = replayed `TaskProjection.phase` (`TaskPhase`, `replay.py:35`).
 - `attempts` incremented on each `EXECUTION_STARTED` (`replay.py:220`).
 - Per-step retry budget `max_step_retries` (default 2) in
-  `ChiefOrchestrator._execute_steps` (`orchestrator.py:523`).
+  `ChiefOrchestrator._execute_steps` (`orchestrator.py:721`).
 - Queue `max_delivery_attempts` (default 3) governs message redelivery
   (`config.py:651`).
 - Recovery `max_attempts` (default 3, from `QueueSettings.max_delivery_attempts`)
@@ -105,7 +105,7 @@ lineages. The event vocabulary (`src/paa/core/types.py:67`):
 
 ## 5. Concurrency controls
 
-- Daemon `claim_batch=4` (`daemon.py:49`).
+- Daemon `claim_batch=4` (`daemon.py:65`).
 - Model router semaphore: `max_concurrent_streams=2` (`models/router.py:226`) — memory
   bound on constrained hardware.
 - Delegation graph: `max_depth` (modality `recursion_ceiling`), `max_nodes`
@@ -117,10 +117,10 @@ lineages. The event vocabulary (`src/paa/core/types.py:67`):
 
 | Failure | Handling |
 |---|---|
-| Daemon loop exception | Logged, loop restarted after 1s (`daemon.py:100`) |
-| Task run exception | Logged, message nacked (redelivery) (`daemon.py:134`) |
-| Orchestrator `PaaError` | `EXECUTION_FAILED` event, re-project, return error (`orchestrator.py:310`) |
-| Sandbox step failure | `VALIDATION_FAILED`; retry up to budget (`orchestrator.py:556`) |
+| Daemon loop exception | Logged, loop restarted after 1s (`daemon.py:134`) |
+| Task run exception | Logged, message nacked (redelivery) (`daemon.py:170`) |
+| Orchestrator `PaaError` | `EXECUTION_FAILED` event, re-project, return error (`orchestrator.py:428`) |
+| Sandbox step failure | `VALIDATION_FAILED`; retry up to budget (`orchestrator.py:764`) |
 | Recovery single lineage failure | Logged as `UNRECOVERABLE`; sweep continues (`recovery.py:250`) |
 | Hash-chain problem | Reported in `RecoveryReport.chain_problems`, never repaired (`recovery.py:231`) |
 | Queue enqueue failure in recovery | Logged, non-fatal; ledger already records the task as open (`recovery.py:444`) |

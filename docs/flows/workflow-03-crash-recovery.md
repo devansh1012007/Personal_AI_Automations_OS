@@ -9,7 +9,7 @@ Verified against `src/paa/ledger/recovery.py`, `src/paa/ledger/store.py`,
 | Trigger | Entry | File |
 |---|---|---|
 | CLI | `paa recover` | `cli/main.py:210` → `Runtime.boot_recovery()` |
-| Service start | `paa serve` → `Daemon.start()` | `daemon.py:64` |
+| Service start | `paa serve` → `Daemon.start()` | `daemon.py:91` |
 | Runtime build | `Runtime.build(run_recovery=True)` (default) | `runtime.py:331` |
 
 All lead to `ChiefOrchestrator.boot()` → `RecoveryEngine.boot_sweep()`.
@@ -135,9 +135,9 @@ sequenceDiagram
 
 ## What the daemon does next
 
-The daemon dispatch loop (`daemon.py:127`) claims the re-queued messages and
+The daemon dispatch loop (`daemon.py:144`) claims the re-queued messages and
 runs each via `Runtime.run(cid)`, which re-projects and resumes at
-`resume_step_index` (`orchestrator.py:519`, `replay.py` `completed_steps`).
+`resume_step_index` (`orchestrator.py:726`, `replay.py` `completed_steps`).
 
 ## Failure behavior
 

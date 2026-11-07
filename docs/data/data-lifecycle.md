@@ -8,7 +8,7 @@ and what happens on failure. All paths are verified against source where cited.
 
 ### Creation
 A task originates from a caller (CLI, API, daemon, or coder agent tool).
-`ChiefOrchestrator.submit()` (`orchestrator.py:293`) mints a `CorrelationId`
+`ChiefOrchestrator.submit()` (`orchestrator.py:296`) mints a `CorrelationId`
 and writes `TASK_REQUESTED` then `TASK_QUEUED` to `system_state_ledger` before
 enqueuing to `queue_messages` (`StreamName.ORCHESTRATOR_CORE`). Submission is
 deliberately cheap and always succeeds so the request is durable before any
@@ -47,7 +47,7 @@ append-only. The only "mutation" of the head row is the upsert in
 `_update_head` (`ledger/store.py:292`).
 
 ### Invalidation / deletion
-- Terminal events close a lineage (`TERMINAL_EVENTS`, `types.py:132`); recovery
+- Terminal events close a lineage (`TERMINAL_EVENTS`, `types.py:242`); recovery
   skips `is_terminal = 1` rows (`ledger/store.py:357`).
 - `STATE_ROLLBACK_TRIGGERED` restores a workspace to a checkpoint manifest and
   resets `completed_steps` to steps before `restored_step_index`
@@ -81,8 +81,8 @@ and facts via `FactRepository.upsert_entity` / `add_fact` (`memory/facts.py:363`
 `:823`) into `hot_serving_entity_index` and `hot_serving_active_facts`.
 
 Facts are **never overwritten**: `add_fact` appends a new version; `supersede`
-links `old → new` (`memory/facts.py:860`, refuses cycles). `supersession_chain`
-walks back with a visited-set guard (`memory/facts.py:892`).
+links `old → new` (`memory/facts.py:894`, refuses cycles). `supersession_chain`
+walks back with a visited-set guard (`memory/facts.py:926`).
 
 Confidence stored is `initial_confidence` (C₀); the effective confidence
 `C(t) = C₀·e⁻ˡᵃᵐᵇᵈᵃ·t` is computed lazily at read time
@@ -92,8 +92,8 @@ Confidence stored is `initial_confidence` (C₀); the effective confidence
 - `FactRepository.query_facts()` filters by `min_confidence` on **decayed**
   confidence in Python (cannot push into SQL because it's derived), bounded by
   `max_scan=10_000`, sorted by `(-confidence, -importance, created_at)`
-  (`facts.py:904`).
-- `resolve_entity()` (`facts.py:456`): a three-rung ladder — exact → alias →
+  (`facts.py:948`).
+- `resolve_entity()` (`facts.py:501`): a three-rung ladder — exact → alias →
   fuzzy — in which the **Python gate is the authority**. The gate is a
   character-trigram Jaccard similarity over the 3-grams of the raw,
   case-folded text (`facts.py:158`, `:214`) — FTS5's own gram model, so a
@@ -162,7 +162,7 @@ Hard guarantee: `allocated_tokens <= ceiling` (assertion, `gatherer.py:565`).
 
 ### Consumption
 Orchestrator `_hydrate()` reads `routing_directive`; on HARD_STOP it parks the
-task on `AWAITING_HUMAN_ATTESTATION` (`orchestrator.py:379`).
+task on `AWAITING_HUMAN_ATTESTATION` (`orchestrator.py:936`).
 
 ### Worker packet
 `WorkerContextBuilder.handle()` (`context_agents.py:428`) drops all narrative
@@ -178,7 +178,7 @@ enters the sandbox.
 the `patch` in the step output (`reasoning.py:469`).
 
 ### Validation
-`CriticValidatorAdapter` (`runtime.py:66`) adapts `DeterministicValidationEngine`
+`CriticValidatorAdapter` (`runtime.py:77`) adapts `DeterministicValidationEngine`
 (`validation/engine.py:208`) to the critic's call shape. Checks in order:
 schema → AST security scan → patch dry-run (`UnifiedDiffValidator.dry_run`,
 `validation/patch.py:467`) → workspace drift → tests (runs last, only inside
@@ -192,7 +192,7 @@ rename) with in-memory rollback journal (`validation/patch.py:672`).
 
 ### Commit
 On `CRITIQUE_CONCLUDED` verdict `PASS`, orchestrator emits `EXECUTION_COMPLETED`;
-after all steps, `MUTATION_COMMITTED` (`orchestrator.py:609`). The worker never
+after all steps, `MUTATION_COMMITTED` (`orchestrator.py:815`). The worker never
 applies its own patch — the host validates and commits (`reasoning.py` docstring,
 RFC §14.3).
 
@@ -204,7 +204,7 @@ on `channel`+`external_id`) → row in `cold_lake_signals`; oversized payloads
 offloaded to CAS blobs (`cold_lake/blobs/<sha>/<sha>.zst`) with `cas://` stub.
 
 ### Consumption
-Daemon ingestion loop (`daemon.py:139`) → `MemoryCreator.run_batch()` claims
+Daemon ingestion loop (`daemon.py:160`) → `MemoryCreator.run_batch()` claims
 `unprocessed` signals → creates facts/entities → marks signals `processed`,
 `malformed`, or `quarantined`.
 
@@ -217,7 +217,7 @@ tracks `unprocessed`/`processing`/`processed`/`malformed`/`quarantined`
 
 ### Creation
 Orchestrator `submit()` enqueues `{correlation_id, goal}` to
-`StreamName.ORCHESTRATOR_CORE` (`orchestrator.py:233`). Recovery `_requeue()`
+`StreamName.ORCHESTRATOR_CORE` (`orchestrator.py:341`). Recovery `_requeue()`
 re-enqueues recovered lineages (`recovery.py:437`).
 
 ### Consumption

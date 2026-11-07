@@ -42,21 +42,20 @@ model (`orchestrator.py:9`, `policy.py:7`).
 
 ### `orchestrator.py` — Chief Orchestrator
 `run(cid)` projects the lineage; if terminal, returns immediately
-(`orchestrator.py:400`). Phases:
-- `_hydrate` (`:468`) — context builder; parks on `AWAITING_HUMAN_ATTESTATION`
+(`orchestrator.py:403`). Phases:
+- `_hydrate` (`:471`) — context builder; parks on `AWAITING_HUMAN_ATTESTATION`
   if density insufficient (`:527`).
-- `_plan` (`:543`) — planner; SIMPLE bypasses model (`:548`); validates
-  `max_plan_nodes()` (`:581`).
-- `_check_policy` (`:461`) — policy agent; blocked → `POLICY_BLOCKED`/
+- `_plan` (`:546`) — planner; SIMPLE bypasses model (`:551`); validates
+  `max_plan_nodes()` (`:584`).
+- `_check_policy` (`:604`) — policy agent; blocked → `POLICY_BLOCKED`/
   `SECURITY_VIOLATION`; human gate → `AWAITING_HUMAN_ATTESTATION`; else
-  `POLICY_CLEARED` (`:505`).
-- `_execute_steps` (`:718`) — per step: `EXECUTION_STARTED` → worker → critic
+  `POLICY_CLEARED` (`:711`).
+- `_execute_steps` (`:721`) — per step: `EXECUTION_STARTED` → worker → critic
   → `EXECUTION_COMPLETED`/`VALIDATION_FAILED`; retry up to `max_step_retries`
-  (default 2, `:108`).
-- `_commit` (`:609`) — `MUTATION_COMMITTED` (terminal).
+  (default 2, `:214`).
+- `_commit` (`:815`) — `MUTATION_COMMITTED` (terminal).
 
-`mediate_delegation()` (`:631`) enforces delegation graph bounds. `clear_human_
-gate()` (`:688`) — only external callers clear gates. `boot()` (`:737`) runs
+`mediate_delegation()` (`:837`) enforces delegation graph bounds. `clear_human_gate()` (`:1042`) — only external callers clear gates. `boot()` (`:1131`) runs
 recovery.
 
 ### `reasoning.py` — planner, critic, router, worker
@@ -76,7 +75,7 @@ recovery.
 ### `policy.py` — PolicyRiskAgent
 Deterministic risk gate, **no model consulted** (`policy.py:7`). Checks:
 permissions (`:174`), LOCKDOWN network (`:194`), irreversible ops under SAFE
-(`:213`, `_IRREVERSIBLE_PATTERNS` at `:37`), paths (`:222`), operator rules
+(`:214`, `_IRREVERSIBLE_PATTERNS` at `:37`), paths (`:222`), operator rules
 from DB (`:234`), anti-goals (cosine ≥0.82 or phrase match, `:262`). Risk score
 [0,1]; `_needs_gate()` (`:318`) decides human-gate need by mode.
 
@@ -106,17 +105,17 @@ from DB (`:234`), anti-goals (cosine ≥0.82 or phrase match, `:262`). Risk scor
 
 | Component | Relationship | Why | Source |
 |---|---|---|---|
-| `ChiefOrchestrator` → all agents | calls `agent.run(message, ctx)` | Drive lifecycle phases | `orchestrator.py:512`, `:574`, `:667`, `:741`, `:797` |
-| `Agent` → `DelegationRegistry` | `delegate()` | Orchestrator owns delegation graph | `agents/base.py:373`, `orchestrator.py:834` |
+| `ChiefOrchestrator` → all agents | calls `agent.run(message, ctx)` | Drive lifecycle phases | `orchestrator.py:515`, `:577`, `:670`, `:744`, `:800` |
+| `Agent` → `DelegationRegistry` | `delegate()` | Orchestrator owns delegation graph | `agents/base.py:373`, `orchestrator.py:837` |
 | `Reasoning agents` → `ModelLike` | `complete_structured()` | Model seam | `reasoning.py:95`, `:246`, `:353` |
 | `RouterModelAdapter` | wraps `EscalatingModelRouter` | Bridge `ModelLike` → router | `runtime.py:98` |
 | `PolicyRiskAgent` → `Database` | `fetch_all(hot_serving_policy_rules)` | Operator rules | `policy.py:255` |
 | `Context builders` → `Database`/vector/graph | fetch facts/semantic/graph | Build context packet | `context_agents.py:144`, `:244`, `:341` |
-| `Runtime.build` | constructs all agents | Composition root | `runtime.py:407` |
+| `Runtime.build` | constructs all agents | Composition root | `runtime.py:554` |
 
 ## Runtime behavior
 
-- Initialized by `Runtime.build()` → `_build_agents()` (`runtime.py:407`).
+- Initialized by `Runtime.build()` → `_build_agents()` (`runtime.py:554`).
 - Each `Agent.run()` is async, applies cross-cutting guarantees, returns
   `AgentResult`.
 - Delegation is mediated, non-blocking at topology level (DAG wait graph).
@@ -130,16 +129,16 @@ from DB (`:234`), anti-goals (cosine ≥0.82 or phrase match, `:262`). Risk scor
 - Critic deterministic failure → short-circuits, no model call
   (`reasoning.py:226`).
 - Policy block → `POLICY_BLOCKED`/`SECURITY_VIOLATION` event; terminal phase
-  (`orchestrator.py:474`).
-- Step exhaustion → `PaaError` → `EXECUTION_FAILED` (`orchestrator.py:570`).
+  (`orchestrator.py:673`).
+- Step exhaustion → `PaaError` → `EXECUTION_FAILED` (`orchestrator.py:780`).
 
 ## Modification impact
 
 - Changing an agent's `handle()` signature breaks the `Agent` ABC contract
   (`agents/base.py:296`).
 - Adding a delegation requires `can_delegate = True` and orchestrator
-  registration (`agents/base.py:308`, `orchestrator.py:248`).
-- Changing `TERMINAL_EVENTS` affects recovery scanning (`core/types.py:187`,
+  registration (`agents/base.py:308`, `orchestrator.py:251`).
+- Changing `TERMINAL_EVENTS` affects recovery scanning (`core/types.py:242`,
   `ledger/store.py:304`).
 - Tests: `tests/agents/` (70 tests per README).
 
@@ -147,7 +146,7 @@ from DB (`:234`), anti-goals (cosine ≥0.82 or phrase match, `:262`). Risk scor
 
 - `src/paa/agents/specialists/` is an empty package (`AGENTS.md:146`).
 - Router is optional; when absent, `_classify()` heuristic picks modality
-  (`orchestrator.py:352`).
+  (`orchestrator.py:355`).
 - Deterministic planner fallback is crude (splits on conjunctions).
 
 ## Related documents

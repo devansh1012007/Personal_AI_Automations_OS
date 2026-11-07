@@ -19,33 +19,33 @@ cooperative via an `asyncio.Event`.
 
 ## Internal implementation
 
-### Loops (`src/paa/daemon.py:119`–`:182`)
+### Loops (`src/paa/daemon.py:144`–`:210`)
 - **Dispatch** (0.5s interval): `claim_batch=4` messages from
   `StreamName.ORCHESTRATOR_CORE`; runs each via `runtime.run(cid)`; `ack` on
-  success, `nack` on failure (`src/paa/daemon.py:146`). If `runtime.queue is None`, sleeps
-  (`src/paa/daemon.py:121`).
+  success, `nack` on failure (`src/paa/daemon.py:159`). If `runtime.queue is None`, sleeps
+  (`src/paa/daemon.py:154`).
 - **Ingestion** (1.0s): `MemoryCreator.run_batch(limit=25)` drains unprocessed
-  signals into hot serving (`src/paa/daemon.py:156`); also drains the
-  pending-embedding backlog (`src/paa/daemon.py:165`).
+  signals into hot serving (`src/paa/daemon.py:173`); also drains the
+  pending-embedding backlog (`src/paa/daemon.py:188`).
 - **Maintenance** (6h): `MemoryCurator.run_maintenance` — decay, prune-edges,
   consolidate, orphans, reconcile-vectors, analyze — after one initial
-  interval (`src/paa/daemon.py:200`). The first tick is a dry-run preview;
+  interval (`src/paa/daemon.py:193`). The first tick is a dry-run preview;
   only a clean complete preview consumes the flag so the next tick deletes
   (`src/paa/daemon.py:356`, `src/paa/daemon.py:403`). Curator construction
   failure falls back to a bare `DecaySweeper.sweep()` honouring the same
-  preview discipline (`src/paa/daemon.py:286`). The operator runbook —
+  preview discipline (`src/paa/daemon.py:349`). The operator runbook —
   first-tick preview, snapshot-before-delete, cold-lake replay restore —
   lives in `docs/operations/deployment-and-runtime.md` (*Memory curation*).
 
-### Supervision (`src/paa/daemon.py:102`)
+### Supervision (`src/paa/daemon.py:125`)
 `_supervise(name, loop)` restarts on unexpected error after 1s; `CancelledError`
 propagates.
 
-### Shutdown (`src/paa/daemon.py:81`)
+### Shutdown (`src/paa/daemon.py:104`)
 `stop()` sets `self._stop`, cancels tasks, awaits drain. `run_forever()` blocks
-on the event (`src/paa/daemon.py:92`).
+on the event (`src/paa/daemon.py:115`).
 
-### Collaborators (`src/paa/daemon.py:186`)
+### Collaborators (`src/paa/daemon.py:335`)
 `_memory_creator()` builds `MemoryCreator(self._rt.db)`; unavailable degrades
 to `None` (ingestion skipped).
 
@@ -63,9 +63,9 @@ to `None` (ingestion skipped).
 
 | Component | Relationship | Why | Source |
 |---|---|---|---|
-| `Daemon` → `Runtime` | `boot_recovery()`, `run()`, `queue`, `agents` | Drive the runtime | `src/paa/daemon.py:48` |
-| `Daemon` → `MemoryCreator` | `run_batch()` | Ingest signals | `src/paa/daemon.py:156` |
-| `Daemon` → `MemoryCurator` | `run_maintenance()` | Curate memory (decay, prune, consolidate, orphans, reconcile, analyze) | `src/paa/daemon.py:200` |
+| `Daemon` → `Runtime` | `boot_recovery()`, `run()`, `queue`, `agents` | Drive the runtime | `src/paa/daemon.py:53` |
+| `Daemon` → `MemoryCreator` | `run_batch()` | Ingest signals | `src/paa/daemon.py:160` |
+| `Daemon` → `MemoryCurator` | `run_maintenance()` | Curate memory (decay, prune, consolidate, orphans, reconcile, analyze) | `src/paa/daemon.py:180` |
 | `cli.main serve` → `Daemon` | `Daemon(rt)`, `start()`/`stop()` | `paa serve` | `cli/main.py:311` |
 | `Runtime.build` → boot recovery | `orchestrator.boot()` | Recovery at boot | `runtime.py:326` |
 
@@ -80,14 +80,14 @@ to `None` (ingestion skipped).
 
 - Loop exception → logged, restarted after 1s (`src/paa/daemon.py:121`).
 - Task run exception → logged, message nacked (redelivery up to
-  `max_delivery_attempts`) (`src/paa/daemon.py:146`).
-- Ingestion failure → logged, skipped (`src/paa/daemon.py:169`).
-- Maintenance failure → logged, skipped (`src/paa/daemon.py:181`).
+  `max_delivery_attempts`) (`src/paa/daemon.py:159`).
+- Ingestion failure → logged, skipped (`src/paa/daemon.py:182`).
+- Maintenance failure → logged, skipped (`src/paa/daemon.py:209`).
 - Recovery enqueue failure → logged, non-fatal (`recovery.py:444`).
 
 ## Modification impact
 
-- Loop intervals are constructor params (`src/paa/daemon.py:52`–`:55`).
+- Loop intervals are constructor params (`src/paa/daemon.py:56`–`:65`).
 - Adding a loop means adding to `start()`'s task list and `stop()` handling.
 - Tests: daemon exercised via `tests/integration/` (16 tests per README).
 

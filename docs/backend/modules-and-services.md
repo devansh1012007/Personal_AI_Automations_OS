@@ -23,7 +23,7 @@ section cited. Pydantic-settings `Settings` with prefix `PAA_`, nested delimiter
 - `_enforce_loopback` refuses non-loopback `api_host` unless
   `PAA_ALLOW_NON_LOOPBACK=1` (`config.py:410`).
 - `_propagate_home` re-roots storage paths when `home` is overridden directly
-  (`config.py:425`).
+  (`config.py:428`).
 - `ensure_directories()` creates every directory the runtime needs (`config.py:886`).
 
 **Configuration precedence:** explicit kwargs > environment (`PAA_*`) >
@@ -116,16 +116,16 @@ boots recovery (`boot`).
 
 **Key logic:**
 - `submit()` writes `TASK_REQUESTED` then `TASK_QUEUED`, applies backpressure,
-  enqueues to `StreamName.ORCHESTRATOR_CORE` (`orchestrator.py:293`).
+  enqueues to `StreamName.ORCHESTRATOR_CORE` (`orchestrator.py:296`).
 - `run()` drives a submitted task to terminal; returns early if already
-  terminal (`orchestrator.py:397`).
+  terminal (`orchestrator.py:403`).
 - `_execute_steps` retries each step up to `max_step_retries` (default 2)
-  (`orchestrator.py:523`).
+  (`orchestrator.py:721`).
 - Delegation graph enforces depth/cycle/node bounds per correlation
-  (`orchestrator.py:631`, `delegation.py:87`).
+  (`orchestrator.py:837`, `delegation.py:87`).
 
 **Failure behavior:** `PaaError` during execution → `EXECUTION_FAILED` event,
-then re-project (`orchestrator.py:310`).
+then re-project (`orchestrator.py:428`).
 
 ### `reasoning.py` — planner, critic, router, worker
 **Responsibility:** `StrategicPlanner` compiles goals into steps (model or
@@ -303,12 +303,12 @@ known bound below ([**ADR-0029**](../adr/0029-entity-resolution-parity.md)).
 **Failure behavior:** a candidate query the engine refuses → returns `[]`
 (failing closed), so the fuzzy rung answers "no match" (`facts.py`). A term
 carrying a NUL is refused before any statement is issued, on both
-substrates (`facts.py:482`); so is a term with more than `_MAX_TERM_GRAMS`
-grams (`facts.py:135`, refused at `facts.py:508`), because the count proxy's
+substrates (`facts.py:527`); so is a term with more than `_MAX_TERM_GRAMS`
+grams (`facts.py:136`, refused at `facts.py:553`), because the count proxy's
 `CASE` sum would otherwise hit SQLite's expression-depth limit and be refused
 as "expression tree is too large" — which is not a `QueryRejected` and would
 escape the ladder.
-`supersede` refuses cycles (`memory/facts.py:881`).
+`supersede` refuses cycles (`memory/facts.py:894`).
 
 **Known bound:** the parity is exact for ASCII and **bounded** outside it.
 The candidate query folds the *column* with the engine's `lower()`
@@ -322,7 +322,7 @@ Python-computed normalisation to close
 ([**ADR-0029**](../adr/0029-entity-resolution-parity.md)).
 
 ### `memory/creator.py`, `curator.py`, `contradiction.py`, `world_model.py`
-- `MemoryCreator.run_batch()` — ingests signals into facts (`daemon.py:148`).
+- `MemoryCreator.run_batch()` — ingests signals into facts (`daemon.py:160`).
 - `MemoryCurator` — nightly consolidation.
 - `contradiction.py` — quarantines conflicting facts above threshold; demands
   human tie-break (never auto-resolves).
@@ -381,7 +381,7 @@ ABC, `resolve_workspace`/`assert_inside_workspace` (workspace jail).
 **Public interface:** `SandboxSpec`, `SandboxResult`, `IsolationLevel`, `Sandbox`.
 
 **Failure behavior:** `resolve_workspace` raises `SandboxError` if the directory
-doesn't exist (`sandbox/base.py:512`). `SandboxSpec._reject_ambient_env_smell` trips on
+doesn't exist (`sandbox/base.py:515`). `SandboxSpec._reject_ambient_env_smell` trips on
 `env=dict(os.environ)` (`sandbox/base.py:337`).
 
 ### `sandbox/subprocess_backend.py` — SubprocessSandbox
@@ -475,7 +475,7 @@ passed>0).
 | Structured output invalid | `router.py:333` | Escalate trigger; `StructuredOutputError` after retries |
 | Policy violation | `policy.py:153` | `STATUS_BLOCKED` verdict → `POLICY_BLOCKED`/`SECURITY_VIOLATION` event |
 | Missing permission | `agents/base.py:333` | `AgentResult.failure` (`PermissionDeniedError`) |
-| Sandbox step failure | `orchestrator.py:556` | `VALIDATION_FAILED`; retry up to `max_step_retries` |
+| Sandbox step failure | `orchestrator.py:764` | `VALIDATION_FAILED`; retry up to `max_step_retries` |
 | Validation failure | `validation/engine.py:236` | Binary FAIL; critic can only downgrade |
 | Sandbox memory breach | `watchdog.py` | Kill; `killed_reason="memory"` |
 | Queue depth (backpressure) | `backpressure.py:115` | Degrade modality / shed discretionary ingestion (HTTP 429) |

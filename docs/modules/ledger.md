@@ -49,7 +49,7 @@ made retries impossible under a UNIQUE constraint.
 `correlation_id`, `event_type`, `state_version`, `payload`, `recorded_at`.
 
 `is_terminal` property (`events.py:196`): membership in `TERMINAL_EVENTS`
-(`core/types.py:132`).
+(`core/types.py:242`).
 
 ### `store.py` — append-only store
 `LedgerStore.append()` (`ledger/store.py:116`) inside one transaction:
@@ -161,7 +161,7 @@ from that version.
 ## Known gaps
 
 - `EXECUTION_COMPLETED` is per-step, not terminal — a common misreading
-  (`ADR-0010`, `types.py:132`).
+  (`ADR-0010`, `types.py:242`).
 - `open_correlations` reads the head projection, which can lag if a crash
   lands between ledger insert and head upsert; recovery repairs it
   (`recovery.py:269`).

@@ -15,33 +15,33 @@ to `MUTATION_COMMITTED`. All paths verified against `src/paa/agents/orchestrator
 
 ### 1. Submit — durable intake
 
-`ChiefOrchestrator.submit()` (`orchestrator.py:293`):
+`ChiefOrchestrator.submit()` (`orchestrator.py:296`):
 1. Mint `CorrelationId` (`new_correlation_id()`, `core/types.py:50`).
-2. Classify modality (`_classify()`, `orchestrator.py:352`) — heuristic: keywords
+2. Classify modality (`_classify()`, `orchestrator.py:355`) — heuristic: keywords
    (`refactor`, `implement`, `build`, `debug`, `fix`) → `COMPLEX`; `migrate`/`redesign`
    → `MAX`; target agent + short goal → `SIMPLE`; else `STANDARD`.
-3. Emit `TASK_REQUESTED` (`_emit()`, `orchestrator.py:264`) → `LedgerStore.append()`
+3. Emit `TASK_REQUESTED` (`_emit()`, `orchestrator.py:267`) → `LedgerStore.append()`
    (`ledger/store.py:116`) → row in `system_state_ledger`, head projection upserted.
 4. Apply backpressure (`_apply_backpressure()` — may degrade modality if queue
-   deep, `orchestrator.py:264`; `backpressure.py:77`).
+   deep, `orchestrator.py:267`; `backpressure.py:77`).
 5. Emit `TASK_QUEUED`.
 6. If queue configured: `queue.enqueue(StreamName.ORCHESTRATOR_CORE,
-   {correlation_id, goal})` (`orchestrator.py:233`) → `queue_messages`.
+   {correlation_id, goal})` (`orchestrator.py:341`) → `queue_messages`.
 
 Return `correlation_id` to caller. Submission does **not** execute — the request
 is durable before any work (`orchestrator.py` docstring).
 
 ### 2. Run — project existing state
 
-`ChiefOrchestrator.run(cid)` (`orchestrator.py:397`):
+`ChiefOrchestrator.run(cid)` (`orchestrator.py:403`):
 1. `project(ledger, cid)` (`replay.py:422`) → `TaskProjection`.
-2. If `state.is_terminal`, return immediately (`:295`).
+2. If `state.is_terminal`, return immediately (`orchestrator.py:403`).
 3. Build `AgentContext` from `MODALITY_PROFILES[state.modality]` (`_context_for`,
-   `:327`) — token budget, permission mode, recursion depth.
+   `orchestrator.py:445`) — token budget, permission mode, recursion depth.
 
 ### 3. Hydrate — build context packet
 
-`_hydrate()` (`orchestrator.py:468`):
+`_hydrate()` (`orchestrator.py:471`):
 1. Skip if `context_packet` already present (resume).
 2. Emit `CONTEXT_HYDRATION_REQUESTED`.
 3. `PlannerContextBuilder.run(message, ctx)` (`context_agents.py:377`):
@@ -52,15 +52,15 @@ is durable before any work (`orchestrator.py` docstring).
    - `_graph_neighbours()` — bounded traversal by `graph_hops`.
    - `BoundedContextGatherer.compile()` packs within `token_ceiling` (1500).
 4. If `routing_directive == HARD_STOP_ESCALATE_TO_USER` → emit
-   `AWAITING_HUMAN_ATTESTATION` (parks; `:379`), return.
-5. Emit `CONTEXT_HYDRATED` with `context_packet` (`orchestrator.py:534`).
+   `AWAITING_HUMAN_ATTESTATION` (parks; `orchestrator.py:936`), return.
+5. Emit `CONTEXT_HYDRATED` with `context_packet` (`orchestrator.py:538`).
 
 ### 4. Plan — compile execution steps
 
-`_plan()` (`orchestrator.py:543`):
+`_plan()` (`orchestrator.py:546`):
 1. Skip if `plan_steps` already present (resume).
 2. SIMPLE: emit `PLAN_COMPILED` with one step (`{action: goal, agent: worker}`,
-   `bypassed_planner: true`) (`:408`).
+   `bypassed_planner: true`) (`orchestrator.py:551`).
 3. Else `StrategicPlanner.run(message, ctx)` (`reasoning.py:78`):
    - Model `complete_structured` with `_PLAN_SCHEMA` (requires `execution_steps`)
      (`reasoning.py:95`); one retry on failure (`:93`); deterministic fallback
@@ -68,26 +68,26 @@ is durable before any work (`orchestrator.py` docstring).
    - `_normalise()` preserves passthrough keys (`command`, `required_permissions`,
      `path`, `risk_profile`, ...) — security requirement (`:155`).
    - Validate `len(steps) <= max_plan_nodes()`; else `RecursionGuardError`
-     (`:441`).
-4. Emit `PLAN_COMPILED` with `execution_steps` + `step_requirements` (`:448`).
+     (`orchestrator.py:584`).
+4. Emit `PLAN_COMPILED` with `execution_steps` + `step_requirements` (`orchestrator.py:593`).
 
 ### 5. Policy — deterministic risk gate
 
-`_check_policy()` (`orchestrator.py:461`):
+`_check_policy()` (`orchestrator.py:604`):
 1. Skip if `policy_decision` already present (resume).
 2. `PolicyRiskAgent.run(message, ctx)` (`policy.py:139`):
    - Permissions check (`:174`), LOCKDOWN network (`:194`), irreversible ops
-     under SAFE (`:213`), paths (`:222`), operator rules from DB (`:234`),
+     under SAFE (`:214`), paths (`:222`), operator rules from DB (`:234`),
      anti-goals (cosine ≥ 0.82 or phrase match, `:262`).
    - Risk score [0,1]; `_needs_gate()` decides human-gate need by mode (`:318`).
 3. Blocked → `POLICY_BLOCKED` (or `SECURITY_VIOLATION` on anti-goal) → phase
    `BLOCKED` (terminal) (`orchestrator.py:673`).
-4. Human gate required → `AWAITING_HUMAN_ATTESTATION` → phase parks (`orchestrator.py:909`).
-5. Cleared → `POLICY_CLEARED` + `risk_score` → phase `EXECUTING` (`orchestrator.py:709`).
+4. Human gate required → `AWAITING_HUMAN_ATTESTATION` → phase parks (`orchestrator.py:936`).
+5. Cleared → `POLICY_CLEARED` + `risk_score` → phase `EXECUTING` (`orchestrator.py:711`).
 
 ### 6. Execute steps — per step in sandbox
 
-`_execute_steps()` (`orchestrator.py:718`). For each step not in
+`_execute_steps()` (`orchestrator.py:721`). For each step not in
 `completed_steps`:
 
 ```
@@ -109,11 +109,11 @@ on budget exhausted: raise PaaError → EXECUTION_FAILED (terminal)
 
 `EXECUTION_COMPLETED` fires **per step**, not per task; phase stays `EXECUTING`
 until all steps done (`replay.py:240`, ADR-0010). Re-project after each step
-(`orchestrator.py:780`).
+(`orchestrator.py:783`).
 
 ### 7. Commit — terminal
 
-`_commit()` (`orchestrator.py:609`): emit `MUTATION_COMMITTED`
+`_commit()` (`orchestrator.py:815`): emit `MUTATION_COMMITTED`
 {steps_completed, tokens_consumed}; phase `COMMITTED` (terminal).
 
 ## Sequence diagram
