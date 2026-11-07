@@ -657,3 +657,96 @@ async def test_superseded_fact_hit_does_not_hydrate(db: Database) -> None:
     assert elements[0].importance == pytest.approx(0.33, abs=1e-6)
     derived = effective_confidence(1.0, from_iso(old_iso), "semantic", now=now)
     assert elements[0].confidence != pytest.approx(derived, abs=1e-6)
+
+
+async def test_corrupt_row_hydration_failed_log_is_redacted(db: Database) -> None:
+    """R-W1b-01: the per-hit ``context.hydration_failed`` entry is redacted.
+
+    ``from_iso``'s ValueError embeds its input, so a secret-shaped corrupt
+    ``last_queried_at`` (e.g. ``sk-...``) makes the per-hit ``redact()`` at
+    the second redacted emission point testable: the log's ``error`` must
+    carry ``***REDACTED***`` and no raw token substring (mirrors the batch
+    degrade test's assertions, for the per-hit entry carrying ``fact_id``).
+    Deleting ``redact()`` at the per-hit line fails the token-absent leg.
+    """
+    repo = FactRepository(db)
+    entity_id = await repo.upsert_entity("concept", "Widget")
+    corrupt_id = await repo.add_fact(
+        entity_id, "is", "foo_bar corrupt", domain="semantic", confidence=1.0, importance=0.5
+    )
+    await db.execute(
+        "UPDATE hot_serving_active_facts SET last_queried_at = ? WHERE id = ?",
+        ("sk-ABCDEF1234567890", corrupt_id),
+    )
+    hit = _Hit(
+        corrupt_id,
+        payload={
+            "object_value": "foo_bar corrupt",
+            "confidence": 0.42,
+            "importance": 0.33,
+            "predicate": "is",
+            "memory_domain": "semantic",
+        },
+    )
+    builder = PlannerContextBuilder(
+        db=db, vector_store=_FakeVectors([hit]), embedder=_FakeEmbedder()
+    )
+    with structlog.testing.capture_logs() as captured:
+        elements = await builder._semantic("widget foo_bar", now=utc_now())
+    assert len(elements) == 1
+    assert elements[0].confidence == pytest.approx(0.42, abs=1e-6)
+    assert elements[0].importance == pytest.approx(0.33, abs=1e-6)
+    entries = [
+        e
+        for e in captured
+        if e.get("event") == "context.hydration_failed" and e.get("fact_id") == corrupt_id
+    ]
+    assert entries
+    for entry in entries:
+        error_text = str(entry.get("error", ""))
+        assert "***REDACTED***" in error_text
+        assert "sk-ABCDEF1234567890" not in error_text
+
+
+async def test_duplicate_hit_ids_deduped_before_in_clause(
+    db: Database, monkeypatch: Any
+) -> None:
+    """TREV P2-c / R-W1b-02: duplicate hit ids collapse to one IN placeholder.
+
+    Two ``_Hit``s with the same id issue exactly one ``fetch_all`` whose SQL
+    carries a single ``?`` placeholder and whose params hold the id once
+    (the ``dict.fromkeys`` dedup). Removing the dedup fails the placeholder
+    count / params leg (two placeholders, id doubled) while result length
+    stays 2 either way — so the placeholder leg is the pin, not the call
+    count.
+    """
+    repo = FactRepository(db)
+    entity_id = await repo.upsert_entity("concept", "Widget")
+    fact_id = await repo.add_fact(
+        entity_id, "is", "foo_bar dup", domain="semantic", confidence=1.0, importance=0.5
+    )
+    payload = {
+        "object_value": "foo_bar dup",
+        "confidence": 1.0,
+        "importance": 0.5,
+        "predicate": "is",
+        "memory_domain": "semantic",
+    }
+    hits = [_Hit(fact_id, payload=dict(payload)), _Hit(fact_id, payload=dict(payload))]
+    builder = PlannerContextBuilder(
+        db=db, vector_store=_FakeVectors(hits), embedder=_FakeEmbedder()
+    )
+    calls: list[tuple[str, Any]] = []
+    original = db.fetch_all
+
+    async def _counting(sql: str, params: Any = ()) -> Any:
+        calls.append((sql, params))
+        return await original(sql, params)
+
+    monkeypatch.setattr(db, "fetch_all", _counting)
+    elements = await builder._semantic("widget foo_bar", now=utc_now())
+    assert len(elements) == 2
+    assert len(calls) == 1
+    sql, params = calls[0]
+    assert sql.count("?") == 1
+    assert list(params) == [fact_id]
