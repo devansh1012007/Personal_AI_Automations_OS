@@ -75,12 +75,12 @@
 - Gate results: orchestrator gate ruff 0 / mypy 3 / W4 scoped green (1 PG skip) / docs-lock 2 failing → REV-W4 REJECT (BLOCKER docs lock, MAJOR R-W4-002 unscheduled allocator, MAJOR R-W4-003 TUI mirror dead, MAJOR R-W4-004 graph 2nd writer, casualties C1–C5 stale) + TREV-W4 APPROVE-WITH-CHANGES → fixes 8971e83 + 48b9b5a/9e8e688 + 6fec6bb → re-review REV-W4b APPROVE-WITH-CHANGES (MAJOR R-W4b-001 test pollution — fixed by 6fec6bb shape (a)) + TREV-W4b APPROVE-WITH-CHANGES → orchestrator re-gate ruff 0 / mypy 3 / lock 5 passed.
 - Status: done. Tracked residuals: R-W4-002 allocator scheduling (W5), R-W4-006 DRAIN_THROTTLED emitter (W5), R-W4b-003 docs sweep ~65 lock-blind (W5), R-W4b-004 v5 STRICT wedge NEED (open, see deferred), drain-window survivor (open, minor).
 
-### Wave 5 (in progress)
+### Wave 5 (DONE)
 - WAVE_BASE_SHA: `af8c12b` (run HEAD at open)
 - Agents: W5-IMPL-01 (T-008 cost gate), W5-IMPL-02 (T-011 coding pilot), W5-IMPL-03 (T-007b scheduling + attention_top + DRAIN_THROTTLED), W5-DOCS (docs sweep + ADR-0029 amendment 0044) — parallel, disjoint write-sets (ownership/W5.tsv)
 - Pre-mortem: (a) auto-delete temptation on cost gate → advisory only; (b) 21-specialist big-bang → coding pilot only; (c) allocator producer invented → named decision OR operator-fed amendment; (d) docs sweep blind +N → read each citation; (e) ADR-0029 amendment numbered wrong → 0044 verified free.
-- Gate results: pending
-- Status: in progress
+- Gate results: orchestrator gate ruff 0 / mypy 3 / W5 scoped green / lock green → REV-W5 APPROVE-WITH-CHANGES (3 MAJOR, 4+4 MAJOR test gaps) + TREV-W5 APPROVE-WITH-CHANGES → fix c2e746c + cef92c2 → re-review REV-W5b APPROVE + TREV-W5b APPROVE-WITH-CHANGES, 0 blocker/major → orchestrator re-gate ruff 0 / mypy 3 / lock 5 passed.
+- Status: done. Residuals: R-W5-006 settings-threading (deferred, legitimate MINOR — orchestrator.py+daemon.py needed); exact-threshold boundary, cap kept-set order, producer multi-line evasion, 50-task ≥45 soften (all MINOR, recorded).
 
 ## Deep dives
 | Task | Agent | Design approved by | Report | Reviewers |
