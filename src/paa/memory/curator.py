@@ -85,6 +85,11 @@ class CurationReport:
     orphans_removed: int = 0
     vectors_reconciled: int = 0
     errors: int = 0
+    # PLAN:integration-fix:P008 advisory cost-gate suggestions (docs/adr/0040).
+    # Append-only; existing fields untouched. The list body is not in
+    # summary() (count only) so an advisory inf total can never leak into
+    # JSON-printed summaries.
+    cost_gate_suggestions: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def duration_seconds(self) -> float:
@@ -105,6 +110,7 @@ class CurationReport:
             "orphans_removed": self.orphans_removed,
             "vectors_reconciled": self.vectors_reconciled,
             "errors": self.errors,
+            "cost_gate_suggestions": len(self.cost_gate_suggestions),
         }
 
 
@@ -436,7 +442,81 @@ class MemoryCurator:
     async def _phase_analyze(
         self, report: CurationReport, *, now: datetime, dry_run: bool = False
     ) -> None:
-        """Refresh the query planner's statistics after the churn above."""
+        """Refresh the query planner's statistics after the churn above.
+
+        PLAN:integration-fix:P008 advisory cost gate (docs/adr/0040). The
+        suggestion is computed after reconciliation (this is the last
+        phase), never before decay, and never deletes, quarantines, or
+        marks a fact stale — the fact stays in the hot set either way.
+
+        DECISION (dry_run): the cost gate runs in ``dry_run`` too because
+        it writes nothing (no DB mutation, no ledger event); a preview tick
+        therefore shows the suggestions it would emit. The planner
+        ``analyze()`` refresh below remains suppressed in ``dry_run``.
+        """
+        # Gate first: disabled -> zero suggestions, zero cost calls.
+        from paa.config import get_settings
+
+        gate = get_settings().cost_gate
+        if gate.enabled:
+            from paa.context.metrics import total_memory_cost
+            # DECISION D-DERIVATIONS: named derivations from stored columns
+            # only (docs/adr/0040 source gaps closed, never silent 0/1):
+            # storage=row share 1/N (N=live facts), retrieval=1/(1+use_count),
+            # noise=1-importance, maintenance=1-initial_confidence,
+            # utility=importance*initial_confidence. utility=0 -> inf.
+            threshold = gate.threshold
+            live_count = int(
+                await self._db.fetch_value(
+                    "SELECT COUNT(*) FROM hot_serving_active_facts WHERE superseded_by IS NULL"
+                )
+                or 0
+            )
+            if live_count > 0:
+                storage = 1.0 / live_count
+                cursor = ""
+                while True:
+                    rows = await self._db.fetch_all(
+                        "SELECT id, importance, initial_confidence, use_count "
+                        "FROM hot_serving_active_facts "
+                        "WHERE superseded_by IS NULL AND id > ? ORDER BY id LIMIT ?",
+                        (cursor, self._batch),
+                    )
+                    if not rows:
+                        break
+                    cursor = rows[-1]["id"]
+                    for row in rows:
+                        try:
+                            importance = float(row["importance"])
+                            confidence = float(row["initial_confidence"])
+                            use_count = int(row["use_count"] or 0)
+                            if use_count < 0:
+                                raise ValueError("use_count must be non-negative")
+                            retrieval = 1.0 / (1.0 + use_count)
+                            noise = 1.0 - importance
+                            maintenance = 1.0 - confidence
+                            utility = importance * confidence
+                            total = total_memory_cost(
+                                storage, retrieval, noise, maintenance, utility
+                            )
+                        except (TypeError, ValueError, ZeroDivisionError):
+                            report.errors += 1
+                            continue
+                        if total >= threshold:
+                            suggestion = {
+                                "fact_id": row["id"],
+                                "total_cost": total,
+                                "threshold": threshold,
+                            }
+                            report.cost_gate_suggestions.append(suggestion)
+                            log.info(
+                                "cost_gate.suggestions",
+                                fact_id=row["id"],
+                                total_cost=total,
+                                threshold=threshold,
+                            )
+                    if len(rows) < self._batch:
+                        break
         if dry_run:
             return
         analyze = getattr(self._db, "analyze", None)

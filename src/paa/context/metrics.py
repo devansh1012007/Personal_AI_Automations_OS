@@ -45,6 +45,7 @@ __all__ = [
     "provider_reliability",
     "skill_rank",
     "token_efficiency",
+    "total_memory_cost",
 ]
 
 log = structlog.get_logger(__name__)
@@ -680,3 +681,70 @@ def skill_rank(
 
     numerator = weight_reliability * reliability_value + weight_risk * (1.0 - risk_value)
     return max(0.0, min(1.0, numerator / total_weight))
+
+
+# ---------------------------------------------------------------------------
+# PLAN:integration-fix:P008 — advisory total memory cost (docs/adr/0040)
+# ---------------------------------------------------------------------------
+
+
+def total_memory_cost(
+    storage: float,
+    retrieval: float,
+    noise: float,
+    maintenance: float,
+    utility: float,
+) -> float:
+    r"""Advisory total cost of keeping one fact in the hot set.
+
+    PLAN:integration-fix:P008, docs/adr/0040.
+
+    .. math::
+
+        C = \frac{\text{storage} + \text{retrieval} + \text{noise} +
+        \text{maintenance}}{\text{utility}} \quad (\text{utility} > 0)
+
+    :param storage: storage cost of the fact (e.g. row share of the hot set).
+        Non-negative, finite.
+    :param retrieval: retrieval cost. Non-negative, finite.
+    :param noise: noise cost. Non-negative, finite.
+    :param maintenance: maintenance cost. Non-negative, finite.
+    :param utility: usefulness of the fact. Non-negative, finite.
+    :returns: :math:`C \in [0, \infty]`. The result is always finite or
+        :math:`+\infty`, never NaN.
+
+    ``utility == 0`` returns ``math.inf`` — the raw division is never
+    evaluated (docs/adr/0040). A fact with zero utility has infinite cost,
+    and the curator logs the suggestion. Zero utility must say "infinite",
+    not crash and not quietly become a large finite number the threshold
+    can wave through.
+
+    DECISION (D-FORMULA): docs/adr/0040 states the ``utility=0 -> inf``
+    semantics and that the threshold is a positive scale, but names no
+    equation. The ratio form above is the only shape matching both (an
+    additive ``sum - utility`` cannot yield ``inf`` at ``utility = 0``,
+    and an epsilon guard ``sum / (utility + eps)`` is explicitly rejected
+    by the ADR as a large finite number). The threshold is therefore a
+    ratio: costs per unit utility.
+
+    All five terms are caller-supplied inputs. The storage/maintenance
+    source gaps (docs/adr/0040) are closed by the *caller* with named
+    derivations (e.g. row share), never by silent ``0``/``1`` substitution
+    inside this pure function. The number is recomputed, never stored.
+
+    Hostile inputs (negative, NaN, infinite) raise :class:`ValueError` via
+    :func:`_finite`; huge finite inputs may overflow the summation to
+    ``inf``, which is an allowed return (never NaN: the divisor is always
+    finite and positive, so ``inf / utility == inf``).
+    """
+    storage_value = _non_negative("storage", storage)
+    retrieval_value = _non_negative("retrieval", retrieval)
+    noise_value = _non_negative("noise", noise)
+    maintenance_value = _non_negative("maintenance", maintenance)
+    utility_value = _non_negative("utility", utility)
+
+    numerator = storage_value + retrieval_value + noise_value + maintenance_value
+    if utility_value == 0.0:
+        return math.inf
+    return numerator / utility_value
+

@@ -715,3 +715,97 @@ def test_skill_rank_always_in_unit_interval(
     """Bounded for every weight pair, so a configured threshold stays meaningful."""
     assume(w_rel + w_risk > 0.0)
     assert 0.0 <= skill_rank(reliability, risk, w_rel, w_risk) <= 1.0
+
+
+# ---------------------------------------------------------------------------
+# PLAN:integration-fix:P008 total_memory_cost (docs/adr/0040) — append-only
+# ---------------------------------------------------------------------------
+
+
+def test_total_memory_cost_known_values() -> None:
+    from paa.context.metrics import total_memory_cost
+
+    assert total_memory_cost(2.0, 1.0, 1.0, 0.0, 2.0) == pytest.approx(2.0)
+    assert total_memory_cost(1.0, 1.0, 1.0, 1.0, 2.0) == pytest.approx(2.0)
+    assert total_memory_cost(0.0, 0.0, 0.0, 0.0, 1.0) == pytest.approx(0.0)
+    assert total_memory_cost(1.0, 0.0, 0.0, 0.0, 1.0) == pytest.approx(1.0)
+
+
+def test_total_memory_cost_zero_utility_is_infinite() -> None:
+    """utility=0 -> inf, never ZeroDivision, never a large finite number."""
+    from paa.context.metrics import total_memory_cost
+
+    assert total_memory_cost(1.0, 1.0, 1.0, 1.0, 0.0) == math.inf
+    assert total_memory_cost(0.0, 0.0, 0.0, 0.0, 0.0) == math.inf
+
+
+def test_total_memory_cost_boundary_zero_terms() -> None:
+    """storage=0 and maintenance=0 are measured zeros, not unavailable."""
+    from paa.context.metrics import total_memory_cost
+
+    assert total_memory_cost(0.0, 1.0, 1.0, 0.0, 1.0) == pytest.approx(2.0)
+    assert total_memory_cost(0.0, 0.0, 0.0, 0.0, 5.0) == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize(
+    ("storage", "retrieval", "noise", "maintenance", "utility"),
+    [
+        (-1.0, 0.0, 0.0, 0.0, 1.0),
+        (0.0, -1.0, 0.0, 0.0, 1.0),
+        (0.0, 0.0, -0.5, 0.0, 1.0),
+        (0.0, 0.0, 0.0, -1.0, 1.0),
+        (0.0, 0.0, 0.0, 0.0, -1.0),
+        (float("nan"), 0.0, 0.0, 0.0, 1.0),
+        (0.0, float("nan"), 0.0, 0.0, 1.0),
+        (0.0, 0.0, float("nan"), 0.0, 1.0),
+        (0.0, 0.0, 0.0, float("nan"), 1.0),
+        (0.0, 0.0, 0.0, 0.0, float("nan")),
+        (float("inf"), 0.0, 0.0, 0.0, 1.0),
+        (0.0, 0.0, 0.0, 0.0, float("inf")),
+    ],
+)
+def test_total_memory_cost_rejects_out_of_domain(
+    storage: float, retrieval: float, noise: float, maintenance: float, utility: float
+) -> None:
+    from paa.context.metrics import total_memory_cost
+
+    with pytest.raises(ValueError):
+        total_memory_cost(storage, retrieval, noise, maintenance, utility)
+
+
+def test_total_memory_cost_huge_inputs_never_nan() -> None:
+    """Huge finite inputs overflow to inf at worst — never NaN."""
+    from paa.context.metrics import total_memory_cost
+
+    huge = total_memory_cost(1e308, 1e308, 0.0, 0.0, 1.0)
+    assert math.isinf(huge) and huge > 0.0
+    assert not math.isnan(huge)
+    tiny = total_memory_cost(1.0, 0.0, 0.0, 0.0, 1e308)
+    assert math.isfinite(tiny)
+    assert not math.isnan(tiny)
+
+
+@given(non_negative, non_negative, non_negative, non_negative, non_negative)
+def test_total_memory_cost_never_nan(
+    storage: float, retrieval: float, noise: float, maintenance: float, utility: float
+) -> None:
+    """Every in-domain input yields finite or inf, never NaN."""
+    from paa.context.metrics import total_memory_cost
+
+    total = total_memory_cost(storage, retrieval, noise, maintenance, utility)
+    assert not math.isnan(total)
+    assert math.isfinite(total) or math.isinf(total)
+
+
+@given(non_negative, non_negative, non_negative, non_negative, non_negative)
+def test_total_memory_cost_decreases_with_utility(
+    storage: float, retrieval: float, noise: float, maintenance: float, utility: float
+) -> None:
+    """More utility must never raise the cost (utility>0)."""
+    from paa.context.metrics import total_memory_cost
+
+    assume(utility > 0.0)
+    low = total_memory_cost(storage, retrieval, noise, maintenance, utility)
+    high = total_memory_cost(storage, retrieval, noise, maintenance, utility * 2.0)
+    assert high <= low + 1e-9
+
