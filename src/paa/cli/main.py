@@ -30,6 +30,7 @@ from rich.table import Table
 from paa import __version__
 from paa.cli.coder import register_agent
 from paa.core.types import ComplexityModality, PermissionMode
+from paa.memory.touch import touch_recalled
 from paa.models.base import redact
 from paa.sandbox.base import collect_sandbox_facts, sandbox_report_rows
 
@@ -538,7 +539,7 @@ def facts(
         if not rows:
             console.print("[dim]no facts[/dim]")
             return
-        await _touch_recalled(rt.db, [f.id for f in rows])
+        await touch_recalled(rt.db, [f.id for f in rows])
         _render_fact_table(rows, title=f"facts for {entity}")
 
     _run(_run_with_runtime(_do))
@@ -564,7 +565,7 @@ def search(
         if not rows:
             console.print("[dim]no matches[/dim]")
             return
-        await _touch_recalled(rt.db, [f.id for f in rows])
+        await touch_recalled(rt.db, [f.id for f in rows])
         _render_fact_table(rows, title=f"search: {text}")
 
     _run(_run_with_runtime(_do))
@@ -716,32 +717,6 @@ def world_model(
 
 
 app.add_typer(memory_app, name="memory")
-
-
-async def _touch_recalled(db: Any, fact_ids: list[str]) -> None:
-    """Advance retention clocks for the rows one recall just printed.
-
-    ``DecaySweeper.touch_many`` is the only write these commands perform, and
-    it writes only derived retention state (``use_count``/``last_queried_at``):
-    the printed table is unchanged (the ids never leave this function). This
-    is the documented derived-state exception — retention clocks are not
-    derivable from cold-lake replay (a rebuild resets them), the same way the
-    decay sweep itself mutates hot serving state outside the ledger.
-    """
-    if db is None or not fact_ids:
-        return
-    import structlog
-
-    from paa.memory.decay import DecaySweeper
-
-    log = structlog.get_logger(__name__)
-    ids = list(dict.fromkeys(fact_ids))
-    try:
-        await DecaySweeper(db).touch_many(ids)
-    except Exception as exc:
-        log.warning("memory.recall_touch_failed", count=len(ids), error=redact(str(exc)))
-        return
-    log.debug("memory.recall_touched", count=len(ids))
 
 
 if __name__ == "__main__":

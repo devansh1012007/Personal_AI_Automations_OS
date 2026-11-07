@@ -6,6 +6,8 @@ RFC §4 / §12. Layering, bottom to top:
     The taxonomy: 18 domain names over 6 real mechanisms (ADR-0014).
 ``decay``
     Confidence decay and the eviction sweep — derived, never stored.
+``touch``
+    Post-recall retention touch — one home for advancing recall clocks.
 ``contradiction``
     Conflict detection and quarantine; never auto-resolves.
 ``facts``
@@ -55,6 +57,7 @@ from paa.memory.domains import (
     narrative_domains,
 )
 from paa.memory.facts import Entity, Fact, FactRepository
+from paa.memory.touch import touch_recalled
 from paa.memory.world_model import BeliefDocument, EpisodeSummary, WorldModel
 
 __all__ = [
@@ -92,4 +95,5 @@ __all__ = [
     "importance_index",
     "is_stale",
     "narrative_domains",
+    "touch_recalled",
 ]

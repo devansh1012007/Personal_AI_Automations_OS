@@ -53,6 +53,7 @@ from paa.context.gatherer import BoundedContextGatherer, ContextElement
 from paa.core.types import AgentRole, as_text
 from paa.memory.decay import effective_confidence
 from paa.memory.domains import narrative_domains
+from paa.memory.touch import touch_recalled
 from paa.models.base import redact
 from paa.storage.relational.base import RelationalBackend
 from paa.storage.relational.like import like_pattern, like_predicate
@@ -102,7 +103,7 @@ class _BaseContextBuilder(Agent):
 
     **Read-only by construction** (RFC §2.1 agent 2: "banned from writing to
     any storage layer"). The one exception is the post-recall retention
-    touch at :func:`_touch_recalled`: after ``handle()`` returns, touch
+    touch at :func:`paa.memory.touch.touch_recalled`: after ``handle()`` returns, touch
     advances ``use_count``/``last_queried_at`` — derived-state exception.
     """
 
@@ -402,7 +403,7 @@ class PlannerContextBuilder(_BaseContextBuilder):
         # Graph elements carry synthetic ids (graph:...) that match no fact
         # row, so they are excluded explicitly.
         delivered = [e.id for e in packet.elements if not e.id.startswith("graph:")]
-        await _touch_recalled(self._db, delivered)
+        await touch_recalled(self._db, delivered)
         return AgentResult.success(
             packet.model_dump(mode="json"),
             tokens_consumed=packet.allocated_tokens,
@@ -468,33 +469,9 @@ class WorkerContextBuilder(_BaseContextBuilder):
             raise ValueError(f"narrative memory leaked into a worker packet: {', '.join(leaked)}")
         # Touch only the delivered packet (see planner handle, R-W2-001).
         delivered = [e.id for e in packet.elements if not e.id.startswith("graph:")]
-        await _touch_recalled(self._db, delivered)
+        await touch_recalled(self._db, delivered)
         return AgentResult.success(
             packet.model_dump(mode="json"),
             tokens_consumed=packet.allocated_tokens,
             confidence=packet.density,
         )
-
-
-async def _touch_recalled(db: RelationalBackend | None, fact_ids: list[str]) -> None:
-    """Advance retention clocks for the fact ids one recall just returned.
-
-    ``DecaySweeper.touch_many`` is the only write this module performs, and it
-    writes only derived retention state (``use_count``/``last_queried_at``):
-    content, stored confidence, ranking and routing are untouched, so the
-    ledger-is-truth invariant holds. This is the documented derived-state
-    exception — retention clocks are not derivable from cold-lake replay (a
-    rebuild resets them), the same way the decay sweep itself mutates hot
-    serving state outside the ledger.
-    """
-    if db is None or not fact_ids:
-        return
-    from paa.memory.decay import DecaySweeper
-
-    ids = list(dict.fromkeys(fact_ids))
-    try:
-        await DecaySweeper(db).touch_many(ids)
-    except Exception as exc:
-        log.warning("memory.recall_touch_failed", count=len(ids), error=redact(str(exc)))
-        return
-    log.debug("memory.recall_touched", count=len(ids))

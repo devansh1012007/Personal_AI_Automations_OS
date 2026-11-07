@@ -38,6 +38,7 @@ from paa.api.schemas import (
     TaskStatusResponse,
     TaskSubmitResponse,
 )
+from paa.memory.touch import touch_recalled
 from paa.models.base import redact
 
 if TYPE_CHECKING:
@@ -207,7 +208,7 @@ def create_app(runtime: Runtime) -> FastAPI:
         if not await _admit(runtime, essential=False):
             raise HTTPException(status_code=429, detail="memory under backpressure")
         facts = await FactRepository(runtime.db).query_facts(entity_id=entity)
-        await _touch_recalled(runtime.db, [f.id for f in facts])
+        await touch_recalled(runtime.db, [f.id for f in facts])
         return [
             FactView(
                 id=f.id,
@@ -230,7 +231,7 @@ def create_app(runtime: Runtime) -> FastAPI:
             facts = await FactRepository(runtime.db).search_facts_by_text(query=q)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=redact(str(exc))) from exc
-        await _touch_recalled(runtime.db, [f.id for f in facts])
+        await touch_recalled(runtime.db, [f.id for f in facts])
         return [
             FactView(
                 id=f.id,
@@ -341,26 +342,3 @@ def _parse_uuid(value: str) -> uuid.UUID:
         return uuid.UUID(value)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="invalid correlation id") from exc
-
-
-async def _touch_recalled(db: Any, fact_ids: list[str]) -> None:
-    """Advance retention clocks for the facts one recall just returned.
-
-    ``DecaySweeper.touch_many`` is the only write these routes perform, and it
-    writes only derived retention state (``use_count``/``last_queried_at``):
-    response payloads are unchanged. This is the documented derived-state
-    exception — retention clocks are not derivable from cold-lake replay (a
-    rebuild resets them), the same way the decay sweep itself mutates hot
-    serving state outside the ledger.
-    """
-    if db is None or not fact_ids:
-        return
-    from paa.memory.decay import DecaySweeper
-
-    ids = list(dict.fromkeys(fact_ids))
-    try:
-        await DecaySweeper(db).touch_many(ids)
-    except Exception as exc:
-        log.warning("memory.recall_touch_failed", count=len(ids), error=redact(str(exc)))
-        return
-    log.debug("memory.recall_touched", count=len(ids))
