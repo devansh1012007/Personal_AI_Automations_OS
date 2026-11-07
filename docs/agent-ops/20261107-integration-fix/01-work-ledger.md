@@ -61,18 +61,26 @@
 - Gate results: orchestrator gate ruff 0 / mypy 3 / W2 scoped green (1 PG skip) / docs-lock 44 broken → REV-W2 REJECT (BLOCKER Dockerfile USER, BLOCKER docs, MAJOR fold validation) + TREV-W2 APPROVE-WITH-CHANGES → fixes f009484 + 8d39e5c → re-review REV-W2b/TREV-W2b both APPROVE-WITH-CHANGES, 0 blocker/major → orchestrator re-gate ruff 0 / mypy 3 / lock 5 passed.
 - Status: done
 
-### Wave 3 (in progress)
+### Wave 3 (DONE)
 - WAVE_BASE_SHA: `492d4b2` (run HEAD at open)
 - Agents: W3-IMPL-01 (T-009c sweeper), W3-IMPL-02 (T-010 vault), W3-IMPL-03 (T-006 panels), W3-IMPL-04 (T-004b fallback) — parallel, disjoint write-sets (ownership/W3.tsv)
 - Pre-mortem: (a) dry_run bypass (sweeper hardcodes flag) → brief forces injection; (b) fence silent-overwrite → conflict error is the contract; (c) fake attention score → null enforced; (d) second touch copy at fallback site → T05 lock must stay green; (e) docs lock re-break (standing gate item).
+- Gate results: REV-W3 REJECT → fixes 037a8d6 + f3baf89/efe4207 → REV-W3b/TREV-W3b both APPROVE-WITH-CHANGES, 0 blocker/major → orchestrator re-gate ruff 0 / mypy 3 / lock 5 passed.
+- Status: done
+
+### Wave 4 (DONE)
+- WAVE_BASE_SHA: `45b542d` (run HEAD at open)
+- Agents: W4-IMPL-01 (T-007 allocator+drain), W4-IMPL-02 (T-013 reflection), W4-IMPL-03 (T-003 stored-norm v6) — parallel, disjoint write-sets (ownership/W4.tsv)
+- Pre-mortem: (a) queue without ledger = non-replayable → ledger-before-ack enforced; (b) T13 literal-not-ADR → fixed pins; (c) docs lock re-break (standing gate item).
+- Gate results: orchestrator gate ruff 0 / mypy 3 / W4 scoped green (1 PG skip) / docs-lock 2 failing → REV-W4 REJECT (BLOCKER docs lock, MAJOR R-W4-002 unscheduled allocator, MAJOR R-W4-003 TUI mirror dead, MAJOR R-W4-004 graph 2nd writer, casualties C1–C5 stale) + TREV-W4 APPROVE-WITH-CHANGES → fixes 8971e83 + 48b9b5a/9e8e688 + 6fec6bb → re-review REV-W4b APPROVE-WITH-CHANGES (MAJOR R-W4b-001 test pollution — fixed by 6fec6bb shape (a)) + TREV-W4b APPROVE-WITH-CHANGES → orchestrator re-gate ruff 0 / mypy 3 / lock 5 passed.
+- Status: done. Tracked residuals: R-W4-002 allocator scheduling (W5), R-W4-006 DRAIN_THROTTLED emitter (W5), R-W4b-003 docs sweep ~65 lock-blind (W5), R-W4b-004 v5 STRICT wedge NEED (open, see deferred), drain-window survivor (open, minor).
+
+### Wave 5 (in progress)
+- WAVE_BASE_SHA: `af8c12b` (run HEAD at open)
+- Agents: W5-IMPL-01 (T-008 cost gate), W5-IMPL-02 (T-011 coding pilot), W5-IMPL-03 (T-007b scheduling + attention_top + DRAIN_THROTTLED), W5-DOCS (docs sweep + ADR-0029 amendment 0044) — parallel, disjoint write-sets (ownership/W5.tsv)
+- Pre-mortem: (a) auto-delete temptation on cost gate → advisory only; (b) 21-specialist big-bang → coding pilot only; (c) allocator producer invented → named decision OR operator-fed amendment; (d) docs sweep blind +N → read each citation; (e) ADR-0029 amendment numbered wrong → 0044 verified free.
 - Gate results: pending
 - Status: in progress
-
-### Wave 4 (planned)
-- T-007 allocator+drain · T-013 reflection wiring (after vault fence delegation) · T-003 stored-normalisation (migration v6, after v5 parity).
-
-### Wave 5 (planned)
-- T-008 cost gate · T-011 coding pilot. Final review on combined diff (Step 8).
 
 ## Deep dives
 | Task | Agent | Design approved by | Report | Reviewers |
