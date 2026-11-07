@@ -50,7 +50,7 @@ where a meaning is inferred rather than verified, it is labelled.
   lineage's events into coarse lifecycle phase (`CREATED`, `QUEUED`,
   `PLANNING`, `POLICY_REVIEW`, `EXECUTING`, `VALIDATING`, `AWAITING_HUMAN`,
   `COMMITTED`, `FAILED`, `BLOCKED`, `ROLLED_BACK`, `ABANDONED`).
-  `src/paa/ledger/replay.py:34`.
+  `src/paa/ledger/replay.py:35`.
 - **Snapshot** — A checkpointed projection (`system_state_snapshots`) used as a
   replay optimisation; safe to delete, never truth.
   `src/paa/ledger/store.py:364`.
@@ -62,7 +62,7 @@ PLAN_COMPILED → POLICY_CLEARED → EXECUTION_STARTED → (per step)
 EXECUTION_COMPLETED / VALIDATION_FAILED → CRITIQUE_CONCLUDED → MUTATION_COMMITTED`.
 Branches: `POLICY_BLOCKED / SECURITY_VIOLATION` (terminal blocked),
 `AWAITING_HUMAN_ATTESTATION` (parks), `STATE_ROLLBACK_TRIGGERED` (drift → restore).
-`src/paa/core/types.py:67`; `src/paa/ledger/replay.py:149`.
+`src/paa/core/types.py:67`; `src/paa/ledger/replay.py:150`.
 
 ## Permission model
 

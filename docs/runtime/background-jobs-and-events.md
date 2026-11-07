@@ -94,8 +94,8 @@ lineages. The event vocabulary (`src/paa/core/types.py:67`):
 
 ## 4. Status tracking and retries
 
-- Task status = replayed `TaskProjection.phase` (`TaskPhase`, `replay.py:34`).
-- `attempts` incremented on each `EXECUTION_STARTED` (`replay.py:219`).
+- Task status = replayed `TaskProjection.phase` (`TaskPhase`, `replay.py:35`).
+- `attempts` incremented on each `EXECUTION_STARTED` (`replay.py:220`).
 - Per-step retry budget `max_step_retries` (default 2) in
   `ChiefOrchestrator._execute_steps` (`orchestrator.py:523`).
 - Queue `max_delivery_attempts` (default 3) governs message redelivery

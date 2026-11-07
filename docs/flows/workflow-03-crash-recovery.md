@@ -8,7 +8,7 @@ Verified against `src/paa/ledger/recovery.py`, `src/paa/ledger/store.py`,
 
 | Trigger | Entry | File |
 |---|---|---|
-| CLI | `paa recover` | `cli/main.py:209` → `Runtime.boot_recovery()` |
+| CLI | `paa recover` | `cli/main.py:210` → `Runtime.boot_recovery()` |
 | Service start | `paa serve` → `Daemon.start()` | `daemon.py:64` |
 | Runtime build | `Runtime.build(run_recovery=True)` (default) | `runtime.py:331` |
 
@@ -36,7 +36,7 @@ messages; the ledger is not.
 
 For each head:
 
-a. `project(store, cid)` → `TaskProjection` (replay from ledger, `ledger/replay.py:322`).
+a. `project(store, cid)` → `TaskProjection` (replay from ledger, `ledger/replay.py:412`).
 b. If `projection.is_terminal` → head projection lagged (crash between ledger
    insert and head upsert); `_mark_head_terminal()`; outcome `ALREADY_TERMINAL`
    (`:270`).

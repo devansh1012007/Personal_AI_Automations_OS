@@ -43,8 +43,8 @@ Programmatic: `Runtime.build()` (`src/paa/runtime.py:260`):
    (`runtime.py:331`).
 
 CLI one-shot commands build a `Runtime`, do one thing, print, and close
-(`cli/main.py:54`). `paa serve` builds one `Runtime`, starts the `Daemon` and
-FastAPI app over it (`cli/main.py:254`).
+(`cli/main.py:55`). `paa serve` builds one `Runtime`, starts the `Daemon` and
+FastAPI app over it (`cli/main.py:293`).
 
 ## Daemon loops
 
@@ -100,7 +100,7 @@ deleted fact, re-run the creator over its persisted signal: facts carry
 and `MemoryCreator.run_batch` claims `unprocessed` signals
 (`src/paa/memory/creator.py:1282`). The operator steps are: set the affected
 signal(s) back to `unprocessed`, then `paa memory drain` (or
-`POST /memory/drain`, `src/paa/api/app.py:272`). The creator is
+`POST /memory/drain`, `src/paa/api/app.py:274`). The creator is
 deterministic and replay-stable (`src/paa/memory/creator.py:185`), so the
 fact is recreated from the same payload; contradiction and quarantine rules
 still apply on replay. Code revert restores neither the facts nor the
@@ -140,9 +140,9 @@ All state under `PAA_HOME` (default `~/.paa`, outside the repo):
 ## Health / observability
 
 - `paa doctor` reports live backends and sandbox isolation level
-  (`cli/main.py:227`).
+  (`cli/main.py:228`).
 - `GET /health` returns backend type names and open task count
-  (`api/app.py:68`).
+  (`api/app.py:71`).
 - `src/paa/observability/` (logging, metrics, tracing, runs) is built but
   **untested** — exercised nowhere (`AGENTS.md:97`).
 

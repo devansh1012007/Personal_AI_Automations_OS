@@ -6,7 +6,7 @@ holds no application state, makes no model calls, and writes directly to neither
 operational tables nor the ledger; a request becomes either a ledger event (via
 the orchestrator) or a cold-lake row (via the signal repository) (`api/app.py:8`).
 
-The app is built by `create_app(runtime)` (`src/paa/api/app.py:53`) and imported
+The app is built by `create_app(runtime)` (`src/paa/api/app.py:54`) and imported
 lazily (FastAPI is imported inside the function) so the package imports on a
 minimal install.
 
@@ -22,7 +22,7 @@ minimal install.
 ## Endpoints
 
 ### `GET /health`
-**Handler:** `api/app.py:68`
+**Handler:** `api/app.py:71`
 **Response:** `HealthResponse` (`api/schemas.py:96`)
 ```json
 {
@@ -40,7 +40,7 @@ minimal install.
 `open_tasks` = `len(await runtime.ledger.open_correlations(limit=10_000))`.
 
 ### `POST /tasks`
-**Handler:** `api/app.py:85`
+**Handler:** `api/app.py:94`
 **Request:** `TaskRequestBody` (`api/schemas.py:28`)
 ```json
 {
@@ -55,7 +55,7 @@ minimal install.
 **Behavior:**
 1. Calls `_admit(runtime, essential=False)`; if the queue is deep (SHEDDING),
    returns **HTTP 429** "runtime under backpressure; retry shortly"
-   (`api/app.py:87`).
+   (`api/app.py:295`).
 2. `runtime.submit(goal, modality, required_slots, workspace_path,
    target_agent)` → writes `TASK_REQUESTED` + `TASK_QUEUED`, enqueues to the
    queue, returns `correlation_id` (`runtime.py:189`, `orchestrator.py:188`).
@@ -69,7 +69,7 @@ minimal install.
 ```
 
 ### `GET /tasks/{correlation_id}`
-**Handler:** `api/app.py:104`
+**Handler:** `api/app.py:114`
 **Response:** `TaskStatusResponse` (`api/schemas.py:49`)
 ```json
 {
@@ -91,7 +91,7 @@ minimal install.
 for the projection. Invalid UUID → 400.
 
 ### `POST /tasks/{correlation_id}/gate`
-**Handler:** `api/app.py:126`
+**Handler:** `api/app.py:136`
 **Request:** `GateRequest` (`api/schemas.py:64`) `{ "approved": bool, "note": "string|null" }`
 **Behavior:** `runtime.orchestrator.clear_human_gate(cid, approved, note)`.
 409 if the task is not awaiting human attestation (`PaaError`). Returns the
@@ -101,13 +101,13 @@ Only an external caller reaches this; nothing in the automated path can clear
 its own gate (`orchestrator.py:1015`).
 
 ### `POST /tasks/{correlation_id}/correction`
-**Handler:** `api/app.py:139`
+**Handler:** `api/app.py:149`
 **Body:** `{ "correction": "string" }` (arbitrary dict; reads `.get("correction", "")`)
 **Behavior:** `runtime.orchestrator.record_correction(cid, correction)` → writes
 `USER_CORRECTION` event. Returns 202 `{"status": "recorded"}`.
 
 ### `GET /ledger/{correlation_id}`
-**Handler:** `api/app.py:147`
+**Handler:** `api/app.py:156`
 **Response:** list of `LedgerEventView` (`api/schemas.py:85`)
 ```json
 [
@@ -119,7 +119,7 @@ its own gate (`orchestrator.py:1015`).
 explainability endpoint — walk the causal chain backwards via `causation_id`.
 
 ### `POST /signals`
-**Handler:** `api/app.py:165`
+**Handler:** `api/app.py:175`
 **Request:** `SignalRequest` (`api/schemas.py:71`)
 ```json
 { "channel": "string (min 1)", "payload": {...}, "external_id": "string|null" }
@@ -131,7 +131,7 @@ explainability endpoint — walk the causal chain backwards via `causation_id`.
 **Behavior:**
 1. `_admit(runtime, essential=False)` → 429 under backpressure.
 2. Builds `SignalRepository` over `runtime.db` + cold-lake CAS
-   (`_signal_repo`, `api/app.py:315`); 503 if cold lake not configured.
+   (`_signal_repo`, `api/app.py:316`); 503 if cold lake not configured.
 3. If `external_id` set, checks `get_by_external_id` for a pre-existing row
    (`duplicate` flag).
 4. `repo.record(channel, payload, external_id)` → idempotent insert.
@@ -156,15 +156,15 @@ FastAPI):
 
 | Status | Condition | Source |
 |---|---|---|
-| 400 | Invalid correlation_id UUID | `_parse_uuid` (`api/app.py:337`) |
-| 404 | No such task (head is None / no events) | `task_status` (`api/app.py:109`), `ledger` (`api/app.py:150`) |
-| 409 | Task not awaiting human gate | `clear_gate` (`api/app.py:135`) |
-| 429 | Queue under backpressure (SHEDDING) | `_admit` (`api/app.py:87`, `:168`) |
-| 503 | Cold lake not configured | `ingest_signal` (`api/app.py:172`) |
+| 400 | Invalid correlation_id UUID | `_parse_uuid` (`api/app.py:338`) |
+| 404 | No such task (head is None / no events) | `task_status` (`api/app.py:114`), `ledger` (`api/app.py:156`) |
+| 409 | Task not awaiting human gate | `clear_gate` (`api/app.py:136`) |
+| 429 | Queue under backpressure (SHEDDING) | `_admit` (`api/app.py:295`) |
+| 503 | Cold lake not configured | `ingest_signal` (`api/app.py:175`) |
 
 Backpressure: essential control-plane traffic is always admitted; only
 discretionary ingestion (`/tasks` without `run`? actually all task submission and signals)
-is shed when depth ≥ `shed_load_depth` (`api/app.py:199`, `backpressure.py:115`).
+is shed when depth ≥ `shed_load_depth` (`api/app.py:200`, `backpressure.py:115`).
 
 ## Authentication / authorization
 

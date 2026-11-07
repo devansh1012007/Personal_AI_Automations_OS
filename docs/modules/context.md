@@ -58,8 +58,8 @@ reproducibility (`context_agents.py` module docstring).
 
 | Component | Relationship | Why | Source |
 |---|---|---|---|
-| `PlannerContextBuilder` → `BoundedContextGatherer` | `compile()` | Pack planner packet | `context_agents.py:309` |
-| `WorkerContextBuilder` → `BoundedContextGatherer` | `compile_worker_packet()` | Pack worker packet | `context_agents.py:296` |
+| `PlannerContextBuilder` → `BoundedContextGatherer` | `compile()` | Pack planner packet | `context_agents.py:310` |
+| `WorkerContextBuilder` → `BoundedContextGatherer` | `compile_worker_packet()` | Pack worker packet | `context_agents.py:297` |
 | `Gatherer` → `TokenBudget` | `try_consume` | Enforce ceiling | `gatherer.py` |
 | `ChiefOrchestrator` → context builders | `handle()` | Hydrate phase | `orchestrator.py:374` |
 
@@ -75,9 +75,9 @@ reproducibility (`context_agents.py` module docstring).
 ## Failure behavior
 
 - Expander failure → deterministic `_KeywordExpander` fallback
-  (`context_agents.py:122`).
+  (`context_agents.py:123`).
 - Missing vector/graph → semantic/graph searches return `[]` (degrade)
-  (`context_agents.py:183`, `:214`).
+  (`context_agents.py:184`, `:215`).
 - Ceiling exceeded → `AssertionError` (`gatherer.py:565`).
 
 ## Modification impact

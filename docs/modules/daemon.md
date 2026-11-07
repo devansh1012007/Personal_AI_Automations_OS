@@ -66,7 +66,7 @@ to `None` (ingestion skipped).
 | `Daemon` → `Runtime` | `boot_recovery()`, `run()`, `queue`, `agents` | Drive the runtime | `src/paa/daemon.py:48` |
 | `Daemon` → `MemoryCreator` | `run_batch()` | Ingest signals | `src/paa/daemon.py:156` |
 | `Daemon` → `MemoryCurator` | `run_maintenance()` | Curate memory (decay, prune, consolidate, orphans, reconcile, analyze) | `src/paa/daemon.py:200` |
-| `cli.main serve` → `Daemon` | `Daemon(rt)`, `start()`/`stop()` | `paa serve` | `cli/main.py:310` |
+| `cli.main serve` → `Daemon` | `Daemon(rt)`, `start()`/`stop()` | `paa serve` | `cli/main.py:311` |
 | `Runtime.build` → boot recovery | `orchestrator.boot()` | Recovery at boot | `runtime.py:326` |
 
 ## Runtime behavior

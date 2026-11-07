@@ -73,7 +73,7 @@ raises on unknown event types (records them in `unknown_events` instead).
 
 **Key logic:** `_PHASE_MAP` maps each `EventType` to a `TaskPhase`; event-specific
 state (plan steps, policy decision, attempts, completed steps, tokens) is
-applied in `apply_event`'s `match` block (`replay.py:170`).
+applied in `apply_event`'s `match` block (`replay.py:171`).
 
 ### `recovery.py` — crash recovery
 **Responsibility:** `RecoveryEngine.boot_sweep()` — replays open lineages from
@@ -173,8 +173,8 @@ no-holes hydration). Both use `BoundedContextGatherer` + `QueryExpander`.
 `QueryExpander`.
 
 **Failure behavior:** Expander failure degrades to deterministic `_KeywordExpander`
-(`context_agents.py:122`). Missing required primitives → `hydration_required`
-failure rather than dispatching an unprepared worker (`context_agents.py:303`).
+(`context_agents.py:123`). Missing required primitives → `hydration_required`
+failure rather than dispatching an unprepared worker (`context_agents.py:446`).
 
 ## 4. Storage — `storage/`
 

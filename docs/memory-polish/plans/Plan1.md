@@ -61,7 +61,7 @@
 - `src/paa/config.py` — `ModelSettings` (embedding model, etc.), `MemorySettings` (curator budget). No extraction-model field yet.
 
 **Entry points and execution flow today, with `[FACT file:line]`:**
-- Signal lands: `POST /signals` → `SignalRepository.record` → `cold_lake_signals` row `[FACT src/paa/api/app.py:172-196]`.
+- Signal lands: `POST /signals` → `SignalRepository.record` → `cold_lake_signals` row `[FACT src/paa/api/app.py:173-197]`.
 - Daemon drains: `_ingestion_loop` → `creator.run_batch(limit=25)` → `process_signal` per signal `[FACT src/paa/daemon.py:142-152]`.
 - Creator extracts: `RuleBasedExtractor.extract` (rule-based, no model) → entity resolution → contradiction check → one transaction commit → embedding enqueue `[FACT src/paa/memory/creator.py:1133-1212]`.
 - Context builds: `ContextGatherer` packs facts mechanically under token budget `[FACT src/paa/context/gatherer.py]`.
@@ -76,8 +76,8 @@
 - Contradictions never auto-resolved (creator.py, curator.py).
 
 **Conventions to follow:**
-- CLI: one `@app.command()` per verb, `_build_runtime()` + `try/finally rt.close()` pattern `[FACT cli/main.py:69-99]`.
-- API: `_admit` backpressure gate, `_parse_uuid`, `response_model` schemas `[FACT api/app.py:91-170]`.
+- CLI: one `@app.command()` per verb, `_build_runtime()` + `try/finally rt.close()` pattern `[FACT cli/main.py:70-100]`.
+- API: `_admit` backpressure gate, `_parse_uuid`, `response_model` schemas `[FACT api/app.py:92-171]`.
 - Tests: asyncio auto mode, tmp_path fixtures, no session-scoped state (AGENTS.md testing conventions).
 
 ---
@@ -90,7 +90,7 @@ Add a `paa memory` CLI command group and four memory API routes (`GET /memory/fa
 **Before flow / After flow (numbered steps, real symbols):**
 
 *Before (signal ingestion → fact):*
-1. Operator POSTs to `/signals` → row in `cold_lake_signals` `[api/app.py:172]`.
+1. Operator POSTs to `/signals` → row in `cold_lake_signals` `[api/app.py:175]`.
 2. Daemon `_ingestion_loop` claims row → `MemoryCreator.run_batch` `[daemon.py:142]`.
 3. `RuleBasedExtractor` produces candidates (no model) `[creator.py:455]`.
 4. Entity resolution + contradiction check + one-transaction commit `[creator.py:1305-1451]`.

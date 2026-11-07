@@ -47,18 +47,18 @@ note=None)` (`orchestrator.py:1015`):
 — a crash is never interpreted as consent (`replay.py:62`).
 
 Callers:
-- CLI `paa gate <id> --approve/--reject` (`cli/main.py:164`)
-- API `POST /tasks/{id}/gate` (`api/app.py:126`)
+- CLI `paa gate <id> --approve/--reject` (`cli/main.py:183`)
+- API `POST /tasks/{id}/gate` (`api/app.py:136`)
 
 ## Replay semantics
 
-`apply_event()` on `HUMAN_GATE_CLEARED` (`replay.py:261`):
+`apply_event()` on `HUMAN_GATE_CLEARED` (`replay.py:262`):
 - clears `awaiting_reason`;
 - sets phase to `TaskPhase(payload.get("resume_phase", EXECUTING))` — resumes
   where the gate interrupted, defaulting to execution.
 
 On `HUMAN_GATE_REJECTED` → `policy_decision` set, phase `BLOCKED` via
-`_PHASE_MAP` (`replay.py:163`).
+`_PHASE_MAP` (`replay.py:164`).
 
 ## Recovery behavior
 

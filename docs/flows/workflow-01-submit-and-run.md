@@ -7,8 +7,8 @@ to `MUTATION_COMMITTED`. All paths verified against `src/paa/agents/orchestrator
 
 | Trigger | Entry | File |
 |---|---|---|
-| CLI | `paa submit "fix the login bug"` | `cli/main.py:76` → `Runtime.submit()` |
-| API | `POST /tasks?run=true` | `api/app.py:85` → `Runtime.submit()` + `Runtime.run()` |
+| CLI | `paa submit "fix the login bug"` | `cli/main.py:77` → `Runtime.submit()` |
+| API | `POST /tasks?run=true` | `api/app.py:94` → `Runtime.submit()` + `Runtime.run()` |
 | Programmatic | `rt.submit_and_run("...")` | `runtime.py:241` |
 
 ## Step-by-step execution
@@ -34,7 +34,7 @@ is durable before any work (`orchestrator.py` docstring).
 ### 2. Run — project existing state
 
 `ChiefOrchestrator.run(cid)` (`orchestrator.py:292`):
-1. `project(ledger, cid)` (`replay.py:322`) → `TaskProjection`.
+1. `project(ledger, cid)` (`replay.py:412`) → `TaskProjection`.
 2. If `state.is_terminal`, return immediately (`:295`).
 3. Build `AgentContext` from `MODALITY_PROFILES[state.modality]` (`_context_for`,
    `:327`) — token budget, permission mode, recursion depth.
@@ -44,7 +44,7 @@ is durable before any work (`orchestrator.py` docstring).
 `_hydrate()` (`orchestrator.py:467`):
 1. Skip if `context_packet` already present (resume).
 2. Emit `CONTEXT_HYDRATION_REQUESTED`.
-3. `PlannerContextBuilder.run(message, ctx)` (`context_agents.py:376`):
+3. `PlannerContextBuilder.run(message, ctx)` (`context_agents.py:377`):
    - Expand goal → terms + slots (`_KeywordExpander` or AI expander).
    - `_hot_facts()` — relational candidates, confidence decayed at read time
      (`effective_confidence`, `decay.py`).
@@ -108,7 +108,7 @@ on budget exhausted: raise PaaError → EXECUTION_FAILED (terminal)
 ```
 
 `EXECUTION_COMPLETED` fires **per step**, not per task; phase stays `EXECUTING`
-until all steps done (`replay.py:239`, ADR-0010). Re-project after each step
+until all steps done (`replay.py:240`, ADR-0010). Re-project after each step
 (`orchestrator.py:577`).
 
 ### 7. Commit — terminal

@@ -89,7 +89,7 @@ from DB (`:234`), anti-goals (cosine ≥0.82 or phrase match, `:262`). Risk scor
 ### `context_agents.py` — context builders
 `PlannerContextBuilder` (`:236`) — all domains; `WorkerContextBuilder` (`:271`)
 — drops narrative domains, fails on vacant slots (`hydration_required`,
-`:303`). Both use `BoundedContextGatherer` + `QueryExpander`.
+`:446`). Both use `BoundedContextGatherer` + `QueryExpander`.
 
 ## Inputs and outputs
 
@@ -111,7 +111,7 @@ from DB (`:234`), anti-goals (cosine ≥0.82 or phrase match, `:262`). Risk scor
 | `Reasoning agents` → `ModelLike` | `complete_structured()` | Model seam | `reasoning.py:95`, `:246`, `:353` |
 | `RouterModelAdapter` | wraps `EscalatingModelRouter` | Bridge `ModelLike` → router | `runtime.py:98` |
 | `PolicyRiskAgent` → `Database` | `fetch_all(hot_serving_policy_rules)` | Operator rules | `policy.py:255` |
-| `Context builders` → `Database`/vector/graph | fetch facts/semantic/graph | Build context packet | `context_agents.py:143`, `:243`, `:340` |
+| `Context builders` → `Database`/vector/graph | fetch facts/semantic/graph | Build context packet | `context_agents.py:144`, `:244`, `:341` |
 | `Runtime.build` | constructs all agents | Composition root | `runtime.py:407` |
 
 ## Runtime behavior

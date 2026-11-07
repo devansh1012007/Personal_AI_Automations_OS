@@ -91,12 +91,12 @@ flowchart TD
 | `PolicyRiskAgent` (`agents/policy.py:132`) | Deterministic risk gate; no model consulted | `PolicyRiskAgent.handle()` (`policy.py:158`) | `Database` (policy rules), vector store + embedder (anti-goals), `PolicySettings` | Orchestrator (`_check_policy`) | Reads `hot_serving_policy_rules`; returns verdict dict |
 | `CriticReviewer` (`agents/reasoning.py:194`) | Reviews worker output; deterministic validation first, model second | `CriticReviewer.handle()` (`reasoning.py:221`) | `ModelLike`, `DeterministicValidationEngine` | Orchestrator (`_critique`) | Returns verdict (`PASS`/`FAIL_REJECT_RETRY`/`FAIL_ESCALATE`) |
 | `WorkerCell` (`agents/reasoning.py:413`) | Executes one plan step inside a sandbox | `WorkerCell.handle()` (`reasoning.py:431`) | `Sandbox` backend, `SandboxSpec` | Orchestrator (`_execute_steps`) | Runs sandboxed process; returns patch/stdout |
-| `PlannerContextBuilder` / `WorkerContextBuilder` (`agents/context_agents.py:295`) | Build context packets (planner: all domains; worker: narrative blocked) | `.handle()` | `Database`, vector, graph, embedder, `BoundedContextGatherer` | Orchestrator (`_hydrate`) | Read-only fetches; no writes |
+| `PlannerContextBuilder` / `WorkerContextBuilder` (`agents/context_agents.py:296`) | Build context packets (planner: all domains; worker: narrative blocked) | `.handle()` | `Database`, vector, graph, embedder, `BoundedContextGatherer` | Orchestrator (`_hydrate`) | Read-only fetches; no writes |
 | `BoundedContextGatherer` (`context/gatherer.py`) | Enforces hard token ceiling on context packet | `compile()` | `TokenBudget`, `CharEstimator` | Context builders | Pure computation; no persistence |
 | `EscalatingModelRouter` (`models/router.py:165`) | Local-first routing with explicit, logged escalation to frontier | `complete()` / `complete_structured()` | Local provider, optional frontier provider, `LedgerStore` | `RouterModelAdapter` (via agents) | Writes `MODEL_ESCALATED` ledger event before frontier call |
 | `RouterModelAdapter` (`runtime.py:109`) | Bridges agents' `ModelLike` protocol to the escalation router | `complete_structured()` (`runtime.py:132`) | `EscalatingModelRouter` | All reasoning agents | No persistence (router logs escalations) |
 | `RecoveryEngine` (`ledger/recovery.py:140`) | Post-crash boot sweep: replay, reconcile workspace, re-queue | `RecoveryEngine.boot_sweep()` (`recovery.py:226`) | `LedgerStore`, `Database`, optional `WorkspaceSnapshotter`, optional queue requeuer | `ChiefOrchestrator.boot()` (`orchestrator.py:1104`) | Writes `RECOVERY_REPLAY_COMPLETED`/`STATE_ROLLBACK_TRIGGERED`/`TASK_ABANDONED` events; restores workspace |
-| `Daemon` (`daemon.py:45`) | Background loops: dispatch, ingestion, maintenance | `Daemon.start()` (`daemon.py:70`) | `Runtime`, `MemoryCreator`, `DecaySweeper` | `paa serve` (`cli/main.py:292`) | Claims queue messages; runs decay sweep; ingests signals |
+| `Daemon` (`daemon.py:45`) | Background loops: dispatch, ingestion, maintenance | `Daemon.start()` (`daemon.py:70`) | `Runtime`, `MemoryCreator`, `DecaySweeper` | `paa serve` (`cli/main.py:293`) | Claims queue messages; runs decay sweep; ingests signals |
 | `MemoryCreator` (`memory/creator.py`) | Ingests unprocessed signals into hot-serving facts | `MemoryCreator.run_batch()` | `Database`, `FactRepository` | Daemon ingestion loop | Writes entities/facts |
 | `DecaySweeper` (`memory/decay.py`) | Evicts stale facts via `C(t)=C₀·e⁻ˡᵃᵐᵇᵈᵃ·t` | `DecaySweeper.sweep()` | `Database`, `DomainPolicy` | Daemon maintenance loop | Deletes/archives stale fact rows |
 | `DeterministicValidationEngine` (`validation/engine.py:185`) | Binary PASS/FAIL: schema → AST → patch → drift → tests | `validate()` (`engine.py:208`) | `AstSecurityScanner`, `SchemaValidator`, `UnifiedDiffValidator`, `WorkspaceSnapshot`, optional `PytestRunner`/`Sandbox` | `CriticValidatorAdapter` (`runtime.py:76`) | Runs tests in sandbox (only check that executes code) |
@@ -226,7 +226,7 @@ paa agent "prompt" (cli/coder.py:44)
   (`runtime.py:497`).
 - **API is an edge layer only:** `create_app` parses/validates and delegates to
   `Runtime`; it holds no application state and makes no model calls
-  (`api/app.py:53`).
+  (`api/app.py:54`).
 - **Everything is injected:** `Runtime.build` accepts `model_adapter`,
   `model_router` overrides; agents take their collaborators in constructors
   (`runtime.py:260`).

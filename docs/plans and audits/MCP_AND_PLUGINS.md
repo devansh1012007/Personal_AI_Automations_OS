@@ -80,7 +80,7 @@ Everything else in this document is plumbing around those two.
 | Coder tool protocol (`name`/`description`/`schema()`/`run(args) -> str`) | **works, live, tested** | `src/paa/coder/loop.py:85-97` |
 | Tool permission policy (allow/deny/ask globs, PLAN refuses mutating) | **works** | `src/paa/coder/permissions.py` |
 | `AgentLoop` gate order (hook → permission → confirm → execute → hook) | **works** | `src/paa/coder/loop.py:200-255` |
-| Runtime tool catalogue (9 tools) | **works** | `src/paa/coder/runtime_tools.py:84-106` |
+| Runtime tool catalogue (9 tools) | **works** | `src/paa/coder/runtime_tools.py:85-107` |
 | Ledger / replay / recovery | **works** | `src/paa/ledger/` |
 
 ### The three findings that shape everything

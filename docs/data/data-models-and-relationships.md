@@ -89,7 +89,7 @@ ADR-0010.
 | `created_at` | TEXT / TIMESTAMPTZ | |
 
 PK `(correlation_id, state_version)`. Snapshots are safe to delete; never truth
-(`replay.py:92`).
+(`replay.py:93`).
 
 ## 2. Hot-serving relational tables (mutable read path)
 
@@ -182,7 +182,7 @@ membership in `TERMINAL_EVENTS`.
 `HUMAN_GATE_REJECTED`, `TASK_ABANDONED`. Notably **not** `EXECUTION_COMPLETED`
 (per-step, non-terminal).
 
-### `TaskProjection` / `TaskPhase` (`replay.py:88`, `:34`)
+### `TaskProjection` / `TaskPhase` (`replay.py:89`, `:35`)
 The derived read model of a lineage. Fields include `phase`, `modality`,
 `state_version`, `request`, `context_packet`, `plan_steps`,
 `current_step_index`, `completed_steps`, `policy_decision`, `policy_reason`,

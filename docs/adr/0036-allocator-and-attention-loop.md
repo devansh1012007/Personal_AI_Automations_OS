@@ -74,7 +74,7 @@ shows K or R pinned at default on every run, the derivation — not the formula
 
 **Allocator decisions are ledger events, not side effects.** The run emits an
 allocator-decision `EventType` (name chosen by the P-007 implementer) that
-maps to `_NO_PHASE_CHANGE` in `src/paa/ledger/replay.py:291`, never to
+maps to `_NO_PHASE_CHANGE` in `src/paa/ledger/replay.py:379`, never to
 `_PHASE_MAP`, and is not named in `TERMINAL_EVENTS`. The reasoning is the
 same as the tier precedent's: an allocation decision is information about a
 task, not a move of the task's lifecycle. Idempotency uses the full ADR-0008
@@ -112,7 +112,7 @@ in scope — the two plan P-001 sites — the posture is:
 * append an explicit truncation marker so a truncated error is visibly
   truncated, never silently short.
 
-Per-site applicability, stated so the next implementer does not generalise it: the 200-character bound applies to the rendered operator-console text at the CLI drain site (`src/paa/cli/main.py:635`, `_MAX_DRAIN_ERROR_CHARS`), where the truncation marker is inside the 200-character budget — the rendered error is at most 200 characters including the marker. The runtime site (`src/paa/runtime.py:482`) is a structlog keyword argument, not rendered console text; it is redact-only and unbounded, mirroring the existing `src/paa/runtime.py:474` site, because truncating a structured log field would silently drop diagnostic detail without protecting a terminal.
+Per-site applicability, stated so the next implementer does not generalise it: the 200-character bound applies to the rendered operator-console text at the CLI drain site (`src/paa/cli/main.py:636`, `_MAX_DRAIN_ERROR_CHARS`), where the truncation marker is inside the 200-character budget — the rendered error is at most 200 characters including the marker. The runtime site (`src/paa/runtime.py:482`) is a structlog keyword argument, not rendered console text; it is redact-only and unbounded, mirroring the existing `src/paa/runtime.py:474` site, because truncating a structured log field would silently drop diagnostic detail without protecting a terminal.
 
 200 is the house excerpt bound (sibling constants in the tree use the same
 value), not a new invention; the point of this section is that the number is

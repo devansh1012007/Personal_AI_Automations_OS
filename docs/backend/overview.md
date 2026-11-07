@@ -10,16 +10,16 @@ the CLI and API are both thin edges over the same `Runtime` object
 
 | Entry point | File | What it does |
 |---|---|---|
-| `paa submit "goal"` | `src/paa/cli/main.py:76` | Builds a `Runtime`, submits a task, optionally runs it to completion, then closes |
-| `paa run <id>` | `src/paa/cli/main.py:89` | Drives an already-submitted task to a terminal state |
-| `paa status <id>` | `src/paa/cli/main.py:121` | Shows the replayed projection of a task |
-| `paa ledger <id>` | `src/paa/cli/main.py:134` | Walks a task's event chain (explainability) |
-| `paa gate <id> --approve/--reject` | `src/paa/cli/main.py:164` | Clears a task parked on a human gate |
-| `paa recover` | `src/paa/cli/main.py:209` | Runs the post-crash boot sweep |
-| `paa doctor` | `src/paa/cli/main.py:227` | Reports which backends/sandbox are actually live |
-| `paa serve [host] [port]` | `src/paa/cli/main.py:248` | Starts FastAPI API + background daemon over one shared runtime |
+| `paa submit "goal"` | `src/paa/cli/main.py:77` | Builds a `Runtime`, submits a task, optionally runs it to completion, then closes |
+| `paa run <id>` | `src/paa/cli/main.py:106` | Drives an already-submitted task to a terminal state |
+| `paa status <id>` | `src/paa/cli/main.py:122` | Shows the replayed projection of a task |
+| `paa ledger <id>` | `src/paa/cli/main.py:148` | Walks a task's event chain (explainability) |
+| `paa gate <id> --approve/--reject` | `src/paa/cli/main.py:183` | Clears a task parked on a human gate |
+| `paa recover` | `src/paa/cli/main.py:210` | Runs the post-crash boot sweep |
+| `paa doctor` | `src/paa/cli/main.py:228` | Reports which backends/sandbox are actually live |
+| `paa serve [host] [port]` | `src/paa/cli/main.py:293` | Starts FastAPI API + background daemon over one shared runtime |
 | `paa agent "prompt"` | `src/paa/cli/coder.py:44` | Tool-using coder loop over the runtime |
-| `paa tui` | `src/paa/cli/main.py:307` | Interactive dashboard |
+| `paa tui` | `src/paa/cli/main.py:356` | Interactive dashboard |
 | `Runtime.build()` | `src/paa/runtime.py:260` | Programmatic composition root (used by all edges) |
 
 ## Backend module responsibilities
@@ -51,9 +51,9 @@ There is no HTTP "business" API surface beyond ingestion. The backend is driven
 by:
 
 1. **CLI one-shot commands** — each builds a `Runtime` (`Runtime.build()`),
-   performs one operation, prints, and closes (`cli/main.py:54`).
+   performs one operation, prints, and closes (`cli/main.py:55`).
 2. **`paa serve`** — builds one `Runtime`, starts a `Daemon` and a FastAPI app
-   over it (`cli/main.py:254`). The API delegates to the same `Runtime`.
+   over it (`cli/main.py:293`). The API delegates to the same `Runtime`.
 3. **Programmatic `Runtime`** — `async with await Runtime.build() as rt:
    cid = await rt.submit(...); outcome = await rt.run(cid)`
    (`runtime.py:144`).

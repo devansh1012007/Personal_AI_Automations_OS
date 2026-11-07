@@ -23,11 +23,11 @@ a data change, not a new subsystem.
 ### `domains.py` — 18 domains, 6 mechanisms
 `MemoryDomain` (18 members: working, long_term_distilled, episodic, semantic,
 procedural, task, session, temporal, narrative, reflection, strategic, skill,
-tool, relationship, identity, operational, environmental, workspace — `memory/domains.py:75`).
+tool, relationship, identity, operational, environmental, workspace — `memory/domains.py:76`).
 `MemoryMechanism`: VOLATILE, RELATIONAL, IMMUTABLE_LOG, VECTOR, GRAPH, DOCUMENT
-(`memory/domains.py:43`). `DomainPolicy`: decay_lambda, prune_floor, immutable, narrative
-(`memory/domains.py:99`). `DOMAINS` matrix (`memory/domains.py:137`); `domain_policy()` lookup (`memory/domains.py:250`);
-`narrative_domains()` = {narrative, reflection, strategic, identity} (`memory/domains.py:260`).
+(`memory/domains.py:44`). `DomainPolicy`: decay_lambda, prune_floor, immutable, narrative
+(`memory/domains.py:100`). `DOMAINS` matrix (`memory/domains.py:138`); `domain_policy()` lookup (`memory/domains.py:251`);
+`narrative_domains()` = {narrative, reflection, strategic, identity} (`memory/domains.py:261`).
 
 ### `decay.py` — DecaySweeper
 `effective_confidence(initial_confidence, last_queried_at, domain)` =
@@ -139,14 +139,14 @@ callable`.
 | `FactRepository` → `Database` | SQL INSERT/SELECT | Persist entities/facts | `facts.py` |
 | `DecaySweeper` → `Database`, `domains` | decay policy + SQL DELETE | Evict stale facts | `decay.py` |
 | `MemoryCreator` → `SignalRepository`, `FactRepository` | claim signals → facts | Ingest signals | `creator.py`, `daemon.py:148` |
-| `Context builders` → `Database` | hand-rolled `LIKE` over the fact tables | Read context | `context_agents.py:189` |
+| `Context builders` → `Database` | hand-rolled `LIKE` over the fact tables | Read context | `context_agents.py:190` |
 | `PolicyRiskAgent` → anti-goals (vault) | read `anti_goals.md` | Semantic block | `runtime.py:474`, `policy.py:280` |
 
 ## Runtime behavior
 
 - Decay sweep runs as the first curator phase on the daemon's 6h maintenance interval (`src/paa/memory/curator.py:141`).
 - Confidence computed lazily at read time (not stored) — a two-year-old fact is
-  not treated as freshly verified (`context_agents.py:221`).
+  not treated as freshly verified (`context_agents.py:222`).
 - Facts are immutable: supersede links versions; chain walkable backwards.
 
 ## Failure behavior
@@ -160,12 +160,12 @@ callable`.
   (`memory/facts.py:492`); the two substrates refuse a NUL in different places, so
   the refusal has to be in one place.
 - Unknown memory domain → `KeyError`; never silently defaults to decaying
-  (`memory/domains.py:250`, `facts.py::_to_fact`).
+  (`memory/domains.py:251`, `facts.py::_to_fact`).
 - Decay archive failure → logged at error, doesn't block eviction.
 
 ## Modification impact
 
-- Adding a domain = add to `DOMAINS` dict (`memory/domains.py:137`) — data change.
+- Adding a domain = add to `DOMAINS` dict (`memory/domains.py:138`) — data change.
 - Changing `decay_lambda` values affects eviction; source of truth is
   `domains.py`. `MemorySettings.decay_lambda` is deprecated and ignored (kept
   only so existing `PAA_MEMORY__DECAY_LAMBDA` / `.env` entries keep parsing;

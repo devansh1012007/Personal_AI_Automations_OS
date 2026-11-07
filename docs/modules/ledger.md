@@ -76,19 +76,19 @@ Snapshots: `save_snapshot`/`load_snapshot` (`ledger/store.py:450`) checkpoint a
 `TaskProjection` as a replay optimisation; safe to delete.
 
 ### `replay.py` — deterministic projection
-`TaskProjection` (`replay.py:88`) is the derived read model. `TaskPhase`
-(`replay.py:34`) is the coarse lifecycle position (`CREATED`…`ABANDONED`).
+`TaskProjection` (`replay.py:89`) is the derived read model. `TaskPhase`
+(`replay.py:35`) is the coarse lifecycle position (`CREATED`…`ABANDONED`).
 
-`apply_event()` (`replay.py:170`) is pure and total: never raises on unknown
-events (records them in `unknown_events`). `_PHASE_MAP` (`replay.py:149`) maps
+`apply_event()` (`replay.py:171`) is pure and total: never raises on unknown
+events (records them in `unknown_events`). `_PHASE_MAP` (`replay.py:150`) maps
 each `EventType` to a phase; event-specific state (plan steps, policy decision,
 attempts, completed steps, tokens) applied in the `match` block.
 
 `EXECUTION_COMPLETED` fires per step and updates `completed_steps`; the phase
-stays `EXECUTING` until all steps are done (`replay.py:239`). This is ADR-0010
+stays `EXECUTING` until all steps are done (`replay.py:240`). This is ADR-0010
 — treating `EXECUTION_COMPLETED` as terminal would skip remaining steps.
 
-`project()` (`replay.py:322`) loads a snapshot (if compatible) then replays
+`project()` (`replay.py:412`) loads a snapshot (if compatible) then replays
 from that version.
 
 ### `recovery.py` — crash recovery
@@ -127,9 +127,9 @@ from that version.
 | `ChiefOrchestrator` | calls `LedgerStore.append` | Emits every state transition | `orchestrator.py:276` |
 | `Runtime.build` | constructs `LedgerStore`, `RecoveryEngine` | Composition root | `runtime.py:288`, `:326` |
 | `RecoveryEngine` | uses `LedgerStore`, `Database` | Replay and reconcile | `recovery.py:140` |
-| `replay.project` | reads `LedgerStore.read_correlation` | Build TaskProjection | `replay.py:347` |
-| `API /ledger/{id}` | calls `read_correlation` | Explainability endpoint | `api/app.py:149` |
-| `CLI paa ledger` | calls `read_correlation` + `verify_chain` | Terminal explainability | `cli/main.py:140` |
+| `replay.project` | reads `LedgerStore.read_correlation` | Build TaskProjection | `replay.py:437` |
+| `API /ledger/{id}` | calls `read_correlation` | Explainability endpoint | `api/app.py:156` |
+| `CLI paa ledger` | calls `read_correlation` + `verify_chain` | Terminal explainability | `cli/main.py:148` |
 | `Database` | used by `LedgerStore` | SQLite persistence | `storage/relational/database.py:110` |
 
 ## Runtime behavior

@@ -73,7 +73,7 @@ TOOL_CALL/TOOL_RESULT/SYSTEM/SUMMARY (`:32`).
 
 ### `runtime_tools.py` — build_runtime_tools
 Seven ledger-facing tools: `check_runtime`, `list_tasks`, `task_status`,
-`submit_task`, `run_task`, `read_ledger`, `verify_ledger` (`:47`). They read
+`submit_task`, `run_task`, `read_ledger`, `verify_ledger` (`:85`). They read
 the ledger projection (not derived caches) and return JSON with errors as values.
 
 ### `commands.py` — slash commands
@@ -99,7 +99,7 @@ Custom commands from `.md` files with `$ARGUMENTS`/`$1`..`$9` substitution.
 | `AgentLoop` → `ToolPermissionPolicy` | `evaluate()` | Gate every call | `loop.py:224` |
 | `AgentLoop` → `HookRegistry` | `fire()` | Hooks pre/post tool | `loop.py:217`, `:246` |
 | `AgentLoop` → `Session` | record turns | Transcript persistence | `loop.py:144` |
-| runtime tools → `Runtime.submit/run` | drive tasks | Ledger writes | `coder/runtime_tools.py:222`, `:269` |
+| runtime tools → `Runtime.submit/run` | drive tasks | Ledger writes | `coder/runtime_tools.py:223`, `:270` |
 | `cli/coder.py` → `CoderAgent.build` | compose | `paa agent` CLI | `cli/coder.py:103` |
 
 ## Runtime behavior

@@ -200,7 +200,7 @@ These are deliberate, documented, and cited in source:
 | `EXECUTION_COMPLETED` is per-step, not terminal | ADR-0010, `core/types.py:187` | Treating it as terminal skips remaining steps |
 | Optional router; bypassed when a target agent is named | ADR-0011, `reasoning.py:303` | Explicit user direction |
 | Peak RSS, not ∫Memory·dt | ADR-0009, `config.py:420` | The RFC's rule is dimensionally wrong |
-| 18 memory domains over 6 mechanisms | ADR-0014, `memory/domains.py:78` | Most RFC rows differ only by label |
+| 18 memory domains over 6 mechanisms | ADR-0014, `memory/domains.py:79` | Most RFC rows differ only by label |
 
 Full ADR list that exists on disk: `0008`, `0010`, `0015`, `0019`, `0020`.
 `docs/adr/README.md` claims 0001–0020 but those files are absent

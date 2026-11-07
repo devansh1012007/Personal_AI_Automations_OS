@@ -37,7 +37,7 @@ updated in the same transaction. `state_version` is per-correlation and dense;
 
 ### Retrieval
 `LedgerStore.read_correlation()` returns all events for a lineage ordered by
-`state_version` (`ledger/store.py:149`). `project()` (`replay.py:322`) folds them into
+`state_version` (`ledger/store.py:149`). `project()` (`replay.py:412`) folds them into
 a `TaskProjection`. `LedgerStore.head()` reads the head projection for status
 (`ledger/store.py:341`).
 
@@ -51,7 +51,7 @@ append-only. The only "mutation" of the head row is the upsert in
   skips `is_terminal = 1` rows (`ledger/store.py:357`).
 - `STATE_ROLLBACK_TRIGGERED` restores a workspace to a checkpoint manifest and
   resets `completed_steps` to steps before `restored_step_index`
-  (`replay.py:266`).
+  (`replay.py:267`).
 - `TASK_ABANDONED` closes a lineage that exceeded `max_delivery_attempts`
   (`recovery.py:285`).
 - There is no explicit "delete a task" operation; ledger rows are append-only.
@@ -117,7 +117,7 @@ Confidence stored is `initial_confidence` (C₀); the effective confidence
   cannot, and the two substrates can answer differently for the same
   non-ASCII name.
 - Context gatherer reads hot facts with decayed confidence at read time
-  (`context_agents.py:223`).
+  (`context_agents.py:224`).
 
 ### Mutation / invalidation
 - `DecaySweeper.sweep()` (`memory/decay.py`): per-domain `decay_lambda`; facts
@@ -139,7 +139,7 @@ no user-facing fact deletion.
 ## 3. Context packet lifecycle
 
 ### Creation
-`PlannerContextBuilder.handle()` (`context_agents.py:376`):
+`PlannerContextBuilder.handle()` (`context_agents.py:377`):
 1. Expand goal → search terms + required slots (`QueryExpander`, deterministic
    `_KeywordExpander` fallback).
 2. `_hot_facts()` — relational candidates from `hot_serving_active_facts`,
@@ -165,10 +165,10 @@ Orchestrator `_hydrate()` reads `routing_directive`; on HARD_STOP it parks the
 task on `AWAITING_HUMAN_ATTESTATION` (`orchestrator.py:379`).
 
 ### Worker packet
-`WorkerContextBuilder.handle()` (`context_agents.py:427`) drops all narrative
+`WorkerContextBuilder.handle()` (`context_agents.py:428`) drops all narrative
 domains (`narrative_domains()` = `{narrative, reflection, strategic, identity}`)
 and fails with `hydration_required` if any required slot is vacant
-(`context_agents.py:303`). This is a security boundary: strategy/identity never
+(`context_agents.py:446`). This is a security boundary: strategy/identity never
 enters the sandbox.
 
 ## 4. Workspace / patch lifecycle

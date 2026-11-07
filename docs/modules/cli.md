@@ -7,7 +7,7 @@
 - **Main responsibility:** The `paa` Typer command line — the primary human entry point; every command except `serve` is one-shot (build Runtime, do one thing, print, close).
 - **Architectural layer:** Edge
 - **Entrypoints:** `cli/main.py:app` (Typer), `cli/coder.py:register_agent` (`paa agent`)
-- **Public interfaces:** `app` (`cli/main.py:38`), `register_agent` (`cli/coder.py:53`)
+- **Public interfaces:** `app` (`cli/main.py:42`), `register_agent` (`cli/coder.py:53`)
 - **Other modules that depend on it:** `runtime.py` (all commands build `Runtime`), `coder/agent.py` (`paa agent`)
 
 ## Purpose and responsibilities
@@ -33,7 +33,7 @@ never overstates backends or isolation (`cli/main.py:13`).
 | `mode` | 336 | Show `PAA_POLICY__MODE=<value>` to set |
 | `tui` | 352 | Run `run_tui()` |
 
-All one-shot commands use `_build_runtime(run_recovery=False)` (`cli/main.py:54`) —
+All one-shot commands use `_build_runtime(run_recovery=False)` (`cli/main.py:55`) —
 recovery is opt-in per command (an operator decision, `coder/agent.py:124`);
 `serve` also does not run recovery at build (daemon does it at start, `daemon.py:64`).
 
@@ -48,14 +48,14 @@ under `--yes`, else `prompt_yes` (blocks on `input`; EOF → deny)
 - `submit` default `run=True` (`:64`).
 - `serve` binds loopback only; `api_host` validator enforced at `Settings`
   construction (`config.py:708`).
-- Every command closes the `Runtime` in `finally` (`cli/main.py:95`, `:111`, etc.).
+- Every command closes the `Runtime` in `finally` (`cli/main.py:99`, `:115`, etc.).
 
 ## Failure behavior
 
-- Invalid correlation id → `typer.Exit(1)` (`cli/main.py:372`).
+- Invalid correlation id → `typer.Exit(1)` (`cli/main.py:377`).
 - Task not awaiting gate → `PaaError` → printed red, exit 1 (`:180`).
 - `paa agent` `PaaError` → `[red]error:[/red]`, exit 1 (`cli/coder.py:194`).
-- Unknown mode → printed red, exit 1 (`cli/main.py:343`, `cli/coder.py:100`).
+- Unknown mode → printed red, exit 1 (`cli/main.py:348`, `cli/coder.py:100`).
 
 ## Modification impact
 
