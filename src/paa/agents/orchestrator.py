@@ -43,6 +43,7 @@ from paa.ledger.events import LedgerEvent
 from paa.ledger.replay import TaskPhase, TaskProjection, project
 
 if TYPE_CHECKING:
+    from paa.context.allocator import AllocationResult
     from paa.ledger.store import LedgerStore
 
 __all__ = ["BackpressureLike", "ChiefOrchestrator", "TaskOutcome", "TaskRequest"]
@@ -1114,7 +1115,7 @@ class ChiefOrchestrator:
         log.info("orchestrator.boot_recovery", **report.summary())
         return report
 
-    async def run_allocation(self, *, limit: int = 25) -> Any:
+    async def run_allocation(self, *, limit: int = 25) -> AllocationResult:
         """Run one attention-allocation pass and return its result.
 
         PLAN:integration-fix:P007 (ADR-0036) — the only orchestrator

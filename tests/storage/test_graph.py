@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from paa.core.errors import StorageError
+from paa.memory.facts import FactRepository
 from paa.storage.graph import (
     MAX_HOPS_CEILING,
     GraphEdge,
@@ -540,3 +541,100 @@ async def test_backends_return_identical_results(db: Database, tmp_path: Path) -
     finally:
         await sqlite_store.close()
         await kuzu_store.close()
+
+
+# ---------------------------------------------------------------------------
+# Cross-writer agreement on the entity table (REV-W4 R-W4-004)
+# ---------------------------------------------------------------------------
+#
+# There are two writers of hot_serving_entity_index: FactRepository's
+# upsert_entity (the canonical write path) and this backend's. A
+# property-graph write that stored a row the entity machinery could not
+# resolve would leave two substrates disagreeing about the same data, so
+# these tests exercise both directions at the real repository seam.
+# Only the sqlite backend touches the relational table (kuzu keeps its own
+# node table — it is a projection, not a writer of this table), so they
+# construct the sqlite store directly rather than through the parametrized
+# fixture.
+
+
+async def test_graph_upserted_entity_resolves_through_facts(db: Database) -> None:
+    """Graph writes the fold; entity resolution finds the row it wrote.
+
+    The non-ASCII name pins the real fold: an engine lower() backfill or a
+    missing fold would leave the exact rung (which compares against the
+    stored fold with a Python-folded term) unable to see the graph's row.
+    """
+    store = SqliteGraphStore(db)
+    await store.ensure_schema()
+    await store.upsert_entity("graph-1", "task", "Éclair Project")
+
+    repo = FactRepository(db)
+    resolved = await repo.resolve_entity("Éclair Project", fuzzy=False)
+    assert resolved is not None
+    assert resolved.id == "graph-1"
+    assert resolved.match == "exact"
+
+    row = await db.fetch_one(
+        "SELECT canonical_name_norm, aliases_norm FROM hot_serving_entity_index "
+        "WHERE id = 'graph-1'"
+    )
+    assert row is not None
+    assert row["canonical_name_norm"] == "éclair project"
+    assert row["aliases_norm"] == "[]"
+
+
+async def test_facts_upserted_entity_is_visible_to_graph_reads(db: Database) -> None:
+    """Entities written through facts are read back through the graph.
+
+    The facts write-path already stores the fold. The graph store's reads
+    (neighbours/traversal over the relationships table) join the entity
+    table, so a facts-written row must be visible there with the same
+    canonical name — the same data, one answer, both substrates.
+    """
+    repo = FactRepository(db)
+    entity_id = await repo.upsert_entity("task", "Widget Service", aliases=["Gadget Assembly"])
+
+    store = SqliteGraphStore(db)
+    await store.ensure_schema()
+    await store.upsert_entity("graph-anchor", "task", "Anchor")
+    assert await store.upsert_edge(
+        GraphEdge(
+            from_entity_id="graph-anchor",
+            to_entity_id=entity_id,
+            rel_type="DEPENDS_ON",
+            weight=0.8,
+        )
+    )
+    neighbors = await store.neighbors("graph-anchor", direction="out")
+    assert [(n.entity.id, n.entity.canonical_name) for n in neighbors] == [
+        (entity_id, "Widget Service")
+    ]
+
+    # And the alias the facts path recorded is still the facts'
+    # (norm and raw written together there).
+    resolved = await repo.resolve_entity("Gadget Assembly", fuzzy=False)
+    assert resolved is not None
+    assert resolved.id == entity_id
+    assert resolved.match == "alias"
+
+
+async def test_graph_rename_refreshes_the_fold_for_resolution(db: Database) -> None:
+    """A graph-side rename must not leave a stale fold behind.
+
+    Rewriting the canonical name without refreshing the fold would leave
+    the OLD name resolvable and the entity invisible under its new one —
+    staleness in one column corrupting the answer in another layer.
+    """
+    store = SqliteGraphStore(db)
+    await store.ensure_schema()
+    await store.upsert_entity("graph-2", "task", "Old Project")
+    await store.upsert_entity("graph-2", "task", "New Project")
+
+    repo = FactRepository(db)
+    assert await repo.resolve_entity("Old Project", fuzzy=False) is None
+    resolved = await repo.resolve_entity("New Project", fuzzy=False)
+    assert resolved is not None
+    assert resolved.id == "graph-2"
+    assert resolved.match == "exact"
+

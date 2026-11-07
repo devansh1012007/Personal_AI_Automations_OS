@@ -241,7 +241,9 @@ class AttentionAllocator:
         self._settings = settings if settings is not None else get_settings().allocator
 
     async def allocate_attention(self, *, limit: int = 25) -> AllocationResult:
-        """Run one allocation pass. Never raises for poison/empty; see docstring."""
+        """Run one allocation pass. Never raises for poison/empty or a claim
+        failure (a down queue degrades to ``underfed``); see module docstring.
+        """
         settings = self._settings
         if not settings.enabled:
             log.info("allocator.disabled")
@@ -251,7 +253,14 @@ class AttentionAllocator:
             return AllocationResult(outcome="underfed")
         queue = self._queue
 
-        messages = await queue.claim(StreamName.WORKERS_ALLOC, "allocator", limit=limit)
+        # REV-W4 R-W4-007: a queue backend that is down must degrade to an
+        # underfed no-op, never raise out of the loop — the house posture is
+        # degrade-and-log, and an outage here must not take the pass down.
+        try:
+            messages = await queue.claim(StreamName.WORKERS_ALLOC, "allocator", limit=limit)
+        except Exception as exc:
+            log.warning("allocator.claim_failed", error=str(exc))
+            return AllocationResult(outcome="underfed", claimed=0)
         if not messages:
             log.info("allocator.underfed", reason="empty")
             return AllocationResult(outcome="underfed", claimed=0)
@@ -329,7 +338,19 @@ class AttentionAllocator:
                         correlation_id=item.correlation_id,
                         session_id=message.session_id,
                     )
-                except Exception as exc:  # decision stands; notify waits for reclaim
+                except Exception as exc:  # decision stands; notify is lost (at-most-once)
+                    # The comment used to say "notify waits for reclaim".
+                    # That was false: on redelivery the store returns the
+                    # EXISTING event (a different event_id than the fresh
+                    # uuid4), so the duplicate branch below skips notify
+                    # and acks — the notification is permanently lost.
+                    # That is the accepted cost the module docstring
+                    # records (at-most-once notify; the gatherer fallback
+                    # covers ranking), and the unacked message costs one
+                    # reclaim cycle on the way to it. An ack-on-notify-
+                    # failure change would avoid that churn but is a
+                    # separate ack-semantics decision — not made here;
+                    # the brief explicitly accepts the reclaim cycle.
                     log.error(
                         "allocator.notify_failed",
                         message_id=message.id,

@@ -56,12 +56,18 @@ _GRAMS: Final[tuple[str, ...]] = ("wid", "idg", "dge")
 #: The count proxy's half-expression, written out rather than imported from
 #: the module that builds it: the test has to be able to fail when the seam
 #: stops using the helper, and it cannot do that if it *is* the helper.
+#:
+#: Deliberate owner update (REV-W4 C2 rating: STALE). The column is now
+#: the stored Python fold (``canonical_name_norm``) rather than the
+#: engine's ``lower()`` of the raw name — PLAN:integration-fix:P003
+#: (ADR-0029). The CASE/ESCAPE shape is what is pinned here.
 _COUNT_CASE: Final[str] = (
-    "(CASE WHEN lower(e.canonical_name) LIKE ? ESCAPE '\\' THEN 1 ELSE 0 END)"
+    "(CASE WHEN e.canonical_name_norm LIKE ? ESCAPE '\\' THEN 1 ELSE 0 END)"
 )
 
-#: The two columns the count proxy reads, and the two it reads them from.
-_COLUMNS: Final[tuple[str, str]] = ("lower(e.canonical_name)", "lower(e.aliases)")
+#: The two columns the count proxy reads, in stored-normalised form.
+#: (C2 stale update, same rationale as _COUNT_CASE above.)
+_COLUMNS: Final[tuple[str, str]] = ("e.canonical_name_norm", "e.aliases_norm")
 
 #: The modes the seam takes, as literals — the seam's own type, so the
 #: tests cannot pass a mode it does not know.
@@ -343,9 +349,11 @@ class TestThePostgresPredicate:
         sql, params = PostgresDialect().entity_candidates_sql(
             mode="phrase", term=_TERM, grams=_GRAMS, limit=20
         )
+        # C2 stale update (REV-W4): the phrase predicate measures the
+        # stored Python fold, not the engine's lower() of the raw text.
         assert _predicate_of(sql) == (
-            "lower(e.canonical_name) LIKE ? ESCAPE '\\' "
-            "OR lower(e.aliases) LIKE ? ESCAPE '\\'"
+            "e.canonical_name_norm LIKE ? ESCAPE '\\' "
+            "OR e.aliases_norm LIKE ? ESCAPE '\\'"
         )
         assert list(params)[:2] == [
             like_pattern(fold_case(_TERM)),
@@ -451,15 +459,24 @@ def _sqlite_with_entities() -> sqlite3.Connection:
     """An in-memory SQLite carrying the entity index and its FTS5 shadow.
 
     The two tables the seam's statement names, and nothing else: the
-    statement reads ``id``, ``canonical_name`` and ``aliases``, and the
-    FTS5 table is the trigram-tokenised shadow the schema keeps in step by
-    trigger. No server, no configuration, no schema file — the quoting is
-    an engine property and an engine is the only thing that can decide it.
+    statement reads ``id``, ``canonical_name_norm`` and ``aliases_norm``
+    (the stored Python fold, P003), and the FTS5 table is the
+    trigram-tokenised shadow the schema keeps in step by trigger. No
+    server, no configuration, no schema file — the quoting is an engine
+    property and an engine is the only thing that can decide it.
+
+    C2 fixture update (REV-W4): the fixture table must carry the norm
+    columns or the generated SQL raises ``no such column`` — every
+    production table now has them (fresh DDL + migration v6), so the
+    fixture mirrors the production shape. The inserted row is the one
+    entity with a canonical name and an empty alias list, with the fold
+    written exactly as the write path computes it.
     """
     conn = sqlite3.connect(":memory:")
     conn.execute(
         "CREATE TABLE hot_serving_entity_index ("
-        "id TEXT PRIMARY KEY, class TEXT, canonical_name TEXT, aliases TEXT)"
+        "id TEXT PRIMARY KEY, class TEXT, canonical_name TEXT, aliases TEXT,"
+        " canonical_name_norm TEXT, aliases_norm TEXT)"
     )
     conn.execute(
         "CREATE VIRTUAL TABLE hot_serving_entity_fts "
@@ -468,10 +485,10 @@ def _sqlite_with_entities() -> sqlite3.Connection:
     conn.execute(
         "CREATE TRIGGER trg_entity_fts_insert AFTER INSERT ON hot_serving_entity_index BEGIN"
         " INSERT INTO hot_serving_entity_fts(rowid, canonical_name, aliases)"
-        " VALUES (new.rowid, new.canonical_name, new.aliases); END"
+        " VALUES (new.rowid, new.canonical_name_norm, new.aliases_norm); END"
     )
     conn.execute(
-        "INSERT INTO hot_serving_entity_index VALUES (?,?,?,?)",
-        ("11111111-1111-1111-1111-111111111111", "project", _TERM, "[]"),
+        "INSERT INTO hot_serving_entity_index VALUES (?,?,?,?,?,?)",
+        ("11111111-1111-1111-1111-111111111111", "project", _TERM, "[]", fold_case(_TERM), "[]"),
     )
     return conn

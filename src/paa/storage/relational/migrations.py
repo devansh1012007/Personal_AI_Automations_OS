@@ -173,6 +173,8 @@ from functools import cache
 from pathlib import Path
 from typing import Any, Final, Literal, Protocol
 
+import structlog
+
 from paa.core.errors import StorageError
 from paa.storage.relational.connection import TransactionConnection
 from paa.storage.relational.dialect import fold_case
@@ -184,6 +186,8 @@ from paa.storage.relational.schema_parser import (
     parse_tables,
     parse_virtual_tables,
 )
+
+log = structlog.get_logger(__name__)
 
 __all__ = [
     "ARRIVAL_SEQUENCES",
@@ -1326,6 +1330,12 @@ async def _backfill_entity_norm(conn: TransactionConnection) -> None:
     back with the migration transaction; a hand-built partial
     state (some rows filled, some ``NULL``) is repaired on
     re-run by filling the rest.
+    Called only for rows whose normalised columns are ``NULL`` — i.e. rows
+    the guard still sees as unnormalised. If a row's ``aliases`` blob is
+    unparseable, it is still written as ``'[]'`` (the gate's fail-soft
+    view), but the row is counted and the count is logged as
+    ``migration.backfill_alias_corrupt`` so the loss is visible rather
+    than silent. A fully-corrupt row never wedges the migration.
     """
     async with conn.execute(
         "SELECT id, canonical_name, aliases "
@@ -1333,16 +1343,22 @@ async def _backfill_entity_norm(conn: TransactionConnection) -> None:
         "WHERE canonical_name_norm IS NULL OR aliases_norm IS NULL"
     ) as cur:
         rows = await cur.fetchall()
+    corrupt_alias_rows = 0
     for row in rows:
         canonical = str(row["canonical_name"])
         canonical_norm = fold_case(canonical)
         raw_aliases = row["aliases"]
+        parsed: Any = []
+        corrupt = False
         try:
             parsed = json.loads(raw_aliases) if isinstance(raw_aliases, str) else []
             if not isinstance(parsed, list):
-                parsed = []
+                corrupt = True
         except (json.JSONDecodeError, UnicodeDecodeError):
+            corrupt = True
+        if corrupt:
             parsed = []
+            corrupt_alias_rows += 1
         folded_aliases = [fold_case(str(alias)) for alias in parsed]
         aliases_norm = json.dumps(
             folded_aliases, ensure_ascii=False, separators=(",", ":")
@@ -1351,6 +1367,12 @@ async def _backfill_entity_norm(conn: TransactionConnection) -> None:
             "UPDATE hot_serving_entity_index "
             "SET canonical_name_norm = ?, aliases_norm = ? WHERE id = ?",
             (canonical_norm, aliases_norm, str(row["id"])),
+        )
+    if corrupt_alias_rows:
+        log.warning(
+            "migration.backfill_alias_corrupt",
+            corrupt_rows=corrupt_alias_rows,
+            total_rows=len(rows),
         )
 
 

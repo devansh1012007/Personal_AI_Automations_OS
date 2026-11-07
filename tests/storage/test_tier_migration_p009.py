@@ -180,8 +180,15 @@ async def _v4_database_with_rows(path: Path) -> None:
 
 
 def test_schema_version_is_five() -> None:
-    """The runner's version is derived from the migration list's last entry."""
-    assert SCHEMA_VERSION == 5
+    """The runner's version is derived from the migration list's last entry.
+
+    The name carries the historical version this test first pinned; the
+    value is the CURRENT version — v6 landed (ADR-0036/P-003 stored
+    normalisation), so 6 is the expected number now. The test's purpose
+    (version derived from the migration list, never restated) is
+    unchanged. [C4 deliberate update: REV-W4 rates this STALE-not-defect.]
+    """
+    assert SCHEMA_VERSION == 6
 
 
 async def test_a_fresh_database_has_the_tier_columns(tmp_path: Path) -> None:
@@ -509,3 +516,172 @@ async def test_postgres_version_4_is_migrated_and_backfilled(
         ]
     finally:
         await db.close()
+
+
+# ---------------------------------------------------------------------------
+# v6: a corrupt alias blob is counted in the migration log, not silent
+# ---------------------------------------------------------------------------
+#
+# REV-W4 R-W4-008: the v6 backfill writes '[]' for an unparseable aliases
+# blob (the gate's fail-soft view) and then treats the row as finished.
+# That residue erasure must be VISIBLE: the backfill counts the rows it
+# backfilled from unparseable blobs and logs
+# ``migration.backfill_alias_corrupt`` with the count. The natural home
+# for this test is the P003 normalisation file (outside this task's
+# write-set), so it lives here — this is the migration file in the
+# write-set — and records the placement here rather than silently
+# widening the diff.
+#
+# The downgrade-to-v5 helper mirrors the P003 file's: drop the FTS
+# triggers (SQLite refuses to drop a column a trigger references), drop
+# the norm columns, restore the v5 triggers, rewind the version log.
+_OLD_FTS_TRIGGERS: dict[str, str] = {
+    "trg_entity_fts_insert": (
+        "CREATE TRIGGER trg_entity_fts_insert "
+        "AFTER INSERT ON hot_serving_entity_index BEGIN "
+        "INSERT INTO hot_serving_entity_fts(rowid, canonical_name, aliases) "
+        "VALUES (new.rowid, new.canonical_name, new.aliases); END"
+    ),
+    "trg_entity_fts_delete": (
+        "CREATE TRIGGER trg_entity_fts_delete "
+        "AFTER DELETE ON hot_serving_entity_index BEGIN "
+        "INSERT INTO hot_serving_entity_fts("
+        "hot_serving_entity_fts, rowid, canonical_name, aliases) "
+        "VALUES ('delete', old.rowid, old.canonical_name, old.aliases); END"
+    ),
+    "trg_entity_fts_update": (
+        "CREATE TRIGGER trg_entity_fts_update "
+        "AFTER UPDATE ON hot_serving_entity_index BEGIN "
+        "INSERT INTO hot_serving_entity_fts("
+        "hot_serving_entity_fts, rowid, canonical_name, aliases) "
+        "VALUES ('delete', old.rowid, old.canonical_name, old.aliases); "
+        "INSERT INTO hot_serving_entity_fts(rowid, canonical_name, aliases) "
+        "VALUES (new.rowid, new.canonical_name, new.aliases); END"
+    ),
+}
+
+
+def _downgrade_to_v5(path: Path) -> None:
+    """Turn a current (v6) database back into the version-5 shape.
+
+    Drops the two normalised columns and restores the three FTS triggers
+    to the v5 (raw) form, then rewinds the version log — the inverse of
+    the v6 migration, ready for a backfill to run over.
+    """
+    conn = _raw(path)
+    try:
+        for name in _OLD_FTS_TRIGGERS:
+            conn.execute(f"DROP TRIGGER IF EXISTS {name}")
+        conn.execute("ALTER TABLE hot_serving_entity_index DROP COLUMN aliases_norm")
+        conn.execute("ALTER TABLE hot_serving_entity_index DROP COLUMN canonical_name_norm")
+        for statement in _OLD_FTS_TRIGGERS.values():
+            conn.execute(statement)
+        conn.execute("DELETE FROM schema_migrations WHERE version > 5")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at, description) "
+            "VALUES (?, ?, ?)",
+            (5, _STAMP, description_for(5)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+async def test_a_corrupt_alias_blob_is_backfilled_and_counted_in_the_log(
+    tmp_path: Path,
+) -> None:
+    """REV-W4 R-W4-008: a corrupt blob is backfilled to '[]' AND counted.
+
+    The '[]' behaviour is kept (honest middle — no wedge) but it may no
+    longer be silent: the migration logs ``migration.backfill_alias_corrupt``
+    with the row count. This test writes one corrupt row (a non-JSON blob,
+    smuggled past the CHECK the way a foreign writer would) beside one
+    healthy row, migrates, and pins both the completion (the gate's
+    fail-soft residue on the corrupt row, real norms elsewhere) and the
+    explicit count line.
+
+    **Construction, and why the corrupt row arrives AFTER the column adds.**
+    A corrupt row present BEFORE the adds never reaches the backfill at
+    all, on SQLite: ``ALTER TABLE ADD COLUMN`` on a STRICT table
+    re-validates the table's CHECK constraints over existing rows
+    (verified in scratch: STRICT+CHECK fails on a pre-existing
+    ``json_valid`` violation, while non-STRICT and no-CHECK variants
+    pass), so the v6 add-column step wedges the whole migration — the DB
+    stays at v5. That pre-existing-corruption wedge is a separate,
+    deliberately carried finding (NEED posted this run): the backfill's
+    ``parsed=[]`` branch is reachable only for rows damaged after the
+    columns landed — a crash mid-migration (columns present, rows
+    unfilled; the ``test_the_backfill_guard_repairs_a_crash_mid_step``
+    state) or on PostgreSQL, whose ``ADD COLUMN`` does not re-validate
+    existing CHECKs. This test therefore constructs exactly that
+    crash-mid-step state — columns landed, norms NULL, one corrupt row
+    written behind the runtime's back — so the log line is exercised on
+    the only shape that can produce it. [C4-file placement note: the
+    natural home is the P003 file, outside this task's write-set.]
+    """
+    import structlog.testing
+
+    path = tmp_path / "paa.db"
+    db = Database(path)
+    await db.connect()
+    await db.close()
+    _downgrade_to_v5(path)
+
+    # Crash mid-step, the way the P003 crash test builds it: the two norm
+    # columns have landed (steps 1-3 completed, nothing written yet), so
+    # the backfill guard is what remains to run. The corrupt row is
+    # written NOW — after the adds — because that is the only order in
+    # which the backfill (and its count) can ever see it on SQLite.
+    conn = _raw(path)
+    try:
+        conn.execute("ALTER TABLE hot_serving_entity_index ADD COLUMN canonical_name_norm TEXT")
+        conn.execute("ALTER TABLE hot_serving_entity_index ADD COLUMN aliases_norm TEXT")
+        conn.commit()
+    finally:
+        conn.close()
+
+    corrupt_id = "00000000-0000-0000-0000-0000000000c1"
+    healthy_id = "00000000-0000-0000-0000-0000000000c2"
+    conn = _raw(path)
+    try:
+        conn.execute("PRAGMA ignore_check_constraints=ON")
+        conn.execute(
+            "INSERT INTO hot_serving_entity_index "
+            "(id, class, canonical_name, aliases, created_at, updated_at) "
+            "VALUES (?, 'project', 'Corrupt Service', 'not json at all', ?, ?)",
+            (corrupt_id, _STAMP, _STAMP),
+        )
+        conn.execute("PRAGMA ignore_check_constraints=OFF")
+        conn.execute(
+            "INSERT INTO hot_serving_entity_index "
+            "(id, class, canonical_name, aliases, created_at, updated_at) "
+            "VALUES (?, 'project', 'Healthy Service', '[\"Gadget\"]', ?, ?)",
+            (healthy_id, _STAMP, _STAMP),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    db = Database(path)
+    with structlog.testing.capture_logs() as captured:
+        await db.connect()
+    try:
+        assert await _versions(db) == list(range(1, SCHEMA_VERSION + 1))
+        rows = await db.fetch_all(
+            "SELECT id, canonical_name_norm, aliases_norm "
+            "FROM hot_serving_entity_index ORDER BY id"
+        )
+        by_id = {str(row["id"]): row for row in rows}
+        # The gate's fail-soft residue: no aliases, but a real fold.
+        assert by_id[corrupt_id]["canonical_name_norm"] == "corrupt service"
+        assert by_id[corrupt_id]["aliases_norm"] == "[]"
+        # The healthy row is untouched by the corruption accounting.
+        assert by_id[healthy_id]["canonical_name_norm"] == "healthy service"
+        assert by_id[healthy_id]["aliases_norm"] == '["gadget"]'
+    finally:
+        await db.close()
+
+    backfills = [e for e in captured if e.get("event") == "migration.backfill_alias_corrupt"]
+    assert len(backfills) == 1
+    assert backfills[0]["corrupt_rows"] == 1
+

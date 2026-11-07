@@ -52,6 +52,7 @@ from paa.storage.graph.base import (
 )
 from paa.storage.relational.base import RelationalBackend
 from paa.storage.relational.database import from_iso, to_iso, utc_now
+from paa.storage.relational.dialect import fold_case
 from paa.storage.relational.errors import ConstraintViolation
 
 __all__ = ["SqliteGraphStore"]
@@ -76,13 +77,30 @@ _EDGE_COLUMNS: Final = """
     created_by_agent, valid_from, valid_to
 """
 
+# PLAN:integration-fix:P003-followup / REV-W4 R-W4-004. This backend is the
+# SECOND writer of hot_serving_entity_index (facts.py:upsert_entity is the
+# first), and the stored-normalisation columns exist precisely so every
+# writer agrees on the fold before touching the table. The graph backend's
+# upsert carries no alias list (its signature is id/class/canonical_name),
+# so on INSERT it stores the empty folded alias list (``"[]"``, matching
+# the raw ``aliases`` default) and the fold of the canonical name — the
+# only fold it can compute. On conflict (a rename of an existing id) it
+# refreshes ``canonical_name_norm`` from the new name but must NOT touch
+# ``aliases_norm``: writing ``"[]"`` there would silently erase the aliases
+# facts.py wrote, leaving the raw blob and the norm column diverged, and
+# the alias rung (which reads the norm) would lose the entity — the same
+# invisible-entity defect this fix closes for canonical names. The raw
+# ``aliases`` column is likewise left alone here (it has always been:
+# this backend never owned aliases).
 _UPSERT_ENTITY_SQL: Final = """
-INSERT INTO hot_serving_entity_index (id, class, canonical_name, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?)
+INSERT INTO hot_serving_entity_index
+    (id, class, canonical_name, canonical_name_norm, aliases_norm, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
-    class          = excluded.class,
-    canonical_name = excluded.canonical_name,
-    updated_at     = excluded.updated_at
+    class               = excluded.class,
+    canonical_name      = excluded.canonical_name,
+    canonical_name_norm = excluded.canonical_name_norm,
+    updated_at          = excluded.updated_at
 """
 
 _UPSERT_EDGE_SQL: Final = f"""
@@ -143,9 +161,14 @@ class SqliteGraphStore(GraphStore):
 
     async def upsert_entity(self, entity_id: str, class_: str, canonical_name: str) -> GraphEntity:
         now = to_iso(utc_now())
+        # REV-W4 R-W4-004: the stored fold, computed with the same
+        # dialect.fold_case the facts write path uses (ADR-0029), in this
+        # same statement as the row — never an engine lower().
+        canonical_norm = fold_case(canonical_name)
         try:
             await self._db.execute(
-                _UPSERT_ENTITY_SQL, (entity_id, class_, canonical_name, now, now)
+                _UPSERT_ENTITY_SQL,
+                (entity_id, class_, canonical_name, canonical_norm, "[]", now, now),
             )
         except ConstraintViolation as exc:
             # Almost always the UNIQUE on canonical_name: two ids claiming one

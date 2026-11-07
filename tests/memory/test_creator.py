@@ -500,12 +500,34 @@ class TestDrainPendingEmbeddings:
         assert len(await FactRepository(db).pending_embeddings()) == 2
 
     async def test_drain_105_backlog_drained_not_paginated(self, db: Database) -> None:
-        """P1-3: default ``limit=100`` drains 100 then 5 (drained, not OFFSET)."""
+        """P1-3: default ``limit=100`` drains 100 then 5 (drained, not OFFSET).
+
+        Deliberate owner update (REV-W4 C1 rating: STALE EXPECTATION).
+        The old assertion drained 100 then 5 on ONE creator back-to-back,
+        which pins pre-throttle unbounded draining. ADR-0036 added a
+        windowed per-second cap (``drain_max_per_second``, default 100):
+        the first drain exhausts the window, so the second call on the
+        same instance indexes 0 and logs ``memory.embedding_drain_throttled``
+        — the intended behaviour, pinned canonically by the T15 tests.
+        This test's intent (105 backlogs drain fully across calls, never
+        OFFSET-paginated, nothing dropped) is preserved by draining the
+        remaining 5 through a FRESH creator (its own window), which proves
+        the full backlog still drains and nothing is lost to the throttle.
+        """
+        import structlog.testing as _st
+
         await self._seed_pending(db, n=105, prefix="backlog")
         creator = MemoryCreator(db, embedding_sink=_RecordingSink())
         assert await creator.drain_pending_embeddings() == 100
         assert len(await FactRepository(db).pending_embeddings()) == 5
-        assert await creator.drain_pending_embeddings() == 5
+        # Second call in the same window: fully deferred, logged, no drop.
+        with _st.capture_logs() as captured:
+            assert await creator.drain_pending_embeddings() == 0
+        assert [e for e in captured if e.get("event") == "memory.embedding_drain_throttled"]
+        assert len(await FactRepository(db).pending_embeddings()) == 5
+        # A fresh creator has its own window, so the remainder drains.
+        fresh = MemoryCreator(db, embedding_sink=_RecordingSink())
+        assert await fresh.drain_pending_embeddings() == 5
         assert await FactRepository(db).pending_embeddings() == []
 
     async def test_drain_partial_sink_return_marks_only_returned(self, db: Database) -> None:

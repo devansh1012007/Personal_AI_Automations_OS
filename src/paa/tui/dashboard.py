@@ -18,6 +18,7 @@ from rich.table import Table
 from rich.text import Text
 
 from paa.core.types import ComplexityModality
+from paa.improvement.reflection import format_reflection_health
 from paa.ledger.replay import TaskPhase
 from paa.sandbox.base import sandbox_report_rows
 from paa.tui.snapshot import Snapshot
@@ -412,15 +413,21 @@ def render_doctor(info: dict[str, Any]) -> Panel:
 
 
 def _reflection_doctor_value(info: dict[str, Any]) -> str:
-    """The doctor reflection value from a runner info dict (P013 mirror)."""
-    if not info.get("reflection_enabled", False):
-        return "disabled"
-    age = info.get("reflection_last_run_age_days")
-    if age is None:
-        return "unknown (due)"
-    if info.get("reflection_stale", False):
-        return f"{float(age):.1f}d (stale)"
-    return f"{float(age):.1f}d"
+    """The doctor reflection value from a runner info dict (P013 mirror).
+
+    Renders the shared :func:`format_reflection_health` rule (the same one
+    the CLI doctor uses) over the runner-populated keys, so the two
+    surfaces of one home cannot disagree about the same week. Missing
+    keys render ``disabled`` — the ReflectionSettings default. Only the
+    dashboard's key adaptation lives here; the formatted value itself is
+    the shared formatter's, never a second spelling of it.
+    """
+    health = {
+        "enabled": info.get("reflection_enabled", False),
+        "last_run_age_days": info.get("reflection_last_run_age_days"),
+        "stale": info.get("reflection_stale", False),
+    }
+    return format_reflection_health(health)
 
 
 def render_transcript(lines: list[str], hint: str | None = None) -> Group:

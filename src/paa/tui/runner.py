@@ -33,6 +33,7 @@ from rich.console import Console
 from rich.text import Text
 
 from paa.core.types import ComplexityModality, CorrelationId
+from paa.improvement.reflection import reflection_health
 from paa.ledger.replay import TaskPhase
 from paa.ledger.replay import project as project_lineage
 from paa.models.base import redact
@@ -114,6 +115,15 @@ async def _build_info(settings: Any, rt: Any) -> dict[str, Any]:
                 "tui.sandbox_diagnostics_failed", error=sandbox_facts["diagnostic_error"]
             )
     open_tasks = [str(cid) for cid in await rt.ledger.open_correlations()]
+    # REV-W4 R-W4-003: the doctor mirror's three reflection keys. The CLI
+    # doctor renders reflection_health(settings.home, enabled=...), and the
+    # TUI renders the same helper's output through the shared formatter, so
+    # the two surfaces answer about the same home. A settings object without
+    # a reflection block (e.g. the injected test fakes) reads as disabled —
+    # the ReflectionSettings default — rather than breaking the 2s tick.
+    _reflection = getattr(settings, "reflection", None)
+    _enabled = getattr(_reflection, "enabled", False)
+    _health = reflection_health(settings.home, enabled=bool(_enabled))
     return {
         "home": str(settings.home),
         "policy_mode": settings.policy.mode.value,
@@ -127,6 +137,9 @@ async def _build_info(settings: Any, rt: Any) -> dict[str, Any]:
         "sandbox": sandbox,
         "sandbox_facts": sandbox_facts,
         "open_tasks": open_tasks,
+        "reflection_enabled": _health["enabled"],
+        "reflection_last_run_age_days": _health["last_run_age_days"],
+        "reflection_stale": _health["stale"],
     }
 
 

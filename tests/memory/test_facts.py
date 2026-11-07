@@ -204,6 +204,15 @@ class TestTheCorruptRow:
     row, so a single corrupt row breaks the alias rung for every term —
     and the rung has to answer "no match" rather than take the ingestion
     batch down with it.
+
+    Deliberate owner update (REV-W4 C3a rating: STALE EXPECTATION). The
+    alias rung now expands the stored-normalised alias text
+    (``aliases_norm``, P003) rather than the raw ``aliases`` blob, which no
+    read path consults anymore. The fail-closed property moved with the
+    mechanism: the corruptible column is ``aliases_norm``. Writing invalid
+    JSON into it directly (the schema has no CHECK on the norm column, so
+    no pragma juggling is needed) must break the alias rung for every
+    term exactly as a corrupt raw blob did in the old shape.
     """
 
     async def test_a_corrupt_row_fails_closed_and_the_row_was_consulted(
@@ -214,11 +223,6 @@ class TestTheCorruptRow:
         The row is genuinely corrupt — the alias column holds something
         that is not JSON — so the failure is raised by the engine and
         classified by the substrate boundary, not simulated by a fake.
-
-        The schema's ``CHECK (json_valid(aliases))`` means a corrupt row
-        cannot be written through the repository at all: it is a row that
-        arrived by another route, which is exactly what the classifier's
-        corrupt-document case is a defence against.
 
         ``fuzzy=False`` isolates the alias rung, so the assertion is about
         the rung that fails rather than about a trigram guess.
@@ -236,14 +240,13 @@ class TestTheCorruptRow:
         assert other is not None, "the alias rung did not resolve a matching alias"
         assert other.match == "alias"
 
-        # The check constraint has to be out of the way for the row to be
-        # written corrupt at all.
-        await db.execute("PRAGMA ignore_check_constraints=ON")
+        # The corruptible column is now the normalised alias text. The
+        # raw blob — which no read path consults — carries no CHECK on
+        # the norm column, so the corruption is written directly.
         await db.execute(
-            "UPDATE hot_serving_entity_index SET aliases = 'not json at all' "
+            "UPDATE hot_serving_entity_index SET aliases_norm = 'not json at all' "
             "WHERE canonical_name = 'Widget Service'"
         )
-        await db.execute("PRAGMA ignore_check_constraints=OFF")
 
         # One corrupt row breaks the alias rung for *every* term — the
         # second alias was perfectly good, and it stops resolving too.
@@ -309,7 +312,20 @@ class TestTheGateModel:
 
         Spaces, punctuation, digits and mixed case — because those are what
         the padding and the collapsing used to change.
+
+        Since P003 the FTS5 index holds the stored fold
+        (``canonical_name_norm`` / ``aliases_norm``), not the raw text, so
+        the raw INSERT below carries the fold it represents: the row is a
+        "arrived by another route" row whose norm happens to be the fold
+        of its own canonical name. The gate folds with the seam's
+        ``fold_case``, so the gate grams are ``_trigrams`` of the stored
+        fold — which is what the trigram tokenizer sees. A raw INSERT
+        *without* the fold (norm-NULL) would index NULL tokens — the
+        R-W4-004 foreign-writer class: silently invisible to the index
+        now that the norm is the token source.
         """
+        from paa.storage.relational.dialect import fold_case
+
         corpus = (
             "Widget Service",
             "ACME-42 Corp",
@@ -326,8 +342,10 @@ class TestTheGateModel:
         # it was given — and the gate has to score the text the index holds.
         await db.execute(
             "INSERT INTO hot_serving_entity_index "
-            "(id, class, canonical_name, aliases, created_at, updated_at) "
+            "(id, class, canonical_name, aliases, canonical_name_norm, aliases_norm, "
+            "created_at, updated_at) "
             "VALUES ('direct-1', 'project', 'Widget  Service', '[]', "
+            "'widget  service', '[]', "
             "'2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')"
         )
 
@@ -338,9 +356,9 @@ class TestTheGateModel:
         for row in rows:
             stored = str(row["canonical_name"])
             tokens = await self._tokens(db, int(row["rowid"]))
-            assert tokens == _trigrams(stored), (
+            assert tokens == _trigrams(fold_case(stored)), (
                 f"the gate's model drifted from the tokenizer's for {stored!r}: "
-                f"index={sorted(tokens)} gate={sorted(_trigrams(stored))}"
+                f"index={sorted(tokens)} gate={sorted(_trigrams(fold_case(stored)))}"
             )
 
     async def test_a_pair_that_shares_no_gram_is_refused(

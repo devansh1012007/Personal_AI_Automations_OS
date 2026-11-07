@@ -51,6 +51,7 @@ import pytest
 
 from paa.memory.facts import _MAX_TERM_GRAMS, FactRepository, trigram_similarity
 from paa.storage.relational.database import Database, dumps, loads, to_iso, utc_now
+from paa.storage.relational.dialect import fold_case
 
 #: The floor the fuzzy rung gates at. The same default the repository uses,
 #: named here so a test that changes it has to say so.
@@ -361,13 +362,39 @@ async def _insert(db: Database, entity_id: str, name: str, aliases: Sequence[str
     The ids are fixed because they are the variable the test needs to hold
     still: the same two entities, with the same ids, written in two
     different orders, are the same data — and the answer must be the same.
+
+    Since P003 the rows carry the stored fold (``canonical_name_norm`` /
+    ``aliases_norm``) that the read paths measure against — a fixture fix,
+    not an expectation weakening. A row written without its fold is a
+    norm-NULL row: invisible to the exact rung, the candidate query and
+    FTS (the same R-W4-004 foreign-writer class). The fold here is the
+    one the write path computes: :func:`fold_case` of the name, and the
+    folded alias list as non-escaped JSON — matching
+    ``facts._aliases_norm_value`` without importing the private helper.
     """
+    import json
+
     stamp = to_iso(utc_now())
+    aliases_norm = json.dumps(
+        [fold_case(alias) for alias in aliases], ensure_ascii=False, separators=(",", ":")
+    )
     await db.execute(
         "INSERT INTO hot_serving_entity_index "
-        "(id, class, canonical_name, aliases, importance_weight, attributes,"
-        " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
-        (entity_id, "project", name, dumps(list(aliases)), 0.5, "{}", stamp, stamp),
+        "(id, class, canonical_name, aliases, canonical_name_norm, aliases_norm,"
+        " importance_weight, attributes,"
+        " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (
+            entity_id,
+            "project",
+            name,
+            dumps(list(aliases)),
+            fold_case(name),
+            aliases_norm,
+            0.5,
+            "{}",
+            stamp,
+            stamp,
+        ),
     )
 
 
@@ -1050,29 +1077,36 @@ class TestTheGramCeiling:
 
 
 class TestTheEscapedAliasBlob:
-    """A non-ASCII alias is invisible to the count proxy.
+    """A non-ASCII alias is NOT invisible anymore (the flip that is the fix).
 
     The alias column holds JSON *text*, and ``json.dumps`` escapes
     non-ASCII — so the alias ``"ééé"`` is stored as
     ``["\\u00e9\\u00e9\\u00e9"]``, and the count proxy's pattern, built
     from the folded *text*, never matches the escaped blob.
 
-    The breakage is **symmetric**: the blob is the same text on both
-    substrates, so both answer "no match" and the superset property fails
-    on both rather than on one. The fix is a stored normalised form
-    (ADR-0029's limitation (c)), and this test is what says it is still
-    open.
+    **This test used to assert that limitation as behaviour** (ADR-0029
+    (c), the "symmetric breakage"): the answer was "no match" on both
+    substrates. P003 closed (a)(c)(d) by adding the stored-normalised
+    alias text — ``aliases_norm`` carries the folded, non-escaped list,
+    and the count proxy plus the alias rung now measure against it —
+    so the term resolves through the norm. This test now asserts the
+    *repaired* behaviour: the raw blob is still escaped (the convergence
+    mechanism is the norm column, not a global dumps change), but the row
+    is a candidate and the answer is a match. [C5 deliberate rewrite:
+    REV-W4 and TREV-W4 rate the flip as the intended fix working; it is
+    justified here rather than silently edited.]
     """
 
-    async def test_a_non_ascii_alias_resolves_to_no_match(
+    async def test_a_non_ascii_alias_resolves_through_the_norm(
         self, db: Database, repo: FactRepository
     ) -> None:
-        """The gate accepts the pair; the candidate query cannot see the row.
+        """The gate accepts the pair; the norm column lets the query see it.
 
         The gate scores the alias ``"ééé"`` at 0.5 against the term
         ``"éééx"`` — over the floor — so the pair is one the gate would
-        accept. The candidate query never sees the row, so the answer is
-        "no match", on both substrates.
+        accept. The candidate query now sees the row through the norm
+        (folded, non-escaped), so the answer is a match via the alias
+        rung.
         """
         await repo.upsert_entity("project", "Widget Service", aliases=["ééé"])
 
@@ -1084,17 +1118,24 @@ class TestTheEscapedAliasBlob:
         )
         assert blob == '["\\u00e9\\u00e9\\u00e9"]'
 
+        # The norm is what the query measures: folded, non-escaped.
+        norm = await db.fetch_value(
+            "SELECT aliases_norm FROM hot_serving_entity_index "
+            "WHERE canonical_name = 'Widget Service'"
+        )
+        assert norm == '["ééé"]'
+
         # The gate accepts the pair: the alias scores 0.5 against the term.
         assert trigram_similarity("éééx", "ééé") == pytest.approx(0.5)
         assert trigram_similarity("éééx", "ééé") >= _FLOOR
 
-        # And the row is not a candidate, because the escaped blob holds
-        # no gram of the term.
-        assert await _candidates(db, "broad", "éééx") == set()
+        # And the row IS a candidate now, through the norm.
+        assert await _candidates(db, "broad", "éééx") == {"Widget Service"}
 
-        # So the answer is "no match" — on both substrates, since the blob
-        # is the same text on both.
-        assert await repo.resolve_entity("éééx") is None
+        # So the answer is a match — the alias rung resolves.
+        resolved = await repo.resolve_entity("éééx")
+        assert resolved is not None
+        assert resolved.canonical_name == "Widget Service"
 
 
 class TestTheTwoQueries:

@@ -345,3 +345,150 @@ def test_p006_panel_builder_isolates_a_raising_source() -> None:
         "awaiting_ids": [],
     }
     assert panels["agent_monitor"] == {"agents": [], "recent_roles": []}
+
+
+# ---------------------------------------------------------------------------
+# Reflection doctor mirror (P013 wiring — REV-W4 R-W4-003)
+# ---------------------------------------------------------------------------
+#
+# The doctor row renders the same value as the CLI doctor — the shared
+# format_reflection_health rule over health the runner collects from
+# reflection_health(settings.home). Hand-built info dicts pin the RENDER
+# contract (enabled+running, enabled+stale, disabled); the runner-level
+# tests below pin the population: a real marker file under tmp_path flows
+# through _build_info into the renderer's keys, so a runner that stops
+# populating them fails here rather than rendering "disabled" forever.
+
+
+def _doctor_info(**keys: Any) -> dict[str, Any]:
+    info: dict[str, Any] = {
+        "home": "/tmp/paa",
+        "policy_mode": "ask",
+        "relational": "sqlite",
+        "vector_store": "VectorStoreX",
+        "graph_store": "GraphStoreY",
+        "queue": "QueueZ",
+        "model_router": "RouterA",
+        "sandbox": "SubprocessBackend",
+        "open_tasks": [],
+    }
+    info.update(keys)
+    return info
+
+
+def test_reflection_enabled_and_running_renders_the_age_not_disabled() -> None:
+    """Enabled + recently run: the row shows an age, never "disabled".
+
+    This is the R-W4-003 tripwire: before the runner populated the keys,
+    the mirror rendered "disabled" in every state — a state the value
+    could never come from this info dict.
+    """
+    console = _console()
+    console.print(
+        render_doctor(
+            _doctor_info(
+                reflection_enabled=True,
+                reflection_last_run_age_days=2.5,
+                reflection_stale=False,
+            )
+        )
+    )
+    out = console.file.getvalue()
+    assert "reflection.last_run_age_days" in out
+    assert "2.5d" in out
+    assert "disabled" not in out
+    assert "stale" not in out
+
+
+def test_reflection_enabled_and_stale_renders_the_stale_value() -> None:
+    console = _console()
+    console.print(
+        render_doctor(
+            _doctor_info(
+                reflection_enabled=True,
+                reflection_last_run_age_days=9.25,
+                reflection_stale=True,
+            )
+        )
+    )
+    out = console.file.getvalue()
+    assert "9.2d (stale)" in out
+
+
+def test_reflection_disabled_renders_disabled() -> None:
+    console = _console()
+    console.print(render_doctor(_doctor_info()))
+    out = console.file.getvalue()
+    assert "reflection.last_run_age_days" in out
+    assert "disabled" in out
+
+
+async def test_runner_build_info_populates_the_reflection_keys(tmp_path: Any) -> None:
+    """_build_info is the runner's side of the mirror: it must supply the keys.
+
+    A marker written just now (enabled) flows through reflection_health to
+    the info dict: enabled=True, an age near zero, stale=False. A home
+    with no marker reports unknown (None age) rather than a fabricated
+    one. Both are the same data the CLI doctor renders from the same home.
+    """
+    from types import SimpleNamespace
+
+    from paa.improvement.reflection import write_reflection_last_run
+    from paa.storage.relational.database import utc_now
+    from paa.tui.runner import _build_info
+
+    write_reflection_last_run(tmp_path, utc_now())
+
+    class _Ledger:
+        async def open_correlations(self) -> list[Any]:
+            return []
+
+    settings = SimpleNamespace(
+        home=str(tmp_path),
+        policy=SimpleNamespace(mode=SimpleNamespace(value="ask")),
+        reflection=SimpleNamespace(enabled=True),
+    )
+    rt = SimpleNamespace(
+        db=SimpleNamespace(),
+        ledger=_Ledger(),
+        sandbox=None,
+        vector_store=None,
+        graph_store=None,
+        queue=None,
+        model_router=None,
+    )
+    info = await _build_info(settings, rt)
+    assert info["reflection_enabled"] is True
+    assert isinstance(info["reflection_last_run_age_days"], float)
+    assert info["reflection_last_run_age_days"] < 1.0
+    assert info["reflection_stale"] is False
+
+
+async def test_runner_build_info_without_a_marker_reports_unknown(tmp_path: Any) -> None:
+    from types import SimpleNamespace
+
+    from paa.tui.runner import _build_info
+
+    class _Ledger:
+        async def open_correlations(self) -> list[Any]:
+            return []
+
+    settings = SimpleNamespace(
+        home=str(tmp_path),
+        policy=SimpleNamespace(mode=SimpleNamespace(value="ask")),
+        reflection=SimpleNamespace(enabled=True),
+    )
+    rt = SimpleNamespace(
+        db=SimpleNamespace(),
+        ledger=_Ledger(),
+        sandbox=None,
+        vector_store=None,
+        graph_store=None,
+        queue=None,
+        model_router=None,
+    )
+    info = await _build_info(settings, rt)
+    assert info["reflection_enabled"] is True
+    assert info["reflection_last_run_age_days"] is None
+    assert info["reflection_stale"] is False
+
