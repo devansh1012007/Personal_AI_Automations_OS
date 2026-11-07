@@ -1092,6 +1092,43 @@ class FactRepository:
             sql += " WHERE superseded_by IS NULL"
         return int(await self._db.fetch_value(sql) or 0)
 
+    async def count_facts_by_domain(self, *, include_superseded: bool = False) -> dict[str, Any]:
+        """Live-fact counts grouped by ``memory_domain`` and ``embedding_status``.
+
+        PLAN:integration-fix:P006 — read-only aggregate for the TUI memory
+        browser panel and the API ``/health`` mirror. One ``GROUP BY`` query
+        per call (bounded ``COUNT(*)``, never per-row); the per-domain and
+        per-status rollups are aggregated from those groups in Python so one
+        statement serves both breakdowns.
+
+        Superseded rows are excluded by default, mirroring :meth:`count_facts`:
+        the browser shows what recall can see. An empty table returns
+        ``{"total": 0, "by_domain": {}, "by_status": {}}`` — zeros, not a crash
+        and not a missing key.
+        """
+        sql = (
+            "SELECT memory_domain, embedding_status, COUNT(*) AS n "
+            "FROM hot_serving_active_facts"
+        )
+        if not include_superseded:
+            sql += " WHERE superseded_by IS NULL"
+        sql += (
+            " GROUP BY memory_domain, embedding_status"
+            " ORDER BY memory_domain ASC, embedding_status ASC"
+        )
+        rows = await self._db.fetch_all(sql)
+        by_domain: dict[str, int] = {}
+        by_status: dict[str, int] = {}
+        total = 0
+        for row in rows:
+            domain = str(row["memory_domain"])
+            status = str(row["embedding_status"])
+            count = int(row["n"])
+            total += count
+            by_domain[domain] = by_domain.get(domain, 0) + count
+            by_status[status] = by_status.get(status, 0) + count
+        return {"total": total, "by_domain": by_domain, "by_status": by_status}
+
 
 # ---------------------------------------------------------------------------
 # Row mapping

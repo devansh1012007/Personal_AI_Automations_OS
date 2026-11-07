@@ -83,6 +83,22 @@ def render_help() -> Panel:
 def render_dashboard(snapshot: Snapshot) -> Panel:
     header = Text("paa — live dashboard", style="bold cyan", justify="center")
 
+    # PLAN:integration-fix:P006 — the five named panels always render (even
+    # when there are no open tasks), one sub-panel per field. ``None`` (or an
+    # empty container) renders "No data yet" — that empty state is the T07
+    # acceptance criterion, not a placeholder. Every user-controlled string
+    # below is wrapped in Text so it is data, never markup: a Panel built
+    # from a str (or a table cell that is a str) parses markup, so "[red]"
+    # text changes style and a bare "[/red]" raises MarkupError and kills the
+    # dashboard loop. Panel *titles* are fixed field names, never data.
+    panels: list[Any] = [
+        _panel_attention(snapshot.attention_top),
+        _panel_memory(snapshot.memory_browser_counts),
+        _panel_decisions(snapshot.decision_tracker),
+        _panel_autonomy(snapshot.autonomy_state),
+        _panel_agents(snapshot.agent_monitor),
+    ]
+
     if not snapshot.rows:
         empty = Text("[dim]no active tasks[/dim]", justify="center")
         summary = Text(
@@ -91,7 +107,7 @@ def render_dashboard(snapshot: Snapshot) -> Panel:
             justify="center",
             style="dim",
         )
-        return Panel(Group(header, empty, summary), border_style="cyan")
+        return Panel(Group(header, empty, summary, *panels), border_style="cyan")
 
     table = Table(expand=True, box=None, show_header=True, header_style="bold")
     table.add_column("id", overflow="fold")
@@ -107,7 +123,10 @@ def render_dashboard(snapshot: Snapshot) -> Panel:
             row.modality.value,
             str(row.attempts),
             str(row.tokens_consumed),
-            row.goal_preview or "",
+            # goal_preview is caller-supplied text: Text makes it literal
+            # (the markup=False precedent from W1 P-001 at render time). A
+            # str cell would parse "[red]" as style and crash on "[/red]".
+            Text(row.goal_preview or ""),
         )
 
     footer = Text(
@@ -115,7 +134,174 @@ def render_dashboard(snapshot: Snapshot) -> Panel:
         "live updates refresh on each poll tick.[/dim]",
         justify="center",
     )
-    return Panel(Group(header, table, footer), border_style="cyan")
+    return Panel(Group(header, table, *panels, footer), border_style="cyan")
+
+
+def _is_empty_panel(value: Any) -> bool:
+    return value is None or (isinstance(value, (list, tuple, dict)) and len(value) == 0)
+
+
+def _panel_no_data(name: str) -> Panel:
+    return Panel(Text("No data yet", style="dim"), title=name, border_style="cyan")
+
+
+def _cell_text(value: Any) -> Text:
+    # ``-`` for null mirrors _fmt's empty rendering; Text keeps hostile
+    # strings literal (see render_dashboard).
+    return Text("-" if value is None else str(value))
+
+
+def _panel_attention(value: Any) -> Panel:
+    name = "attention_top"
+    if _is_empty_panel(value):
+        return _panel_no_data(name)
+    if isinstance(value, dict):
+        # A {id: score} mapping: rank by score descending when numeric so
+        # the row order is the attention order, not the dict order.
+        def _score(item: tuple[str, Any]) -> float:
+            try:
+                return float(item[1])
+            except (TypeError, ValueError):
+                return 0.0
+
+        items = sorted(value.items(), key=_score, reverse=True)
+        table = Table(show_header=True, header_style="bold", expand=True)
+        table.add_column("rank", justify="right")
+        table.add_column("id", overflow="fold")
+        table.add_column("score", justify="right")
+        for rank, (cid, score) in enumerate(items, start=1):
+            table.add_row(str(rank), _cell_text(cid), _cell_text(score))
+        return Panel(table, title=name, border_style="cyan")
+    if isinstance(value, (list, tuple)):
+        # Ranked rows: list order *is* the ranking (P-07 fills this). Dict
+        # entries render one row per key; scalars render one row each.
+        if value and isinstance(value[0], dict):
+            columns: list[str] = []
+            for item in value:
+                if isinstance(item, dict):
+                    for key in item:
+                        if key not in columns:
+                            columns.append(key)
+            table = Table(show_header=True, header_style="bold", expand=True)
+            table.add_column("rank", justify="right")
+            for key in columns:
+                table.add_column(key, overflow="fold")
+            for rank, item in enumerate(value, start=1):
+                row: list[Any] = [str(rank)]
+                if isinstance(item, dict):
+                    for key in columns:
+                        row.append(_cell_text(item.get(key)))
+                else:
+                    # Mixed list (first entry was a dict, this one is not):
+                    # a malformed panel must not crash the loop.
+                    row.append(_cell_text(item))
+                    row.extend([_cell_text(None)] * (len(columns) - 1))
+                table.add_row(*row)
+            return Panel(table, title=name, border_style="cyan")
+        table = Table(show_header=True, header_style="bold", expand=True)
+        table.add_column("rank", justify="right")
+        table.add_column("value", overflow="fold")
+        for rank, item in enumerate(value, start=1):
+            table.add_row(str(rank), _cell_text(item))
+        return Panel(table, title=name, border_style="cyan")
+    return Panel(Text(str(value)), title=name, border_style="cyan")
+
+
+def _counts_table(title: str, counts: dict[Any, Any]) -> Table:
+    table = Table(show_header=True, header_style="bold")
+    table.add_column(title, overflow="fold")
+    table.add_column("count", justify="right")
+    # Deterministic total order: count descending, then name ascending, so
+    # the rendered ranking is reproducible across runs and substrates.
+    # Non-numeric counts sort as 0 rather than raising.
+    def _order(key: Any) -> tuple[float, str]:
+        raw = counts[key]
+        count = float(raw) if isinstance(raw, (int, float)) else 0.0
+        return (-count, str(key))
+
+    for key in sorted(counts, key=_order):
+        table.add_row(_cell_text(key), _cell_text(counts[key]))
+    return table
+
+
+def _panel_memory(value: Any) -> Panel:
+    name = "memory_browser_counts"
+    if _is_empty_panel(value):
+        return _panel_no_data(name)
+    if isinstance(value, dict) and ("total" in value or "by_domain" in value):
+        total = value.get("total", 0)
+        by_domain = value.get("by_domain") or {}
+        by_status = value.get("by_status") or {}
+        chunks: list[Any] = [Text(f"total: {total}")]
+        if isinstance(by_domain, dict) and by_domain:
+            chunks.append(_counts_table("domain", by_domain))
+        if isinstance(by_status, dict) and by_status:
+            chunks.append(_counts_table("status", by_status))
+        return Panel(Group(*chunks), title=name, border_style="cyan")
+    if isinstance(value, dict):
+        # A plain {domain: count} mapping from a different caller.
+        return Panel(_counts_table("domain", value), title=name, border_style="cyan")
+    return Panel(Text(str(value)), title=name, border_style="cyan")
+
+
+def _panel_decisions(value: Any) -> Panel:
+    name = "decision_tracker"
+    if _is_empty_panel(value):
+        return _panel_no_data(name)
+    if isinstance(value, (list, tuple)):
+        table = Table(show_header=True, header_style="bold", expand=True)
+        table.add_column("id", overflow="fold")
+        table.add_column("decision", overflow="fold")
+        table.add_column("reason", overflow="fold")
+        for item in value:
+            if isinstance(item, dict):
+                table.add_row(
+                    _cell_text(item.get("correlation_id")),
+                    _cell_text(item.get("policy_decision")),
+                    _cell_text(item.get("policy_reason")),
+                )
+            else:
+                table.add_row(_cell_text(item), _cell_text(None), _cell_text(None))
+        return Panel(table, title=name, border_style="cyan")
+    return Panel(Text(str(value)), title=name, border_style="cyan")
+
+
+def _panel_autonomy(value: Any) -> Panel:
+    name = "autonomy_state"
+    if _is_empty_panel(value):
+        return _panel_no_data(name)
+    if isinstance(value, dict):
+        mode = value.get("mode", "?")
+        awaiting = value.get("awaiting_gates", 0)
+        ids = value.get("awaiting_ids") or []
+        chunks: list[Any] = [Text(f"mode: {mode}")]
+        chunks.append(Text(f"awaiting gates: {awaiting}"))
+        if isinstance(ids, (list, tuple)) and ids:
+            for cid in ids:
+                chunks.append(Text(f"  {_short_id(cid)}"))
+        return Panel(Group(*chunks), title=name, border_style="cyan")
+    return Panel(Text(str(value)), title=name, border_style="cyan")
+
+
+def _panel_agents(value: Any) -> Panel:
+    name = "agent_monitor"
+    if _is_empty_panel(value):
+        return _panel_no_data(name)
+    if isinstance(value, dict):
+        agents = value.get("agents") or []
+        roles = value.get("recent_roles") or []
+        chunks: list[Any] = []
+        if isinstance(agents, (list, tuple)):
+            chunks.append(Text(f"agents: {', '.join(str(a) for a in agents) or 'none'}"))
+        else:
+            chunks.append(_cell_text(agents))
+        if isinstance(roles, (list, tuple)) and roles:
+            chunks.append(Text(f"recent roles: {', '.join(str(r) for r in roles)}"))
+        return Panel(Group(*chunks), title=name, border_style="cyan")
+    if isinstance(value, (list, tuple)):
+        single: list[Any] = [Text(f"agents: {', '.join(str(a) for a in value) or 'none'}")]
+        return Panel(Group(*single), title=name, border_style="cyan")
+    return Panel(Text(str(value)), title=name, border_style="cyan")
 
 
 def _short_id(cid: Any) -> str:

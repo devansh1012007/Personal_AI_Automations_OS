@@ -70,6 +70,15 @@ def create_app(runtime: Runtime) -> FastAPI:
     @app.get("/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
         open_tasks = len(await runtime.ledger.open_correlations(limit=10_000))
+        # PLAN:integration-fix:P006 — additive panel fields from the one
+        # shared builder the TUI uses (tui.runner.build_panel_fields), so
+        # both surfaces read the same runtime fact the same way. Imported
+        # function-locally to keep the TUI out of this module's import time.
+        # The builder never raises (per-panel isolation), so a failing panel
+        # source is null here, never a 500.
+        from paa.tui.runner import build_panel_fields
+
+        panels = await build_panel_fields(runtime.settings, runtime)
         return HealthResponse(
             status="ok",
             version=__version__,
@@ -87,6 +96,11 @@ def create_app(runtime: Runtime) -> FastAPI:
                 ),
             },
             open_tasks=open_tasks,
+            attention_top=panels["attention_top"],
+            memory_browser_counts=panels["memory_browser_counts"],
+            decision_tracker=panels["decision_tracker"],
+            autonomy_state=panels["autonomy_state"],
+            agent_monitor=panels["agent_monitor"],
         )
 
     # -- task submission ----------------------------------------------

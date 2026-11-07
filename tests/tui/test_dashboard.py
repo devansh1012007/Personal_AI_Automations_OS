@@ -189,3 +189,159 @@ def test_doctor_renders_the_shared_sandbox_rows() -> None:
     assert "NOT registered" in out
     assert "NAMESPACE" in out
     assert "paa/base_worker:v4.1" in out
+
+
+# ---------------------------------------------------------------------------
+# P006 panels (T-006-P006) — appended, existing tests untouched above.
+# ---------------------------------------------------------------------------
+
+
+def test_p006_all_null_panels_render_no_data_yet() -> None:
+    console = _console()
+    console.print(render_dashboard(Snapshot(rows=[])))
+    out = console.file.getvalue()
+    assert "no active tasks" in out.lower()
+    for name in (
+        "attention_top",
+        "memory_browser_counts",
+        "decision_tracker",
+        "autonomy_state",
+        "agent_monitor",
+    ):
+        assert name in out, f"missing panel {name}"
+    assert out.count("No data yet") == 5, out
+
+
+def test_p006_populated_panels_render_rows() -> None:
+    console = _console()
+    snapshot = Snapshot(
+        rows=[
+            CorrelationRow(
+                correlation_id=CorrelationId(uuid.UUID("12345678-1234-1234-1234-123456789012")),
+                phase=TaskPhase.EXECUTING,
+                modality=ComplexityModality.STANDARD,
+                attempts=1,
+                tokens_consumed=10,
+                created_at="12:34:56",
+                goal_preview="goal",
+            )
+        ],
+        runtime_info={},
+        attention_top=[
+            {"correlation_id": "aaaa-1", "score": 0.9},
+            {"correlation_id": "bbbb-2", "score": 0.5},
+        ],
+        memory_browser_counts={
+            "total": 3,
+            "by_domain": {"semantic": 2, "episodic": 1},
+            "by_status": {"indexed": 3},
+        },
+        decision_tracker=[
+            {
+                "correlation_id": "12345678-1234-1234-1234-123456789012",
+                "policy_decision": "AUTO_APPROVE",
+                "policy_reason": "low risk",
+            }
+        ],
+        autonomy_state={"mode": "ask", "awaiting_gates": 1, "awaiting_ids": ["12345678-x"]},
+        agent_monitor={"agents": ["planner", "worker"], "recent_roles": ["worker"]},
+    )
+    console.print(render_dashboard(snapshot))
+    out = console.file.getvalue()
+    # Ranked attention rows keep list order.
+    assert "aaaa-1" in out and "bbbb-2" in out
+    assert out.index("aaaa-1") < out.index("bbbb-2")
+    assert "semantic" in out and "total: 3" in out
+    assert "AUTO_APPROVE" in out and "low risk" in out
+    assert "mode: ask" in out and "awaiting gates: 1" in out
+    assert "planner" in out and "worker" in out
+    assert out.count("No data yet") == 0
+
+
+def test_p006_one_null_panel_does_not_hide_the_others() -> None:
+    console = _console()
+    snapshot = Snapshot(
+        rows=[],
+        runtime_info={},
+        attention_top=None,
+        memory_browser_counts={"total": 1, "by_domain": {"semantic": 1}, "by_status": {}},
+        decision_tracker=None,
+        autonomy_state={"mode": "auto", "awaiting_gates": 0, "awaiting_ids": []},
+        agent_monitor={"agents": ["planner"], "recent_roles": []},
+    )
+    console.print(render_dashboard(snapshot))
+    out = console.file.getvalue()
+    assert out.count("No data yet") == 2
+    assert "semantic" in out
+    assert "mode: auto" in out
+    assert "planner" in out
+
+
+def test_p006_hostile_strings_render_literally_without_markup_crash() -> None:
+    # A bare "[/red]" in a str cell / Panel(str) raises MarkupError and kills
+    # the loop. Text cells render it literally. ANSI escapes pass through
+    # (documented passthrough, not stripped — W1 FINDING), so assert only
+    # that the render succeeds and the payload text survives.
+    hostile = "[red]hacked[/red] \x1b[31mpwned\x1b[0m"
+    console = _console()
+    snapshot = Snapshot(
+        rows=[
+            CorrelationRow(
+                correlation_id=CorrelationId(uuid.UUID("12345678-1234-1234-1234-123456789012")),
+                phase=TaskPhase.EXECUTING,
+                modality=ComplexityModality.STANDARD,
+                attempts=1,
+                tokens_consumed=10,
+                created_at="12:34:56",
+                goal_preview=hostile,
+            )
+        ],
+        runtime_info={},
+        decision_tracker=[
+            {
+                "correlation_id": "12345678-1234-1234-1234-123456789012",
+                "policy_decision": "CLEAR",
+                "policy_reason": hostile,
+            }
+        ],
+    )
+    console.print(render_dashboard(snapshot))
+    out = console.file.getvalue()
+    assert "hacked" in out and "pwned" in out
+    # Literal, not parsed: the markup tags are visible in the output.
+    assert "[red]hacked[/red]" in out
+
+
+def test_p006_panel_builder_isolates_a_raising_source() -> None:
+    # Per-panel isolation at the data-source level: one source raising
+    # empties only its panel. Driven through the shared builder the TUI and
+    # /health both use, with a fake runtime whose db blows up the counts
+    # query while the ledger stays readable.
+    import asyncio
+    from types import SimpleNamespace
+
+    from paa.tui.runner import build_panel_fields
+
+    class ExplodingDb:
+        async def fetch_all(self, _sql: str, _params: Any = ()) -> list[Any]:
+            raise RuntimeError("counts exploded")
+
+    class FakeLedger:
+        async def open_correlations(self) -> list[Any]:
+            return []
+
+        async def read_correlation(self, _cid: Any) -> list[Any]:
+            return []
+
+    settings = SimpleNamespace(policy=SimpleNamespace(mode=SimpleNamespace(value="ask")))
+    rt = SimpleNamespace(db=ExplodingDb(), ledger=FakeLedger(), agents={})
+    panels = asyncio.run(build_panel_fields(settings, rt))
+    assert panels["attention_top"] is None
+    assert panels["memory_browser_counts"] is None
+    assert panels["decision_tracker"] == []
+    assert panels["autonomy_state"] == {
+        "mode": "ask",
+        "awaiting_gates": 0,
+        "awaiting_ids": [],
+    }
+    assert panels["agent_monitor"] == {"agents": [], "recent_roles": []}

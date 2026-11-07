@@ -33,6 +33,7 @@ from rich.console import Console
 from rich.text import Text
 
 from paa.core.types import ComplexityModality, CorrelationId
+from paa.ledger.replay import TaskPhase
 from paa.ledger.replay import project as project_lineage
 from paa.sandbox.base import collect_sandbox_facts
 from paa.tui.dashboard import (
@@ -45,12 +46,19 @@ from paa.tui.dashboard import (
 from paa.tui.dispatcher import CommandKind, CommandResult, dispatch
 from paa.tui.snapshot import CorrelationRow, Snapshot
 
-__all__ = ["run_tui"]
+__all__ = ["build_panel_fields", "run_tui"]
 
 log = structlog.get_logger(__name__)
 
 REFRESH_SECONDS = 2.0
 INLINE_PAUSE_SECONDS = 0.25
+
+# PLAN:integration-fix:P006 — bound on how many open lineages a panel scans
+# per build. The dashboard rebuilds every 2s tick; an unbounded per-row scan
+# would grow without limit as open tasks grow. The counts panel is a single
+# bounded COUNT query (see FactRepository.count_facts_by_domain) and is not
+# subject to this limit.
+_PANEL_SCAN_LIMIT = 50
 
 
 async def _gather_rows(rt: Any) -> list[CorrelationRow]:
@@ -119,6 +127,148 @@ async def _build_info(settings: Any, rt: Any) -> dict[str, Any]:
         "sandbox_facts": sandbox_facts,
         "open_tasks": open_tasks,
     }
+
+
+def _correlation_id_of(head: Any) -> Any:
+    """The uuid inside an ``open_correlations`` entry, or the entry itself.
+
+    ``LedgerStore.open_correlations`` returns :class:`CorrelationHead`
+    (``head.correlation_id``), while the test fake returns plain id strings.
+    Both are accepted so the panel builders work against the real ledger and
+    the fakes without a special case per caller.
+    """
+    return getattr(head, "correlation_id", head)
+
+
+async def _memory_browser_counts(rt: Any) -> dict[str, Any]:
+    """Live-fact counts for the memory browser panel.
+
+    Imported function-locally so the TUI module stays importable without the
+    memory stack on the path (the same lazy pattern as the cold-lake factory
+    in ``api/app.py``). One bounded aggregate query per call.
+    """
+    from paa.memory.facts import FactRepository
+
+    if rt.db is None:
+        raise RuntimeError("memory browser has no relational backend")
+    return await FactRepository(rt.db).count_facts_by_domain()
+
+
+async def _decision_tracker(rt: Any) -> list[dict[str, Any]]:
+    """Recent raw POLICY_* decisions from open lineages.
+
+    Quality/outcome scores do not exist (``hot_serving_evaluation_results``
+    is schema-only, never written), so only the raw ``policy_decision`` /
+    ``policy_reason`` pair is surfaced; nothing is synthesised. Per-lineage
+    projection failures are tolerated (that lineage is skipped), mirroring
+    ``_gather_rows``; only a catastrophic ledger failure escapes to the
+    per-panel isolation wrapper.
+    """
+    entries: list[dict[str, Any]] = []
+    heads = await rt.ledger.open_correlations()
+    for head in heads[:_PANEL_SCAN_LIMIT]:
+        cid = _correlation_id_of(head)
+        try:
+            proj = await project_lineage(rt.ledger, cid)
+        except Exception as exc:
+            log.warning("tui.project_failed", correlation_id=str(cid), error=str(exc))
+            continue
+        if proj.policy_decision is None:
+            continue
+        entries.append(
+            {
+                "correlation_id": str(cid),
+                "policy_decision": proj.policy_decision,
+                "policy_reason": proj.policy_reason,
+            }
+        )
+    return entries
+
+
+async def _autonomy_state(settings: Any, rt: Any) -> dict[str, Any]:
+    """Permission mode plus the count of open awaiting-human gates."""
+    mode = settings.policy.mode.value
+    awaiting_ids: list[str] = []
+    heads = await rt.ledger.open_correlations()
+    for head in heads[:_PANEL_SCAN_LIMIT]:
+        cid = _correlation_id_of(head)
+        try:
+            proj = await project_lineage(rt.ledger, cid)
+        except Exception as exc:
+            log.warning("tui.project_failed", correlation_id=str(cid), error=str(exc))
+            continue
+        if proj.phase == TaskPhase.AWAITING_HUMAN:
+            awaiting_ids.append(str(cid))
+    return {
+        "mode": mode,
+        "awaiting_gates": len(awaiting_ids),
+        "awaiting_ids": awaiting_ids,
+    }
+
+
+async def _agent_monitor(rt: Any) -> dict[str, Any]:
+    """Coarse agent view: loaded agents plus recent roles from open lineages.
+
+    No per-agent counters exist (``hot_serving_agent_registry`` is schema-only,
+    never written), so this is deliberately coarse and writes no state. Recent
+    roles are the last event's ``agent_role`` per scanned lineage (bounded by
+    ``_PANEL_SCAN_LIMIT``); per-lineage read failures are tolerated.
+    """
+    agents = sorted(str(k) for k in rt.agents)
+    recent_roles: list[str] = []
+    heads = await rt.ledger.open_correlations()
+    for head in heads[:_PANEL_SCAN_LIMIT]:
+        cid = _correlation_id_of(head)
+        try:
+            events = await rt.ledger.read_correlation(cid)
+        except Exception as exc:
+            log.warning("tui.ledger_failed", correlation_id=str(cid), error=str(exc))
+            continue
+        label = getattr(events[-1], "agent_role", None) if events else None
+        if label and label not in recent_roles:
+            recent_roles.append(str(label))
+    return {"agents": agents, "recent_roles": recent_roles}
+
+
+async def build_panel_fields(settings: Any, rt: Any) -> dict[str, Any]:
+    """Collect the five P006 panel fields with per-panel isolation.
+
+    PLAN:integration-fix:P006 — one builder, two surfaces. The TUI fills its
+    :class:`Snapshot` from this and the API ``/health`` mirrors the same dict
+    (additive, same names), so the two surfaces cannot disagree about the
+    same runtime fact — the same one-source pattern ``sandbox_report_rows``
+    uses for the doctor panel.
+
+    ``attention_top`` is always ``None`` this wave: the P-07 allocator (W4)
+    has not landed, and a null that renders "No data yet" is correct while a
+    computed score would be a fake. Each other field is collected under its
+    own try/except: a raising source empties only its panel (logged, not
+    silent) and never kills the 2s tick loop or the health response.
+    """
+    fields: dict[str, Any] = {
+        "attention_top": None,
+        "memory_browser_counts": None,
+        "decision_tracker": None,
+        "autonomy_state": None,
+        "agent_monitor": None,
+    }
+    try:
+        fields["memory_browser_counts"] = await _memory_browser_counts(rt)
+    except Exception as exc:
+        log.warning("tui.panel_failed", panel="memory_browser_counts", error=str(exc))
+    try:
+        fields["decision_tracker"] = await _decision_tracker(rt)
+    except Exception as exc:
+        log.warning("tui.panel_failed", panel="decision_tracker", error=str(exc))
+    try:
+        fields["autonomy_state"] = await _autonomy_state(settings, rt)
+    except Exception as exc:
+        log.warning("tui.panel_failed", panel="autonomy_state", error=str(exc))
+    try:
+        fields["agent_monitor"] = await _agent_monitor(rt)
+    except Exception as exc:
+        log.warning("tui.panel_failed", panel="agent_monitor", error=str(exc))
+    return fields
 
 
 async def _read_line(stdin: Any) -> str | None:
@@ -266,7 +416,20 @@ async def run_tui(*, stdin: Any = None, rt: Any = None) -> None:
         while True:
             rows = await _gather_rows(rt)
             info = await _build_info(settings, rt)
-            snapshot = Snapshot(rows=rows, runtime_info=info)
+            # PLAN:integration-fix:P006 — panels come from the one shared
+            # builder so this surface and /health cannot disagree. The builder
+            # never raises (per-panel isolation), so a panel source failure
+            # refreshes as "No data yet" instead of killing the tick loop.
+            panels = await build_panel_fields(settings, rt)
+            snapshot = Snapshot(
+                rows=rows,
+                runtime_info=info,
+                attention_top=panels["attention_top"],
+                memory_browser_counts=panels["memory_browser_counts"],
+                decision_tracker=panels["decision_tracker"],
+                autonomy_state=panels["autonomy_state"],
+                agent_monitor=panels["agent_monitor"],
+            )
             console.print(render_dashboard(snapshot))
 
             raw = await _read_line(stdin)

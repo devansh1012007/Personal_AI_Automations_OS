@@ -137,3 +137,11 @@ class HealthResponse(BaseModel):
     version: str
     backends: dict[str, str | None]
     open_tasks: int
+    # PLAN:integration-fix:P006 — additive mirror of the five TUI panel
+    # fields (same names, same builder). Old keys above are unchanged; a
+    # field is null when its source has no data or failed in isolation.
+    attention_top: Any | None = None
+    memory_browser_counts: Any | None = None
+    decision_tracker: Any | None = None
+    autonomy_state: Any | None = None
+    agent_monitor: Any | None = None
