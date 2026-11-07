@@ -207,38 +207,63 @@ async def test_e2e_paraphrase_retrieved_after_restart(tmp_path: Path) -> None:
         await store2.close()
 
 
-async def test_recall_facts_synonym_only_miss(db: Database) -> None:
-    """Keyword recall must miss a synonym-only query (documented boundary).
+async def test_recall_facts_synonym_only_miss(db: Database, tmp_path: Path) -> None:
+    """Keyword recall misses a synonym-only query; the P-004 fallback does not.
 
-    Vector recall finds "rapid" -> "swift" via the synonym map; the coder
-    recall_facts tool (DECISION T-007: keyword-only) resolves "rapid" to
-    no entity and LIKE-matches no predicate/object, so it must return zero.
+    Two halves, and both matter (ADR-0039 degrade-never-raise): with the
+    vector store and the synonym embedder live, ``recall_facts("rapid")``
+    runs the vector fallback and returns the "swift" fact, touched. With
+    either backend absent — the same query against a bare ``db`` namespace —
+    it degrades to the keyword-only result (count 0, no error). DECISION
+    T-007 (keyword-only) is superseded by ADR-0039; the old single-half
+    form pinned that decision and is updated deliberately here.
     """
     from paa.coder.runtime_tools import _RecallFacts
+    from paa.storage.vector import ACTIVE_FACTS, NumpyVectorStore
 
-    creator = MemoryCreator(db)
-    result = await creator.process_signal(
-        _row({"facts": [{"subject": "Aurora", "predicate": "status", "object": "swift"}]})
-    )
-    assert result.outcome is ProcessingOutcome.PROCESSED
+    embedder = _SynonymEmbedder()
+    assert embedder.dimensions == ACTIVE_FACTS.dimensions
+    store = NumpyVectorStore(tmp_path / "vectors")
+    try:
+        await store.ensure_spec(ACTIVE_FACTS)
+        creator = MemoryCreator(db, embedding_sink=VectorEmbeddingSink(store, embedder))
+        result = await creator.process_signal(
+            _row({"facts": [{"subject": "Aurora", "predicate": "status", "object": "swift"}]})
+        )
+        assert result.outcome is ProcessingOutcome.PROCESSED
+        fact_id = result.facts_written[0]
 
-    tool = _RecallFacts(SimpleNamespace(db=db))  # type: ignore[arg-type]
-    payload = json.loads(str(await tool.run({"query": "rapid"})))
-    assert payload["count"] == 0
-    assert payload["facts"] == []
-    # R-W4-T-03: pin the user-facing note's existence (lexical content is
-    # deliberately flexible) so the stale "no vector sink wired" text in
-    # runtime_tools.py cannot silently drift away without a test noticing
-    # the contract change.
-    assert "note" in payload
-    assert payload["note"]
-    assert "no vector sink wired" not in payload["note"]
-    # FINAL-01: the note must state the post-C01 truth — this tool is
-    # keyword-based and semantic recall is planner-side over embedded
-    # vectors — not that facts are unembedded. Reversal: restoring the
-    # stale note fails both assertions above.
-    assert "planner-side" in payload["note"]
-    assert "embedded vectors" in payload["note"]
+        # Half 1: store + embedder present -> vector fallback hits.
+        tool = _RecallFacts(SimpleNamespace(db=db, vector_store=store, embedder=embedder))  # type: ignore[arg-type]
+        payload = json.loads(str(await tool.run({"query": "rapid"})))
+        assert payload["count"] == 1
+        assert payload["facts"] != []
+        assert payload["facts"][0]["object_value"] == "swift"
+        # The fallback's hit is touched like every other tier's.
+        use_count = await db.fetch_value(
+            "SELECT use_count FROM hot_serving_active_facts WHERE id = ?",
+            (fact_id,),
+        )
+        assert use_count == 1
+        # The note states the tiered algorithm verbatim (FINAL-01 then
+        # ADR-0039 changed it twice; assert the current text, not a
+        # substring anything). Reversal: restoring the stale planner-side
+        # note fails this.
+        assert payload["note"] == (
+            "keyword recall first; a vector (semantic) fallback runs "
+            "only on a keyword miss when the vector backend and "
+            "embedder are live — otherwise keyword-only "
+            "(degrade-never-raise)"
+        )
+
+        # Half 2: same query, no backends -> degrade to keyword-only, count 0.
+        tool_absent = _RecallFacts(SimpleNamespace(db=db))  # type: ignore[arg-type]
+        payload_absent = json.loads(str(await tool_absent.run({"query": "rapid"})))
+        assert payload_absent["count"] == 0
+        assert payload_absent["facts"] == []
+        assert payload_absent["note"] == payload["note"]
+    finally:
+        await store.close()
 
 
 async def test_ignored_emits_info_signal_processed(db: Database) -> None:

@@ -169,6 +169,17 @@ class Runtime:
     vector_store: Any = None
     graph_store: Any = None
     queue: Any = None
+    embedder: Any = None
+    """The embedder backing ``vector_store`` (ADR-0039).
+
+    Stored on the runtime beside ``vector_store`` rather than left as a
+    build-local: the coder ``recall_facts`` vector tier needs an embedder to
+    embed the query, and building a second one per query would reload the
+    (heavy) sentence-transformer model each time, while reaching through
+    the memory creator's private sink breaks whenever the sink is absent.
+    ``None`` when the vector backend degraded (minimal install) — every
+    fallback caller degrades to its keyword-only result in that case.
+    """
     agents: dict[str, Agent] = field(default_factory=dict)
     sandbox: Any = None
     """The containment backend the worker executes plan steps in.
@@ -373,6 +384,7 @@ class Runtime:
             vector_store=vector_store,
             graph_store=graph_store,
             queue=queue,
+            embedder=embedder,
             agents=agents,
             sandbox=sandbox,
             memory_creator=memory_creator,

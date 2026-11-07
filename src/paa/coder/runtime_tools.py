@@ -44,10 +44,13 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
+import structlog
+
 from paa.ledger.replay import project
 from paa.memory.creator import MemoryCreator, ProcessingOutcome, SignalEnvelope
 from paa.memory.facts import Fact, FactRepository
 from paa.memory.touch import touch_recalled
+from paa.models.base import redact
 from paa.storage.coldlake.signals import Signal, SignalRepository
 from paa.storage.relational.database import dumps
 
@@ -55,6 +58,8 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from paa.runtime import Runtime
+
+log = structlog.get_logger(__name__)
 
 __all__ = ["READ_ONLY_TOOLS", "as_modality", "build_runtime_tools"]
 
@@ -720,34 +725,41 @@ class _RememberFact(_RuntimeTool):
 
 
 class _RecallFacts(_RuntimeTool):
-    """Read memory back: entity resolution first, keyword search as fallback.
+    """Read memory back: entity resolution first, keyword search second, vector fallback third.
 
-    Two tiers because the memory subsystem offers two indexes and neither
-    covers everything. ``resolve_entity`` handles "what do I know about
-    Project Alpha" — exact, alias, then trigram-fuzzy, the ladder the fact
-    repository already implements. When the query is a *phrase* rather than an
-    entity name ("Acme", "deploy pipeline"), resolution misses and
+    Three tiers because the memory subsystem offers three paths and none alone
+    covers everything. ``resolve_entity`` handles "what do I know about Project
+    Alpha" — exact, alias, then trigram-fuzzy, the ladder the fact repository
+    already implements. When the query is a *phrase* rather than an entity name
+    ("Acme", "deploy pipeline"), resolution misses and
     :meth:`~paa.memory.facts.FactRepository.search_facts_by_text` scans fact
-    predicates and object values instead.
+    predicates and object values instead. And when neither keyword tier answers
+    — a paraphrase no LIKE pattern can spell-match ("rapid" for a fact stored
+    as "swift") — the vector fallback embeds the query and searches the
+    active-facts collection the embedding sink already writes
+    (``PLAN:integration-fix:P004``, ADR-0039).
 
-    Semantic (vector) recall is honestly absent in v1: a fact only reaches the
-    vector index when the creator is built with an embedding sink
-    (:class:`paa.memory.creator.EmbeddingSink`), and nothing in the runtime
-    wires one, so the response says so in ``note`` rather than pretending the
-    absence is a miss. Confidence is the decayed effective value, because
-    :meth:`~paa.memory.facts.FactRepository.query_facts` decays at read time by
-    design.
+    The fallback needs both a live vector backend and ``Runtime.embedder`` —
+    the same embedder the sink writes with. When either is absent (a minimal
+    install, ``enable_optional_backends=False``), the fallback returns exactly
+    the keyword-only result: degrade, never raise, so recall is never less
+    reliable than before the fallback existed. Confidence is the decayed
+    effective value on every tier, because
+    :meth:`~paa.memory.facts.FactRepository.query_facts` decays at read time
+    and the vector tier hydrates through
+    :meth:`~paa.memory.facts.FactRepository.get_fact` — the value returned is
+    always derived from the live row, never the enqueue-time snapshot frozen
+    in the vector payload (the P-002 derivation discipline).
     """
 
     name = "recall_facts"
     description = (
         "Recall previously remembered facts. The query is matched against "
         "entity names first (exact, alias, then fuzzy), falling back to a "
-        "keyword search over fact predicates and values. Confidence is "
-        "time-decayed. This tool is keyword-based; semantic recall over "
-        "embedded vectors is planner-side over the shared vector store "
-        "(C01 wired the embedding sink, so facts are embedded where the "
-        "backends are live)."
+        "keyword search over fact predicates and values, and — only when "
+        "both miss — to a vector search over embedded facts when the vector "
+        "backend is live. Confidence is time-decayed. Absent vector backends "
+        "degrade to keyword-only recall rather than erroring."
     )
 
     def schema(self) -> dict[str, Any]:
@@ -791,6 +803,11 @@ class _RecallFacts(_RuntimeTool):
             facts = await repo.query_facts(entity_id=entity.id, limit=limit)
         if not facts:
             facts = await repo.search_facts_by_text(query, limit=limit)
+        if not facts:
+            # PLAN:integration-fix:P004 (ADR-0039): keyword-first, vector
+            # second, and only on a miss — a paraphrase no LIKE pattern can
+            # spell-match can still be nearest in vector space.
+            facts = await self._vector_fallback(query, limit)
 
         await touch_recalled(self._rt.db, [f.id for f in facts])
         return self._emit(
@@ -808,11 +825,71 @@ class _RecallFacts(_RuntimeTool):
                 ],
                 "count": len(facts),
                 "note": (
-                    "keyword recall; semantic recall is planner-side over "
-                    "embedded vectors"
+                    "keyword recall first; a vector (semantic) fallback runs "
+                    "only on a keyword miss when the vector backend and "
+                    "embedder are live — otherwise keyword-only "
+                    "(degrade-never-raise)"
                 ),
             }
         )
+
+    async def _vector_fallback(self, query: str, limit: int) -> list[Fact]:
+        """Vector tier, run only when both keyword tiers found nothing.
+
+        PLAN:integration-fix:P004 (ADR-0039). Mirrors
+        :meth:`~paa.agents.context_agents.PlannerContextBuilder._semantic`:
+        embed the query, search the active-facts collection, map the hits —
+        except that hydration needs the P-002 discipline, so each hit is
+        loaded through :meth:`~paa.memory.facts.FactRepository.get_fact` and
+        the returned confidence is the decayed value derived from the live
+        row, never the enqueue-time snapshot frozen in the vector payload.
+
+        Two deliberate deviations from ``_semantic``:
+
+        * **Function-local vector import.** The collection constant is
+          imported here, at call time, so a minimal install without the
+          vector extra still imports this module (the
+          ``VectorEmbeddingSink`` precedent). The guard above already covers
+          the absent case — no store or no embedder never reaches the
+          import — so the ``try`` below is only the search itself failing.
+        * **``get_fact`` per hit, not one batched SQL fetch.** ``_semantic``
+          batch-hydrates with raw SQL because it needs derived confidence
+          for id-only hits; here the repository owns the row-to-Fact mapping
+          (``_to_fact`` is private) and exposes no batch-by-ids read.
+          ``get_fact`` *is* the derived-confidence path, so the discipline
+          holds; the lookups are bounded by the clamped ``limit`` (<= 50),
+          never an unbounded scan (DECISION, see report).
+
+        Degrade, never raise: a missing backend, an import/embed/search
+        failure, or a hit with no live row all return the keyword-only
+        result (empty here, by construction) rather than erroring — a
+        fallback that became a hard dependency would make recall *less*
+        reliable than before it existed. Hits are returned in vector
+        relevance order, exactly like ``_semantic``; the caller ranks
+        nothing further. Superseded and deleted hits are skipped, for the
+        same reason ``_semantic``'s hydration filters them: a fallback must
+        not resurrect a belief a newer version replaced.
+        """
+        vector_store = getattr(self._rt, "vector_store", None)
+        embedder = getattr(self._rt, "embedder", None)
+        if vector_store is None or embedder is None:
+            return []
+        try:
+            from paa.storage.vector import ACTIVE_FACTS
+
+            vector = (await embedder.embed([query]))[0]
+            hits = await vector_store.search(ACTIVE_FACTS.name, vector, limit=limit)
+        except Exception as exc:
+            log.warning("coder.vector_search_failed", error=redact(str(exc)))
+            return []
+        repo = FactRepository(self._rt.db)
+        facts: list[Fact] = []
+        for hit in hits:
+            fact = await repo.get_fact(str(hit.id))
+            if fact is None or fact.superseded_by is not None:
+                continue
+            facts.append(fact)
+        return facts
 
 
 # ---------------------------------------------------------------------------

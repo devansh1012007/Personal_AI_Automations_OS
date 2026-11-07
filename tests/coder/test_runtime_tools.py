@@ -49,7 +49,7 @@ from paa.config import Settings
 from paa.core.types import EventType, PermissionMode, new_correlation_id
 from paa.ledger.events import LedgerEvent
 from paa.ledger.store import LedgerStore
-from paa.memory.creator import MemoryCreator
+from paa.memory.creator import MemoryCreator, ProcessingOutcome
 from paa.memory.facts import FactRepository
 from paa.sandbox.base import IsolationLevel
 from paa.storage.relational.database import Database, dumps, to_iso, utc_now
@@ -434,7 +434,17 @@ class TestRememberAndRecall:
         assert fact["predicate"] == "is"
         assert fact["object_value"] == "active"
         assert 0.0 < fact["confidence"] <= 0.6
-        assert "semantic recall unavailable" in recall["note"]
+        # Baseline category-D (00-mission.md:23): this assertion pinned the
+        # pre-FINAL-01 note text ("semantic recall unavailable") and has
+        # failed since FINAL-01 changed the note — the test was wrong, the
+        # code was right. P-004 changes the note again (ADR-0039: keyword
+        # first, vector fallback on a miss); assert the new text verbatim.
+        assert recall["note"] == (
+            "keyword recall first; a vector (semantic) fallback runs "
+            "only on a keyword miss when the vector backend and "
+            "embedder are live — otherwise keyword-only "
+            "(degrade-never-raise)"
+        )
 
     async def test_empty_text_is_an_error_value_not_an_exception(
         self, tools: dict[str, Any]
@@ -1113,3 +1123,265 @@ class TestRecallTouch:
         )
         assert row is not None
         assert row["use_count"] == 0
+
+
+def _vector_signal(payload: Any) -> dict[str, Any]:
+    """A signal shaped like a cold_lake_signals row (unpersisted)."""
+    return {
+        "id": str(uuid.uuid4()),
+        "channel": "test",
+        "external_id": None,
+        "raw_payload": json.dumps(payload),
+        "received_at": to_iso(utc_now()),
+        "persisted": False,
+    }
+
+
+class TestRecallVectorFallback:
+    """P-004 / ADR-0039 (T-004b): keyword-first, vector fallback on a miss.
+
+    The vector halves run against the real NumpyVectorStore with the real
+    VectorEmbeddingSink (the fixture the e2e file uses), so the only fake is
+    the synonym embedder. Reversal: removing the vector tier makes the
+    present-half tests return count 0 instead of 1; making the fallback a
+    hard dependency (raising when a backend is absent) fails the degrade
+    halves.
+    """
+
+    async def _seed(self, db: Database, tmp_path: Path) -> tuple[Any, Any, str]:
+        """One fact written through the sink into a real vector store."""
+        from paa.memory.creator import VectorEmbeddingSink
+        from paa.storage.vector import ACTIVE_FACTS, NumpyVectorStore
+        from tests.memory.test_e2e_remember_recall import _SynonymEmbedder
+
+        embedder = _SynonymEmbedder()
+        assert embedder.dimensions == ACTIVE_FACTS.dimensions
+        store = NumpyVectorStore(tmp_path / "vectors")
+        await store.ensure_spec(ACTIVE_FACTS)
+        creator = MemoryCreator(db, embedding_sink=VectorEmbeddingSink(store, embedder))
+        result = await creator.process_signal(
+            _vector_signal(
+                {"facts": [{"subject": "Aurora", "predicate": "status", "object": "swift"}]}
+            )
+        )
+        assert result.outcome is ProcessingOutcome.PROCESSED
+        return store, embedder, result.facts_written[0]
+
+    def _tool(self, db: Database, **kw: Any) -> Any:
+        from paa.coder.runtime_tools import _RecallFacts
+
+        return _RecallFacts(SimpleNamespace(db=db, **kw))  # type: ignore[arg-type]
+
+    async def test_vector_fallback_hits_and_touches(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """T-004b present half: "rapid"->"swift" via vectors, touched."""
+        store, embedder, fact_id = await self._seed(db, tmp_path)
+        try:
+            tool = self._tool(db, vector_store=store, embedder=embedder)
+            payload = json.loads(str(await tool.run({"query": "rapid"})))
+            assert payload["count"] == 1
+            assert payload["facts"][0]["object_value"] == "swift"
+            use_count = await db.fetch_value(
+                "SELECT use_count FROM hot_serving_active_facts WHERE id = ?",
+                (fact_id,),
+            )
+            assert use_count == 1
+        finally:
+            await store.close()
+
+    async def test_absent_store_degrades_to_keyword_only(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """Embedder without a store: count 0, no error (degrade half)."""
+        store, embedder, _ = await self._seed(db, tmp_path)
+        try:
+            tool = self._tool(db, vector_store=None, embedder=embedder)
+            payload = json.loads(str(await tool.run({"query": "rapid"})))
+            assert payload["count"] == 0
+            assert payload["facts"] == []
+        finally:
+            await store.close()
+
+    async def test_absent_embedder_degrades_to_keyword_only(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """Store without an embedder: count 0, no error (degrade half)."""
+        store, _, _ = await self._seed(db, tmp_path)
+        try:
+            tool = self._tool(db, vector_store=store, embedder=None)
+            payload = json.loads(str(await tool.run({"query": "rapid"})))
+            assert payload["count"] == 0
+            assert payload["facts"] == []
+        finally:
+            await store.close()
+
+    async def test_keyword_hit_short_circuits_the_vector_tier(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """Keyword-first ordering: a keyword hit never reaches the embedder."""
+        from tests.memory.test_e2e_remember_recall import _SynonymEmbedder
+
+        store, _, _ = await self._seed(db, tmp_path)
+        try:
+            calls: list[int] = []
+
+            class _CountingEmbedder(_SynonymEmbedder):
+                async def embed(self, texts: list[str]) -> list[list[float]]:
+                    calls.append(1)
+                    return await super().embed(texts)
+
+            counting = _CountingEmbedder()
+            tool = self._tool(db, vector_store=store, embedder=counting)
+            result = json.loads(str(await tool.run({"query": "swift"})))
+            assert result["count"] == 1
+            assert calls == []
+        finally:
+            await store.close()
+
+    async def test_nul_query_is_refused_before_any_vector_call(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """A NUL query is an error value and never reaches the embedder."""
+        from tests.memory.test_e2e_remember_recall import _SynonymEmbedder
+
+        store, _, _ = await self._seed(db, tmp_path)
+        try:
+            calls: list[int] = []
+
+            class _CountingEmbedder(_SynonymEmbedder):
+                async def embed(self, texts: list[str]) -> list[list[float]]:
+                    calls.append(1)
+                    return await super().embed(texts)
+
+            tool = self._tool(db, vector_store=store, embedder=_CountingEmbedder())
+            result = json.loads(str(await tool.run({"query": "a\x00b"})))
+            assert "error" in result
+            assert calls == []
+        finally:
+            await store.close()
+
+    async def test_vector_limit_is_bounded_not_untrusted(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """Limits clamp: 1 and 50 are honoured, 0 clamps to 1, 1000 to 50."""
+        store, embedder, _ = await self._seed(db, tmp_path)
+        try:
+            tool = self._tool(db, vector_store=store, embedder=embedder)
+            one = json.loads(str(await tool.run({"query": "rapid", "limit": 1})))
+            assert one["count"] == 1
+            fifty = json.loads(str(await tool.run({"query": "rapid", "limit": 50})))
+            assert fifty["count"] == 1
+            zero = json.loads(str(await tool.run({"query": "rapid", "limit": 0})))
+            assert zero["count"] == 1
+            huge = json.loads(str(await tool.run({"query": "rapid", "limit": 1000})))
+            assert huge["count"] <= 50
+        finally:
+            await store.close()
+
+    async def test_vector_failure_degrades_to_the_keyword_result(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """A failing embedder or store returns the keyword result, no raise."""
+        store, embedder, _ = await self._seed(db, tmp_path)
+        try:
+
+            class _BoomEmbedder:
+                dimensions = 384
+                model_name = "boom"
+
+                async def embed(self, texts: list[str]) -> Any:
+                    raise RuntimeError("encoder on fire")
+
+            class _BoomStore:
+                async def search(self, *args: Any, **kwargs: Any) -> Any:
+                    raise RuntimeError("store on fire")
+
+            boom_embedder = self._tool(db, vector_store=store, embedder=_BoomEmbedder())
+            payload = json.loads(str(await boom_embedder.run({"query": "rapid"})))
+            assert payload["count"] == 0
+
+            boom_store = self._tool(db, vector_store=_BoomStore(), embedder=embedder)
+            payload = json.loads(str(await boom_store.run({"query": "rapid"})))
+            assert payload["count"] == 0
+        finally:
+            await store.close()
+
+    async def test_vector_fallback_returns_derived_not_snapshot_confidence(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """T-002 discipline: an aged fact's fallback confidence is derived.
+
+        The vector payload still carries the enqueue-time snapshot (1.0-ish,
+        frozen when the fact was fresh); the returned confidence must be the
+        decayed effective value for the live row, never that snapshot.
+        """
+        from datetime import timedelta
+
+        from paa.memory.decay import effective_confidence
+        from paa.storage.relational.database import from_iso
+        from paa.storage.vector import ACTIVE_FACTS
+
+        store, embedder, fact_id = await self._seed(db, tmp_path)
+        try:
+            aged = to_iso(utc_now() - timedelta(days=3000))
+            await db.execute(
+                "UPDATE hot_serving_active_facts SET last_queried_at = ? WHERE id = ?",
+                (aged, fact_id),
+            )
+            row = await db.fetch_one(
+                "SELECT initial_confidence, memory_domain FROM hot_serving_active_facts "
+                "WHERE id = ?",
+                (fact_id,),
+            )
+            assert row is not None
+            expected = effective_confidence(
+                float(row["initial_confidence"]),
+                from_iso(aged),
+                str(row["memory_domain"]),
+            )
+            payload_hits = await store.search(
+                ACTIVE_FACTS.name,
+                (await embedder.embed(["rapid"]))[0],
+                limit=5,
+            )
+            assert payload_hits
+            snapshot = float(payload_hits[0].payload["confidence"])
+
+            tool = self._tool(db, vector_store=store, embedder=embedder)
+            payload = json.loads(str(await tool.run({"query": "rapid"})))
+            assert payload["count"] == 1
+            returned = float(payload["facts"][0]["confidence"])
+            assert returned == pytest.approx(expected, abs=0.05)
+            assert returned < snapshot
+            assert returned < float(row["initial_confidence"]) * 0.1
+        finally:
+            await store.close()
+
+    async def test_superseded_vector_hit_is_skipped(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """A superseded fact stays in the store but must not be returned."""
+        store, embedder, fact_id = await self._seed(db, tmp_path)
+        try:
+            repo = FactRepository(db)
+            new_id = await repo.add_fact(
+                await repo.upsert_entity("concept", "Borealis"),
+                "status",
+                "still",
+                confidence=0.9,
+            )
+            await repo.supersede(fact_id, new_id)
+            tool = self._tool(db, vector_store=store, embedder=embedder)
+            payload = json.loads(str(await tool.run({"query": "rapid"})))
+            assert payload["count"] == 0
+            assert payload["facts"] == []
+        finally:
+            await store.close()
+
+    def test_runtime_embedder_defaults_to_none(self) -> None:
+        """The field exists and is None by default (no fallback, no crash)."""
+        from paa.runtime import Runtime
+
+        assert "embedder" in Runtime.__dataclass_fields__
+        assert Runtime.__dataclass_fields__["embedder"].default is None
