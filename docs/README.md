@@ -50,7 +50,7 @@ Primary entry points:
 * `paa ledger <id>` — walk a task's event chain (`src/paa/cli/main.py:148`)
 * `paa agent "prompt"` — tool-using coder loop (`src/paa/cli/coder.py:56`)
 
-The composition root is `Runtime.build()` (`src/paa/runtime.py:260`).
+The composition root is `Runtime.build()` (`src/paa/runtime.py:271`).
 
 ## B. Start here
 

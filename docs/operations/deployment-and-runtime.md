@@ -26,7 +26,7 @@ live-server run still needs a pass (parity + backend verification pending).
 
 ## Runtime startup
 
-Programmatic: `Runtime.build()` (`src/paa/runtime.py:260`):
+Programmatic: `Runtime.build()` (`src/paa/runtime.py:271`):
 1. `Settings()` → `ensure_directories()` creates all state dirs
    (`config.py:886`).
 2. `Database` connects + applies `schema_sqlite.sql`.

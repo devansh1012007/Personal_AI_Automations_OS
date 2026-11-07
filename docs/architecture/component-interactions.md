@@ -83,7 +83,7 @@ flowchart TD
 
 | Component | Responsibility | Entry point | Key dependencies | Consumers | State / side effects |
 |---|---|---|---|---|---|
-| `Runtime` (`runtime.py:151`) | Composition root; builds and closes the whole runtime; drives tasks | `Runtime.build()` (`runtime.py:260`) | `Database`, `LedgerStore`, agents, model router, storage substrates, recovery engine | CLI, API, daemon, coder agent | Opens DB; creates directories; runs boot recovery |
+| `Runtime` (`runtime.py:152`) | Composition root; builds and closes the whole runtime; drives tasks | `Runtime.build()` (`runtime.py:271`) | `Database`, `LedgerStore`, agents, model router, storage substrates, recovery engine | CLI, API, daemon, coder agent | Opens DB; creates directories; runs boot recovery |
 | `ChiefOrchestrator` (`agents/orchestrator.py:188`) | Task lifecycle: hydrate → plan → policy → execute → commit; owns delegation graph and backpressure | `ChiefOrchestrator.run()` (`orchestrator.py:396`) | `LedgerStore`, all agents, queue, backpressure, recovery | `Runtime`, API (`/tasks`), daemon dispatch loop | Writes ledger events; enqueues tasks |
 | `LedgerStore` (`ledger/store.py:108`) | Append-only event log; idempotency, state_version, hash chain, head projection | `LedgerStore.append()` (`ledger/store.py:116`) | `Database` | Orchestrator, recovery, replay, API (`/ledger/{id}`), CLI (`paa ledger`) | Appends rows to `system_state_ledger`; updates `system_state_correlation_head` |
 | `Database` (`storage/relational/database.py:110`) | Async SQLite access layer; single writer + read pool; WAL | `Database.connect()` (`storage/relational/database.py:168`) | `aiosqlite`, `sqlite3` | Nearly every storage-writing/reading module | Creates/mutates `paa.db`; applies schema on connect |
@@ -229,7 +229,7 @@ paa agent "prompt" (cli/coder.py:44)
   (`api/app.py:54`).
 - **Everything is injected:** `Runtime.build` accepts `model_adapter`,
   `model_router` overrides; agents take their collaborators in constructors
-  (`runtime.py:260`).
+  (`runtime.py:271`).
 
 ## 6. What would break if changed or removed
 

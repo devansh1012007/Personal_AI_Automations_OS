@@ -14,9 +14,9 @@ placement is plan-original rather than RFC-derived.*
 ## Context
 
 The vault the code governs today is four files wide. `BeliefDocument` in
-`src/paa/memory/world_model.py:42` names `current_focus.md`,
+`src/paa/memory/world_model.py:69` names `current_focus.md`,
 `strategic_risks.md`, `active_constraints.md` and `operating_themes.md` — and
-`WorldModel.update_belief_state` in `src/paa/memory/world_model.py:107` has
+`WorldModel.update_belief_state` in `src/paa/memory/world_model.py:218` has
 **zero production callers**. The one live writer of a vault file is not this
 writer at all: the reflection engine writes `playbooks.md` through a second,
 duplicate fence implementation, for a file the enum does not govern.
@@ -49,7 +49,7 @@ honesty about which of the 17 files (15 managed + 2 governance) is RFC-derived
 matters because a future reader will otherwise go looking for an RFC section
 that does not exist. Supporting the subdir requires a named
 `WorldModel`/`path_for` task: `path_for` is currently a flat join
-(`src/paa/memory/world_model.py:89`) and gains a subdirectory branch for the
+(`src/paa/memory/world_model.py:186`) and gains a subdirectory branch for the
 governance files only. Constitution and principles are the *same* RFC files,
 not copies — one truth per name.
 

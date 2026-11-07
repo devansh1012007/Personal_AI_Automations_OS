@@ -96,10 +96,10 @@ fact (`src/paa/memory/creator.py:185`).
 
 ### `curator.py` — MemoryCurator
 The full nightly consolidation, run by the daemon maintenance loop on its
-6h cadence (`src/paa/memory/curator.py:141`). Phases in order
-(`src/paa/memory/curator.py:62`): decay, prune-edges, consolidate,
+6h cadence (`src/paa/memory/curator.py:154`). Phases in order
+(`src/paa/memory/curator.py:64`): decay, prune-edges, consolidate,
 orphans, reconcile-vectors, analyze. Delete phases count-only under
-`dry_run` (`src/paa/memory/curator.py:141`), which is what makes the
+`dry_run` (`src/paa/memory/curator.py:154`), which is what makes the
 daemon's first-tick preview safe. Authoritative operator runbook —
 snapshot before first delete, cold-lake replay restore — in
 `docs/operations/deployment-and-runtime.md` (*Memory curation*).
@@ -113,7 +113,7 @@ auto-resolved (`core/errors.py:279`).
 Marker-fenced vault documents (`current_foods.md`… actually `current_focus.md`,
 `strategic_risks.md`, `active_constraints.md`, `operating_themes.md`).
 Rewrites only the managed `<!-- paa:managed:BEGIN/END -->` section, preserving
-human text; atomic writes (temp + `os.replace`) (`memory/world_model.py:185`).
+human text; atomic writes (temp + `os.replace`) (`memory/world_model.py:413`).
 
 `BeliefDocument` is a `str`-mixin enum, so its inherited string API is part of
 its contract: `doc.title` is `str.title` (a *method*) and must stay callable.
