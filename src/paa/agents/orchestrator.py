@@ -1141,7 +1141,9 @@ class ChiefOrchestrator:
         log.info("orchestrator.boot_recovery", **report.summary())
         return report
 
-    async def run_allocation(self, *, limit: int = 25, settings: Any = None) -> AllocationResult:
+    async def run_allocation(
+        self, *, limit: int = 25, settings: AllocatorSettings | None = None
+    ) -> AllocationResult:
         """Run one attention-allocation pass and return its result.
 
         PLAN:integration-fix:P007 (ADR-0036) — the only orchestrator
@@ -1168,6 +1170,14 @@ class ChiefOrchestrator:
         return await allocate_attention(
             self._queue,
             self._ledger,
-            settings=settings or get_settings().allocator,  # DECISION: Any = AllocatorSettings
+            settings=settings if settings is not None else get_settings().allocator,
             limit=limit,
         )
+
+
+# DECISION: this second TYPE_CHECKING block sits at the end of the file
+# because docs/ cites orchestrator.py:<line> over a hundred times and the
+# docs-references lock pins every cited line non-blank — adding an import
+# to the block at the top would shift every citation below it.
+if TYPE_CHECKING:
+    from paa.config import AllocatorSettings

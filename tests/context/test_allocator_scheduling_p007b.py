@@ -318,7 +318,11 @@ def _workers_alloc_enqueue_sites(source: str, filename: str) -> list[str]:
     argument names the stream: ``StreamName.WORKERS_ALLOC``, a bare
     ``WORKERS_ALLOC`` name, or the ``"workers:alloc"`` string. The queue
     package's docstring example never matches: it is a string literal,
-    not a call node, so the scan needs no file exemption.
+    not a call node, so the scan needs no file exemption. Residual gaps
+    the predicate does not catch: variable indirection
+    (``s = StreamName.WORKERS_ALLOC; enqueue(s)``), string concatenation
+    (``"workers:" + "alloc"``), and dynamic ``getattr`` —
+    ``getattr(StreamName, "WORKERS_ALLOC")`` — so the lock is not total.
     """
     import ast
 

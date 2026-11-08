@@ -1485,7 +1485,10 @@ def _entity_norm_pre_repair_step(table: str, column: str) -> MigrationStep:
     through the fail-soft ``loads`` default. Rewriting the raw blob on
     PostgreSQL would change stored data without unblocking anything,
     so the raw residue differs by engine while the migrated norms —
-    the columns reads measure — agree.
+    the columns reads measure — agree. The ``attributes`` CHECK
+    (``ck_entity_attrs_json``) on the same table wedges identically and
+    is a recorded residual out of scope of this step until investigated
+    — this repair covers ``aliases`` only.
     """
     return MigrationStep(
         description=(

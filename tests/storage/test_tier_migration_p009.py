@@ -618,8 +618,10 @@ async def test_a_corrupt_alias_blob_is_backfilled_and_counted_in_the_log(
     crash-mid-step state — columns landed, norms NULL, one corrupt row
     written behind the runtime's back — so the log line is exercised on
     the crash-mid-step shape. [W4-FIX-01: the pre-existing-corruption
-    wedge described above is no longer carried — the v6 pre-repair step
-    repairs pre-existing corrupt blobs before the adds;
+    wedge described above is no longer carried for ``aliases`` — the v6 pre-repair step
+    repairs pre-existing corrupt ``aliases`` blobs before the adds (the
+    ``attributes`` half — ``ck_entity_attrs_json`` — remains the recorded
+    residual; see ``_entity_norm_pre_repair_step``);
     ``test_v5_shape_corrupt_blob_migrates_to_v6`` pins that shape. On
     this crash-mid-step state the log line now comes from the pre-repair
     (which runs first and rewrites the raw blob) while the backfill
