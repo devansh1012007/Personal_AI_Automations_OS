@@ -217,13 +217,13 @@ class EventType(str, enum.Enum):
     #
     # DRAIN_THROTTLED is the drain-throttle telemetry member. The throttle
     # itself lives in MemoryCreator.drain_pending_embeddings (windowed
-    # `drain_max_per_second` cap, ADR-0036) and its observable channel this
-    # wave is the `memory.embedding_drain_throttled` log line — the creator
-    # holds no ledger handle, and emitting a ledger event requires one, so
-    # this member is vocabulary + replay wiring (replay stays total for any
-    # lineage carrying it), with the emitter deferred to a wave that owns a
-    # creator-side ledger path. It is deliberately never emitted here
-    # rather than inventing a handle the creator does not have.
+    # `drain_max_per_second` cap, ADR-0036); on breach the creator emits
+    # this event through its ledger handle, alongside the
+    # `memory.embedding_drain_throttled` log line. The emit is breach-only
+    # and deduped per process window and cap (ADR-0008 key); a missing
+    # ledger handle emits nothing and a failed emit is logged, never
+    # raised — telemetry must never break the drain. Replay stays total
+    # for any lineage carrying it (`_NO_PHASE_CHANGE`, never terminal).
     ATTENTION_ALLOCATED = "ATTENTION_ALLOCATED"
     DRAIN_THROTTLED = "DRAIN_THROTTLED"
 

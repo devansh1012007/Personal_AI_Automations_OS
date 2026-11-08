@@ -49,6 +49,9 @@ queue is empty or its payload is stale the allocator is a no-op (plus an
 `allocator.underfed` metric), and ranking falls back to today's
 gatherer-local order. `allocator.enabled` defaults to `False`, so a
 deployment that never sets the field keeps today's behaviour exactly.
+The wiring is the claim-ack consumer plus the daemon tick gated off by
+that default, fed by operator enqueue: it is a no-op until an external
+enqueue arrives, not a live producer loop.
 
 **The five inputs are derived as follows** (no producer is invented
 silently; each rule names the input it reads):

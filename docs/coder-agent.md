@@ -58,7 +58,7 @@ Two consequences worth knowing:
 | `task_status` | no | One lineage's phase, plan progress, attempts, token spend, policy/awaiting reason — derived by replay, not cached |
 | `read_ledger` | no | One lineage's event chain in replay order |
 | `verify_ledger` | no | Hash-chain verification: digests recompute, `prev_hash` links, `state_version` dense and monotonic |
-| `recall_facts` | no | Long-term memory lookup — facts the daemon extracted, not a transcript replay |
+| `recall_facts` | no | Long-term memory lookup — facts the daemon extracted, not a transcript replay; entity resolve, then keyword tier, then vector tier on a keyword miss (degrades to keyword-only when the vector backend is absent) |
 | `submit_task` | **yes** | Submit to the orchestrator, return the correlation id. Records, does not execute |
 | `run_task` | **yes** | Drive a submitted task to a terminal state |
 | `remember_fact` | **yes** | Write one assertion into long-term memory. Rule-based extraction, no model call |

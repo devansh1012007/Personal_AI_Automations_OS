@@ -48,7 +48,8 @@ asserts exactly one definition remains.
 recall flow becomes entity resolve, fact query, keyword tier, and — only when
 those found nothing — a vector tier over the active-facts collection,
 ranked by query-time derived confidence (inheriting the P-002 derivation:
-the payload snapshot is provenance, never ranking truth). Every hit from
+hydrated hits are derived; degraded hits — hydration miss or corrupt
+row — rank by the payload snapshot by design). Every hit from
 either tier touches exactly once.
 
 **The embedder plumbing is one field: `Runtime.embedder`.** The build

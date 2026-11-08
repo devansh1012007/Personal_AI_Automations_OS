@@ -202,9 +202,9 @@ These are deliberate, documented, and cited in source:
 | Peak RSS, not ∫Memory·dt | ADR-0009, `config.py:420` | The RFC's rule is dimensionally wrong |
 | 18 memory domains over 6 mechanisms | ADR-0014, `memory/domains.py:79` | Most RFC rows differ only by label |
 
-Full ADR list that exists on disk: `0008`, `0010`, `0015`, `0019`, `0020`.
-`docs/adr/README.md` claims 0001–0020 but those files are absent
-(`AGENTS.md:323`).
+Full ADR list that exists on disk: `0008`, `0010`, `0015`, `0019`–`0026`,
+`0028`–`0035` and `0036`–`0044` (`docs/adr/README.md:66`). The remaining
+index rows are index-only: a decision was taken, without a body on disk.
 
 ## Module boundary summary (dependency direction)
 
@@ -223,7 +223,7 @@ coder/                    ← runtime, agents (base), models (router), validatio
 skills/                   ← validation, sandbox, storage (db), core types
 marketplace/              ← core errors, skills contracts
 observability/            ← storage (relational database)
-daemon.py                 ← runtime, memory (creator, decay)
+daemon.py                 ← runtime, context (allocator), memory (creator, decay)
 api/                      ← runtime
 cli/                      ← runtime, coder, config
 ```
@@ -235,12 +235,13 @@ access layer, not business logic).
 
 ## What is NOT in the architecture (honest gaps)
 
-- No UI beyond CLI; a TUI exists (`src/paa/tui/`) but there is no web dashboard
-  and no streaming terminal output (`README.md:250`).
+- Beyond CLI there is a TUI (`src/paa/tui/`) with five panels
+  (`src/paa/tui/snapshot.py:57`, mirrored at `src/paa/api/app.py:99`); no web dashboard (`README.md:250`).
 - No built-in concrete tools for real work (no file edit, bash, web search,
   git) wired into the orchestrator yet (`README.md:240`).
 - Observability code exists but is untested (`AGENTS.md:97`).
-- `src/paa/agents/specialists/` is an empty package (`AGENTS.md:146`).
+- `src/paa/agents/specialists/` holds the `coding` pilot specialist
+  (`src/paa/agents/specialists/coding.py:1`, ADR-0041); others are not built.
 - No auth or multi-user; single-user, single-machine (`README.md:250`).
 
 ## Related documents

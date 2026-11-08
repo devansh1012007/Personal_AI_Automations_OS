@@ -1,12 +1,12 @@
 """Ledger-wired attention allocator (PLAN:integration-fix:P007).
 
-ADR-0036 loop around the ADR-0012 `attention_allocation_score` in
+ADR-0036 consumer around the ADR-0012 `attention_allocation_score` in
 :mod:`paa.context.metrics`: claim ``workers:alloc``, score each item, emit a
 ledger event for every decided (top-N) item, notify the controller about the
 top ``max_results`` (5 by default), and ack only after the event persists.
 
-The loop is a claim-ack consumer of a stream that has never carried traffic
-before this module, so its semantics are defensive on purpose:
+The loop is a claim-ack consumer, gated off and operator-fed (below), of a
+stream that has never carried traffic, so its semantics are defensive:
 
 * ``allocator.enabled=False`` gates the consumer: the queue is untouched
   (nothing is claimed, nothing becomes invisible) and the gatherer ranks

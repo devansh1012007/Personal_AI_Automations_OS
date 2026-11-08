@@ -29,7 +29,7 @@ pure function's clothes.
 **Pure function, advisory only.** `total_memory_cost(storage, retrieval,
 noise, maintenance, utility)` is a pure function of five named terms, wired
 into the curator's ANALYZE phase (the last phase, after reconciliation) as a
-**logged suggestion** when the total crosses `cost_gate.threshold`. The
+**logged suggestion** when the total is at or above `cost_gate.threshold`. The
 suggestion never deletes, never quarantines and never marks a fact stale —
 the fact stays in the hot set either way, and a fact whose cost has been
 logged as too high still recurs in recall. `cost_gate.enabled` defaults to
