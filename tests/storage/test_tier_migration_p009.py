@@ -607,8 +607,9 @@ async def test_a_corrupt_alias_blob_is_backfilled_and_counted_in_the_log(
     (verified in scratch: STRICT+CHECK fails on a pre-existing
     ``json_valid`` violation, while non-STRICT and no-CHECK variants
     pass), so the v6 add-column step wedges the whole migration — the DB
-    stays at v5. That pre-existing-corruption wedge is a separate,
-    deliberately carried finding (NEED posted this run): the backfill's
+    stays at v5. That pre-existing-corruption wedge was a separate,
+    deliberately carried finding (NEED posted this run, since repaired
+    by W4-FIX-01): the backfill's
     ``parsed=[]`` branch is reachable only for rows damaged after the
     columns landed — a crash mid-migration (columns present, rows
     unfilled; the ``test_the_backfill_guard_repairs_a_crash_mid_step``
@@ -616,8 +617,15 @@ async def test_a_corrupt_alias_blob_is_backfilled_and_counted_in_the_log(
     existing CHECKs. This test therefore constructs exactly that
     crash-mid-step state — columns landed, norms NULL, one corrupt row
     written behind the runtime's back — so the log line is exercised on
-    the only shape that can produce it. [C4-file placement note: the
-    natural home is the P003 file, outside this task's write-set.]
+    the crash-mid-step shape. [W4-FIX-01: the pre-existing-corruption
+    wedge described above is no longer carried — the v6 pre-repair step
+    repairs pre-existing corrupt blobs before the adds;
+    ``test_v5_shape_corrupt_blob_migrates_to_v6`` pins that shape. On
+    this crash-mid-step state the log line now comes from the pre-repair
+    (which runs first and rewrites the raw blob) while the backfill
+    writes the same ``aliases_norm = '[]'`` residue.] [C4-file placement
+    note: the natural home is the P003 file, outside this task's
+    write-set.]
     """
     import structlog.testing
 
@@ -678,6 +686,213 @@ async def test_a_corrupt_alias_blob_is_backfilled_and_counted_in_the_log(
         # The healthy row is untouched by the corruption accounting.
         assert by_id[healthy_id]["canonical_name_norm"] == "healthy service"
         assert by_id[healthy_id]["aliases_norm"] == '["gadget"]'
+    finally:
+        await db.close()
+
+    backfills = [e for e in captured if e.get("event") == "migration.backfill_alias_corrupt"]
+    assert len(backfills) == 1
+    assert backfills[0]["corrupt_rows"] == 1
+
+
+# ---------------------------------------------------------------------------
+# v6: the pre-repair for the STRICT wedge (W4-FIX-01) — a v5 database whose
+# corrupt blob predates the add-column steps migrates instead of pinning.
+# ---------------------------------------------------------------------------
+#
+# SQLite's ``ALTER TABLE ADD COLUMN`` on a STRICT table re-validates the
+# table's CHECK constraints over existing rows, so a pre-existing
+# ``aliases`` blob that fails ``json_valid`` (written via
+# ``PRAGMA ignore_check_constraints=ON``, the way a foreign writer could)
+# wedges the whole v6 migration at version 5 forever: the add fails, the
+# single migration transaction rolls back, and the backfill — the only
+# code that would have counted the row — is never reached. The v6 step
+# list therefore opens with a guarded pre-repair: rows failing
+# ``json_valid(aliases)`` are rewritten to the fail-soft residue ``'[]'``
+# (the same residue ``_backfill_entity_norm`` writes and the gate's
+# ``loads`` default sees) BEFORE any add-column step runs, and the count
+# is logged under the same ``migration.backfill_alias_corrupt`` event the
+# backfill uses. Valid-JSON-but-not-a-list blobs pass ``json_valid`` and
+# so do not wedge; they remain the backfill's to count.
+
+
+async def test_v5_shape_corrupt_blob_migrates_to_v6(tmp_path: Path) -> None:
+    """A v5 database carrying a corrupt blob BEFORE the adds reaches v6.
+
+    This is the exact shape ``test_a_corrupt_alias_blob_is_backfilled_
+    and_counted_in_the_log`` declines to construct: the corrupt row is
+    written while the database is still in the version-5 shape, before
+    any column add. At HEAD this pins the wedge — ``connect()`` raises
+    ``StorageError`` (CHECK constraint failed) and the database stays at
+    v5. With the pre-repair step first in the v6 list the migration
+    completes: the raw blob is the residue ``'[]'``, the norms are the
+    real fold (an empty alias list, not an error), exactly one
+    corrupt-count line is emitted, and a re-run of the v6 steps against
+    the repaired shape emits nothing a second time.
+    """
+    import structlog.testing
+
+    path = tmp_path / "paa.db"
+    db = Database(path)
+    await db.connect()
+    await db.close()
+    _downgrade_to_v5(path)
+
+    corrupt_id = "00000000-0000-0000-0000-0000000000c1"
+    healthy_id = "00000000-0000-0000-0000-0000000000c2"
+    conn = _raw(path)
+    try:
+        # The wedge order: the corrupt row predates every column add.
+        conn.execute("PRAGMA ignore_check_constraints=ON")
+        conn.execute(
+            "INSERT INTO hot_serving_entity_index "
+            "(id, class, canonical_name, aliases, created_at, updated_at) "
+            "VALUES (?, 'project', 'Corrupt Service', 'not json at all', ?, ?)",
+            (corrupt_id, _STAMP, _STAMP),
+        )
+        conn.execute("PRAGMA ignore_check_constraints=OFF")
+        conn.execute(
+            "INSERT INTO hot_serving_entity_index "
+            "(id, class, canonical_name, aliases, created_at, updated_at) "
+            "VALUES (?, 'project', 'Healthy Service', '[\"Gadget\"]', ?, ?)",
+            (healthy_id, _STAMP, _STAMP),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    db = Database(path)
+    with structlog.testing.capture_logs() as captured:
+        await db.connect()
+    try:
+        assert await _versions(db) == list(range(1, SCHEMA_VERSION + 1))
+        rows = await db.fetch_all(
+            "SELECT id, aliases, canonical_name_norm, aliases_norm "
+            "FROM hot_serving_entity_index ORDER BY id"
+        )
+        by_id = {str(row["id"]): row for row in rows}
+        # The raw blob is the fail-soft residue; the norms are the real fold.
+        assert by_id[corrupt_id]["aliases"] == "[]"
+        assert by_id[corrupt_id]["canonical_name_norm"] == "corrupt service"
+        assert by_id[corrupt_id]["aliases_norm"] == "[]"
+        assert by_id[healthy_id]["aliases"] == '["Gadget"]'
+        assert by_id[healthy_id]["canonical_name_norm"] == "healthy service"
+        assert by_id[healthy_id]["aliases_norm"] == '["gadget"]'
+    finally:
+        await db.close()
+
+    backfills = [e for e in captured if e.get("event") == "migration.backfill_alias_corrupt"]
+    assert len(backfills) == 1
+    assert backfills[0]["corrupt_rows"] == 1
+
+    # Idempotency: rewind only the version row so the v6 steps re-run
+    # against the repaired shape. The pre-repair guard ("no row fails
+    # json_valid") and the backfill guard ("no row is unnormalised") are
+    # both false now, so nothing is rewritten and no second
+    # corrupt-count line is emitted.
+    conn = _raw(path)
+    try:
+        conn.execute("DELETE FROM schema_migrations WHERE version = 6")
+        conn.commit()
+    finally:
+        conn.close()
+
+    db = Database(path)
+    with structlog.testing.capture_logs() as again:
+        await db.connect()
+    try:
+        assert await _versions(db) == list(range(1, SCHEMA_VERSION + 1))
+        rows = await db.fetch_all(
+            "SELECT aliases, canonical_name_norm, aliases_norm "
+            "FROM hot_serving_entity_index ORDER BY id"
+        )
+        assert [row["aliases"] for row in rows] == ["[]", '["Gadget"]']
+        assert [row["canonical_name_norm"] for row in rows] == [
+            "corrupt service",
+            "healthy service",
+        ]
+    finally:
+        await db.close()
+    assert [e for e in again if e.get("event") == "migration.backfill_alias_corrupt"] == []
+
+
+async def _pg_downgrade_to_v5(dsn: str) -> None:
+    """Turn a server database back into the version-5 entity shape."""
+    await _pg_execute(
+        dsn, "ALTER TABLE hot_serving_entity_index DROP COLUMN IF EXISTS aliases_norm"
+    )
+    await _pg_execute(
+        dsn,
+        "ALTER TABLE hot_serving_entity_index DROP COLUMN IF EXISTS canonical_name_norm",
+    )
+    await _pg_execute(dsn, "DELETE FROM schema_migrations WHERE version > 5")
+    await _pg_execute(
+        dsn,
+        "INSERT INTO schema_migrations(version, applied_at, description) "
+        "VALUES (%s, now(), %s) ON CONFLICT (version) DO NOTHING",
+        (5, description_for(5)),
+    )
+
+
+@pytest.mark.requires_postgres
+@pytest.mark.skipif(
+    not HAS_PSYCOPG or not DSN,
+    reason="needs the 'postgres' extra and PAA_TEST_POSTGRES_DSN",
+)
+async def test_postgres_v5_shape_corrupt_blob_migrates_to_v6(
+    postgres_dsn: str,
+) -> None:
+    """A v5 server database carrying a corrupt blob migrates to v6.
+
+    The PostgreSQL half of the wedge repair, and the documented choice
+    behind it: the PG schema declares no ``json_valid`` CHECK
+    (``schema_postgres.sql:209-210`` carries only the importance /
+    confidence CHECKs) and ``ADD COLUMN`` does not re-validate existing
+    rows, so there is no wedge to repair. The pre-repair step's PG half
+    is therefore a documented no-op — shipped here as that choice, not
+    as an oversight. The backfill already fires on this engine: it
+    counts the row under the same ``migration.backfill_alias_corrupt``
+    event and writes ``aliases_norm = '[]'``, and readers see the raw
+    blob through the fail-soft ``loads`` default. Rewriting the raw
+    blob on PostgreSQL would change stored data without unblocking
+    anything, so the raw residue is left as written; the migrated norms
+    — the columns reads measure — are the same as SQLite's.
+    """
+    import structlog.testing
+
+    from paa.storage.relational.postgres import PostgresDatabase
+
+    stamp = datetime(2026, 1, 1, tzinfo=UTC)
+
+    db = PostgresDatabase(postgres_dsn)
+    await db.connect()
+    await db.close()
+    await _pg_downgrade_to_v5(postgres_dsn)
+    await _pg_execute(
+        postgres_dsn,
+        "INSERT INTO hot_serving_entity_index "
+        "(id, class, canonical_name, aliases, created_at, updated_at) "
+        "VALUES (%s, 'project', 'Corrupt Service', 'not json at all', %s, %s)",
+        (uuid.uuid4(), stamp, stamp),
+    )
+
+    db = PostgresDatabase(postgres_dsn)
+    with structlog.testing.capture_logs() as captured:
+        await db.connect()
+    try:
+        rows = await db.fetch_all("SELECT version FROM schema_migrations ORDER BY version")
+        assert [int(row["version"]) for row in rows] == list(
+            range(1, SCHEMA_VERSION + 1)
+        )
+        rows = await db.fetch_all(
+            "SELECT aliases, canonical_name_norm, aliases_norm "
+            "FROM hot_serving_entity_index"
+        )
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["canonical_name_norm"] == "corrupt service"
+        assert row["aliases_norm"] == "[]"
+        # Documented no-op, pinned: the raw blob is left as written.
+        assert row["aliases"] == "not json at all"
     finally:
         await db.close()
 

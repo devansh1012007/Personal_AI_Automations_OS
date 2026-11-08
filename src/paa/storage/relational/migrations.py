@@ -1423,6 +1423,94 @@ def _entity_norm_backfill_step(table: str, column: str) -> MigrationStep:
     )
 
 
+async def _pre_repair_corrupt_aliases(conn: TransactionConnection) -> None:
+    """Rewrite the blobs the ``json_valid`` CHECK rejects to ``'[]'``.
+
+    W4-FIX-01 - SQLite's ``ALTER TABLE ADD COLUMN`` on a STRICT table
+    re-validates the table's CHECK constraints over existing rows, so a
+    ``aliases`` blob written behind the runtime's back (via ``PRAGMA
+    ignore_check_constraints=ON``) pins a v5 database at v5 forever:
+    the add-column step fails, the single migration transaction rolls
+    back, and :func:`_backfill_entity_norm` — the only code that would
+    have counted the row — is never reached. This repair runs FIRST in
+    the v6 step list, before any add: it rewrites every blob
+    ``json_valid`` rejects to ``'[]'`` — the gate's fail-soft residue,
+    the same value ``_backfill_entity_norm`` writes for a corrupt blob
+    and the same value ``loads`` returns for one — so the adds validate
+    cleanly and the backfill then treats the row as the empty alias
+    list it already saw. Valid-JSON-but-not-a-list blobs pass
+    ``json_valid`` and so do not wedge; they stay the backfill's to
+    count. The count is logged as
+    ``migration.backfill_alias_corrupt`` with the same keys the backfill
+    uses, so a crash before the backfill still names the loss. The
+    repair is inside the migration transaction, so a crash rolls the
+    rewrites back with everything else, and re-running rewrites nothing
+    because the guard — no row fails ``json_valid`` any more — is
+    false. A fresh database has no rows, so the guard is false there
+    too. The v5 raw FTS triggers are what is active at this point in
+    the step order (the norm triggers land after the adds), so each
+    UPDATE indexes the cleaned blob, not the corrupt one.
+    """
+    async with conn.execute(
+        "SELECT id FROM hot_serving_entity_index "
+        "WHERE json_valid(aliases) = 0"
+    ) as cur:
+        rows = await cur.fetchall()
+    for row in rows:
+        await conn.execute(
+            "UPDATE hot_serving_entity_index SET aliases = '[]' WHERE id = ?",
+            (str(row["id"]),),
+        )
+    if rows:
+        log.warning(
+            "migration.backfill_alias_corrupt",
+            corrupt_rows=len(rows),
+            total_rows=len(rows),
+        )
+
+
+def _entity_norm_pre_repair_step(table: str, column: str) -> MigrationStep:
+    """Repair corrupt raw blobs before the STRICT CHECK re-validation.
+
+    W4-FIX-01 - the guard asks about the effect the adds need ("no row
+    fails ``json_valid(aliases)``") and the action is the Python loop
+    above. It is the FIRST step of the v6 list: after any add the CHECK
+    re-validation has already wedged. The guard is a data guard like
+    the backfill's, unqualified, on SQLite. PostgreSQL's half is
+    deliberately empty: its schema declares no ``json_valid`` CHECK
+    (``schema_postgres.sql`` carries only the importance/confidence
+    CHECKs) and ``ADD COLUMN`` does not re-validate existing rows, so
+    there is no wedge to repair — the backfill already counts the row
+    and writes ``aliases_norm = '[]'``, and readers see the raw blob
+    through the fail-soft ``loads`` default. Rewriting the raw blob on
+    PostgreSQL would change stored data without unblocking anything,
+    so the raw residue differs by engine while the migrated norms —
+    the columns reads measure — agree.
+    """
+    return MigrationStep(
+        description=(
+            f"{table} pre-repairs corrupt aliases blobs before "
+            "the stored-normalisation columns land"
+        ),
+        table=table,
+        column=column,
+        sqlite=EngineStep(
+            guarded=(
+                GuardedStatement(
+                    guard=(
+                        "SELECT 1 FROM hot_serving_entity_index "
+                        "WHERE json_valid(aliases) = 0 LIMIT 1"
+                    ),
+                    guard_params=(),
+                    statements=(),
+                    python=_pre_repair_corrupt_aliases,
+                ),
+            )
+        ),
+        postgres=EngineStep(),
+    )
+
+
 # ---------------------------------------------------------------------------
 # The list
 # ---------------------------------------------------------------------------
@@ -1464,6 +1552,7 @@ MIGRATIONS: tuple[Migration, ...] = (
             "stored normalisation on the entity row (ADR-0029 a-d, P003)"
         ),
         steps=(
+            _entity_norm_pre_repair_step("hot_serving_entity_index", "aliases"),
             _entity_norm_column_step(
                 "hot_serving_entity_index", "canonical_name_norm"
             ),
