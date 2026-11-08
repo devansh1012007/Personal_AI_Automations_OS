@@ -137,10 +137,12 @@ async def _stale_fact(db: Database, name: str) -> str:
 
 def _stub_runtime(db: Database) -> Any:
     """The slice of Runtime the daemon curation tick reads."""
-    from paa.config import MemorySettings
+    from paa.config import CostGateSettings, MemorySettings
 
     return SimpleNamespace(
-        settings=SimpleNamespace(memory=MemorySettings()),
+        settings=SimpleNamespace(
+            memory=MemorySettings(), cost_gate=CostGateSettings()
+        ),
         db=db,
         vector_store=None,
         archive_writer=None,
