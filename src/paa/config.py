@@ -716,7 +716,7 @@ class CostGateSettings(BaseModel):
     """Advisory memory-cost gate. PLAN:integration-fix:P08, ADR-0040.
 
     The curator emits a deprecation *suggestion* when the advisory total
-    cost crosses the threshold; it never auto-deletes (the
+    cost at or above the threshold; it never auto-deletes (the
     never-auto-resolve invariant), so this gate cannot hide a fact — the
     fact stays in the hot set either way.
     """

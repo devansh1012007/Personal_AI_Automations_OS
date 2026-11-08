@@ -66,7 +66,7 @@ problems: it is keyed by the thing that moves.
   *survival* (does the fact still exist?), `prune_floor` decides *hot-set
   membership* (is it served?). A fact below its floor leaves the hot set
   even when its tier TTL has not expired; a fact past its tier TTL is
-  archived even when its decayed confidence is above the floor. Neither
+  archived even when its decayed confidence is above the floor. The sweeper moves one rung per tick, never a cascade (T2→T4 converges in 2 ticks, each rung with its own ledger event). Neither
   rule may shorten the other's guarantee — the Hypothesis property in the
   decay suite pins "tier TTL never shortens decay guarantee".
 * The sweeper writes the `TIER_DEMOTED` / `TIER_ARCHIVED` event **before**

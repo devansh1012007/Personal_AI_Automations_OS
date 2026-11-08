@@ -258,14 +258,14 @@ class _BaseContextBuilder(Agent):
 
         # PLAN:integration-fix:P002 (D13: derive at query, never store). The Qdrant
         # payload `confidence` is an enqueue-time provenance snapshot only (written
-        # in VectorEmbeddingSink.enqueue) and is never ranking truth: it freezes
-        # the decayed value at ingest and every touch advances `last_queried_at`,
-        # so trusting it ranks paraphrase recall by a stale snapshot. Batch-hydrate
-        # the hit fact ids in ONE query and derive each confidence with live
-        # `last_queried_at` via `effective_confidence`, exactly like `_hot_facts`
-        # and `_to_fact`. Hydrated `importance`/`memory_domain` likewise win over
-        # payload values so the 0.8/0.5 reader defaults never resurrect as ranking
-        # truth for hydrated hits. If hydration fails (or db is absent, or a hit
+        # in VectorEmbeddingSink.enqueue): hydrated hits derived; degraded hits
+        # payload-snapshot by design. It freezes the decayed value at ingest, and
+        # every touch advances `last_queried_at`, so trusting it ranks paraphrase
+        # recall by a stale snapshot. Batch-hydrate the hit fact ids in ONE query and
+        # derive each confidence with live `last_queried_at` via `effective_confidence`,
+        # exactly like `_hot_facts` and `_to_fact`. Hydrated `importance`/`memory_domain`
+        # likewise win over payload values so the 0.8/0.5 reader defaults never resurrect
+        # as ranking truth for hydrated hits. If hydration fails (or db is absent, or a hit
         # has no live row such as a deleted fact), that hit falls back to its
         # payload snapshot and the semantic tier still serves — hydration failure
         # must never empty the tier. Unknown `memory_domain` follows `_to_fact`:
