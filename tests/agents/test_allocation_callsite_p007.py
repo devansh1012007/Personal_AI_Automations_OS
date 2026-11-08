@@ -208,6 +208,36 @@ async def test_run_allocation_disabled_leaves_the_queue_untouched(
     assert queue.acked == []
 
 
+async def test_run_allocation_injected_settings_override_global(
+    ledger: LedgerStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-W5-006 / W5-FIX-02: an injected AllocatorSettings wins over the global.
+
+    The daemon threads the runtime-owned settings through ``run_allocation``;
+    the callsite must honor them ahead of ``get_settings().allocator``. The
+    ``_enable`` fallback (no ``settings`` kwarg) keeps its global read, so
+    existing callers are byte-identical.
+    """
+    _enable(monkeypatch, enabled=False)
+    queue = _Queue(
+        [_msg("m1", {"item_id": "item-1", "priority": 1.0, "density": 0.9, "risk": 0.0})]
+    )
+    injected = AllocatorSettings(enabled=True, max_results=5)
+    result = await _orchestrator(ledger, queue).run_allocation(settings=injected)
+    assert result.outcome == "allocated"
+    assert [d.item_id for d in result.selected] == ["item-1"]
+    assert queue.claim_calls == [(StreamName.WORKERS_ALLOC, "allocator", 25)]
+
+    _enable(monkeypatch, enabled=True)
+    queue2 = _Queue(
+        [_msg("m2", {"item_id": "item-2", "priority": 1.0, "density": 0.9, "risk": 0.0})]
+    )
+    disabled = AllocatorSettings(enabled=False, max_results=5)
+    result2 = await _orchestrator(ledger, queue2).run_allocation(settings=disabled)
+    assert result2.outcome == "disabled"
+    assert queue2.claim_calls == []
+
+
 async def test_gatherer_binding_survives_enable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

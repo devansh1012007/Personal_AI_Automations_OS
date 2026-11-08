@@ -294,7 +294,9 @@ class Daemon:
         if not settings.allocator.enabled:
             return None
         async with self._curation_lock:
-            result = await self._rt.orchestrator.run_allocation()
+            result = await self._rt.orchestrator.run_allocation(
+                settings=self._rt.settings.allocator
+            )
         log.info(
             "daemon.allocation_completed",
             outcome=result.outcome,
@@ -418,6 +420,7 @@ class Daemon:
             curator = MemoryCurator(
                 self._rt.db,
                 settings=settings,
+                cost_gate=self._rt.settings.cost_gate,
                 vector_store=self._rt.vector_store,
                 archive_writer=getattr(self._rt, "archive_writer", None),
             )

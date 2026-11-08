@@ -137,10 +137,25 @@ class FakeOrchestrator:
     def __init__(self, allocator: AttentionAllocator) -> None:
         self._allocator = allocator
         self.calls = 0
+        self.last_settings: AllocatorSettings | None = None
+        self.seen_settings: list[AllocatorSettings | None] = []
 
-    async def run_allocation(self, *, limit: int = 25) -> Any:
+    async def run_allocation(
+        self, *, limit: int = 25, settings: AllocatorSettings | None = None
+    ) -> Any:
         self.calls += 1
-        return await self._allocator.allocate_attention(limit=limit)
+        self.last_settings = settings
+        self.seen_settings.append(settings)
+        if settings is None:
+            return await self._allocator.allocate_attention(limit=limit)
+        from paa.context.allocator import allocate_attention
+
+        return await allocate_attention(
+            self._allocator._queue,
+            self._allocator._store,
+            settings=settings,
+            limit=limit,
+        )
 
 
 def _daemon(*, enabled: bool, queue: FakeQueue, store: FakeStore) -> Daemon:
@@ -361,9 +376,18 @@ class TestDaemonScheduling:
         class FlakyOrchestrator:
             def __init__(self) -> None:
                 self.calls = 0
+                self.last_settings: AllocatorSettings | None = None
+                self.seen_settings: list[AllocatorSettings | None] = []
 
-            async def run_allocation(self, *, limit: int = 25) -> AllocationResult:
+            async def run_allocation(
+                self,
+                *,
+                limit: int = 25,
+                settings: AllocatorSettings | None = None,
+            ) -> AllocationResult:
                 self.calls += 1
+                self.last_settings = settings
+                self.seen_settings.append(settings)
                 if self.calls == 1:
                     raise RuntimeError("boom")
                 return AllocationResult(outcome="underfed", claimed=0)
@@ -394,6 +418,133 @@ class TestDaemonScheduling:
         assert any(
             entry["event"] == "daemon.allocation_completed" for entry in logs
         )
+
+    async def test_allocator_gate_agrees_on_non_global_settings(
+        self, monkeypatch: Any
+    ) -> None:
+        """R-W5-006 / W5-FIX-02: daemon and allocator agree on one source.
+
+        The daemon gate reads the runtime Settings; the orchestrator must
+        run the allocator with that same object, not the process-global
+        singleton. Non-global ``enabled=True`` with a disabled global must
+        allocate — never a ``"disabled"`` outcome logged as completed —
+        and ``enabled=False`` with an enabled global must silence the
+        tick without touching the queue.
+        """
+        # Non-global enabled while the global is disabled: the tick allocates.
+        monkeypatch.setattr(
+            "paa.config.get_settings",
+            lambda: SimpleNamespace(
+                allocator=AllocatorSettings(enabled=False, max_results=5)
+            ),
+        )
+        queue = FakeQueue(
+            [_msg("m1", {"item_id": "item-1", "priority": 1.0, "density": 0.9})]
+        )
+        store = FakeStore()
+        rt_alloc = AllocatorSettings(enabled=True, max_results=5)
+        # Baked disabled mirrors the disabled global, so without forwarding
+        # the fake would return "disabled" and the asserts below fail.
+        allocator = AttentionAllocator(
+            queue, store, AllocatorSettings(enabled=False, max_results=5)
+        )
+        fake = FakeOrchestrator(allocator)
+        rt = SimpleNamespace(
+            settings=SimpleNamespace(allocator=rt_alloc), orchestrator=fake
+        )
+        daemon = Daemon(rt)  # type: ignore[arg-type]
+        with structlog.testing.capture_logs() as logs:
+            result = await daemon._run_allocation_tick()
+        assert result is not None
+        assert result.outcome == "allocated"
+        assert fake.calls == 1
+        assert fake.last_settings is rt_alloc
+        completed = [e for e in logs if e["event"] == "daemon.allocation_completed"]
+        assert completed
+        assert all(e.get("outcome") != "disabled" for e in completed)
+        assert queue.claim_calls != []
+
+        # Inverse: runtime disabled while the global is enabled stays quiet.
+        monkeypatch.setattr(
+            "paa.config.get_settings",
+            lambda: SimpleNamespace(
+                allocator=AllocatorSettings(enabled=True, max_results=5)
+            ),
+        )
+        queue2 = FakeQueue([_msg("m2", {"item_id": "item-2"})])
+        store2 = FakeStore()
+        rt_alloc2 = AllocatorSettings(enabled=False, max_results=5)
+        allocator2 = AttentionAllocator(
+            queue2, store2, AllocatorSettings(enabled=True, max_results=5)
+        )
+        fake2 = FakeOrchestrator(allocator2)
+        rt2 = SimpleNamespace(
+            settings=SimpleNamespace(allocator=rt_alloc2), orchestrator=fake2
+        )
+        daemon2 = Daemon(rt2)  # type: ignore[arg-type]
+        result2 = await daemon2._run_allocation_tick()
+        assert result2 is None
+        assert fake2.calls == 0
+        assert queue2.claim_calls == []
+        assert store2.appended == []
+
+    async def test_daemon_cost_gate_uses_runtime_settings(
+        self, db: Database, paa_home: Any, monkeypatch: Any
+    ) -> None:
+        """The daemon curator owns the runtime cost gate, not the global.
+
+        Non-global ``cost_gate.enabled=True`` with a disabled global must
+        suggest (the injected-path mirror of the curator injection tests);
+        inverse — runtime disabled, global enabled — must stay quiet.
+        """
+        from paa.config import CostGateSettings, MemorySettings, reset_settings_cache
+        from paa.memory.facts import FactRepository
+
+        monkeypatch.setenv("PAA_COST_GATE__ENABLED", "false")
+        reset_settings_cache()
+        repo = FactRepository(db)
+        eid = await repo.upsert_entity("project", "Alpha")
+        await repo.add_fact(eid, "status", "fresh", confidence=1.0, importance=0.0)
+        rt_cost_gate = CostGateSettings(enabled=True, threshold=1.0)
+        rt = SimpleNamespace(
+            settings=SimpleNamespace(
+                memory=MemorySettings(),
+                cost_gate=rt_cost_gate,
+                allocator=AllocatorSettings(enabled=False),
+            ),
+            db=db,
+            vector_store=None,
+            archive_writer=None,
+            orchestrator=FakeOrchestrator(
+                AttentionAllocator(FakeQueue([]), FakeStore(), None)
+            ),
+        )
+        daemon = Daemon(rt)  # type: ignore[arg-type]
+        report = await daemon._run_curation_tick()
+        assert report is not None
+        assert len(report.cost_gate_suggestions) == 1
+
+        monkeypatch.setenv("PAA_COST_GATE__ENABLED", "true")
+        reset_settings_cache()
+        rt2 = SimpleNamespace(
+            settings=SimpleNamespace(
+                memory=MemorySettings(),
+                cost_gate=CostGateSettings(enabled=False, threshold=1.0),
+                allocator=AllocatorSettings(enabled=False),
+            ),
+            db=db,
+            vector_store=None,
+            archive_writer=None,
+            orchestrator=FakeOrchestrator(
+                AttentionAllocator(FakeQueue([]), FakeStore(), None)
+            ),
+        )
+        daemon2 = Daemon(rt2)  # type: ignore[arg-type]
+        # Fresh daemon: the first tick previews again, so the quiet assertion
+        # is about suggestions, not about preview state.
+        report2 = await daemon2._run_curation_tick()
+        assert report2 is not None
+        assert report2.cost_gate_suggestions == []
 
 
 class TestProductionWiring:

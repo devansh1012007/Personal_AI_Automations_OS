@@ -1141,7 +1141,7 @@ class ChiefOrchestrator:
         log.info("orchestrator.boot_recovery", **report.summary())
         return report
 
-    async def run_allocation(self, *, limit: int = 25) -> AllocationResult:
+    async def run_allocation(self, *, limit: int = 25, settings: Any = None) -> AllocationResult:
         """Run one attention-allocation pass and return its result.
 
         PLAN:integration-fix:P007 (ADR-0036) — the only orchestrator
@@ -1160,7 +1160,7 @@ class ChiefOrchestrator:
         an `AllocationResult` (``outcome`` is ``"disabled"`` when the
         operator has not enabled the loop, ``"underfed"`` when there is
         nothing to decide, else ``"allocated"``). The gatherer compiles
-        packets with or without this method ever running.
+        packets with or without this method ever running. The ``settings`` arg wins.
         """
         from paa.config import get_settings
         from paa.context.allocator import allocate_attention
@@ -1168,6 +1168,6 @@ class ChiefOrchestrator:
         return await allocate_attention(
             self._queue,
             self._ledger,
-            settings=get_settings().allocator,
+            settings=settings or get_settings().allocator,  # DECISION: Any = AllocatorSettings
             limit=limit,
         )
