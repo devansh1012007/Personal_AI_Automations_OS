@@ -146,6 +146,39 @@ class TestCostGateThreshold:
         report = await MemoryCurator(db).run_maintenance()
         assert report.cost_gate_suggestions == []
 
+    async def test_finite_total_exactly_at_threshold_suggests(
+        self,
+        db: Database,
+        paa_home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # N=1 -> storage 1, retrieval 1, noise 0, maintenance 0,
+        # utility 1 -> total 2.0. Threshold 2.0 pins the INCLUSIVE
+        # `total >= threshold` boundary (curator.py:534, config.py:728
+        # "at or above"): a `>` mutation would silently drop this.
+        _enable_gate(monkeypatch, "2.0")
+        repo = FactRepository(db)
+        await _fact(db, repo, "Alpha", "status", "fresh", confidence=1.0, importance=1.0)
+        report = await MemoryCurator(db).run_maintenance()
+        assert len(report.cost_gate_suggestions) == 1
+        assert report.cost_gate_suggestions[0]["total_cost"] == 2.0
+        assert report.cost_gate_suggestions[0]["threshold"] == pytest.approx(2.0)
+
+    async def test_finite_total_just_below_threshold_is_quiet(
+        self,
+        db: Database,
+        paa_home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Same total (2.0) with threshold a hair above: the boundary
+        # from below stays quiet, so equality (not a near-miss) is
+        # what suggests.
+        _enable_gate(monkeypatch, "2.0001")
+        repo = FactRepository(db)
+        await _fact(db, repo, "Alpha", "status", "fresh", confidence=1.0, importance=1.0)
+        report = await MemoryCurator(db).run_maintenance()
+        assert report.cost_gate_suggestions == []
+
     async def test_empty_hot_set_is_quiet(
         self,
         db: Database,
@@ -264,13 +297,41 @@ class TestCostGateSuggestionCap:
             "paa.memory.curator._COST_GATE_SUGGESTION_LIMIT", 5
         )
         repo = FactRepository(db)
-        for i in range(10):
-            await _fact(db, repo, f"Entity{i:02d}", "status", "fresh", importance=0.0)
+        # DISTINCT FINITE totals: confidence=1 -> maintenance 0,
+        # retrieval 1, storage 1/10, noise 1-importance,
+        # utility=importance -> total = (2.1 - importance) / importance.
+        # Varying importance gives 10 distinct finite totals (no
+        # utility=0 -> inf, where any subset would pass and an
+        # ascending-sort mutation would survive). Lowest importance
+        # (i=0) is the highest total; i=9 is the lowest.
+        importances = [0.1 + 0.05 * i for i in range(10)]
+        for i, importance in enumerate(importances):
+            await _fact(
+                db,
+                repo,
+                f"Entity{i:02d}",
+                "status",
+                "fresh",
+                confidence=1.0,
+                importance=importance,
+            )
+        expected_totals = sorted(
+            ((2.1 - imp) / imp) for imp in importances
+        )
+        # Top-5 highest totals, descending. N=10 so storage is 1/10
+        # exactly for every fact.
+        expected_top5 = list(reversed(expected_totals[-5:]))
         with structlog.testing.capture_logs() as logs:
             report = await MemoryCurator(db).run_maintenance(
                 start_phase=CurationPhase.ANALYZE
             )
         assert len(report.cost_gate_suggestions) == 5
+        # Kept set is the 5 HIGHEST totals, ordered -total_cost.
+        kept_totals = [
+            s["total_cost"] for s in report.cost_gate_suggestions
+        ]
+        assert kept_totals == pytest.approx(expected_top5)
+        assert kept_totals == sorted(kept_totals, reverse=True)
         summary = [
             e for e in logs if e["event"] == "cost_gate.suggestion_summary"
         ]
@@ -279,6 +340,27 @@ class TestCostGateSuggestionCap:
         assert summary[0]["kept"] == 5
         per_fact = [e for e in logs if e["event"] == "cost_gate.suggestions"]
         assert len(per_fact) == 5
+
+    async def test_no_summary_when_nothing_passes_threshold(
+        self,
+        db: Database,
+        paa_home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Pins the empty-`collected` branch (curator.py:559 `if
+        # collected:`): no fact passes -> no summary line at all.
+        _enable_gate(monkeypatch, "3.0")
+        repo = FactRepository(db)
+        # N=1 -> total 2.0 < 3.0, so collected stays empty.
+        await _fact(db, repo, "Alpha", "status", "fresh", confidence=1.0, importance=1.0)
+        with structlog.testing.capture_logs() as logs:
+            report = await MemoryCurator(db).run_maintenance(
+                start_phase=CurationPhase.ANALYZE
+            )
+        assert report.cost_gate_suggestions == []
+        assert not any(
+            e["event"] == "cost_gate.suggestion_summary" for e in logs
+        )
 
 
 class TestCostGateInjection:
