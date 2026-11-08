@@ -7,8 +7,11 @@ contract is the ingress shape), and the DRAIN_THROTTLED emitter (breach
 only, full-key idempotent, log-only when no ledger handle is supplied).
 
 Reversal: deleting the daemon tick breaks the scheduled-path asserts;
-deleting the emit call breaks the breach asserts; a synthetic producer
-would break the docstring pin.
+deleting the emit call breaks the breach asserts; an ``enqueue`` call
+naming ``StreamName.WORKERS_ALLOC`` (or the ``"workers:alloc"`` string)
+anywhere under ``src/`` breaks the producer lock — the queue docstring
+example is a string literal, not a call node, so the AST scan never
+counts it.
 """
 
 from __future__ import annotations
@@ -304,34 +307,118 @@ class TestDrainThrottledEmit:
         assert event.discriminator.startswith("drain_throttled:")
 
 
-class TestProducerLock:
-    """Operator-fed lock (TREV R-W5-006): the docstring semantics are the
-    contract, this grep is the lock. A synthetic producer that enqueues to
-    workers:alloc anywhere other than the queue docstring example fails."""
+def _workers_alloc_enqueue_sites(source: str, filename: str) -> list[str]:
+    """Every ``enqueue(...)`` call in ``source`` that names ``workers:alloc``.
 
-    def test_no_workers_alloc_enqueue_outside_queue_docstring(self) -> None:
-        """No ``.enqueue(...)`` call names WORKERS_ALLOC outside the queue
-        docstring example. (Line-shaped lock on the call site: docstring
-        prose *about* enqueueing is documentation, not a producer, and a
-        multi-line call that puts the stream on a later line would evade
-        it — the docstring contract is the other half of this lock.)"""
+    The producer-lock predicate (TREV R-W5-006, hardened T-03): an AST
+    scan, not a line grep — a multi-line call that puts the stream on a
+    later line is still one ``ast.Call`` node, so line breaks cannot hide
+    a producer the way they hid it from the old line-shaped predicate.
+    A call counts when its function is an ``enqueue`` attribute and any
+    argument names the stream: ``StreamName.WORKERS_ALLOC``, a bare
+    ``WORKERS_ALLOC`` name, or the ``"workers:alloc"`` string. The queue
+    package's docstring example never matches: it is a string literal,
+    not a call node, so the scan needs no file exemption.
+    """
+    import ast
+
+    tree = ast.parse(source, filename=filename)
+    sites: list[str] = []
+    for node in ast.walk(tree):
+        if (
+            not isinstance(node, ast.Call)
+            or not isinstance(node.func, ast.Attribute)
+            or node.func.attr != "enqueue"
+        ):
+            continue
+        operands = [*node.args, *(kw.value for kw in node.keywords)]
+        if any(
+            (
+                isinstance(sub, ast.Attribute) and sub.attr == "WORKERS_ALLOC"
+            )
+            or (isinstance(sub, ast.Name) and sub.id == "WORKERS_ALLOC")
+            or (isinstance(sub, ast.Constant) and sub.value == "workers:alloc")
+            for operand in operands
+            for sub in ast.walk(operand)
+        ):
+            sites.append(f"{filename}:{node.lineno}")
+    return sites
+
+
+class TestProducerLock:
+    """Operator-fed lock (TREV R-W5-006, hardened T-03): the docstring
+    semantics are the contract, this AST scan is the lock. A synthetic
+    producer that enqueues to workers:alloc anywhere under ``src/`` —
+    on one line or split across lines — fails."""
+
+    def test_no_workers_alloc_enqueue_in_src(self) -> None:
+        """No ``enqueue`` call names WORKERS_ALLOC anywhere under ``src/``.
+
+        AST-shaped (see ``_workers_alloc_enqueue_sites``): neither line
+        breaks nor the queue docstring example can evade it — the
+        docstring example is a string literal, not a call node.
+        """
         from pathlib import Path
 
         root = Path(__file__).resolve().parents[2] / "src"
-        allowed = {"paa/storage/queue/__init__.py"}
         offenders: list[str] = []
         for path in sorted(root.rglob("*.py")):
             rel = path.relative_to(root).as_posix()
-            if rel in allowed:
-                continue
-            for line_no, line in enumerate(
-                path.read_text(encoding="utf-8").splitlines(), start=1
-            ):
-                if ".enqueue(" in line and (
-                    "WORKERS_ALLOC" in line or "workers:alloc" in line
-                ):
-                    offenders.append(f"{rel}:{line_no}: {line.strip()}")
+            offenders.extend(
+                _workers_alloc_enqueue_sites(path.read_text(encoding="utf-8"), rel)
+            )
         assert offenders == [], f"synthetic alloc producers: {offenders}"
+
+    def test_multiline_enqueue_evasion_is_caught(self) -> None:
+        """Negative control: the multi-line shape the old line predicate missed.
+
+        The synthetic producer puts ``.enqueue(`` and ``WORKERS_ALLOC``
+        on different lines — the old per-line predicate (reproduced
+        below) reports no offender, so under the old lock this producer
+        would have passed silently. The AST predicate must flag it, or
+        the lock is apparent, not executed.
+        """
+        synthetic = (
+            "from paa.storage.queue.base import StreamName\n"
+            "\n"
+            "async def _ingress(queue, payload):\n"
+            "    await queue.enqueue(\n"
+            "        StreamName.WORKERS_ALLOC,\n"
+            "        payload,\n"
+            "    )\n"
+        )
+        # The pre-T-03 line-shaped predicate, reproduced to prove evasion.
+        old_offenders = [
+            line
+            for line in synthetic.splitlines()
+            if ".enqueue(" in line
+            and ("WORKERS_ALLOC" in line or "workers:alloc" in line)
+        ]
+        assert old_offenders == []
+        assert _workers_alloc_enqueue_sites(synthetic, "<synthetic>") != []
+
+    def test_queue_docstring_example_is_not_a_call_site(self) -> None:
+        """The queue docstring example is prose, not a producer: pinned twice.
+
+        The example text must still be in the docstring (the operator's
+        contract) and must NOT be flagged — it is a string literal, so
+        the AST scan cannot see it as a call. The old file-level
+        exemption would have hidden real producers in that file too.
+        """
+        from pathlib import Path
+
+        path = (
+            Path(__file__).resolve().parents[2]
+            / "src"
+            / "paa"
+            / "storage"
+            / "queue"
+            / "__init__.py"
+        )
+        source = path.read_text(encoding="utf-8")
+        assert ".enqueue(" in source and "WORKERS_ALLOC" in source
+        sites = _workers_alloc_enqueue_sites(source, "paa/storage/queue/__init__.py")
+        assert sites == []
 
     def test_operator_fed_statement_present(self) -> None:
         import paa.context.allocator as allocator_mod
