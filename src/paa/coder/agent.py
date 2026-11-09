@@ -35,7 +35,8 @@ from paa.coder.fs_read_tools import build_fs_read_tools
 from paa.coder.fs_write_tools import build_fs_write_tools
 from paa.coder.git_tools import build_git_tools
 from paa.coder.hooks import HookRegistry
-from paa.coder.loop import AgentLoop, LoopResult
+from paa.coder.journal import LedgerToolJournal
+from paa.coder.loop import AgentLoop, LoopResult, ToolJournal
 from paa.coder.model_adapter import RouterToolCallingModel
 from paa.coder.permissions import DEFAULT_MUTATING_TOOLS, PermissionMode, ToolPermissionPolicy
 from paa.coder.runtime_tools import READ_ONLY_TOOLS, build_runtime_tools
@@ -43,7 +44,7 @@ from paa.coder.session import Session
 from paa.coder.shell_tools import build_shell_tools
 from paa.coder.workspace import Workspace
 from paa.core.errors import PaaError
-from paa.core.types import ComplexityModality
+from paa.core.types import ComplexityModality, new_correlation_id
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -134,7 +135,7 @@ class CoderAgent:
         run_recovery: bool = False,
         model_max_tokens: int = 2048,
         workspace: Workspace | None = None,
-        journal: Any | None = None,
+        journal: ToolJournal | None = None,
     ) -> CoderAgent:
         """Build an agent over a fresh runtime.
 
@@ -167,24 +168,15 @@ class CoderAgent:
         without an explicit workspace, so they are not offered rather than
         offered jailed to an implied directory.
 
-        ``journal`` is a reserved Wave-2 (N2.2) slot: the ``ToolJournal``
-        protocol does not exist yet, so the value is accepted as a reserved
-        slot; a non-None value fails fast with ``NotImplementedError`` until
-        N2.2 wires it, rather than being accepted and silently dropped.
-        The name is explicit (not ``**kwargs``) so Wave 2 wires a known
-        parameter instead of renaming one.
+        ``journal`` is the :class:`~paa.coder.loop.ToolJournal` the loop
+        writes through (N2.2). When omitted, the agent builds a
+        :class:`~paa.coder.journal.LedgerToolJournal` over the runtime's
+        own ledger, journalled into ``correlation_id`` (minted fresh when
+        not supplied) — so a built agent journals by default, and the
+        caller that needs a different lineage or a test double passes
+        one explicitly. The name is explicit (not ``**kwargs``) so the
+        wire is a known parameter, not a renamed one.
         """
-        # The journal slot is a name reservation for Wave 2 (N2.2), not a
-        # wire: a non-None journal fails fast, *before* any runtime is
-        # built, rather than being accepted and silently dropped (which
-        # would attest that journalling is on when nothing is journalled)
-        # or raised after the build (which would leak the runtime).
-        if journal is not None:
-            raise NotImplementedError(
-                "CoderAgent.build journal wiring lands in Wave 2 (N2.2); "
-                "no ToolJournal protocol exists yet"
-            )
-
         from paa.runtime import Runtime
 
         runtime = await Runtime.build(settings, run_recovery=run_recovery)
@@ -219,6 +211,14 @@ class CoderAgent:
             max_tokens=model_max_tokens,
         )
         tools = build_work_tools(runtime, workspace)
+        active_journal: ToolJournal = (
+            journal
+            if journal is not None
+            else LedgerToolJournal(
+                runtime.ledger,
+                correlation_id if correlation_id is not None else new_correlation_id(),
+            )
+        )
         loop = AgentLoop(
             model,
             tools,
@@ -240,6 +240,8 @@ class CoderAgent:
             confirm=confirm,
             max_steps=max_steps,
             max_tokens=max_tokens,
+            journal=active_journal,
+            workspace=workspace,
         )
         return cls(
             runtime=runtime,
