@@ -1,6 +1,6 @@
 <!-- ORCH-DIGEST:START -->
 agent: W1-IMPR-04 | task: T-N1-2/4-IMPR | status: DONE
-code_commits: 1c3d0bf60113f0782f148941d6611bca46011b07 | report_commit: (docs-only; backfilled)
+code_commits: 1c3d0bf60113f0782f148941d6611bca46011b07 | report_commit: d5c5606 (docs-only; this file's first commit)
 files_changed: 6 (src/paa/coder/git_tools.py, src/paa/coder/fs_write_tools.py, src/paa/validation/patch.py, tests/coder/test_git_tools.py, tests/coder/test_fs_write_tools.py, tests/validation/test_patch.py)
 contracts_changed: git_stage/git_diff refuse directories and glob/magic pathspecs (reason strings "directory not allowed" and "pathspec magic or glob is not allowed"); EditFileTool refuses over-limit results with limit_exceeded payload shape (same as write_file); PatchPlan entries for MODIFY now describe the new-file trailing newline from the patch's new side
 tests: added 12, changed 0; scoped run: pass (144 combined: 49 fs_write + 43 git + 52 patch)
