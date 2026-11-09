@@ -168,7 +168,9 @@ class CoderAgent:
         offered jailed to an implied directory.
 
         ``journal`` is a reserved Wave-2 (N2.2) slot: the ``ToolJournal``
-        protocol does not exist yet, so the value is accepted and ignored.
+        protocol does not exist yet, so the value is accepted as a reserved
+        slot; a non-None value fails fast with ``NotImplementedError`` until
+        N2.2 wires it, rather than being accepted and silently dropped.
         The name is explicit (not ``**kwargs``) so Wave 2 wires a known
         parameter instead of renaming one.
         """

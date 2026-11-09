@@ -219,6 +219,37 @@ class _ScriptedModel:
 
 
 class TestBuildMerge:
+    async def test_built_policy_denies_git_stage_allows_reads_in_plan(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression anchor (W1-REV-05 MINOR-2): the policy matrix above uses
+        a copied _policy(); this asserts against the composition's own
+        policy object so build-drift cannot go green while the agent
+        changes behavior."""
+        from paa.config import Settings
+
+        home = tmp_path / "paa_home"
+        home.mkdir(parents=True, exist_ok=True)
+        settings = Settings(home=home)
+        settings.ensure_directories()
+        workspace = tmp_path / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        agent = await CoderAgent.build(
+            settings,
+            model=_ScriptedModel(),
+            mode=PermissionMode.PLAN,
+            workspace=Workspace(root=workspace),
+        )
+        try:
+            policy = agent.loop._perms
+            assert policy.evaluate("read_file", {}).allowed
+            assert policy.evaluate("git_stage", {}).outcome is (
+                PermissionOutcome.DENY
+            )
+        finally:
+            await agent.close()
+
     async def test_build_with_workspace_merges_all_twenty_tools(
         self, tmp_path: Path
     ) -> None:
