@@ -20,7 +20,7 @@ All lead to `ChiefOrchestrator.boot()` → `RecoveryEngine.boot_sweep()`.
 
 ### 1. Verify hash chains
 
-`verify_all_chains()` (`ledger/store.py:435`): for every lineage, `verify_chain()` checks
+`verify_all_chains()` (`ledger/store.py:447`): for every lineage, `verify_chain()` checks
 each event's digest recomputes, `prev_hash` links to predecessor, versions dense.
 Problems are **reported, never auto-repaired** (`recovery.py:231`) — silently
 fixing tampered history defeats auditability.
@@ -43,19 +43,19 @@ b. If `projection.is_terminal` → head projection lagged (crash between ledger
 c. If `phase is AWAITING_HUMAN` → `PARKED_HUMAN`; a crash is never consent
    (`:274`).
 d. If `attempts >= max_attempts` → `TASK_ABANDONED` event; outcome `ABANDONED`
-   (`:285`).
+   (`:294`).
 e. `_reconcile_workspace(projection)` (`:350`):
    - Read latest `hot_serving_recovery_marks` checkpoint for the lineage.
    - Compare live filesystem manifest vs checkpoint hash.
    - Match → no drift (`[], []`).
    - Drift → `STATE_ROLLBACK_TRIGGERED` event with drifted/restored paths
      (`:394`); `snapshotter.restore(root, expected)`; outcome `ROLLED_BACK`.
-   - No checkpoint ever taken → nothing can have drifted (`:366`).
+   - No checkpoint ever taken → nothing can have drifted (`:375`).
 f. `_requeue(projection)` (`:437`): enqueue to `StreamName.ORCHESTRATOR_CORE`
    with `{correlation_id, session_id, resume_phase, resume_step_index,
    recovered: true}`. Enqueue failure logged, non-fatal — ledger already
    records the task as open, so a later sweep retries (`recovery.py:444`).
-g. `_record_sweep()` (`:306`): append `RECOVERY_REPLAY_COMPLETED` audit event,
+g. `_record_sweep()` (`:315`): append `RECOVERY_REPLAY_COMPLETED` audit event,
    suppressed if the latest event is already one (keeps repeated sweeps
    no-op; ADR-0010 idempotency fix) (`:329`).
 
@@ -78,7 +78,7 @@ g. `_record_sweep()` (`:306`): append `RECOVERY_REPLAY_COMPLETED` audit event,
 Recovery is idempotent: running twice yields the same end state
 (`recovery.py:17`). A crash during recovery is survivable because each sweep
 re-reads the ledger and the audit-event suppression prevents unbounded growth
-(`recovery.py:306`).
+(`recovery.py:315`).
 
 ## Sequence diagram
 
@@ -147,7 +147,7 @@ runs each via `Runtime.run(cid)`, which re-projects and resumes at
 | Single lineage throws | Logged as `UNRECOVERABLE`; sweep continues (`recovery.py:250`) |
 | Requeue fails | Logged non-fatal; ledger already open; next sweep retries (`recovery.py:444`) |
 | Workspace missing | Logged warning, no drift recorded (`recovery.py:371`) |
-| No checkpoint taken | Nothing can have drifted (`recovery.py:366`) |
+| No checkpoint taken | Nothing can have drifted (`recovery.py:375`) |
 
 ## Persistence
 

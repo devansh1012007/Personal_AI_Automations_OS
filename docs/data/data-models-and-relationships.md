@@ -50,7 +50,7 @@ This is the only append-only table. Every state transition is a row. Columns
 | `recorded_at` | TEXT | TIMESTAMPTZ | UTC timestamp |
 
 The hash chain (`prev_hash` → `event_hash`) makes silent history edits
-detectable; verified by `LedgerStore.verify_chain` (`ledger/store.py:385`).
+detectable; verified by `LedgerStore.verify_chain` (`ledger/store.py:397`).
 
 `LedgerStore.append` performs, inside one transaction (`ledger/store.py:116`):
 1. Idempotency suppression by `idempotency_key` — returns the existing event on

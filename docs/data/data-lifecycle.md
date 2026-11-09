@@ -53,7 +53,7 @@ append-only. The only "mutation" of the head row is the upsert in
   resets `completed_steps` to steps before `restored_step_index`
   (`replay.py:267`).
 - `TASK_ABANDONED` closes a lineage that exceeded `max_delivery_attempts`
-  (`recovery.py:285`).
+  (`recovery.py:294`).
 - There is no explicit "delete a task" operation; ledger rows are append-only.
 
 ### Failure halfway through

@@ -69,7 +69,7 @@ made retries impossible under a UNIQUE constraint.
 head projection — the recovery sweep's entry point; replaces the RFC's partial
 index (ADR-0010).
 
-`verify_chain()` (`ledger/store.py:385`): per event, checks digest recomputes,
+`verify_chain()` (`ledger/store.py:397`): per event, checks digest recomputes,
 `prev_hash` matches predecessor, versions dense/monotonic.
 
 Snapshots: `save_snapshot`/`load_snapshot` (`ledger/store.py:450`) checkpoint a
@@ -105,7 +105,7 @@ from that version.
 5. `_requeue()` enqueues to `StreamName.ORCHESTRATOR_CORE`; failure logged,
    non-fatal (`recovery.py:444`).
 6. `_record_sweep()` appends `RECOVERY_REPLAY_COMPLETED`, suppressed if the
-   latest event is already one (idempotent sweeps; `recovery.py:306`).
+   latest event is already one (idempotent sweeps; `recovery.py:315`).
 
 `RecoveryOutcome`: `RESUMED`, `ROLLED_BACK`, `PARKED_HUMAN`, `ABANDONED`,
 `UNRECOVERABLE`, `ALREADY_TERMINAL` (`recovery.py:80`).
