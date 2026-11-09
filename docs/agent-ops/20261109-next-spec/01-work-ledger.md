@@ -9,20 +9,20 @@ Plan items P-N0..G1 from docs/plans/2026-11-09-next-spec-revised.md §E → mapp
 | T-N0-0 | N0.0 | hygiene | SURFACE | Deleted VISION + spaces research filename | branch + restore + rename research (orchestrator) | none | none | 0 | ORCH | DONE (restore+branch+baseline) | — | 00-mission.md |
 | T-N0-1 | N0.1 | hygiene | DEEP | 12 markdown links + anchor broken, no link lock | docs/VISION.md, docs/README.md, docs/ROADMAP.md, README.md, tests/conventions/ | link-target semantics + ADR allowlist | T-N0-0 | 0 | coder | DONE (d22f0d4 move+lock 657 lines; IMPR 2f26fb8 MAJOR-1/2 fix; REV-01 APPROVE-WITH-CHANGES → IMPR → REV-03 APPROVE) | d22f0d4 + 2f26fb8 | reports/w0-investigation/W0-IMPL-01-N0-1.md, w0-review/W0-REV-01-review.md, W0-IMPR-01-improve.md, W0-REV-03-delta.md |
 | T-N0-2 | N0.2 | hygiene | SURFACE | Research note never committed (spaces filename) | docs/research/2026-11-deepseek-super-agent.md | link target for N0.1 | T-N0-0 | 0 | coder | DONE (be51bba byte-identical, REV-02 APPROVE) | be51bba | reports/w0-investigation/W0-IMPL-02-N0-2.md |
-| T-N0-3 | N0.3 | hygiene | SURFACE | Composability appendix unreviewed, paper dated 2026 | docs/reviews/, docs/VISION.md banner | review verdict table | N0.1 | 0b | coder | PENDING (Wave 0b) | — | — |
-| T-N0-4 | N0.4 | hygiene | DEEP | Hand-typed README numbers, no generator | scripts/status.py, README, .github/workflows/ci.yml | status block markers + method pin | N0.1 | 0b | coder | PENDING (Wave 0b) | — | — |
+| T-N0-3 | N0.3 | hygiene | SURFACE | Composability appendix unreviewed, paper dated 2026 | docs/reviews/, docs/VISION.md banner | review verdict table | N0.1 | 0b | coder | DONE e9e5bbc+b3ce8bc | e9e5bbc |
+| T-N0-4 | N0.4 | hygiene | DEEP | Hand-typed README numbers, no generator | scripts/status.py, README, .github/workflows/ci.yml | status block markers + method pin | N0.1 | 0b | coder | DONE c09b0f1 | c09b0f1 |
 | T-N0-5 | N0.5 | hygiene | SURFACE | Baseline failures un-triaged | report only (docs/agent-ops/.../reports/) | none | none | 0 | general | DONE (c90d835 triage; REV-02 APPROVE; TASK-1..5 filed → see Deferred) | c90d835 | reports/w0-investigation/N0-5-triage.md |
-| T-N1-0 | N1.0 | coder tools | SURFACE | No ADR, no frozen jail contract | docs/adr/0045-*.md, docs/coder-agent.md | workspace API (frozen) | Wave0 | 1 | coder | PENDING | — | — |
-| T-N1-0a | N1.0a | coder tools | DEEP | 4 tools need shared jail | src/paa/coder/workspace.py | Workspace signature | N1.0 | 1 | coder | PENDING | — | — |
-| T-N1-1 | N1.1 | coder tools | SURFACE | read_file/glob/grep absent | src/paa/coder/fs_read_tools.py, tests/coder/test_fs_read_tools.py | Tool protocol | N1.0a | 1b | coder | PENDING | — | — |
-| T-N1-2 | N1.2 | coder tools | SURFACE | write/edit/apply absent; PatchApplier not hash-verified | src/paa/coder/fs_write_tools.py, validation/patch.py, tests/coder/test_fs_write_tools.py | patch SHA contract | N1.0a | 1b | coder | PENDING | — | — |
-| T-N1-3 | N1.3 | coder tools | DEEP | bash absent; subprocess network not enforceable | src/paa/coder/shell_tools.py, tests/coder/test_shell_tools.py | Sandbox.run timeout/isolation | N1.0a | 1b | coder | PENDING | — | — |
-| T-N1-4 | N1.4 | coder tools | SURFACE | git tools absent; git_add escapes PLAN | src/paa/coder/git_tools.py (git_stage), tests/coder/test_git_tools.py | DEFAULT_MUTATING_TOOLS | N1.0a | 1b | coder | PENDING | — | — |
-| T-N1-5 | N1.5 | coder tools | DEEP | Registration/permissions + --workspace wrong file | coder/agent.py, runtime_tools.py, cli/coder.py, __init__.py, tests/agents/test_coding_specialist_p011.py | mutating-coverage test | N1.1-N1.4 | 1c | coder | PENDING | — | — |
-| T-N2-1 | N2.1 | ledger | DEEP | 8 EventTypes absent, replay/sweep semantics | core/types.py, ledger/replay.py, coder/loop.py (ToolJournal stub), docs/adr/0046-*.md | ToolJournal signature, _NO_PHASE_CHANGE | Wave1 | 2a | coder | PENDING | — | — |
-| T-N2-2 | N2.2 | ledger | DEEP | Coder loop not in ledger; order breaks redaction | coder/journal.py, coder/loop.py, coder/agent.py | PROPOSED persisted intent, idempotency | N1.5,N2.1 | 2b | coder | PENDING | — | — |
-| T-N2-4 | N2.4 | ledger | DEEP | No mandate; requester/policy_version absent | ledger/mandate.py, runtime.py, agents/orchestrator.py, cli/main.py, cli/coder.py, api/app.py, api/schemas.py | mandate payload v1, doctor counts | N2.1 | 2b | coder | PENDING | — | — |
-| T-N2-5 | N2.5 | security | SURFACE | Secret leak surface untested | tests/coder/test_secret_hygiene.py | redact contract | N1.3,N2.2 | 2b | coder | PENDING | — | — |
+| T-N1-0 | N1.0 | coder tools | SURFACE | No ADR, no frozen jail contract | docs/adr/0045-*.md, docs/coder-agent.md | workspace API (frozen) | Wave0 | 1a | coder | DONE c9253c8 | c9253c8 |
+| T-N1-0a | N1.0a | coder tools | DEEP | 4 tools need shared jail | src/paa/coder/workspace.py | Workspace signature | N1.0 | 1a | coder | DONE 7c33723 | 7c33723 |
+| T-N1-1 | N1.1 | coder tools | SURFACE | read_file/glob/grep absent | src/paa/coder/fs_read_tools.py, tests/coder/test_fs_read_tools.py | Tool protocol | N1.0a | 1b | coder | DONE a74f5f0+dbff769 | a74f5f0 |
+| T-N1-2 | N1.2 | coder tools | SURFACE | write/edit/apply absent; PatchApplier not hash-verified | src/paa/coder/fs_write_tools.py, validation/patch.py, tests/coder/test_fs_write_tools.py | patch SHA contract | N1.0a | 1b | coder | DONE b97ff73+1c3d0bf | b97ff73 |
+| T-N1-3 | N1.3 | coder tools | DEEP | bash absent; subprocess network not enforceable | src/paa/coder/shell_tools.py, tests/coder/test_shell_tools.py | Sandbox.run timeout/isolation | N1.0a | 1b | coder | DONE 3a99108 | 3a99108 |
+| T-N1-4 | N1.4 | coder tools | SURFACE | git tools absent; git_add escapes PLAN | src/paa/coder/git_tools.py (git_stage), tests/coder/test_git_tools.py | DEFAULT_MUTATING_TOOLS | N1.0a | 1b | coder | DONE 481a8d3+1c3d0bf | 481a8d3 |
+| T-N1-5 | N1.5 | coder tools | DEEP | Registration/permissions + --workspace wrong file | coder/agent.py, runtime_tools.py, cli/coder.py, __init__.py, tests/agents/test_coding_specialist_p011.py | mutating-coverage test | N1.1-N1.4 | 1c | coder | DONE 0d02ea8+ded7cf4+3d24a38 | 0d02ea8 |
+| T-N2-1 | N2.1 | ledger | DEEP | 8 EventTypes absent, replay/sweep semantics | core/types.py, ledger/replay.py, coder/loop.py (ToolJournal stub), docs/adr/0046-*.md | ToolJournal signature, _NO_PHASE_CHANGE | Wave1 | 2a | coder | DONE 51a8c61 NEED-1 fb14fac | 51a8c61 |
+| T-N2-2 | N2.2 | ledger | DEEP | Coder loop not in ledger; order breaks redaction | coder/journal.py, coder/loop.py, coder/agent.py | PROPOSED persisted intent, idempotency | N1.5,N2.1 | 2b | coder | DONE 9a4a519 preview-shape fix (W2-IMPL-04 leak closed) | 9a4a519 |
+| T-N2-4 | N2.4 | ledger | DEEP | No mandate; requester/policy_version absent | ledger/mandate.py, runtime.py, agents/orchestrator.py, cli/main.py, cli/coder.py, api/app.py, api/schemas.py | mandate payload v1, doctor counts | N2.1 | 2b | coder | DONE 00d2e67 ORCH NEEDs 4dbcc68 (config+tests+docs) | 00d2e67 |
+| T-N2-5 | N2.5 | security | SURFACE | Secret leak surface untested | tests/coder/test_secret_hygiene.py | redact contract | N1.3,N2.2 | 2b | coder | DONE 3ffb3d2 22 pass/3 skip (leak closed by 9a4a519) | 3ffb3d2 |
 | T-N2-3 | N2.3 | recovery | DEEP | Crash classification impossible w/o persisted intent | ledger/recovery.py, coder/session.py, coder/agent.py | recovery classification | N2.2 | 2c | coder | PENDING | — | — |
 | T-N2-6 | N2.6 | ledger | SURFACE | Ledger bloat, no owner for >8KB | coder/journal.py, ledger/events.py | blob SHA contract | N2.2 | 2c | coder | PENDING | — | — |
 | T-N3-1 | N3.1 | demo | DEEP | S1 never run | examples/fixtures/buggy_calc/, docs/operations/2026-11-09-next-spec/s1-report.md | S1 exit | Wave2 | 3 | coder/operator | PENDING | — | — |
@@ -47,8 +47,19 @@ Plan items P-N0..G1 from docs/plans/2026-11-09-next-spec-revised.md §E → mapp
 - Review/improve cycles used: 1/2
 - Status: CLOSED (Wave 0b DONE — every Wave 0 task has independent review + gate)
 
-### Wave 0 (overall)
-- Status: CLOSED 2026-11-09 — N0.0–N0.5 all DONE (see Tasks table). Final gate gate-w0-4. Next: Wave 1a (N1.0 + N1.0a serial).
+### Wave 1 (overall)
+- Status: CLOSED 2026-11-09 — N1.0–N1.5 all DONE with independent reviews + gates. Final gate gate-w1-4. Next: Wave 2a (N2.1 DONE 51a8c61, NEED-1 fb14fac) then Wave 2b.
+
+### Wave 2a (N2.1)
+- WAVE_BASE_SHA: 3d24a38
+- Agents: W2-IMPL-01 (51a8c61 + dbf420e report). NEED-1 fixed fb14fac (classification). NEED-2 ADR index + NEED-3 docs sweep committed 55ea344. Reviewer: W2-REV-01 6736ec7 APPROVE-WITH-CHANGES 0 BLOCKER/MAJOR, 4 MINOR deferred to N2.2.
+- Status: CLOSED 2026-11-09
+
+### Wave 2b (N2.2/N2.4/N2.5)
+- WAVE_BASE_SHA: 6736ec7
+- Agents: W2-IMPL-02 (9a4a519 journal), W2-IMPL-03 (00d2e67 mandate), W2-IMPL-04 (3ffb3d2 canary PARTIAL→DONE via 9a4a519 shape-summary preview), ORCH 4dbcc68 (config field + 3 mandate-head tests + 57+~40 docs re-points, conventions 34).
+- Gate: gate-w2-2 (ruff 0, mypy 3 baseline, conventions 34, ledger 161, journal+canary 91 incl 3 skip, api 46 minus daemon host-flake).
+- Status: CODE DONE, W2-REV-02 (journal) + W2-REV-03 (mandate) dispatched; N2.3 blocked until recovery+exemption reviewed.
 
 ## Deep dives
 (none yet — classification in table; DEEP rows get Spotlight in SUMMARY.md)
