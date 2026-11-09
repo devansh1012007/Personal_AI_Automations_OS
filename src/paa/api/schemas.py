@@ -7,7 +7,7 @@ plain and testable on a minimal install.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -19,6 +19,7 @@ __all__ = [
     "GateRequest",
     "HealthResponse",
     "LedgerEventView",
+    "MandateRequestBody",
     "SignalRequest",
     "SignalResponse",
     "SignalView",
@@ -26,6 +27,25 @@ __all__ = [
     "TaskStatusResponse",
     "TaskSubmitResponse",
 ]
+
+
+class MandateRequestBody(BaseModel):
+    """An explicitly asserted mandate for a task submission (N2.4).
+
+    The client asserts *who requested the work* and *on what basis*; it
+    does **not** supply the effective policy version. The server stamps
+    the effective policy (SHA-256 of the canonical policy) itself, so a
+    client cannot forge which policy granted the authority. The requester
+    is asserted — recorded, never authenticated — which the mandate
+    payload records with the same honesty (`identity_assurance` stays
+    ``"asserted"``).
+    """
+
+    kind: str = Field(min_length=1)
+    id: str = Field(min_length=1)
+    basis: Literal["explicit", "inferred", "implicit"] = "explicit"
+    workspace: str | None = None
+    budget: int | None = Field(default=None, ge=0)
 
 
 class TaskRequestBody(BaseModel):
@@ -36,6 +56,7 @@ class TaskRequestBody(BaseModel):
     required_slots: list[str] | None = None
     workspace_path: str | None = None
     target_agent: str | None = None
+    mandate: MandateRequestBody | None = None
     run: bool = Field(
         default=False,
         description="Run to completion synchronously. When false, the task is "

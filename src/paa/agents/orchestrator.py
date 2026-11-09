@@ -40,6 +40,7 @@ from paa.core.types import (
     new_correlation_id,
 )
 from paa.ledger.events import LedgerEvent
+from paa.ledger.mandate import Mandate
 from paa.ledger.replay import TaskPhase, TaskProjection, project
 
 if TYPE_CHECKING:
@@ -170,6 +171,16 @@ class TaskRequest:
 
     required_slots: list[str] | None = None
     metadata: dict[str, Any] | None = None
+    mandate: Mandate | None = None
+    """The authority record for this task (N2.4, ADR-0046).
+
+    ``None`` means no mandate was asserted for the submission; the runtime
+    resolves the default (implicit) before the request reaches here, so a
+    ``None`` here means the caller bypassed the runtime and the lineage
+    carries no mandate event at all. When present, :meth:`submit` records
+    it as the lineage's head event (``MANDATE_GRANTED``) before
+    ``TASK_REQUESTED``, so ``paa ledger`` shows the authority first.
+    """
 
 
 @dataclass(slots=True)
@@ -303,6 +314,24 @@ class ChiefOrchestrator:
         """
         correlation_id = new_correlation_id()
         modality = request.modality or self._classify(request)
+
+        # The mandate is the lineage's head event: the authority is
+        # recorded before the request it authorises, so a task's first
+        # state_version is the grant (N2.4). Ledger-before-side-effect
+        # applies to authority too — a task that crashed before its grant
+        # landed has no authority record and no work.
+        if request.mandate is not None:
+            await self._emit(
+                correlation_id,
+                EventType.MANDATE_GRANTED,
+                session_id=request.session_id,
+                payload=request.mandate.granted_payload(
+                    session_id=str(request.session_id) if request.session_id else None
+                ),
+                modality=modality,
+                role=AgentRole.ORCHESTRATOR,
+                discriminator="mandate",
+            )
 
         payload: dict[str, Any] = {
             "request": {

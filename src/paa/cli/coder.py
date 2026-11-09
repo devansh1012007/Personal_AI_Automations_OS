@@ -206,6 +206,42 @@ def register_agent(app: typer.Typer) -> None:
                     _print_tools(built.tools)
                     return
 
+                # The operator running `paa agent` is the explicit
+                # requester for this session (N2.4): the mandate is
+                # recorded before the first model turn, on the runtime's
+                # ledger, and the server stamps the effective policy
+                # version. `session_id` names the coder session, so the
+                # ledger knows which session the authority covers.
+                # After the --list-tools branch: a catalogue listing must
+                # stay read-only, so it records no authority.
+                from paa.core.types import EventType, new_correlation_id
+                from paa.ledger.events import LedgerEvent
+                from paa.ledger.mandate import explicit_mandate
+
+                mandate = explicit_mandate(
+                    kind="coder",
+                    requester_id="operator",
+                    policy=settings.policy,
+                    workspace=(
+                        str(resolved_workspace.root) if resolved_workspace else None
+                    ),
+                    permission_mode=resolved_mode.value,
+                    budget=max_steps,
+                )
+                await built.runtime.ledger.append(
+                    LedgerEvent(
+                        correlation_id=new_correlation_id(),
+                        event_type=EventType.MANDATE_GRANTED,
+                        payload=mandate.granted_payload(
+                            session_id=built.session.session_id
+                        ),
+                    )
+                )
+                console.print(
+                    "[dim]mandate: explicit (requester asserted: "
+                    "coder/operator)[/dim]"
+                )
+
                 result = await built.ask(prompt or "")
                 console.print()
                 console.print(result.final_text or "[dim](no final text)[/dim]")
