@@ -16,6 +16,10 @@ What is pinned here
 * The journal applies the check to every payload it appends: an oversized
   PROPOSED/DENIED row is blobbed when a store is configured and raises
   (appending nothing) when none is.
+* The production path is wired: ``CoderAgent.build``'s default journal
+  carries the configured cold-lake store, so an oversized row through the
+  built agent's own journal is blobbed into ``PAA_HOME`` and reads back
+  sha-pinned (W2-REV-05 MAJOR-1).
 """
 
 from __future__ import annotations
@@ -26,8 +30,11 @@ from typing import Any
 
 import pytest
 
+from paa.coder.agent import CoderAgent
 from paa.coder.journal import LedgerToolJournal
-from paa.coder.loop import ToolCtx
+from paa.coder.loop import ModelTurn, ToolCtx
+from paa.coder.permissions import PermissionMode
+from paa.config import Settings
 from paa.core.types import EventType, new_correlation_id
 from paa.ledger.events import (
     BLOB_PREVIEW_CHARS,
@@ -45,6 +52,7 @@ from paa.ledger.events import (
 from paa.ledger.replay import TaskPhase, replay
 from paa.ledger.store import LedgerStore
 from paa.sandbox.base import IsolationLevel
+from paa.storage.coldlake import get_blob_store
 from paa.storage.coldlake.cas import ContentAddressedStore
 from paa.storage.coldlake.errors import Corrupt, NotFound
 
@@ -423,3 +431,114 @@ class TestJournalBlobbing:
         rows = await ledger.read_correlation(cid)
         assert rows[0].payload["result_sha256"] == "e" * 64
         assert "blob" not in rows[0].payload
+
+
+class _ScriptedModel:
+    """Model seam double: never proposes a tool call.
+
+    The composition tests below drive the journal the built loop holds
+    directly; the model only has to exist for ``CoderAgent.build`` to
+    complete, exactly as the scripted models in ``test_agent.py`` do.
+    """
+
+    async def propose(
+        self, window: list[dict[str, Any]], tools: list[dict[str, Any]]
+    ) -> ModelTurn:
+        return ModelTurn(text="nothing to do")
+
+
+class TestProdComposition:
+    """The production path journals with a real, configured blob store.
+
+    W2-REV-05 MAJOR-1: ``CoderAgent.build``'s default journal carried no
+    store, so an oversized row failed the tool call closed. These tests
+    build the real composition (Runtime, loop, default journal) and drive
+    the very journal object the loop holds — no test double in the wire.
+    """
+
+    @pytest.fixture
+    def prod_settings(self, tmp_path: Path) -> Settings:
+        settings = Settings(home=tmp_path / "paa_home")
+        settings.ensure_directories()
+        return settings
+
+    async def test_built_agent_journal_carries_configured_store(
+        self, prod_settings: Settings
+    ) -> None:
+        agent = await CoderAgent.build(
+            prod_settings, model=_ScriptedModel(), mode=PermissionMode.BYPASS
+        )
+        try:
+            # DECISION: white-box reach to the journal the loop holds. The
+            # composition assertion needs the object itself, not a rebuild;
+            # a rebuild would only prove a second journal could blob.
+            journal = agent.loop._journal
+            assert isinstance(journal, LedgerToolJournal)
+            assert journal._blob_store is not None
+            store = journal._blob_store
+            assert isinstance(store, ContentAddressedStore)
+            assert store.root == prod_settings.storage.cold_lake_path
+        finally:
+            await agent.close()
+
+    async def test_oversized_row_blobs_and_round_trips_through_prod_journal(
+        self, prod_settings: Settings
+    ) -> None:
+        cid = new_correlation_id()
+        agent = await CoderAgent.build(
+            prod_settings,
+            model=_ScriptedModel(),
+            mode=PermissionMode.BYPASS,
+            correlation_id=cid,
+        )
+        try:
+            journal = agent.loop._journal
+            assert isinstance(journal, LedgerToolJournal)
+            huge_preview = "x" * (BLOB_THRESHOLD_BYTES + 5000)
+            await journal.before(_ctx(args_preview_redacted=huge_preview))
+            rows = await agent.runtime.ledger.read_correlation(cid)
+            assert len(rows) == 1
+            assert is_blobbed_payload(rows[0].payload)
+            assert payload_size_bytes(rows[0].payload) <= BLOB_THRESHOLD_BYTES
+            # The blob lives in the PAA_HOME cold lake and reads back
+            # byte-identical through the configured store.
+            store = get_blob_store(prod_settings.storage)
+            back = resolve_blobbed_payload(rows[0].payload, store)
+            assert back["args_preview_redacted"] == huge_preview
+            sha = rows[0].payload["blob"]["sha256"]
+            assert isinstance(store, ContentAddressedStore)
+            assert list(store.root.rglob(f"{sha}*"))
+            assert (
+                hashlib.sha256(canonical_json(back).encode("utf-8")).hexdigest()
+                == sha
+            )
+            ok, problems = await agent.runtime.ledger.verify_chain(cid)
+            assert ok, problems
+        finally:
+            await agent.close()
+
+    async def test_caller_supplied_journal_still_wins(
+        self, prod_settings: Settings
+    ) -> None:
+        """The ``journal=`` seam is untouched: an explicit journal is used
+        verbatim, not rebuilt with the default store."""
+        first = await CoderAgent.build(
+            prod_settings, model=_ScriptedModel(), mode=PermissionMode.BYPASS
+        )
+        try:
+            store = _store(prod_settings.home / "custom")
+            cid = new_correlation_id()
+            custom = LedgerToolJournal(first.runtime.ledger, cid, blob_store=store)
+            second = await CoderAgent.build(
+                prod_settings,
+                model=_ScriptedModel(),
+                mode=PermissionMode.BYPASS,
+                correlation_id=cid,
+                journal=custom,
+            )
+            try:
+                assert second.loop._journal is custom
+            finally:
+                await second.close()
+        finally:
+            await first.close()
