@@ -23,9 +23,9 @@ Plan items P-N0..G1 from docs/plans/2026-11-09-next-spec-revised.md §E → mapp
 | T-N2-2 | N2.2 | ledger | DEEP | Coder loop not in ledger; order breaks redaction | coder/journal.py, coder/loop.py, coder/agent.py | PROPOSED persisted intent, idempotency | N1.5,N2.1 | 2b | coder | DONE 9a4a519 preview-shape fix (W2-IMPL-04 leak closed) | 9a4a519 |
 | T-N2-4 | N2.4 | ledger | DEEP | No mandate; requester/policy_version absent | ledger/mandate.py, runtime.py, agents/orchestrator.py, cli/main.py, cli/coder.py, api/app.py, api/schemas.py | mandate payload v1, doctor counts | N2.1 | 2b | coder | DONE 00d2e67 ORCH NEEDs 4dbcc68 (config+tests+docs) | 00d2e67 |
 | T-N2-5 | N2.5 | security | SURFACE | Secret leak surface untested | tests/coder/test_secret_hygiene.py | redact contract | N1.3,N2.2 | 2b | coder | DONE 3ffb3d2 22 pass/3 skip (leak closed by 9a4a519) | 3ffb3d2 |
-| T-N2-3 | N2.3 | recovery | DEEP | Crash classification impossible w/o persisted intent | ledger/recovery.py, coder/session.py, coder/agent.py | recovery classification | N2.2 | 2c | coder | PENDING | — | — |
-| T-N2-6 | N2.6 | ledger | SURFACE | Ledger bloat, no owner for >8KB | coder/journal.py, ledger/events.py | blob SHA contract | N2.2 | 2c | coder | PENDING | — | — |
-| T-N3-1 | N3.1 | demo | DEEP | S1 never run | examples/fixtures/buggy_calc/, docs/operations/2026-11-09-next-spec/s1-report.md | S1 exit | Wave2 | 3 | coder/operator | PENDING | — | — |
+| T-N2-3 | N2.3 | recovery | DEEP | Crash classification impossible w/o persisted intent | ledger/recovery.py, coder/session.py, coder/agent.py | recovery classification | N2.2 | 2c | coder | DONE aac0a48 | aac0a48 |
+| T-N2-6 | N2.6 | ledger | SURFACE | Ledger bloat, no owner for >8KB | coder/journal.py, ledger/events.py | blob SHA contract | N2.2 | 2c | coder | DONE c2d25e3 | c2d25e3 |
+| T-N3-1 | N3.1 | demo | DEEP | S1 never run | examples/fixtures/buggy_calc/, docs/operations/2026-11-09-next-spec/s1-report.md | S1 exit | Wave2 | 3 | coder/operator | DONE (dry-run rung 50/50; real-model NOT RUN — Linux+key) | (ORCH commit pending) | reports/w3-impl/W3-IMPL-01-N3-1.md |
 | T-N3-2 | N3.2 | drill | DEEP | No kill-resume harness | scripts/drill_kill_resume.py, tests/coder/test_recovery_chaos.py | drill oracle | N3.1 | 3 | coder | PENDING | — | — |
 | T-N3-3 | N3.3 | stretch | SURFACE | Cancellation missing | coder/loop.py, coder/shell_tools.py | cancel token | N3.1 | 3 | coder | PENDING | — | — |
 
@@ -59,7 +59,18 @@ Plan items P-N0..G1 from docs/plans/2026-11-09-next-spec-revised.md §E → mapp
 - WAVE_BASE_SHA: 6736ec7
 - Agents: W2-IMPL-02 (9a4a519 journal), W2-IMPL-03 (00d2e67 mandate), W2-IMPL-04 (3ffb3d2 canary PARTIAL→DONE via 9a4a519 shape-summary preview), ORCH 4dbcc68 (config field + 3 mandate-head tests + 57+~40 docs re-points, conventions 34).
 - Gate: gate-w2-2 (ruff 0, mypy 3 baseline, conventions 34, ledger 161, journal+canary 91 incl 3 skip, api 46 minus daemon host-flake).
-- Status: CODE DONE, W2-REV-02 (journal) + W2-REV-03 (mandate) dispatched; N2.3 blocked until recovery+exemption reviewed.
+- Status: CODE DONE (W2-REV-02 APPROVE-WITH-CHANGES, W2-REV-03 APPROVE-WITH-CHANGES, 0 BLOCKER/MAJOR); Wave 2c dispatched.
+
+### Wave 2c (N2.3/N2.6)
+- WAVE_BASE_SHA: 4c3826e
+- Agents: W2-IMPL-05 (aac0a48 recovery), W2-IMPL-06 (c2d25e3 blobbing), W2-REV-04 (MAJOR-1), W2-REV-05 (MAJOR-1), W2-IMPR-05 (357134a), W2-IMPR-06 (837ba17), ORCH fa43a3e+5fcf2a8 docs sweeps.
+- Gate: gate-w2-3 (conventions 34, ruff 0, mypy 3, 265 scoped pass per W2-REV-06).
+- Status: CLOSED 2026-11-09 (W2-REV-06 APPROVE delta).
+
+### Wave 3 (N3.1/N3.2/N3.3)
+- WAVE_BASE_SHA: e640481
+- Agents: W3-IMPL-01 (N3.1 S1: fixture + drill_kill_resume.py dry-run 50/50 + s1-report composed by ORCH after subagent interruption; real-model rung NOT RUN — needs Linux/WSL2 + OPENROUTER_API_KEY), then W3-IMPL-02 (N3.2), W3-IMPL-03 (N3.3).
+- Status: N3.1 CODE DONE (dry-run rung), W3-REV-01 dispatched; N3.2/N3.3 depend on S1 harness.
 
 ## Deep dives
 (none yet — classification in table; DEEP rows get Spotlight in SUMMARY.md)
