@@ -211,6 +211,28 @@ def _decode_utf8(raw: bytes, *, truncated: bool) -> str:
     return content
 
 
+def _truncation_note(
+    *, limit_hit: bool, limit_text: str, walk_hit: bool
+) -> str:
+    """Compose the ``note`` for a truncated payload, or ``""`` when whole.
+
+    Both truncation causes are marked, never silent: the caller-supplied
+    result limit (``limit_text``) and the walk budget (``_MAX_WALK_ENTRIES``
+    entries). A caller that broke out on its own limit before the walk
+    could finish reports only that limit — the walk cause is unknown, not
+    false — while a caller that exhausted the walk without hitting its
+    limit reports that the walk stopped early.
+    """
+    notes: list[str] = []
+    if limit_hit:
+        notes.append(limit_text)
+    if walk_hit:
+        notes.append(
+            f"walk capped at {_MAX_WALK_ENTRIES} entries; results are incomplete"
+        )
+    return "; ".join(notes)
+
+
 class _ReadFile(_FsReadTool):
     name = "read_file"
     description = (
@@ -420,7 +442,8 @@ class _Glob(_FsReadTool):
         skipped_protected = 0
         skipped_escaped = 0
         truncated = False
-        for rel, entry in _walk(self._ws.root):
+        walk_capped: list[bool] = [False]
+        for rel, entry in _walk(self._ws.root, cap_hit=walk_capped):
             if regex.match(rel) is None:
                 continue
             try:
@@ -435,16 +458,19 @@ class _Glob(_FsReadTool):
                 truncated = True
                 break
             paths.append(rel)
+        walk_hit = walk_capped[0]
         return _emit(
             {
                 "pattern": pattern,
                 "paths": paths,
                 "count": len(paths),
-                "truncated": truncated,
+                "truncated": truncated or walk_hit,
                 "skipped_protected": skipped_protected,
                 "skipped_escaped": skipped_escaped,
-                "note": (
-                    "result list truncated at the limit" if truncated else ""
+                "note": _truncation_note(
+                    limit_hit=truncated,
+                    limit_text="result list truncated at the limit",
+                    walk_hit=walk_hit,
                 ),
             }
         )
@@ -520,7 +546,23 @@ class _Grep(_FsReadTool):
         files_truncated = 0
         files_skipped = 0
         truncated = False
-        for rel, entry in _walk(root, root_is_workspace=self._ws.root):
+        walk_capped: list[bool] = [False]
+        if root.is_file():
+            # `os.walk` on a file yields nothing, so a file target would
+            # silently search zero files. Search the one jailed file so
+            # `files_scanned` reports 1.
+            try:
+                single_rel = f"{root.relative_to(self._ws.root)}".replace(
+                    "\\", "/"
+                )
+            except ValueError:
+                return _emit({"error": "path not found", "path": str(raw_path)})
+            candidates: Iterator[tuple[str, Path]] = iter([(single_rel, root)])
+        else:
+            candidates = _walk(
+                root, root_is_workspace=self._ws.root, cap_hit=walk_capped
+            )
+        for rel, entry in candidates:
             if not entry.is_file():
                 continue
             if glob_filter is not None and not fnmatch.fnmatchcase(
@@ -544,10 +586,12 @@ class _Grep(_FsReadTool):
             file_truncated = len(chunk) > MAX_READ_BYTES
             raw_bytes = chunk[:MAX_READ_BYTES]
             if b"\x00" in raw_bytes:
+                files_skipped += 1
                 continue  # binary: skipped, never searched
             try:
                 text = _decode_utf8(raw_bytes, truncated=file_truncated)
             except _Denied:
+                files_skipped += 1
                 continue  # not UTF-8: skipped, never searched
             files_scanned += 1
             files_truncated += int(file_truncated)
@@ -569,6 +613,7 @@ class _Grep(_FsReadTool):
                     break
             if truncated:
                 break
+        walk_hit = walk_capped[0]
         return _emit(
             {
                 "pattern": pattern,
@@ -578,15 +623,22 @@ class _Grep(_FsReadTool):
                 "files_scanned": files_scanned,
                 "files_truncated": files_truncated,
                 "files_skipped": files_skipped,
-                "truncated": truncated,
-                "note": (
-                    "match list truncated at the limit" if truncated else ""
+                "truncated": truncated or walk_hit,
+                "note": _truncation_note(
+                    limit_hit=truncated,
+                    limit_text="match list truncated at the limit",
+                    walk_hit=walk_hit,
                 ),
             }
         )
 
 
-def _walk(top: Path, *, root_is_workspace: Path | None = None) -> Iterator[tuple[str, Path]]:
+def _walk(
+    top: Path,
+    *,
+    root_is_workspace: Path | None = None,
+    cap_hit: list[bool] | None = None,
+) -> Iterator[tuple[str, Path]]:
     """Yield ``(posix_relative_to_workspace, absolute_path)`` — never follow.
 
     ``os.walk`` with ``followlinks=False`` never descends a symlinked
@@ -598,6 +650,14 @@ def _walk(top: Path, *, root_is_workspace: Path | None = None) -> Iterator[tuple
     are computed against the workspace root for display; when ``top`` is a
     subdirectory of it (grep's ``path``), the walk still yields
     workspace-relative spellings.
+
+    ``cap_hit`` is the walk-budget out-param: when provided, it is set to
+    ``True`` iff the walk stopped early because the budget
+    (``_MAX_WALK_ENTRIES`` entries) ran out. A one-element list is used
+    because a generator's ``return`` value is invisible to a ``for`` loop,
+    so the signal would otherwise be lost and a partial enumeration
+    presented as whole. Callers must fold it into their ``truncated``
+    flag and ``note`` (see :func:`_truncation_note`).
     """
     ws_root = root_is_workspace if root_is_workspace is not None else top
     seen = 0
@@ -612,12 +672,16 @@ def _walk(top: Path, *, root_is_workspace: Path | None = None) -> Iterator[tuple
         for name in sorted(dirnames):
             seen += 1
             if seen > _MAX_WALK_ENTRIES:
+                if cap_hit is not None:
+                    cap_hit[0] = True
                 return
             entry = current / name
             yield f"{rel_current / name}".replace("\\", "/"), entry
         for name in sorted(filenames):
             seen += 1
             if seen > _MAX_WALK_ENTRIES:
+                if cap_hit is not None:
+                    cap_hit[0] = True
                 return
             entry = current / name
             yield f"{rel_current / name}".replace("\\", "/"), entry

@@ -19,6 +19,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+import paa.coder.fs_read_tools as fs_read_tools
 from paa.coder.fs_read_tools import (
     FS_READ_TOOLS,
     MAX_READ_BYTES,
@@ -534,6 +535,20 @@ class TestGlob:
         assert result["count"] == 7
         assert result["truncated"] is True
 
+    async def test_walk_cap_truncation_is_marked(
+        self, tools: dict[str, Any], ws: Workspace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(fs_read_tools, "_MAX_WALK_ENTRIES", 2)
+        for name in ("a.txt", "b.txt", "c.txt"):
+            _write(ws.root / name, "x\n")
+
+        result = json.loads(await tools["glob"].run({"pattern": "**/*"}))
+
+        assert result["count"] == 2
+        assert result["truncated"] is True
+        assert "capped" in result["note"]
+        assert "incomplete" in result["note"]
+
     async def test_empty_pattern_is_an_error_value(
         self, tools: dict[str, Any]
     ) -> None:
@@ -669,6 +684,77 @@ class TestGrep:
 
         assert result["count"] == 5
         assert result["truncated"] is True
+
+    async def test_single_file_is_searched(
+        self, tools: dict[str, Any], ws: Workspace
+    ) -> None:
+        _write(ws.root / "only.txt", "first\nneedle here\nlast needle\n")
+
+        result = json.loads(
+            await tools["grep"].run({"pattern": "needle", "path": "only.txt"})
+        )
+
+        assert result["count"] == 2
+        assert result["files_scanned"] == 1
+        assert result["matches"][0] == {
+            "path": "only.txt",
+            "line": 2,
+            "text": "needle here",
+        }
+        assert result["matches"][1]["line"] == 3
+
+    async def test_single_file_in_subdirectory_is_searched(
+        self, tools: dict[str, Any], ws: Workspace
+    ) -> None:
+        _write(ws.root / "sub" / "only.txt", "needle\n")
+
+        result = json.loads(
+            await tools["grep"].run({"pattern": "needle", "path": "sub/only.txt"})
+        )
+
+        assert result["count"] == 1
+        assert result["files_scanned"] == 1
+        assert result["matches"][0]["path"] == "sub/only.txt"
+
+    async def test_single_file_without_match_reports_one_scanned(
+        self, tools: dict[str, Any], ws: Workspace
+    ) -> None:
+        _write(ws.root / "only.txt", "nothing\n")
+
+        result = json.loads(
+            await tools["grep"].run({"pattern": "needle", "path": "only.txt"})
+        )
+
+        assert result["count"] == 0
+        assert result["files_scanned"] == 1
+
+    async def test_walk_cap_truncation_is_marked(
+        self, tools: dict[str, Any], ws: Workspace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(fs_read_tools, "_MAX_WALK_ENTRIES", 2)
+        for name in ("a.txt", "b.txt", "c.txt"):
+            _write(ws.root / name, "needle\n")
+
+        result = json.loads(await tools["grep"].run({"pattern": "needle"}))
+
+        assert result["count"] == 2
+        assert result["files_scanned"] == 2
+        assert result["truncated"] is True
+        assert "capped" in result["note"]
+        assert "incomplete" in result["note"]
+
+    async def test_binary_and_non_utf8_files_are_counted_as_skipped(
+        self, tools: dict[str, Any], ws: Workspace
+    ) -> None:
+        _write(ws.root / "bin.dat", b"needle\x00needle\n")
+        _write(ws.root / "latin.txt", b"needle \xe9\n")
+        _write(ws.root / "ok.txt", "needle\n")
+
+        result = json.loads(await tools["grep"].run({"pattern": "needle"}))
+
+        assert result["count"] == 1
+        assert result["files_scanned"] == 1
+        assert result["files_skipped"] == 2
 
 
 class TestPermissionPosture:
