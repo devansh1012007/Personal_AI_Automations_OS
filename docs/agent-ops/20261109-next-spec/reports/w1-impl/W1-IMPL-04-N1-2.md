@@ -1,6 +1,6 @@
 <!-- ORCH-DIGEST:START -->
 agent: W1-IMPL-04 | task: T-N1-2 (N1.2) | status: DONE
-code_commits: b97ff73a443d90fe843b4785fefc77a81130cb11 | report_commit: f03917788867e5a9ec89076e7ee0fcd7d88053a4 (docs-only; backfilled)
+code_commits: b97ff73a443d90fe843b4785fefc77a81130cb11 | report_commit: f039177cfecea1f2bfbbceca6fb6a03a5d16698c (docs-only; backfilled)
 files_changed: 4 (src/paa/coder/fs_write_tools.py, src/paa/validation/patch.py, tests/coder/test_fs_write_tools.py, tests/validation/test_patch.py)
 contracts_changed: PatchApplier.apply now refuses stale plans (ValidationError); new tool names write_file/edit_file/apply_patch for N1.5
 tests: added 46, changed 1 (xfail removed); scoped run: pass (96 combined: 46 fs_write + 50 patch)
