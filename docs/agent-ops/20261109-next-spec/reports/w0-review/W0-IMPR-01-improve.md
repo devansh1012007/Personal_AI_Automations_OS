@@ -1,6 +1,6 @@
 <!-- ORCH-DIGEST:START -->
 agent: W0-IMPR-01 (IMPLEMENTER) | task: T-N0-1-IMPR-01 (fix MAJOR-1 + MAJOR-2 in markdown-link lock) | status: DONE
-code_commits: 2f26fb8 | report_commit: pending-at-write (this report; see §17 after commit)
+code_commits: 2f26fb8 | report_commit: 21ef990 (fix-up commit amends wording only)
 files_changed: 1 (tests/conventions/test_markdown_links.py)
 contracts_changed: none
 tests: changed 1 (test_the_lock_catches_a_broken_link extended: 5 -> 8 synthetic links, 3 -> 6 defects, + _existence_defects assertions); scoped run: pass (8/8 markdown-links, 5/5 docs-references, 34/34 conventions; ruff All checks passed; mypy exactly 3 baseline)
@@ -309,5 +309,6 @@ logic with no platform surface beyond `Path.exists()` (already exercised).
   committed, `git log --oneline -2`: `2f26fb8` on top of `1ccf3f0` (W0-REV-01);
   branch `ops/20261109-next-spec` verified with `git branch --show-current` before
   committing]. 1 file changed, 125 insertions, 53 deletions.
-- Report commit (docs-only, separate): this file — added with explicit path and a
-  commit message listing `2f26fb8`. SHA appended at commit time.
+- Report commit (docs-only, separate): `21ef990` — this file, committed with an
+  explicit path and a commit message listing code commit `2f26fb8`. (A follow-up
+  wording fix-up records this SHA in the file.)
