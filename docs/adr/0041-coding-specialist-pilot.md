@@ -16,7 +16,7 @@ claiming a new terminal event.*
 RFC §11.8 lists **10 example specialists**. The plan's "21 specialists" is
 therefore a verified phantom — an unsourced count — and the 21-at-once build
 it justified is unreviewable. The codebase agrees that nothing is built:
-`AgentRole` in `src/paa/core/types.py:479` holds the nine core hierarchy
+`AgentRole` in `src/paa/core/types.py:510` holds the nine core hierarchy
 roles plus the optional router, and the specialists package is an empty
 `__init__.py`. Delegation, by contrast, is built: `mediate_delegation` is
 the only path by which one agent causes another to run, the delegation graph

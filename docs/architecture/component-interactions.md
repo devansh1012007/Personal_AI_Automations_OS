@@ -242,7 +242,7 @@ paa agent "prompt" (cli/coder.py:44)
 | Make policy model-driven | Violates the "no model in control path / security loop" guarantee (`policy.py:7`) |
 | Remove sandbox from WorkerCell | Worker would execute on host; loses containment (`reasoning.py:441`) |
 | Delete `system_state_correlation_head` | Recovery would have to scan the full ledger instead of open lineages (`ledger/store.py:348`) |
-| Change `TERMINAL_EVENTS` | Recovery sweep would either re-process finished tasks or abandon in-flight ones (`core/types.py:242`) |
+| Change `TERMINAL_EVENTS` | Recovery sweep would either re-process finished tasks or abandon in-flight ones (`core/types.py:273`) |
 
 ## 7. Related documents
 

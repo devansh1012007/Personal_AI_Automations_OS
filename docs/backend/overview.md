@@ -63,7 +63,7 @@ All three converge on `ChiefOrchestrator` (`agents/orchestrator.py:189`).
 ## What the backend does NOT do (honest gaps)
 
 - No user authentication or authorization beyond the single permission mode
-  (`PermissionMode`, `core/types.py:279`).
+  (`PermissionMode`, `core/types.py:310`).
 - No multi-user or multi-tenancy.
 - No built-in concrete tools (file edit, bash, web, git) wired into the
   orchestrator's main task path (`README.md:240`).

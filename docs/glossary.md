@@ -45,7 +45,7 @@ where a meaning is inferred rather than verified, it is labelled.
   recovery sweep: `MUTATION_COMMITTED`, `EXECUTION_FAILED`, `POLICY_BLOCKED`,
   `SECURITY_VIOLATION`, `HUMAN_GATE_REJECTED`, `TASK_ABANDONED`. Note
   `EXECUTION_COMPLETED` is deliberately *not* terminal (it fires per step).
-  `src/paa/core/types.py:242`.
+  `src/paa/core/types.py:273`.
 - **Task projection / TaskPhase** — The deterministic left-fold projection of a
   lineage's events into coarse lifecycle phase (`CREATED`, `QUEUED`,
   `PLANNING`, `POLICY_REVIEW`, `EXECUTING`, `VALIDATING`, `AWAITING_HUMAN`,
@@ -69,10 +69,10 @@ Branches: `POLICY_BLOCKED / SECURITY_VIOLATION` (terminal blocked),
 - **Permission** — Capability tokens (`PERM_SANDBOX_RUN`, `PERM_WRITE_HOT`,
   `PERM_NET_EGRESS`, `PERM_EXTERNAL_WRITE`, `PERM_FILE_DELETE`,
   `PERM_SCHEMA_MIGRATE`, `PERM_SECRET_READ`, `PERM_MODEL_ESCALATE`,
-  `PERM_CROSS_SESSION_READ`). `src/paa/core/types.py:259`.
+  `PERM_CROSS_SESSION_READ`). `src/paa/core/types.py:290`.
 - **PermissionMode** — System-wide autonomy posture: `AUTO`, `ASK`,
   `SUPERVISED`, `LOCKDOWN`, `SAFE`, `HIGH_RISK`. Each grants a fixed permission
-  set without a human gate. `src/paa/core/types.py:279`.
+  set without a human gate. `src/paa/core/types.py:310`.
 - **coder PermissionMode** — Separate session posture for `paa agent`:
   `ask`, `accept_edits`, `plan` (read-only), `bypass`. Precedence: deny >
   allow > mode default. `src/paa/coder/permissions.py:40`.
@@ -81,9 +81,9 @@ Branches: `POLICY_BLOCKED / SECURITY_VIOLATION` (terminal blocked),
 
 - **ComplexityModality** — `SIMPLE`, `STANDARD`, `COMPLEX`, `MAX`. Bounds graph
   hops, recursion ceiling, token ceiling, memory, CPU, timeout, branch factor via
-  `MODALITY_PROFILES`. `src/paa/core/types.py:430`.
+  `MODALITY_PROFILES`. `src/paa/core/types.py:461`.
 - **ModalityProfile** — Hard resource envelope per modality; nothing in it is
-  advisory. `src/paa/core/types.py:343`.
+  advisory. `src/paa/core/types.py:374`.
 - **Escalation** — Local model first, frontier model on failure (only when
   modality ≥ `escalate_at_or_above` and the permission mode allows it). Every
   escalation writes a `MODEL_ESCALATED` ledger event *before* the frontier call.

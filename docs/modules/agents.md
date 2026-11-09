@@ -138,7 +138,7 @@ from DB (`:234`), anti-goals (cosine ≥0.82 or phrase match, `:262`). Risk scor
   (`agents/base.py:296`).
 - Adding a delegation requires `can_delegate = True` and orchestrator
   registration (`agents/base.py:308`, `orchestrator.py:251`).
-- Changing `TERMINAL_EVENTS` affects recovery scanning (`core/types.py:242`,
+- Changing `TERMINAL_EVENTS` affects recovery scanning (`core/types.py:273`,
   `ledger/store.py:304`).
 - Tests: `tests/agents/` (70 tests per README).
 

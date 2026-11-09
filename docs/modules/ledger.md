@@ -49,7 +49,7 @@ made retries impossible under a UNIQUE constraint.
 `correlation_id`, `event_type`, `state_version`, `payload`, `recorded_at`.
 
 `is_terminal` property (`events.py:196`): membership in `TERMINAL_EVENTS`
-(`core/types.py:242`).
+(`core/types.py:273`).
 
 ### `store.py` — append-only store
 `LedgerStore.append()` (`ledger/store.py:116`) inside one transaction:

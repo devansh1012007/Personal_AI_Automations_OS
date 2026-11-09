@@ -150,7 +150,7 @@ Agent-ops run 20261106-memory-remembering-agent (run trail, excluded from the `p
 4. Note what is persisted (ledger event, recovery mark, queue message) and what is
    derived (context packet, projection, indexes).
 5. Follow errors: every `PaaError` subclass carries structured `details` written to the
-   ledger; terminal events close a lineage (`core/types.py:242`).
+   ledger; terminal events close a lineage (`core/types.py:273`).
 
 When modifying a component, check its [module page](modules) for upstream callers and
 downstream consumers, then update the corresponding flow trace and this index.
