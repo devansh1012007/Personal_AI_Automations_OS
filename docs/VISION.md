@@ -400,6 +400,10 @@ Also stop and reassess if:
 | 10. Trust, scale, moat | Credential broker in **Horizon 2**; isolation and review in **Horizon 5**; ongoing throughout |
 ## Appendix: Temporal and spatial composability for PAA
 
+> **UNVERIFIED — paper not fetched or dated 2026, claims subject to review.** See the per-claim review
+> note [`docs/reviews/2026-11-09-composability-review.md`](reviews/2026-11-09-composability-review.md)
+> (abstract of arXiv 2608.25512 fetched 2026-11-09; 92-page PDF body not line-checked).
+
 > **Status: proposed architectural clarification; not an implementation claim.** This
 > addendum extends the existing thesis, product shape, extension constraints, and
 > horizons. It does not replace or remove any existing task. A proposed interface or
