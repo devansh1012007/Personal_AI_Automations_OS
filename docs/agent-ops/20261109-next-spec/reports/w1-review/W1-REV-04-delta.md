@@ -4,7 +4,7 @@
 ORCH-DIGEST: |
   agent: W1-REV-04 | task: T-N1-delta-review | status: DONE
   code_commits: dbff769, 1c3d0bf
-  report_commit: PENDING
+  report_commit: b2864aa
   verdict: APPROVE-DICTATED-SCOPE (all 6 claims verified; zero new defects found; both MAJOR-3s correctly left untouched)
   tests: scoped 207 passed (63 fs_read + 144 write/git/patch); conventions 34 passed; ruff 0; mypy 3 pre-existing
   blockers: none
