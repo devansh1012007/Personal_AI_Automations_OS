@@ -157,6 +157,12 @@ _HTML_TAG = re.compile(r"<[^>]+>")
 #: slugger drops exactly these (punctuation, symbols, slashes).
 _NON_SLUG = re.compile(r"[^\w\s-]", re.UNICODE)
 
+#: The destination ``find_links`` records when the destination cannot be
+#: parsed (the parenthesis never closes on the line). One constant for the
+#: emitter and every consumer, so a typo in one site cannot silently
+#: disable the handling in another.
+_UNPARSEABLE = "<unparseable-link>"
+
 
 @dataclass(frozen=True)
 class Link:
@@ -283,7 +289,7 @@ def find_links(text: str) -> list[tuple[int, str]]:
                 continue
             destination = _parse_destination(line, tail.end())
             if destination is None:
-                found.append((number, "<unparseable-link>"))
+                found.append((number, _UNPARSEABLE))
             else:
                 found.append((number, destination))
     return found
@@ -416,6 +422,36 @@ def _is_allowlisted(document: str, path: str) -> bool:
     return urllib.parse.unquote(path) in ALLOWLISTED_INDEX_ONLY_ADR_FILES
 
 
+def _existence_defect(
+    link: Link, document_path: Path, root: Path = REPO_ROOT
+) -> str | None:
+    """The defect for a link whose destination is bad or missing, if any.
+
+    This is the single source for the existence rules — an unparseable
+    destination, the allowlisted index-only names (a fragment attached
+    disqualifies them), and the missing-target report — shared by
+    :func:`check_link` and the granular existence test so the two cannot
+    diverge. External destinations hold by definition and are not
+    defects here.
+
+    :return: a description of the defect, or ``None`` when the
+        destination names something that exists (or is external).
+    """
+    path, fragment = split_destination(link.destination)
+    if is_external(path):
+        return None
+    if link.destination == _UNPARSEABLE:
+        return (
+            f"{link.quoted} — the link parenthesis never closes on the line; "
+            "the destination cannot be parsed"
+        )
+    if resolve(document_path, path, root) is None:
+        if _is_allowlisted(link.document, path) and not fragment:
+            return None
+        return f"{link.quoted} — no such file or directory in the repository"
+    return None
+
+
 def check_link(
     link: Link,
     document_path: Path,
@@ -431,36 +467,36 @@ def check_link(
     path, fragment = split_destination(link.destination)
     if is_external(path):
         return None
-    if link.destination == "<unparseable-link>":
-        return (
-            f"{link.quoted} — the link parenthesis never closes on the line; "
-            "the destination cannot be parsed"
-        )
-    allowlisted = _is_allowlisted(link.document, path) and not fragment
+    # Existence rules live in _existence_defect — the single source shared
+    # with the granular existence test — so the two paths cannot diverge.
+    existence = _existence_defect(link, document_path, root)
+    if existence is not None:
+        return existence
+    if not fragment:
+        return None
     target = resolve(document_path, path, root)
-    if target is None:
-        if allowlisted:
-            return None
-        return f"{link.quoted} — no such file or directory in the repository"
-    if fragment:
-        decoded_fragment = urllib.parse.unquote(fragment).strip().lower()
-        if target.is_dir():
-            return (
-                f"{link.quoted} — the target is the directory "
-                f"{target.relative_to(root).as_posix()!r}, which has no headings"
-            )
-        if target.suffix.lower() != ".md":
-            return (
-                f"{link.quoted} — the target "
-                f"{target.relative_to(root).as_posix()!r} is not a markdown "
-                "file, so the anchor names nothing"
-            )
-        if decoded_fragment not in _anchors_for(target, cache):
-            return (
-                f"{link.quoted} — no heading in "
-                f"{target.relative_to(root).as_posix()} has the anchor "
-                f"{decoded_fragment!r}"
-            )
+    # _existence_defect returned None, so the target resolves: the only
+    # other None case (an allowlisted bare name) implies no fragment and
+    # returned by the guard above.
+    assert target is not None, f"existence passed for {link.quoted} but resolve failed"
+    decoded_fragment = urllib.parse.unquote(fragment).strip().lower()
+    if target.is_dir():
+        return (
+            f"{link.quoted} — the target is the directory "
+            f"{target.relative_to(root).as_posix()!r}, which has no headings"
+        )
+    if target.suffix.lower() != ".md":
+        return (
+            f"{link.quoted} — the target "
+            f"{target.relative_to(root).as_posix()!r} is not a markdown "
+            "file, so the anchor names nothing"
+        )
+    if decoded_fragment not in _anchors_for(target, cache):
+        return (
+            f"{link.quoted} — no heading in "
+            f"{target.relative_to(root).as_posix()} has the anchor "
+            f"{decoded_fragment!r}"
+        )
     return None
 
 
@@ -492,20 +528,29 @@ def _violations(links: list[Link], root: Path = REPO_ROOT) -> list[str]:
     return defects
 
 
-def test_every_relative_link_names_an_existing_path() -> None:
-    """Every link destination resolves to a file or a directory."""
+def _existence_defects(root: Path = REPO_ROOT) -> list[str]:
+    """Every existence defect in the lock's scope, in link order.
+
+    The granular existence test runs this, so a defect class reported here
+    fails the real suite — not just the synthetic self-test's
+    :func:`_violations` path.
+    """
     defects: list[str] = []
-    for link in all_links():
-        path, _fragment = split_destination(link.destination)
-        if is_external(path) or link.destination == "<unparseable-link>":
-            continue
-        document_path = REPO_ROOT / link.document
-        if resolve(document_path, path, REPO_ROOT) is None:
-            if _is_allowlisted(link.document, path):
-                continue
-            defects.append(
-                f"{link.quoted} — no such file or directory in the repository"
-            )
+    for link in all_links(root):
+        defect = _existence_defect(link, root / link.document, root)
+        if defect is not None:
+            defects.append(defect)
+    return defects
+
+
+def test_every_relative_link_names_an_existing_path() -> None:
+    """Every link destination resolves to a file or a directory.
+
+    A destination that cannot be parsed (the parenthesis never closes) is
+    reported as a defect, not skipped — it renders as literal brackets,
+    so it is a broken link the lock must catch.
+    """
+    defects = _existence_defects()
     assert not defects, "broken links:\n" + "\n".join(defects)
 
 
@@ -549,11 +594,19 @@ def test_the_lock_catches_a_broken_link(tmp_path: Path) -> None:
 
     Mirrors the ``path:line`` lock's self-test: build a synthetic tree —
     the shape of a small repository, with a document that links to a file
-    and to a heading — and break the link three ways: the file is
-    missing, the anchor names no heading, and a same-document anchor is
-    wrong. The allowlisted ADR name in the ADR index is the one missing
-    target that must *not* be reported, and the healthy links must not
-    be reported either.
+    and to a heading — and break the link five ways: the file is
+    missing, the anchor names no heading, a same-document anchor is
+    wrong, two destinations never close their parenthesis (an
+    unterminated angle and a missing close paren), and an allowlisted
+    ADR name carries a fragment. The allowlisted ADR name on its own
+    (no fragment) is the one missing target that must *not* be
+    reported, and the healthy links must not be reported either.
+
+    The granular existence check (:func:`_existence_defects`, the same
+    function the real existence test runs) must report the missing
+    file, both malformed destinations, and the fragmented allowlist
+    name — and nothing else — so the malformed and fragmented classes
+    fail the real suite, not just :func:`_violations`.
     """
     root = tmp_path / "repo"
     (root / "docs" / "adr").mkdir(parents=True)
@@ -562,27 +615,46 @@ def test_the_lock_catches_a_broken_link(tmp_path: Path) -> None:
         "See [the guide](docs/guide.md#the-guide).\n"
         "See [the missing file](docs/missing.md).\n"
         "See [the missing heading](docs/guide.md#no-such-heading).\n"
-        "See [the wrong self anchor](#no-such-heading-on-this-page).\n",
+        "See [the wrong self anchor](#no-such-heading-on-this-page).\n"
+        "See [the unterminated angle](<unterminated\n"
+        "See [the missing paren](docs/guide.md\n",
         encoding="utf-8",
     )
     (root / "docs" / "guide.md").write_text(
         "# Guide\n\n## The guide\n\nBody.\n", encoding="utf-8"
     )
     (root / "docs" / "adr" / "README.md").write_text(
-        "# ADRs\n\n[0001](0001-sqlite-over-postgres.md)\n", encoding="utf-8"
+        "# ADRs\n\n"
+        "[0001](0001-sqlite-over-postgres.md)\n"
+        "[0001 fragment](0001-sqlite-over-postgres.md#foo)\n",
+        encoding="utf-8",
     )
     links = all_links(root)
-    assert len(links) == 5, f"expected five links, found {len(links)}: {links}"
+    assert len(links) == 8, f"expected eight links, found {len(links)}: {links}"
     defects = _violations(links, root=root)
     joined = "\n".join(defects)
     assert "no such file or directory" in joined, joined
     assert "docs/missing.md" in joined, joined
     assert "no heading" in joined, joined
     assert "no-such-heading" in joined, joined
-    # The healthy links and the sanctioned index-only row are not reported.
+    # Both malformed destinations are defects, and so is the allowlisted
+    # name once a fragment is attached.
+    assert joined.count("parenthesis never closes") == 2, joined
+    assert "0001-sqlite-over-postgres.md#foo" in joined, joined
+    # The healthy links and the bare sanctioned index-only row are not
+    # reported: the allowlisted name appears only in the fragmented defect.
     assert "docs/guide.md#the-guide" not in joined, joined
-    assert "0001-sqlite-over-postgres.md" not in joined, joined
-    assert len(defects) == 3, joined
+    assert joined.count("0001-sqlite-over-postgres.md") == 1, joined
+    assert len(defects) == 6, joined
+    # The granular existence check reports the file/malformed/fragmented
+    # classes (and no anchor class), proving they fail the real suite.
+    existence = _existence_defects(root)
+    existence_joined = "\n".join(existence)
+    assert existence_joined.count("parenthesis never closes") == 2, existence_joined
+    assert "docs/missing.md" in existence_joined, existence_joined
+    assert "0001-sqlite-over-postgres.md#foo" in existence_joined, existence_joined
+    assert "no heading" not in existence_joined, existence_joined
+    assert len(existence) == 4, existence_joined
 
 
 def test_allowlist_only_covers_genuinely_missing_adr_bodies() -> None:
