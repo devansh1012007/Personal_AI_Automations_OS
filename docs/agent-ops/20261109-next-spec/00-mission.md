@@ -1,0 +1,12 @@
+# Mission — 20261109-next-spec
+- Run-id: 20261109-next-spec
+- Branch: ops/20261109-next-spec from main @ b8570a6 (owner choice main clean), HEAD b8570a6479ea27485c33ac1b2de3ccc6074e82c0
+- Plan: docs/plans/2026-11-09-next-spec-revised.md (APPROVED 2026-11-09)
+- Spec: docs/2026-11-09-next-spec.md (untracked, source)
+- Concurrency cap: 5
+- Hotspots (single-writer): README.md (N0.1→N0.4), coder/agent.py (N1.5→N2.2/N2.3), coder/loop.py (N2.1→N2.2), cli/main.py+cli/coder.py (N1.5→N2.4), core/types.py+ledger/replay.py (N2.1 only)
+- Commands: ruff check src tests; mypy src; pytest tests/ -q; pytest tests/conventions -q; pytest -m chaos; pytest -m "not slow"; single-file pytest tests/path/test_x.py -q
+- Baseline (ops branch, no agents): ruff All checks passed!; mypy exactly 3 at sandbox/subprocess_backend.py:548 (Windows host, pre-existing A-001); pytest tests/conventions 26 passed; 3754 collected.
+- Pre-existing uncommitted on docs/user-guide-20261108 (not on ops): restored via git restore VISION.md + Plan1.md at preflight. Untracked on ops: docs/2026-11-09-next-spec.md, docs/New shortcut.lnk, docs/plans/2026-11-08-*.md, docs/plans/2026-11-09-next-spec-revised.md, docs/research/ ("deep seek super agent.md" spaces file).
+- Decisions: owner 2026-11-09 all recommended (D-1..D-9 with fixes, Linux/WSL2 S1, OpenRouter, rename research, keep appendix UNVERIFIED, main b8570a6 clean, pwsh/bash + revised stop rule).
+- Assumptions: A-001 Windows mypy 3; PG/S3/Docker not-run locally (CI only).
