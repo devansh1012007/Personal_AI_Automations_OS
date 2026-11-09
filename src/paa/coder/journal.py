@@ -70,7 +70,14 @@ from typing import Any
 from paa.coder.loop import ToolCtx
 from paa.coder.workspace import Workspace, WorkspaceViolation, assert_inside_workspace
 from paa.core.types import EventType
-from paa.ledger.events import LedgerEvent, canonical_json
+from paa.ledger.events import (
+    BlobStoreLike,
+    LedgerEvent,
+    canonical_json,
+    maybe_blob_payload,
+    payload_requires_blob,
+    payload_size_bytes,
+)
 from paa.ledger.store import LedgerStore
 from paa.validation.patch import compute_patch_sha256
 
@@ -382,11 +389,47 @@ class LedgerToolJournal:
     structurally (async, same arities); the class deliberately does not
     inherit the protocol, matching the loop module's own idiom for
     ``Tool`` / ``ToolCallingModel``.
+
+    The optional blob store (N2.6) is the size-check target: when a
+    journalled payload's canonical form exceeds the ledger's inline
+    limit, the payload is offloaded to the store and the row keeps only
+    the descriptor. Without a store an oversized payload raises rather
+    than bloating the row — a journal that cannot journal a call within
+    the size contract must abort it, exactly as it aborts a call whose
+    ids cannot be made unambiguous.
     """
 
-    def __init__(self, ledger: LedgerStore, correlation_id: uuid.UUID) -> None:
+    def __init__(
+        self,
+        ledger: LedgerStore,
+        correlation_id: uuid.UUID,
+        *,
+        blob_store: BlobStoreLike | None = None,
+    ) -> None:
         self._ledger = ledger
         self._correlation_id = correlation_id
+        self._blob_store = blob_store
+
+    def _blobbed(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Apply the N2.6 size check to one payload.
+
+        Small payloads pass through unchanged. Oversized payloads are
+        blobbed through the events contract, which is the single place
+        the threshold, the descriptor shape, and the hash verification
+        live; this module adds only the policy that an oversized payload
+        without a blob store is a :class:`ValueError` (raised before any
+        append, so — as with :func:`_validate_ids` — the raise is the
+        abort and the tool does not execute unjournalled).
+        """
+        if not payload_requires_blob(payload):
+            return payload
+        if self._blob_store is None:
+            raise ValueError(
+                "journal payload exceeds the 8 KB inline limit "
+                f"({payload_size_bytes(payload)} bytes) and no blob store is "
+                "configured — refusing to bloat the ledger"
+            )
+        return maybe_blob_payload(payload, self._blob_store)
 
     async def before(self, ctx: ToolCtx) -> None:
         """Append TOOL_CALL_PROPOSED attesting the post-hook args.
@@ -410,6 +453,8 @@ class LedgerToolJournal:
             "patch_sha256": ctx.patch_sha256,
         }
         _assert_no_fact_id(payload, EventType.TOOL_CALL_PROPOSED)
+        blobbed = self._blobbed(payload)
+        _assert_no_fact_id(blobbed, EventType.TOOL_CALL_PROPOSED)
         await self._ledger.append(
             LedgerEvent.create(
                 self._correlation_id,
@@ -418,7 +463,7 @@ class LedgerToolJournal:
                 discriminator=discriminator_for(
                     ctx.session_id, ctx.call_id, _KIND_PROPOSED
                 ),
-                payload=payload,
+                payload=blobbed,
             )
         )
 
@@ -433,13 +478,15 @@ class LedgerToolJournal:
             "reason": reason,
         }
         _assert_no_fact_id(payload, EventType.TOOL_CALL_DENIED)
+        blobbed = self._blobbed(payload)
+        _assert_no_fact_id(blobbed, EventType.TOOL_CALL_DENIED)
         await self._ledger.append(
             LedgerEvent.create(
                 self._correlation_id,
                 EventType.TOOL_CALL_DENIED,
                 attempt=0,
                 discriminator=discriminator_for(ctx.session_id, ctx.call_id, _KIND_DENIED),
-                payload=payload,
+                payload=blobbed,
             )
         )
 
@@ -470,6 +517,8 @@ class LedgerToolJournal:
                 "isolation_level": ctx.isolation_level.name,
             }
             _assert_no_fact_id(payload, EventType.TOOL_CALL_COMPLETED)
+            blobbed = self._blobbed(payload)
+            _assert_no_fact_id(blobbed, EventType.TOOL_CALL_COMPLETED)
             await self._ledger.append(
                 LedgerEvent.create(
                     self._correlation_id,
@@ -478,7 +527,7 @@ class LedgerToolJournal:
                     discriminator=discriminator_for(
                         ctx.session_id, ctx.call_id, _KIND_COMPLETED
                     ),
-                    payload=payload,
+                    payload=blobbed,
                 )
             )
         else:
@@ -499,12 +548,14 @@ class LedgerToolJournal:
                 "isolation_level": ctx.isolation_level.name,
             }
             _assert_no_fact_id(failed_payload, EventType.TOOL_CALL_FAILED)
+            blobbed_failed = self._blobbed(failed_payload)
+            _assert_no_fact_id(blobbed_failed, EventType.TOOL_CALL_FAILED)
             await self._ledger.append(
                 LedgerEvent.create(
                     self._correlation_id,
                     EventType.TOOL_CALL_FAILED,
                     attempt=0,
                     discriminator=discriminator_for(ctx.session_id, ctx.call_id, _KIND_FAILED),
-                    payload=failed_payload,
+                    payload=blobbed_failed,
                 )
             )
