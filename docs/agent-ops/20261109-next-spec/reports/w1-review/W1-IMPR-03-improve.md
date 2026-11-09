@@ -1,6 +1,6 @@
 <!-- ORCH-DIGEST:START -->
 agent: W1-IMPR-03 | task: T-N1-1-IMPR | status: DONE
-code_commits: dbff769 | report_commit: pending
+code_commits: dbff769 | report_commit: e44e83d
 files_changed: 2 (src/paa/coder/fs_read_tools.py, tests/coder/test_fs_read_tools.py)
 contracts_changed: none (payload keys unchanged; `truncated` now true when walk capped; `note` joins both causes; `files_skipped` now counts binary/non-UTF-8)
 tests: added 6, changed 0; scoped run: pass (63 passed; 6 fail-before)
