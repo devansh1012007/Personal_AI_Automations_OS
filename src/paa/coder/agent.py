@@ -25,6 +25,7 @@ to deny.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -40,11 +41,12 @@ from paa.coder.loop import AgentLoop, LoopResult, ToolJournal
 from paa.coder.model_adapter import RouterToolCallingModel
 from paa.coder.permissions import DEFAULT_MUTATING_TOOLS, PermissionMode, ToolPermissionPolicy
 from paa.coder.runtime_tools import READ_ONLY_TOOLS, build_runtime_tools
-from paa.coder.session import Session
+from paa.coder.session import Session, TurnRole
 from paa.coder.shell_tools import build_shell_tools
-from paa.coder.workspace import Workspace
+from paa.coder.workspace import Workspace, WorkspaceViolation, assert_inside_workspace
 from paa.core.errors import PaaError
 from paa.core.types import ComplexityModality, new_correlation_id
+from paa.ledger.recovery import InterruptedCall, InterruptionState, classify_interrupted
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -243,6 +245,13 @@ class CoderAgent:
             journal=active_journal,
             workspace=workspace,
         )
+        # A resumed session (``--resume`` / ``--continue`` with turns on
+        # disk) re-enters a history a crash may have cut mid-call: close
+        # the interrupted ledger calls and tell the model what happened
+        # before it reasons from a transcript that omits them. A fresh
+        # session has no turns, so it skips this entirely.
+        if session.turns:
+            await _inject_resume_recovery_note(runtime, session, workspace)
         return cls(
             runtime=runtime,
             model=model,
@@ -250,6 +259,103 @@ class CoderAgent:
             session=session,
             tools=tools,
         )
+
+
+async def _inject_resume_recovery_note(
+    runtime: Runtime, session: Session, workspace: Workspace | None
+) -> None:
+    """Close interrupted calls on a resumed session and note them.
+
+    The ledger scan is by payload ``session_id`` across lineages
+    (:func:`paa.ledger.recovery.find_interrupted_calls_for_session`):
+    the interrupted calls live on the correlation the *previous* build
+    minted, not on the one this build mints, and the CLI passes no
+    correlation on ``--resume`` — so a per-correlation read would never
+    see them. Each call found is closed as ``FAILED(reason=
+    "interrupted")`` on its own lineage (idempotent: a second resume
+    finds the outcome and appends nothing), classified, and named in
+    one ``SYSTEM`` turn via :meth:`Session.inject_recovery_note`.
+
+    Classification joins the ledger row to the transcript: the record
+    of which file a ``write_file`` / ``edit_file`` targeted exists only
+    in the ``TOOL_CALL`` turn's arguments, so a call is matched by
+    ``(tool, args_sha256)`` — the hash covers the pre-hook args the
+    transcript recorded, and a hook-redacted call therefore (correctly)
+    fails to match and reads ``UNKNOWN`` rather than guessing. The live
+    file is then hashed through the workspace jail, exactly as the
+    journal hashed it at PROPOSED time.
+    """
+    from paa.coder.journal import args_sha256_of
+    from paa.ledger.recovery import (
+        close_interrupted_calls,
+        find_interrupted_calls_for_session,
+    )
+
+    interrupted = await find_interrupted_calls_for_session(
+        runtime.ledger, session.session_id
+    )
+    if not interrupted:
+        return
+    await close_interrupted_calls(runtime.ledger, interrupted)
+    transcript_args: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for turn in session.turns:
+        if turn.role is TurnRole.TOOL_CALL and turn.tool_name is not None:
+            transcript_args.setdefault(
+                (turn.tool_name, args_sha256_of(turn.tool_arguments)), []
+            ).append(turn.tool_arguments)
+    entries = [
+        _resume_entry(call, transcript_args, workspace) for call in interrupted
+    ]
+    session.inject_recovery_note(entries)
+
+
+def _resume_entry(
+    call: InterruptedCall,
+    transcript_args: dict[tuple[str, str], list[dict[str, Any]]],
+    workspace: Workspace | None,
+) -> str:
+    """One note line: which call, and what its classification forbids.
+
+    File edits are hashed at the jailed target when the transcript
+    names it; everything without a checkable live hash (shell / git /
+    ``apply_patch`` / a redacted or unrecorded path / no workspace)
+    reads ``UNKNOWN`` and the line says so — the model must inspect,
+    never assume.
+    """
+    live_sha256: str | None = None
+    live_checked = False
+    candidates = transcript_args.get((call.tool, call.args_sha256 or ""))
+    if workspace is not None and candidates:
+        args = candidates.pop(0)
+        raw_path = args.get("path")
+        if isinstance(raw_path, str) and raw_path.strip():
+            try:
+                resolved = assert_inside_workspace(
+                    workspace, workspace.root / Path(raw_path)
+                )
+            except (WorkspaceViolation, ValueError, OSError):
+                resolved = None
+            if resolved is not None and resolved.is_file():
+                try:
+                    live_sha256 = hashlib.sha256(resolved.read_bytes()).hexdigest()
+                    live_checked = True
+                except OSError:
+                    live_checked = False
+    state = classify_interrupted(
+        call.tool,
+        pre_sha256=call.pre_sha256,
+        post_sha256=call.post_sha256,
+        patch_sha256=call.patch_sha256,
+        live_sha256=live_sha256,
+        live_checked=live_checked,
+    )
+    if state is InterruptionState.APPLIED:
+        guidance = "the edit landed before the crash — do not re-run"
+    elif state is InterruptionState.NOT_APPLIED:
+        guidance = "the call never landed — it is safe to retry"
+    else:
+        guidance = "outcome unknown — do not re-run; inspect the state first"
+    return f"{call.tool} (call {call.call_id}): {state.value} — {guidance}"
 
 
 def build_work_tools(runtime: Runtime, workspace: Workspace | None = None) -> dict[str, Any]:

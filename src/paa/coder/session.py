@@ -168,6 +168,44 @@ class Session:
         """Drop the in-memory window. The on-disk transcript is preserved."""
         self._turns = []
 
+    # -- recovery note -----------------------------------------------------
+
+    def inject_recovery_note(self, entries: list[str]) -> Turn | None:
+        """Record what a crash interrupted, so the resumed model knows.
+
+        ``entries`` names each interrupted call with its classification
+        (``applied`` / ``not_applied`` / ``unknown`` — see
+        :func:`paa.ledger.recovery.classify_interrupted`). The note is
+        one ``SYSTEM`` turn, so it renders as a system message in the
+        model window and survives in the transcript for the operator.
+
+        Empty ``entries`` is a no-op (``None``): nothing was interrupted,
+        so there is nothing to say. The note is idempotent by content —
+        injecting the same entries twice (a double ``--resume`` with no
+        new crash in between) appends nothing the second time.
+        """
+        if not entries:
+            return None
+        lines = [
+            "Recovery note — the previous run was interrupted before the",
+            "following tool call(s) recorded an outcome:",
+            *(f"- {entry}" for entry in entries),
+            "Calls marked `unknown` must not be re-run (D-6): inspect",
+            "the state first. `applied` calls need no action;",
+            "`not_applied` calls never landed and may be retried.",
+        ]
+        content = "\n".join(lines)
+        for turn in self._turns:
+            if (
+                turn.role is TurnRole.SYSTEM
+                and turn.metadata.get("recovery_note") is True
+                and turn.content == content
+            ):
+                return turn
+        return self.append(
+            Turn(TurnRole.SYSTEM, content, metadata={"recovery_note": True})
+        )
+
     # -- persistence -------------------------------------------------------
 
     @classmethod
