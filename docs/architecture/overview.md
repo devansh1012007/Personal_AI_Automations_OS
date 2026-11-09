@@ -203,7 +203,7 @@ These are deliberate, documented, and cited in source:
 | 18 memory domains over 6 mechanisms | ADR-0014, `memory/domains.py:79` | Most RFC rows differ only by label |
 
 Full ADR list that exists on disk: `0008`, `0010`, `0015`, `0019`–`0026`,
-`0028`–`0035` and `0036`–`0044` (`docs/adr/README.md:66`). The remaining
+`0028`–`0035` and `0036`–`0045` (`docs/adr/README.md:66`). The remaining
 index rows are index-only: a decision was taken, without a body on disk.
 
 ## Module boundary summary (dependency direction)

@@ -33,7 +33,7 @@ from typing import Any, cast
 
 import pytest
 
-from paa.coder.agent import MUTATING_RUNTIME_TOOLS, CoderAgent
+from paa.coder.agent import MUTATING_RUNTIME_TOOLS, CoderAgent, build_work_tools
 from paa.coder.loop import ModelTurn, ToolCall
 from paa.coder.permissions import (
     DEFAULT_MUTATING_TOOLS,
@@ -798,9 +798,21 @@ class TestTheRecallQueryIsRefusedNotSearched:
 
 class TestReadOnlyAndMutatingSets:
     def test_read_only_tools_are_catalogue_members_and_not_mutating(
-        self, tools: dict[str, Any]
+        self, tools: dict[str, Any], rt: StubRuntime
     ) -> None:
-        assert set(tools) >= READ_ONLY_TOOLS
+        # READ_ONLY_TOOLS is a name union over the full catalogue (N1.5):
+        # runtime reads live in build_runtime_tools, work-tool reads in the
+        # factories, so membership is pinned against the merged catalogue.
+        work_reads = {"read_file", "glob", "grep", "git_status", "git_diff"}
+        full = build_work_tools(cast(Any, rt), workspace=None)
+        # build_work_tools(None) is exactly the runtime catalogue; prove the
+        # fixture's set is that set so the membership check below is not
+        # comparing against a different population.
+        assert set(full) == set(tools)
+        assert set(full) >= READ_ONLY_TOOLS - work_reads
+        # Work-tool reads are catalogue members of the merged build (with a
+        # workspace) — build keys superset after wiring.
+        assert set(tools) >= READ_ONLY_TOOLS - work_reads
         assert not READ_ONLY_TOOLS & set(MUTATING_RUNTIME_TOOLS)
         assert set(tools) - READ_ONLY_TOOLS == set(MUTATING_RUNTIME_TOOLS)
 

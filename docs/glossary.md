@@ -130,7 +130,7 @@ Branches: `POLICY_BLOCKED / SECURITY_VIOLATION` (terminal blocked),
   `src/paa/coder/model_adapter.py:118`.
 - **ToolPermissionPolicy** — Allow/deny/ask per tool call; deny always wins
   (even under bypass); PLAN mode refuses all mutating tools.
-  `src/paa/coder/permissions.py:143`.
+  `src/paa/coder/permissions.py:144`.
 
 ## Skills / marketplace
 

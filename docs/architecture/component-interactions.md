@@ -100,7 +100,7 @@ flowchart TD
 | `MemoryCreator` (`memory/creator.py`) | Ingests unprocessed signals into hot-serving facts | `MemoryCreator.run_batch()` | `Database`, `FactRepository` | Daemon ingestion loop | Writes entities/facts |
 | `DecaySweeper` (`memory/decay.py`) | Evicts stale facts via `C(t)=C₀·e⁻ˡᵃᵐᵇᵈᵃ·t` | `DecaySweeper.sweep()` | `Database`, `DomainPolicy` | Daemon maintenance loop | Deletes/archives stale fact rows |
 | `DeterministicValidationEngine` (`validation/engine.py:185`) | Binary PASS/FAIL: schema → AST → patch → drift → tests | `validate()` (`engine.py:208`) | `AstSecurityScanner`, `SchemaValidator`, `UnifiedDiffValidator`, `WorkspaceSnapshot`, optional `PytestRunner`/`Sandbox` | `CriticValidatorAdapter` (`runtime.py:77`) | Runs tests in sandbox (only check that executes code) |
-| `CoderAgent` (`coder/agent.py:71`) | Tool-using loop over the runtime | `CoderAgent.build()` (`coder/agent.py:105`) | `Runtime`, `AgentLoop`, `RouterToolCallingModel`, `ToolPermissionPolicy`, `HookRegistry`, `Session` | `paa agent` CLI (`cli/coder.py`) | Submits/runs tasks via runtime tools; writes session transcripts |
+| `CoderAgent` (`coder/agent.py:81`) | Tool-using loop over the runtime | `CoderAgent.build()` (`coder/agent.py:115`) | `Runtime`, `AgentLoop`, `RouterToolCallingModel`, `ToolPermissionPolicy`, `HookRegistry`, `Session` | `paa agent` CLI (`cli/coder.py`) | Submits/runs tasks via runtime tools; writes session transcripts |
 | `AgentLoop` (`coder/loop.py:116`) | think → act → observe under permissions & hooks | `AgentLoop.run()` (`loop.py:142`) | `ToolCallingModel`, `ToolPermissionPolicy`, `HookRegistry`, `Session` | `CoderAgent.ask()` | Records turns; calls tools; mutates session transcript |
 | `SignalRepository` (`storage/coldlake/signals.py:102`) | Raw signal intake; idempotent on (channel, external_id); CAS offload | `SignalRepository.record()` (`signals.py:127`) | `Database`, `ContentAddressedStore` | API (`/signals`), daemon ingestion | Writes `cold_lake_signals`; offloads blobs to CAS |
 | `ContentAddressedStore` (`storage/coldlake/cas.py:147`) | Content-addressed, zstd-compressed blob store | `put()` / `get()` | `zstandard`, filesystem | `SignalRepository`, `copy_file_into` | Writes blobs under `cold_lake/blobs/<sha2>/<sha>.zst` |
@@ -177,13 +177,13 @@ paa recover / Daemon.start → Runtime.boot_recovery()
 
 ```
 paa agent "prompt" (cli/coder.py:44)
-  → CoderAgent.build() (coder/agent.py:101) → Runtime.build()
+  → CoderAgent.build() (coder/agent.py:115) → Runtime.build()
     → AgentLoop.run() (loop.py:142)
       → RouterToolCallingModel.propose() (model_adapter.py:161)
         → EscalatingModelRouter.complete_structured (router.py:274)
       → for each tool call:
         → HookRegistry.fire(PRE_TOOL_USE) (hooks.py:95)
-        → ToolPermissionPolicy.evaluate() (permissions.py:172)
+        → ToolPermissionPolicy.evaluate() (permissions.py:173)
         → confirm callback on ASK (loop.py:231)
         → tool.run() → build_runtime_tools tool (runtime_tools.py)
           → e.g. submit_task → Runtime.submit() (runtime.py:189)
