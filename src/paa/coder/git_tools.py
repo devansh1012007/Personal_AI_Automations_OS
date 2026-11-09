@@ -22,9 +22,14 @@ decision, like an explicit deny below ``bypass``):
    in that frozen order): every path is validated as a non-empty string,
    canonicalised by :func:`paa.coder.workspace.assert_inside_workspace`,
    then refused if :func:`paa.coder.workspace.is_protected` names a reason
-   (``.git`` subtree, any-depth ``.env*``, ``PAA_HOME``). Validation is
-   all-or-nothing: one protected or escaping path aborts the whole call
-   before git runs, so a batch cannot stage "the safe half".
+   (``.git`` subtree, any-depth ``.env*``, ``PAA_HOME``). Directories and
+   pathspec expansion are refused outright: git expands a directory
+   recursively, ``"."`` to the whole tree, and glob/magic pathspecs to
+   whatever they match, so only *named files* — never a directory and never
+   a path containing ``* ? [ :`` — reach git, and every one of them has
+   passed the check. Validation is all-or-nothing: one protected or escaping
+   path aborts the whole call before git runs, so a batch cannot stage "the
+   safe half".
 
 Subprocess discipline, borrowed from the sandbox backend's patterns
 (``sandbox/subprocess_backend.py``): capped output reads that drain past the
@@ -117,6 +122,16 @@ _DRAIN_TIMEOUT_SECONDS = 5.0
 #: How many paths a single stage/diff call may name. Bounds argv length and
 #: the per-path jail cost (one canonicalisation each).
 _MAX_PATHS = 100
+
+#: Pathspec characters git would interpret instead of matching one file:
+#: ``*``/``?``/``[`` are glob metacharacters and ``:`` introduces pathspec
+#: magic (``:/`` is the top level). A pathspec carrying any of these is
+#: refused before git runs (BLOCKER-1): git expands it to whatever it
+#: matches, and the expansion — protected descendants included — would
+#: never pass the jail-then-protect check. ``?`` and ``[`` are legal in
+#: POSIX filenames; refusing them is the safe direction (and on Windows
+#: ``*`` and ``?`` are illegal in filenames anyway).
+_PATHSPEC_META_CHARS: tuple[str, ...] = ("*", "?", "[", ":")
 
 #: Commit message bound: a real subject plus a body, never a dump.
 _MAX_MESSAGE_CHARS = 2048
@@ -319,9 +334,22 @@ def _jail_paths(ws: Workspace, paths: list[str]) -> list[Path] | dict[str, Any]:
     workspace is allowed on the same terms as a relative one — both go
     through the canonical-compare jail either way. A bare ``Path(raw)``
     would resolve against the process cwd, never the workspace.
+
+    Directories and pathspec expansion are refused (BLOCKER-1): git expands
+    a directory pathspec recursively (staging ``sub`` stages ``sub/.env.local``),
+    ``"."`` expands to the whole tree, and glob/magic pathspecs (``* ? [ :``)
+    expand to whatever they match. The jail-then-protect check runs on the
+    named path only, so those expansions would stage or show files that were
+    never inspected. Refusing both keeps the checked unit and git's acted-on
+    unit identical.
     """
     jailed: list[Path] = []
     for raw in paths:
+        if any(char in raw for char in _PATHSPEC_META_CHARS):
+            return {
+                "error": f"pathspec magic or glob is not allowed: {raw}",
+                "reason": "pathspec magic or glob is not allowed",
+            }
         try:
             resolved = assert_inside_workspace(ws, ws.root / Path(raw))
         except WorkspaceViolation as exc:
@@ -329,6 +357,21 @@ def _jail_paths(ws: Workspace, paths: list[str]) -> list[Path] | dict[str, Any]:
         reason = is_protected(ws, resolved)
         if reason is not None:
             return {"error": f"{reason}: {raw}", "reason": reason}
+        if resolved.is_dir():
+            return {
+                "error": f"directories cannot be staged or diffed; name files: {raw}",
+                "reason": "directory not allowed",
+            }
+        # The canonical relative form is what git receives. A directory
+        # literally named with metacharacters (``*.txt/``) puts the
+        # metacharacter into the relative form even when the raw string
+        # above was clean, so scan the form git will see as well.
+        canonical = _relative_paths(ws, [resolved])[0]
+        if any(char in canonical for char in _PATHSPEC_META_CHARS):
+            return {
+                "error": f"pathspec magic or glob is not allowed: {raw}",
+                "reason": "pathspec magic or glob is not allowed",
+            }
         jailed.append(resolved)
     return jailed
 
@@ -410,7 +453,8 @@ class _GitDiff(_GitTool):
     description = (
         "Show the working-tree diff (or, with staged=true, the staged "
         "diff). Read-only. Output is capped at 64 KB and marked when "
-        "truncated."
+        "truncated. A paths argument names files only: directories and "
+        "paths containing glob/magic characters (* ? [ :) are refused."
     )
 
     def schema(self) -> dict[str, Any]:
@@ -483,7 +527,9 @@ class _GitStage(_GitTool):
     description = (
         "Stage the named workspace-relative paths (fixed argv: git add -- "
         "<paths>). Mutating: prompts in ASK, refused in PLAN. Every path "
-        "is jail- and protection-checked before git runs."
+        "is jail- and protection-checked before git runs. Directories and "
+        "paths containing glob/magic characters (* ? [ :) are refused: git "
+        "would expand them beyond the checked path."
     )
 
     def schema(self) -> dict[str, Any]:

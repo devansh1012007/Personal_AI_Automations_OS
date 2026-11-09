@@ -112,6 +112,28 @@ class TestWriteFile:
         assert payload["ok"] is True
         assert (ws.root / "a.txt").read_bytes() == b"no-newline"
 
+    async def test_overwrite_empty_file_with_trailing_newline_is_exact(
+        self, ws: Workspace, session: FsWriteSession
+    ) -> None:
+        """MAJOR-1 regression: an empty prior file must not eat the
+        trailing newline the new content carries."""
+        (ws.root / "a.txt").write_bytes(b"")
+        tools = _tools(session)
+        payload = await _run(tools["write_file"], path="a.txt", content="hello\n")
+        assert payload["ok"] is True
+        assert (ws.root / "a.txt").read_bytes() == b"hello\n"
+
+    async def test_overwrite_no_trailing_file_gains_newline(
+        self, ws: Workspace, session: FsWriteSession
+    ) -> None:
+        """MAJOR-1 regression: overwriting a no-trailing-newline prior
+        with newline-terminated content keeps the newline."""
+        (ws.root / "a.txt").write_bytes(b"old")
+        tools = _tools(session)
+        payload = await _run(tools["write_file"], path="a.txt", content="new\n")
+        assert payload["ok"] is True
+        assert (ws.root / "a.txt").read_bytes() == b"new\n"
+
     async def test_unicode_round_trips(self, ws: Workspace, session: FsWriteSession) -> None:
         content = "héllo — ünïcode ✓\n"
         tools = _tools(session)
@@ -258,6 +280,25 @@ class TestEditFile:
         )
         assert payload["ok"] is True
         assert (ws.root / "a.txt").read_bytes() == b"\xef\xbb\xbfhello\nthere\n"
+
+    async def test_edit_result_over_size_is_refused(
+        self, ws: Workspace, session: FsWriteSession
+    ) -> None:
+        """MAJOR-2 regression: the *result* of an edit is capped, not just
+        write_file's content. One char replaced by 300 KiB would previously
+        have been written (past the 256 KiB journal/memory bound) and left
+        the file uneditable afterwards."""
+        original = b"x\n"
+        (ws.root / "a.txt").write_bytes(original)
+        tools = _tools(session)
+        payload = await _run(
+            tools["edit_file"], path="a.txt", old_str="x", new_str="y" * (300 * 1024)
+        )
+        assert payload["ok"] is False
+        assert payload["limit_exceeded"] is True
+        assert int(payload["size"]) > MAX_CONTENT_BYTES
+        assert (ws.root / "a.txt").read_bytes() == original
+        assert session.journals == []
 
 
 # ---------------------------------------------------------------------------

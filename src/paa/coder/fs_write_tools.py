@@ -293,6 +293,15 @@ class EditFileTool:
                 )
             new_body = normalised_body.replace(old_normalised, _normalise(new_str), 1)
             new_full = (_BOM + new_body) if has_bom else new_body
+            # The result must clear the same gate write_file applies to new
+            # content (MAJOR-2): without this check one edit could grow a
+            # file far past MAX_CONTENT_BYTES, past the memory/journal
+            # bound, and the bloated file would then be uneditable (the
+            # read side refuses over-limit priors). The NUL check rides
+            # along: edit composes text the caller supplied, and a NUL
+            # reaching disk would land a file the read side refuses as
+            # binary.
+            _encode_new_content(new_full, relative)
             old_lines, _old_trailing = _split_lines(_normalise(prior_text))
             new_lines, new_trailing = _split_lines(_normalise(new_full))
             patch_text = _whole_file_patch(relative, "MODIFY", old_lines, new_lines, new_trailing)

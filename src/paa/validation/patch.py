@@ -585,9 +585,27 @@ class UnifiedDiffValidator:
                 prior_sha256=_sha256_bytes(prior_bytes) if prior_bytes else None,
             )
 
-        wants_trailing = had_trailing_newline or action is PatchAction.CREATE
-        if any(h.new_no_newline for h in file_patch.hunks):
+        # Trailing newline — the *new* side decides (MAJOR-1 fix). The
+        # previous heuristic inherited the prior file's trailing state for
+        # MODIFY, so overwriting an empty or no-trailing-newline file
+        # silently dropped the newline the new content carried (the diff
+        # itself never said otherwise: absence of the no-newline marker on
+        # a new side that reaches the new end of file *is* "ends with a
+        # newline"). A modification that never reaches the new end of file
+        # still inherits the prior state's trailing newline, and CREATE
+        # always ends with one.
+        if action is PatchAction.CREATE:
+            wants_trailing = not any(h.new_no_newline for h in file_patch.hunks)
+        elif any(h.new_no_newline for h in file_patch.hunks):
             wants_trailing = False
+        elif any(
+            h.old_no_newline
+            or (h.new_start - 1 + len(h.target_lines) >= len(new_lines))
+            for h in file_patch.hunks
+        ):
+            wants_trailing = True
+        else:
+            wants_trailing = had_trailing_newline
 
         rebuilt = newline.join(new_lines) + (newline if wants_trailing and new_lines else "")
         new_content = rebuilt.encode("utf-8")

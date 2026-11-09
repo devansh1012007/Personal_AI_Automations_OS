@@ -358,6 +358,83 @@ class TestJailAndProtection:
         assert payload["reason"] == "protected path: git"
 
 
+class TestPathspecExpansion:
+    """Git expands pathspecs; the jail checks named paths only (BLOCKER-1).
+
+    Directories, ``"."``, and glob/magic pathspecs must be refused before
+    git runs, and the refusal must not stage the safe half of a batch.
+    Each probe asserts the error *and* an empty index afterwards, because
+    the defect reverted would leave ``sub/.env.local`` staged silently.
+    """
+
+    def _staged_names(self, ws: Workspace) -> str:
+        return _git(ws.root, "diff", "--cached", "--name-only").stdout
+
+    def _seed(self, tmp_path: Path) -> Workspace:
+        ws = _make_repo(tmp_path)
+        (ws.root / "sub").mkdir()
+        (ws.root / "sub" / ".env.local").write_text("SECRET=1\n", encoding="utf-8")
+        (ws.root / "sub" / "ok.txt").write_text("ok\n", encoding="utf-8")
+        (ws.root / ".env").write_text("SECRET=2\n", encoding="utf-8")
+        return ws
+
+    async def test_stage_directory_is_refused(self, tmp_path: Path) -> None:
+        ws = self._seed(tmp_path)
+        tools = build_git_tools(ws)
+
+        payload = _payload(await tools["git_stage"].run({"paths": ["sub"]}))
+        assert payload["reason"] == "directory not allowed"
+        assert self._staged_names(ws) == ""
+
+    async def test_stage_dot_is_refused(self, tmp_path: Path) -> None:
+        ws = self._seed(tmp_path)
+        tools = build_git_tools(ws)
+
+        payload = _payload(await tools["git_stage"].run({"paths": ["."]}))
+        assert "error" in payload
+        assert self._staged_names(ws) == ""
+
+    async def test_stage_pathspec_magic_is_refused(self, tmp_path: Path) -> None:
+        ws = self._seed(tmp_path)
+        tools = build_git_tools(ws)
+
+        payload = _payload(await tools["git_stage"].run({"paths": [":/"]}))
+        assert payload["reason"] == "pathspec magic or glob is not allowed"
+        assert self._staged_names(ws) == ""
+
+    async def test_stage_glob_is_refused(self, tmp_path: Path) -> None:
+        ws = self._seed(tmp_path)
+        tools = build_git_tools(ws)
+
+        payload = _payload(await tools["git_stage"].run({"paths": ["*.txt"]}))
+        assert payload["reason"] == "pathspec magic or glob is not allowed"
+        assert self._staged_names(ws) == ""
+
+    async def test_stage_named_file_inside_directory_still_stages(self, tmp_path: Path) -> None:
+        """The refusal is about expansion, not about nested files."""
+        ws = self._seed(tmp_path)
+        tools = build_git_tools(ws)
+
+        payload = _payload(await tools["git_stage"].run({"paths": ["sub/ok.txt"]}))
+        assert payload["exit_code"] == 0
+        assert self._staged_names(ws) == "sub/ok.txt\n"
+
+    async def test_batch_with_directory_is_all_or_nothing(self, tmp_path: Path) -> None:
+        ws = self._seed(tmp_path)
+        tools = build_git_tools(ws)
+
+        payload = _payload(await tools["git_stage"].run({"paths": ["sub/ok.txt", "sub"]}))
+        assert payload["reason"] == "directory not allowed"
+        assert self._staged_names(ws) == ""
+
+    async def test_diff_directory_is_refused(self, tmp_path: Path) -> None:
+        ws = self._seed(tmp_path)
+        tools = build_git_tools(ws)
+
+        payload = _payload(await tools["git_diff"].run({"paths": ["sub"]}))
+        assert payload["reason"] == "directory not allowed"
+
+
 # ---------------------------------------------------------------------------
 # Hostile input: the argv is fixed, so flags and subcommands smuggled as
 # values are data, never options; unknown argument keys never reach git.
