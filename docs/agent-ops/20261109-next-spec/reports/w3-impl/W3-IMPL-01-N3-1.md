@@ -3,7 +3,7 @@ agent: W3-IMPL-01 | task: N3.1 (W3-IMPL-01) | status: DONE (dry-run rung); real-
 code_commits: pending (ORCH commit below) | report_commit: pending
 files_changed: 6 (scripts/drill_kill_resume.py, docs/operations/2026-11-09-next-spec/s1-report.md, examples/fixtures/buggy_calc/calc.py, examples/fixtures/buggy_calc/test_calc.py, examples/fixtures/buggy_calc/fix.patch, examples/fixtures/buggy_calc/README.md, examples/fixtures/buggy_calc/.gitignore)
 contracts_changed: none
-tests: added 0, changed 0; scoped run: drill dry-run 50/50 PASS (exit 0); fixture pre-run red (1 failed, 4 passed); conventions 34 pass; ruff 0; mypy 3 pre-existing
+tests: added 0, changed 0; scoped run: drill dry-run 47/47 PASS (exit 0); fixture pre-run red (1 failed, 4 passed); conventions 34 pass; ruff 0; mypy 3 pre-existing
 ownership_violations: none
 deferred_dependencies: real-model S1 run (Linux/WSL2 + key); N3.2 kill drill counts (20x Linux / 5x Windows)
 out_of_scope_findings: 1 (stale MUTATING_RUNTIME_TOOLS remember_fact comment — ORCH fix, comment-only)
@@ -50,8 +50,9 @@ Pre-run fixture state:
     FAILED test_calc.py::test_divide_returns_fraction
     1 failed, 4 passed
 
-Dry-run (`python scripts/drill_kill_resume.py --dry-run`): **50/50 PASS,
-exit 0**. Groups: fixture carries the bug + pre-run red + exactly the
+Dry-run (`python scripts/drill_kill_resume.py --dry-run`): **47/47 PASS,
+exit 0** (W3-REV-01 corrected an earlier 50/50 mis-count — the harness
+prints exactly 47 `[PASS]` lines). Groups: fixture carries the bug + pre-run red + exactly the
 divide test fails; 6 tool calls, none denied; 13 ledger events with
 head `MANDATE_GRANTED`, basis `explicit`, `asserted` assurance,
 SHA-256 `policy_version`; hash chain verifies; every tool has

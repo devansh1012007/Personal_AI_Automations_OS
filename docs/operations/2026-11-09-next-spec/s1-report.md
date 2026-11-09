@@ -36,7 +36,7 @@ Command:
 
     .venv\Scripts\python.exe scripts/drill_kill_resume.py --dry-run
 
-Result: **exit 0, 50/50 checks held.** The harness copies the fixture to
+Result: **exit 0, 47/47 checks held.** The harness copies the fixture to
 a throwaway workspace, initialises a git repo at the buggy state, builds
 a real `CoderAgent` over a throwaway `PAA_HOME`, and drives it with a
 scripted model that reads the file, runs the suite, makes the one-line
@@ -144,7 +144,7 @@ reported not retried, coder-only lineages are exempt.
 
 | S1 exit item | Dry-run rung | Real-model rung |
 |---|---|---|
-| `paa agent --workspace` fixes the fixture's failing test | DONE (50/50) | NOT RUN |
+| `paa agent --workspace` fixes the fixture's failing test | DONE (47/47) | NOT RUN |
 | Every call logged in ledger with hash + isolation level | DONE (13 events, chain verifies) | NOT RUN |
 | `kill -9` + `--resume` loses / repeats nothing | N2.3 chaos suite green (separate rung) | NOT RUN (N3.2) |
 | Unknown outcomes reported, not retried | N2.3 chaos suite green (separate rung) | NOT RUN (N3.2) |
