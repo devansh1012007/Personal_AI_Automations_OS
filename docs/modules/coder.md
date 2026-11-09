@@ -97,7 +97,7 @@ Custom commands from `.md` files with `$ARGUMENTS`/`$1`..`$9` substitution.
 | `CoderAgent` → `RouterToolCallingModel` | `propose()` | Model seam | `agent.py:210` |
 | `RouterToolCallingModel` → `EscalatingModelRouter` | `complete_structured()` | Inference + escalation | `model_adapter.py:176` |
 | `AgentLoop` → `ToolPermissionPolicy` | `evaluate()` | Gate every call | `loop.py:224` |
-| `AgentLoop` → `HookRegistry` | `fire()` | Hooks pre/post tool | `loop.py:217`, `:246` |
+| `AgentLoop` → `HookRegistry` | `fire()` | Hooks pre/post tool | `loop.py:235`, `:313` |
 | `AgentLoop` → `Session` | record turns | Transcript persistence | `loop.py:144` |
 | runtime tools → `Runtime.submit/run` | drive tasks | Ledger writes | `coder/runtime_tools.py:290`, `:329` |
 | `cli/coder.py` → `CoderAgent.build` | compose | `paa agent` CLI | `cli/coder.py:103` |
@@ -106,7 +106,7 @@ Custom commands from `.md` files with `$ARGUMENTS`/`$1`..`$9` substitution.
 
 - `confirm` callback absent → auto-deny (`loop.py:138`).
 - `max_tokens` never trips (tokens always 0); `max_steps` is the bound
-  (`AGENTS.md:160`, `loop.py:198`).
+  (`AGENTS.md:160`, `loop.py:199`).
 - `--mode plan` read-only: `MUTATING_RUNTIME_TOOLS` included in mutating set
   (`agent.py:235`).
 
