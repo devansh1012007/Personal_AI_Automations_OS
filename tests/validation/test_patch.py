@@ -387,17 +387,6 @@ def test_the_journal_records_a_file_that_did_not_exist(tmp_path: Path) -> None:
     assert not (workspace / "new.txt").exists()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "A created file gains one trailing newline it was never given: the planner "
-        "models an empty prior file as one empty line ('' .split('\\n') == ['']), so "
-        "the created content is 'created\\n\\n' instead of 'created\\n'. "
-        "src/paa/validation/patch.py is read-only for T-005; the fix is in "
-        "UnifiedDiffValidator._plan_file — drop the phantom line for an empty prior "
-        "file and let the trailing newline follow the patch body."
-    ),
-)
 def test_a_created_file_contains_exactly_what_the_diff_describes(tmp_path: Path) -> None:
     """The applied bytes are the bytes the diff describes.
 
