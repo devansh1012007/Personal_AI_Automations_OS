@@ -1,6 +1,6 @@
 <!-- ORCH-DIGEST:START -->
 agent: W2-IMPL-04 | task: T-N2-5 | status: PARTIAL
-code_commits: 3ffb3d2 | report_commit: pending
+code_commits: 3ffb3d2 | report_commit: 263dd65
 files_changed: 1 (tests/coder/test_secret_hygiene.py)
 contracts_changed: none
 tests: added 25, changed 0; scoped run: 20 pass, 3 skip (pwsh absent), 2 fail (journal leak, NEED filed)
@@ -385,7 +385,7 @@ pinned the stronger contract and let the owner arbitrate.
 
 <!-- ORCH-DIGEST-UPDATE:PARTIAL -->
 agent: W2-IMPL-04 | task: T-N2-5 | status: PARTIAL
-code_commits: 3ffb3d2 | report_commit: pending
+code_commits: 3ffb3d2 | report_commit: 263dd65
 files_changed: 1 (tests/coder/test_secret_hygiene.py)
 contracts_changed: none
 tests: added 25, changed 0; scoped run: 20 pass, 3 skip (pwsh absent), 2 fail (journal leak, NEED filed)
