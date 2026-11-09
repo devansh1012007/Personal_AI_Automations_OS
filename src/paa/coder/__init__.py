@@ -27,7 +27,7 @@ including its safety behaviour — is testable without a model or a live tool.
 
 from __future__ import annotations
 
-from paa.coder.agent import CoderAgent
+from paa.coder.agent import CoderAgent, build_work_tools
 from paa.coder.commands import (
     CommandRegistry,
     CommandResult,
@@ -82,6 +82,7 @@ __all__ = [
     "Turn",
     "TurnRole",
     "build_runtime_tools",
+    "build_work_tools",
     "command_hook",
     "default_registry",
     "deny_tool_hook",

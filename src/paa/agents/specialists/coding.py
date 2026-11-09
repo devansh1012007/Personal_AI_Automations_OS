@@ -14,15 +14,21 @@ depth/cycle/node guards therefore always see it as a terminal node.
 speaks the same narrow ``ModelLike`` seam as every reasoning agent, and its
 turn schema is :func:`paa.coder.model_adapter.turn_schema` over
 :data:`CODING_TOOL_NAMES`: tool names sit in a JSON-schema ``enum``, so the
-model physically cannot emit a tool outside the offered surface. There is no
-filesystem tool suite in the tree (see ``docs/coder-agent.md`` "Known
-limitations"), so the pilot offers the same runtime catalogue the coder agent
-drives: its mutating half is exactly ``MUTATING_RUNTIME_TOOLS``
-(``submit_task`` / ``run_task`` / ``remember_fact``), already appended to the
-``mutating_tools`` tuple in ``CoderAgent.build`` — which is why no new glob
-and no new tuple entry was needed here. A mutating tool outside both sets
-would become read-only-by-accident; :mod:`tests.agents.test_coding_specialist_p011`
-pins the coverage so a future tool cannot slip in uncovered.
+model physically cannot emit a tool outside the offered surface. Since N1.5
+the pilot offers the full catalogue the coder agent drives (runtime
+ledger/memory tools plus the filesystem-read, filesystem-write, shell and
+git work tools), so the enum can propose every step the tools dict can
+execute. Its mutating half is nine names: the runtime triple
+``MUTATING_RUNTIME_TOOLS`` (``submit_task`` / ``run_task`` /
+``remember_fact``) plus the six work-tool mutating names (``write_file`` /
+``edit_file`` / ``apply_patch`` / ``bash`` / ``git_stage`` / ``git_commit``),
+the latter matching ``DEFAULT_MUTATING_TOOLS`` globs (including the
+``git_stage*`` glob N1.5 added — that name matches nothing without it).
+Offering the mutating names changes no execution path: the specialist
+*proposes* tool calls for a later executor, it never runs them. A mutating
+tool outside both sets would become read-only-by-accident;
+:mod:`tests.agents.test_coding_specialist_p011` pins the coverage so a
+future tool cannot slip in uncovered.
 
 **What the pilot does not do.** The specialist's ``handle`` returns the
 model's constrained turn (text + proposed tool calls); executing those calls
@@ -47,11 +53,17 @@ __all__ = ["CODING_TOOL_NAMES", "CodingSpecialist"]
 
 log = structlog.get_logger(__name__)
 
-#: The pilot's offered tool surface. The read-only half is
-#: ``READ_ONLY_TOOLS`` in ``coder/runtime_tools.py``; the mutating half is
-#: ``MUTATING_RUNTIME_TOOLS`` in ``coder/agent.py``. Kept as a literal tuple
-#: (not imported from either module) so the enum is fixed at import time and
-#: the policy-coverage test reads exactly what the model can emit.
+#: The pilot's offered tool surface. The read-only half is exactly
+#: ``READ_ONLY_TOOLS`` in ``coder/runtime_tools.py`` (eleven names: the six
+#: runtime reads plus the filesystem-read and git-read halves N1.5
+#: aggregated there); the mutating half is ``MUTATING_RUNTIME_TOOLS`` in
+#: ``coder/agent.py`` (the runtime triple) plus the six work-tool mutating
+#: names, each matching a ``DEFAULT_MUTATING_TOOLS`` glob. Kept as a literal
+#: tuple (not imported from either module) so the enum is fixed at import
+#: time and the policy-coverage test reads exactly what the model can emit.
+#: Deliberate pin growth at N1.5: if the specialist enum stayed narrower
+#: than the agent's tools dict it could never propose a work-tool step, and
+#: the constrained-JSON enum can only emit names that are in it.
 CODING_TOOL_NAMES: tuple[str, ...] = (
     "check_runtime",
     "list_tasks",
@@ -62,6 +74,17 @@ CODING_TOOL_NAMES: tuple[str, ...] = (
     "submit_task",
     "run_task",
     "remember_fact",
+    "read_file",
+    "glob",
+    "grep",
+    "write_file",
+    "edit_file",
+    "apply_patch",
+    "bash",
+    "git_status",
+    "git_diff",
+    "git_stage",
+    "git_commit",
 )
 
 

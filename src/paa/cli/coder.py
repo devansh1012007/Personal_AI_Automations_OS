@@ -91,6 +91,12 @@ def register_agent(app: typer.Typer) -> None:
         list_tools: bool = typer.Option(
             False, "--list-tools", help="Print the tool catalogue and exit."
         ),
+        workspace: str | None = typer.Option(
+            None,
+            "--workspace",
+            help="Jailed working tree for filesystem/shell/git tools. "
+            "Without it only ledger/memory tools are offered.",
+        ),
     ) -> None:
         """Run one turn of the tool-using agent against this runtime."""
 
@@ -161,9 +167,25 @@ def register_agent(app: typer.Typer) -> None:
                 session = Session.resume(latest, transcript_dir)
                 console.print(f"[dim]continued session {session.session_id}[/dim]")
 
+            # The workspace string is resolved at this boundary (the
+            # operator's typed input) so ``CoderAgent.build`` receives the
+            # canonical jailed value, never a raw string. An unresolvable
+            # workspace (missing, not a directory, uncanonicalisable)
+            # fails before any runtime is built.
+            from paa.coder.workspace import Workspace, resolve_workspace
+
+            resolved_workspace: Workspace | None = None
+            if workspace is not None:
+                try:
+                    resolved_workspace = Workspace(root=resolve_workspace(workspace))
+                except PaaError as exc:
+                    console.print(f"[red]invalid workspace[/red] {exc.message}")
+                    raise typer.Exit(1) from exc
+
             built = await CoderAgent.build(
                 settings,
                 session=session,
+                workspace=resolved_workspace,
                 mode=resolved_mode,
                 allow=list(allow or []),
                 deny=list(deny or []),
@@ -344,8 +366,11 @@ async def prompt_yes(tool: str, arguments: dict[str, Any], reason: str) -> bool:
     Only state-changing calls reach this prompt. The read-only half of the
     catalogue is standing-allowed in ASK mode, so what arrives here are the
     tools that write: ``submit_task`` and ``run_task`` write to the ledger and
-    can execute work, and ``remember_fact`` writes to the memory tables. A
-    denied call never gets here — it is refused outright.
+    can execute work, ``remember_fact`` writes to the memory tables, and the
+    work tools (``write_file`` / ``edit_file`` / ``apply_patch`` / ``bash``
+    / ``git_stage`` / ``git_commit``, offered only when ``--workspace`` was
+    given) change the working tree or repository. A denied call never gets
+    here — it is refused outright.
     """
 
     def _ask() -> bool:

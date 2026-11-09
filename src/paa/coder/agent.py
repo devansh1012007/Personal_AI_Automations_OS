@@ -31,12 +31,17 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from paa.coder.fs_read_tools import build_fs_read_tools
+from paa.coder.fs_write_tools import build_fs_write_tools
+from paa.coder.git_tools import build_git_tools
 from paa.coder.hooks import HookRegistry
 from paa.coder.loop import AgentLoop, LoopResult
 from paa.coder.model_adapter import RouterToolCallingModel
 from paa.coder.permissions import DEFAULT_MUTATING_TOOLS, PermissionMode, ToolPermissionPolicy
 from paa.coder.runtime_tools import READ_ONLY_TOOLS, build_runtime_tools
 from paa.coder.session import Session
+from paa.coder.shell_tools import build_shell_tools
+from paa.coder.workspace import Workspace
 from paa.core.errors import PaaError
 from paa.core.types import ComplexityModality
 
@@ -49,7 +54,12 @@ if TYPE_CHECKING:
     from paa.core.types import CorrelationId
     from paa.runtime import Runtime
 
-__all__ = ["MUTATING_RUNTIME_TOOLS", "CoderAgent", "TranscriptDir"]
+__all__ = [
+    "MUTATING_RUNTIME_TOOLS",
+    "CoderAgent",
+    "TranscriptDir",
+    "build_work_tools",
+]
 
 log = structlog.get_logger(__name__)
 
@@ -123,6 +133,8 @@ class CoderAgent:
         correlation_id: CorrelationId | None = None,
         run_recovery: bool = False,
         model_max_tokens: int = 2048,
+        workspace: Workspace | None = None,
+        journal: Any | None = None,
     ) -> CoderAgent:
         """Build an agent over a fresh runtime.
 
@@ -148,7 +160,28 @@ class CoderAgent:
         signature matches :meth:`~paa.coder.hooks.HookRegistry.register`: a
         hook with no event has nowhere to fire. Pass ``hook_registry`` instead
         to hand in a pre-wired registry.
+
+        ``workspace`` is the jailed working tree the filesystem, shell and
+        git tools reach through. ``None`` (the default) builds only the
+        ledger/memory catalogue — the work tools have nothing to jail to
+        without an explicit workspace, so they are not offered rather than
+        offered jailed to an implied directory.
+
+        ``journal`` is a reserved Wave-2 (N2.2) slot: the ``ToolJournal``
+        protocol does not exist yet, so the value is accepted and ignored.
+        The name is explicit (not ``**kwargs``) so Wave 2 wires a known
+        parameter instead of renaming one.
         """
+        # The journal slot is a name reservation for Wave 2 (N2.2), not a
+        # wire: a non-None journal fails fast, *before* any runtime is
+        # built, rather than being accepted and silently dropped (which
+        # would attest that journalling is on when nothing is journalled)
+        # or raised after the build (which would leak the runtime).
+        if journal is not None:
+            raise NotImplementedError(
+                "CoderAgent.build journal wiring lands in Wave 2 (N2.2); "
+                "no ToolJournal protocol exists yet"
+            )
 
         from paa.runtime import Runtime
 
@@ -183,7 +216,7 @@ class CoderAgent:
             force_escalate=force_escalate,
             max_tokens=model_max_tokens,
         )
-        tools = build_runtime_tools(runtime)
+        tools = build_work_tools(runtime, workspace)
         loop = AgentLoop(
             model,
             tools,
@@ -213,3 +246,44 @@ class CoderAgent:
             session=session,
             tools=tools,
         )
+
+
+def build_work_tools(runtime: Runtime, workspace: Workspace | None = None) -> dict[str, Any]:
+    """The full coder catalogue: runtime tools plus the work tools.
+
+    With ``workspace=None`` this is exactly :func:`build_runtime_tools` —
+    the ledger/memory catalogue for a session with no jailed tree to
+    work in. With a workspace it additionally merges the filesystem-read,
+    filesystem-write, shell and git catalogues, each bound to that one
+    workspace, into a single ``{name: Tool}`` dict for the loop. The shell
+    tool runs on the runtime's own sandbox backend when one exists (so a
+    ``NAMESPACE`` backend makes ``allow_network=False`` enforceable) and
+    falls back to the subprocess default otherwise; the backend's actual
+    isolation is what every call reports.
+
+    Tool names must be disjoint across the catalogues: a name claimed by
+    two factories would silently overwrite the first tool under the same
+    key while its name stayed in the model's constrained enum — the loop
+    would then dispatch it to the wrong tool. A collision therefore
+    raises :class:`~paa.core.errors.PaaError` at composition time rather
+    than being absorbed by ``dict.update``.
+    """
+    parts: list[dict[str, Any]] = [build_runtime_tools(runtime)]
+    if workspace is not None:
+        parts.append(build_fs_read_tools(workspace))
+        parts.append(build_fs_write_tools(workspace))
+        sandbox = runtime.sandbox if runtime.sandbox is not None else None
+        parts.append(build_shell_tools(workspace, sandbox=sandbox))
+        parts.append(build_git_tools(workspace))
+
+    tools: dict[str, Any] = {}
+    for part in parts:
+        collisions = tools.keys() & part.keys()
+        if collisions:
+            raise PaaError(
+                "duplicate tool name(s) across catalogues: "
+                f"{sorted(collisions)} — a tool name must be claimed by "
+                "exactly one factory"
+            )
+        tools.update(part)
+    return tools

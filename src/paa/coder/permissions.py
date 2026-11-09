@@ -134,6 +134,7 @@ _MUTATING_TOOLS: tuple[str, ...] = (
     "*write*",
     "send_*",
     "*_commit*",
+    "git_stage*",
 )
 
 #: Public alias — the default set, for callers that extend rather than replace.

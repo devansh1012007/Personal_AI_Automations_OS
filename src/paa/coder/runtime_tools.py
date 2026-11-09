@@ -46,6 +46,8 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from paa.coder.fs_read_tools import FS_READ_TOOLS
+from paa.coder.git_tools import GIT_READ_ONLY_TOOLS
 from paa.ledger.replay import project
 from paa.memory.creator import MemoryCreator, ProcessingOutcome, SignalEnvelope
 from paa.memory.facts import Fact, FactRepository
@@ -70,6 +72,17 @@ __all__ = ["READ_ONLY_TOOLS", "as_modality", "build_runtime_tools"]
 #: matter. They stay deniable by name because an explicit deny rule is
 #: precedence step 1 in :class:`~paa.coder.permissions.ToolPermissionPolicy`
 #: and outranks any allow.
+#:
+#: N1.5 aggregates the read-only halves of the work-tool catalogues here
+#: (``FS_READ_TOOLS`` + ``GIT_READ_ONLY_TOOLS``) so there is exactly one
+#: standing-allow set for ``CoderAgent.build`` and exactly one read-only
+#: set for the specialist coverage pin to compare against. This is a
+#: *name* aggregation for permission classification only: the tool
+#: implementations still live in their own modules and
+#: :func:`build_runtime_tools` still builds only the nine ledger/memory
+#: tools below. The union is imported, never re-spelled: a string copied
+#: here by hand would be a second source that drifts when a new read tool
+#: lands. A test pins the union (see ``tests/coder/test_new_integration.py``).
 READ_ONLY_TOOLS: frozenset[str] = frozenset(
     {
         "check_runtime",
@@ -79,6 +92,8 @@ READ_ONLY_TOOLS: frozenset[str] = frozenset(
         "verify_ledger",
         "recall_facts",
     }
+    | FS_READ_TOOLS
+    | GIT_READ_ONLY_TOOLS
 )
 
 #: The cold-lake channel the coder agent's assertions arrive on. A channel of
