@@ -1,6 +1,6 @@
 <!-- ORCH-DIGEST:START -->
 agent: W1-IMPL-07 | task: N1.5 | status: DONE-WITH-DEFERRED-NEEDS
-code_commits: 0d02ea8 | report_commit: PENDING
+code_commits: 0d02ea8 | report_commit: 5124eb8
 files_changed: 8 (src/paa/coder/agent.py, src/paa/coder/runtime_tools.py, src/paa/cli/coder.py, src/paa/coder/__init__.py, src/paa/coder/permissions.py, src/paa/agents/specialists/coding.py, tests/agents/test_coding_specialist_p011.py, tests/coder/test_new_integration.py)
 contracts_changed: CoderAgent.build gains workspace/journal kwargs; new build_work_tools (agent.py, re-exported by paa.coder); READ_ONLY_TOOLS 6->11 (import-union); DEFAULT_MUTATING_TOOLS +git_stage*; CODING_TOOL_NAMES 9->20; cli/coder.py gains --workspace
 tests: added 13, changed 1 (specialist pin 3->9 mutating); scoped run: pass (213 passed + 7 skipped pwsh-absent on the brief's 6-file set; ruff 0; mypy 3 pre-existing)
@@ -486,4 +486,5 @@ Code commit: `0d02ea8` (8 write-set files; explicit paths). Process defect,
 disclosed not hidden: the message has a typo ("gluc" for "glob") and omits
 the Task/Agent/Wave/Report trailers; `--amend` is forbidden, so the message
 stands and this note is the record.
-Report commit: PENDING (this file, docs-only; lists the code SHA).
+Report commit: `5124eb8` (this file, docs-only; lists the code SHA;
+digest backfilled in a follow-up docs-only commit).
