@@ -204,8 +204,5 @@ escalation-failure rendering.
 
 - `--resume` restores a transcript but not in-flight tool state; a resumed run
   starts from the last recorded turn.
-- The tool catalogue is read/submit/run/memory shaped. There is no filesystem
-  tool: this agent drives the *runtime*, not the working tree. That is
-  deliberate — the workspace/validation layer is a separate surface with its
-  own gates.
+- The tool catalogue now includes jailed work tools (read, edit, shell, git) beside the ledger and memory tools, so this agent drives the working tree as well as the runtime. The tools live in `paa.coder` per [ADR-0045](adr/0045-coder-work-tools.md), are jailed by `coder/workspace.py`, edits go via `PatchApplier` and shell via `Sandbox.run`. The deliberate separation the older text recorded is now that a work tool is never a bypass: it always passes the workspace jail and the protected-path check inside the tool, below every permission decision.
 - Token accounting is not surfaced, for the reason in the seam section.
