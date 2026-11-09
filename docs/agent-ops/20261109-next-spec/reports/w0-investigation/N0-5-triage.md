@@ -1,6 +1,6 @@
 <!-- ORCH-DIGEST:START -->
 agent: W0-IMPL-05 | task: T-N0-5 (N0.5) | status: DONE
-code_commits: none (report-only) | report_commit: <filled at commit time>
+code_commits: none (report-only) | report_commit: c90d835
 files_changed: 1 (docs/agent-ops/20261109-next-spec/reports/w0-investigation/N0-5-triage.md)
 contracts_changed: none
 tests: added 0, changed 0; scoped run: pass (4 xfail verified) + 1 failed reproduced as env
