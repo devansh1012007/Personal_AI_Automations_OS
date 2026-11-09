@@ -124,7 +124,7 @@ Review
 Existing (pre-existing) documents retained in `docs/`:
 - [coder-agent.md](coder-agent.md) — the `paa agent` tool loop.
 - [EXTENSIBILITY_PIPELINES.md](EXTENSIBILITY_PIPELINES.md) — pluggable agentic loops design.
-- [ROADMAP.md](ROADMAP.md), [VISION.md](../VISION.md) (`VISION.md` lives at the repository root).
+- [ROADMAP.md](ROADMAP.md), [VISION.md](VISION.md).
 - [deployment/docker.md](deployment/docker.md)
 - [adr/README.md](adr/README.md) — ADR index (0001–0018 and 0019–0026, 0028–0035; 0027 reserved); bodies on disk: 0008, 0010, 0015, 0019–0026, 0028–0035.
 - [memory-polish/plans/Plan1.md](memory-polish/plans/Plan1.md) — dated memory-polish proposal (in scope for the `path:line` lock).
