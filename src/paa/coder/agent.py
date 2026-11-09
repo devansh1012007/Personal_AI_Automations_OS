@@ -69,9 +69,11 @@ log = structlog.get_logger(__name__)
 TranscriptDir = str | Path
 
 #: The runtime tools that change state. ``submit_task`` writes a lineage,
-#: ``run_task`` executes work, and ``remember_fact`` writes rows into the
-#: memory tables (``hot_serving_entity_index`` / ``hot_serving_active_facts``)
-#: — but none of those names matches the conventional filesystem/shell globs
+#: ``run_task`` executes work, and ``remember_fact`` files an assertion as
+#: a ``cold_lake_signals`` row (the same front door every other channel
+#: uses; the creator then materialises the facts from that row — see
+#: :mod:`paa.coder.runtime_tools`) — but none of those names matches the
+#: conventional filesystem/shell globs
 #: in :data:`~paa.coder.permissions.DEFAULT_MUTATING_TOOLS`, so without this
 #: the plan-mode guarantee would silently exempt exactly the tools that matter
 #: most. ``--mode plan`` has to mean *this* runtime does not change, not just
