@@ -52,6 +52,7 @@ from paa.ledger.recovery import (
     RecoveryOutcome,
     classify_interrupted,
     find_interrupted_calls,
+    find_interrupted_calls_for_session,
 )
 from paa.ledger.store import LedgerStore
 from paa.storage.relational.database import Database
@@ -327,6 +328,37 @@ class TestFindInterruptedCalls:
         assert [(c.session_id, c.call_id) for c in found] == [("sess-1", "call-1")]
 
 
+class TestFindInterruptedCallsForSession:
+    """The resume scan resolves by session across lineages, newest-first."""
+
+    async def test_bound_evicts_oldest_not_newest(self, ledger: LedgerStore) -> None:
+        # MINOR-1 (W2-REV-04): the scan fetches newest-first, so a limit
+        # cut below the total tool-event count keeps the newest rows.
+        # The target call below is the newest tool event in the ledger;
+        # an ascending scan would have evicted it before the session
+        # filter and silently dropped the note for the live session.
+        cid = new_correlation_id()
+        for i in range(3):
+            await _proposed(ledger, cid, "sess-other", f"other-{i}", "bash")
+        await _proposed(ledger, cid, "sess-target", "call-new", "bash")
+
+        found = await find_interrupted_calls_for_session(ledger, "sess-target", limit=2)
+
+        assert [(c.session_id, c.call_id) for c in found] == [("sess-target", "call-new")]
+
+    async def test_results_keep_chronological_order(self, ledger: LedgerStore) -> None:
+        # The newest-first fetch is reversed back, so the note order is
+        # the ledger order — matching what an uncapped scan returned.
+        cid = new_correlation_id()
+        await _proposed(ledger, cid, "sess-t", "call-old", "bash")
+        await _proposed(ledger, cid, "sess-other", "other-1", "bash")
+        await _proposed(ledger, cid, "sess-t", "call-new", "bash")
+
+        found = await find_interrupted_calls_for_session(ledger, "sess-t")
+
+        assert [c.call_id for c in found] == ["call-old", "call-new"]
+
+
 class TestCoderExemption:
     """Coder-only lineages are skipped, never re-queued as tasks."""
 
@@ -398,6 +430,96 @@ class TestCoderExemption:
         report = await RecoveryEngine(ledger, db, requeuer=requeuer).boot_sweep()
         assert report.count(RecoveryOutcome.SKIPPED_CODER_LINEAGE) == 1
         assert requeuer.calls == []
+
+    async def test_escalated_coder_lineage_is_skipped_not_resumed(
+        self, ledger: LedgerStore, db: Database, requeuer: RecordingRequeuer
+    ) -> None:
+        # MAJOR-1 (W2-REV-04): the router writes MODEL_ESCALATED onto the
+        # coder lineage whenever reasoning escalates (CoderAgent.build passes
+        # the correlation_id to the model adapter). The escalation row is
+        # phase-neutral audit, not task work — the lineage must stay exempt.
+        cid = new_correlation_id()
+        await ledger.append(
+            LedgerEvent.create(
+                cid,
+                EventType.CODER_SESSION_STARTED,
+                payload={
+                    "v": 1,
+                    "session_id": "sess-1",
+                    "workspace_path": "/tmp/ws",
+                    "permission_mode": "ask",
+                },
+            )
+        )
+        await _proposed(ledger, cid, "sess-1", "call-1", "write_file")
+        await ledger.append(
+            LedgerEvent.create(
+                cid,
+                EventType.MODEL_ESCALATED,
+                discriminator=f"escalation:{uuid.uuid4().hex}",
+                payload={"v": 1, "from_model": "local", "to_model": "frontier"},
+            )
+        )
+        await _outcome(ledger, cid, "sess-1", "call-1", EventType.TOOL_CALL_COMPLETED)
+
+        report = await RecoveryEngine(ledger, db, requeuer=requeuer).boot_sweep()
+
+        assert report.count(RecoveryOutcome.SKIPPED_CODER_LINEAGE) == 1
+        assert report.count(RecoveryOutcome.RESUMED) == 0
+        assert requeuer.calls == []
+
+    async def test_orphan_model_escalated_is_skipped_not_resumed(
+        self, ledger: LedgerStore, db: Database, requeuer: RecordingRequeuer
+    ) -> None:
+        # MAJOR-1, the CLI path (router.py: correlation_id=None): an
+        # escalation recorded against a synthetic correlation id leaves a
+        # MODEL_ESCALATED-only lineage. It holds no task work and must not
+        # mint a phantom task on every boot.
+        cid = new_correlation_id()
+        await ledger.append(
+            LedgerEvent.create(
+                cid,
+                EventType.MODEL_ESCALATED,
+                discriminator=f"escalation:{uuid.uuid4().hex}",
+                payload={"v": 1, "from_model": "local", "to_model": "frontier"},
+            )
+        )
+
+        report = await RecoveryEngine(ledger, db, requeuer=requeuer).boot_sweep()
+
+        assert report.count(RecoveryOutcome.SKIPPED_CODER_LINEAGE) == 1
+        assert report.count(RecoveryOutcome.RESUMED) == 0
+        assert requeuer.calls == []
+
+    async def test_task_lineage_with_escalation_is_still_resumed(
+        self, ledger: LedgerStore, db: Database, requeuer: RecordingRequeuer
+    ) -> None:
+        # The guard against over-exemption: MODEL_ESCALATED also lands on
+        # task lineages, but those carry TASK_*/EXECUTION_* events, so the
+        # subset test still fails and the ordinary task path runs.
+        cid = new_correlation_id()
+        await ledger.append(
+            LedgerEvent.create(cid, EventType.TASK_REQUESTED, payload={"request": {"goal": "x"}})
+        )
+        await ledger.append(
+            LedgerEvent.create(cid, EventType.EXECUTION_STARTED, payload={"step_index": 0})
+        )
+        await ledger.append(
+            LedgerEvent.create(
+                cid,
+                EventType.MODEL_ESCALATED,
+                discriminator=f"escalation:{uuid.uuid4().hex}",
+                payload={"v": 1, "from_model": "local", "to_model": "frontier"},
+            )
+        )
+        await _proposed(ledger, cid, "sess-1", "call-1", "bash")
+
+        report = await RecoveryEngine(ledger, db, requeuer=requeuer).boot_sweep()
+
+        assert report.count(RecoveryOutcome.RESUMED) == 1
+        assert report.count(RecoveryOutcome.SKIPPED_CODER_LINEAGE) == 0
+        assert len(requeuer.calls) == 1
+        assert report.interrupted_count == 1
 
 
 class TestInterruptedClosure:
@@ -623,6 +745,63 @@ class TestResumeRecovery:
             assert failed[0].payload["reason"] == "interrupted"
         finally:
             await agent.close()
+
+    async def test_resume_absent_creation_is_not_applied(self, tmp_path) -> None:
+        # MINOR-2 (W2-REV-04): a creation whose file was never written is
+        # a checked absence — `classify_interrupted` proves NOT_APPLIED
+        # from (pre=None, live=None), so the note must say the call never
+        # landed and is safe to retry, not "unknown — do not re-run".
+        home = tmp_path / "paa_home"
+        home.mkdir(parents=True)
+        settings = Settings(home=home)
+        settings.ensure_directories()
+        workspace = Workspace(root=tmp_path / "ws")
+        workspace.root.mkdir()
+        session = Session(transcript_dir=settings.home / "sessions")
+        session.user("create it")
+        args = {"path": "new.txt", "content": "after"}
+        session.tool_call("write_file", args)
+        agent = await CoderAgent.build(
+            settings, session=session, model=_ScriptedModel(), mode=PermissionMode.BYPASS
+        )
+        sid = session.session_id
+        cid = new_correlation_id()
+        # No file is written anywhere: the crash hit before the tool ran.
+        await agent.runtime.ledger.append(
+            LedgerEvent.create(
+                cid,
+                EventType.TOOL_CALL_PROPOSED,
+                attempt=0,
+                discriminator=f"{sid}:call-1:PROPOSED",
+                payload={
+                    "v": 1,
+                    "session_id": sid,
+                    "call_id": "call-1",
+                    "tool": "write_file",
+                    "args_sha256": args_sha256_of(args),
+                    "args_preview_redacted": "write_file(...)",
+                    "isolation_level": "NONE",
+                    "pre_sha256": None,  # creation: nothing existed
+                    "post_sha256": _sha_text("after"),
+                    "patch_sha256": None,
+                },
+            )
+        )
+        await agent.close()
+
+        resumed = Session.resume(sid, settings.home / "sessions")
+        agent2 = await CoderAgent.build(
+            settings, session=resumed, model=_ScriptedModel(),
+            mode=PermissionMode.BYPASS, workspace=workspace,
+        )
+        try:
+            notes = [t for t in resumed.turns if t.role is TurnRole.SYSTEM]
+            assert len(notes) == 1
+            assert "not_applied" in notes[0].content
+            assert "safe to retry" in notes[0].content
+            assert "do not re-run" not in notes[0].content
+        finally:
+            await agent2.close()
 
     async def test_resume_reports_bash_as_unknown_and_never_retries(self, tmp_path) -> None:
         home = tmp_path / "paa_home"

@@ -176,8 +176,10 @@ class CoderAgent:
         own ledger, journalled into ``correlation_id`` (minted fresh when
         not supplied) — so a built agent journals by default, and the
         caller that needs a different lineage or a test double passes
-        one explicitly. The name is explicit (not ``**kwargs``) so the
-        wire is a known parameter, not a renamed one.
+        one explicitly. The default journal is wired to the configured
+        cold lake, so an oversized row is blobbed (N2.6) rather than
+        failing the call closed. The name is explicit (not ``**kwargs``)
+        so the wire is a known parameter, not a renamed one.
         """
         from paa.runtime import Runtime
 
@@ -213,14 +215,26 @@ class CoderAgent:
             max_tokens=model_max_tokens,
         )
         tools = build_work_tools(runtime, workspace)
-        active_journal: ToolJournal = (
-            journal
-            if journal is not None
-            else LedgerToolJournal(
+        # The default journal blobs oversized rows into the deployment's own
+        # cold lake (N2.6) instead of failing the tool call closed: without a
+        # store an oversized row raises before any append, which aborts a
+        # call the ledger could have journalled. The store is the same one
+        # the signal/intake path builds — ``get_blob_store`` over
+        # ``settings.storage`` — so the blob a row pins is sha-addressed by
+        # the CAS (or the configured S3 substrate) and resolves wherever the
+        # cold lake is mounted. Imported lazily, mirroring
+        # ``runtime_tools``: a caller-supplied journal (tests) brings its own
+        # store and never pays for this.
+        if journal is not None:
+            active_journal: ToolJournal = journal
+        else:
+            from paa.storage.coldlake import get_blob_store
+
+            active_journal = LedgerToolJournal(
                 runtime.ledger,
                 correlation_id if correlation_id is not None else new_correlation_id(),
+                blob_store=get_blob_store(runtime.settings.storage),
             )
-        )
         loop = AgentLoop(
             model,
             tools,
@@ -317,10 +331,12 @@ def _resume_entry(
     """One note line: which call, and what its classification forbids.
 
     File edits are hashed at the jailed target when the transcript
-    names it; everything without a checkable live hash (shell / git /
-    ``apply_patch`` / a redacted or unrecorded path / no workspace)
-    reads ``UNKNOWN`` and the line says so — the model must inspect,
-    never assume.
+    names it; a named target with no file there is a checked absence
+    (a creation whose file never landed reads ``NOT_APPLIED``); every
+    other case without a checkable live hash (shell / git /
+    ``apply_patch`` / a redacted or unrecorded path / no workspace /
+    an unreadable file) reads ``UNKNOWN`` and the line says so — the
+    model must inspect, never assume.
     """
     live_sha256: str | None = None
     live_checked = False
@@ -341,6 +357,14 @@ def _resume_entry(
                     live_checked = True
                 except OSError:
                     live_checked = False
+            elif resolved is not None:
+                # The jailed target is named and there is no file there:
+                # a checked absence. `classify_interrupted` decides from
+                # the recorded intent — a creation (no ``pre``) provably
+                # never landed; an edit whose file vanished stays
+                # ``UNKNOWN`` (something deleted it).
+                live_sha256 = None
+                live_checked = True
     state = classify_interrupted(
         call.tool,
         pre_sha256=call.pre_sha256,

@@ -260,7 +260,15 @@ _CLASSIFIABLE_TOOLS = frozenset({"write_file", "edit_file"})
 #: (P009). The mandate types are included because a bare
 #: ``MANDATE_GRANTED`` (what ``paa agent`` writes on its own lineage,
 #: once per run) or a ``MANDATE_REFUSED`` refusal lineage is equally
-#: not resumable task work.
+#: not resumable task work. ``MODEL_ESCALATED`` is included for the
+#: same reason: the router writes it onto the coder lineage whenever
+#: reasoning crosses the privacy boundary, and an unattributed
+#: escalation lands on a lineage of its own (the CLI's
+#: ``correlation_id=None`` path). It is ``_NO_PHASE_CHANGE`` and can
+#: never stand alone as task work — a lineage that holds only these
+#: and escalation rows holds no ``TASK_*`` event, so there is no task
+#: to resume — and task lineages still carry their lifecycle events,
+#: so they stay non-exempt through the subset test below.
 _CODER_EVENT_TYPES = frozenset(
     {
         EventType.CODER_SESSION_STARTED,
@@ -271,6 +279,7 @@ _CODER_EVENT_TYPES = frozenset(
         EventType.CODER_SESSION_ENDED,
         EventType.MANDATE_GRANTED,
         EventType.MANDATE_REFUSED,
+        EventType.MODEL_ESCALATED,
     }
 )
 
@@ -423,9 +432,14 @@ async def find_interrupted_calls_for_session(
     CLI passes none on ``--resume`` — see ``cli/coder.py``), so this
     scans the ledger's tool-call events and keeps the rows whose
     payload names ``session_id``. Session ids are uuid hex; a payload
-    from another session cannot collide. The scan is ledger-bounded
-    (``limit`` rows, newest-first protection is the caller's); on a
-    local-first home this is a small set.
+    from another session cannot collide. The scan fetches newest-first
+    (``descending=True``) so the ``limit`` cut evicts the oldest tool
+    events, never the newest: an ascending scan filtered by session
+    here would silently strand the most recent (most resumable)
+    sessions once the ledger passes the bound. The newest-first rows
+    are reversed back to chronological order so the returned calls
+    keep their ledger order. On a local-first home the tool-call set
+    is small and the bound is a safety net, not a path.
     """
     since = datetime(1970, 1, 1, tzinfo=UTC)
     events = await store.events_since(
@@ -437,7 +451,9 @@ async def find_interrupted_calls_for_session(
             EventType.TOOL_CALL_FAILED,
         ],
         limit=limit,
+        descending=True,
     )
+    events.reverse()
     return [
         call
         for call in find_interrupted_calls(
