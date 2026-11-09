@@ -126,7 +126,7 @@ from that version.
 |---|---|---|---|
 | `ChiefOrchestrator` | calls `LedgerStore.append` | Emits every state transition | `orchestrator.py:276` |
 | `Runtime.build` | constructs `LedgerStore`, `RecoveryEngine` | Composition root | `runtime.py:288`, `:326` |
-| `RecoveryEngine` | uses `LedgerStore`, `Database` | Replay and reconcile | `recovery.py:150` |
+| `RecoveryEngine` | uses `LedgerStore`, `Database` | Replay and reconcile | `recovery.py:500` |
 | `replay.project` | reads `LedgerStore.read_correlation` | Build TaskProjection | `replay.py:447` |
 | `API /ledger/{id}` | calls `read_correlation` | Explainability endpoint | `api/app.py:156` |
 | `CLI paa ledger` | calls `read_correlation` + `verify_chain` | Terminal explainability | `cli/main.py:148` |

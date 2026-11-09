@@ -113,7 +113,7 @@ Custom commands from `.md` files with `$ARGUMENTS`/`$1`..`$9` substitution.
 ## Failure behavior
 
 - Runtime built without a model router → `PaaError` raised loudly
-  (`agent.py:197`).
+  (`agent.py:193`).
 - Hook raising → logged, treated as non-block (`hooks.py:95`).
 - Tool execution exception → recorded as error result, loop continues
   (`loop.py:239`).
