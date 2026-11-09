@@ -188,7 +188,7 @@ model is consulted (`engine.py:226`).
 Patch dry-run computes full post-patch content before any write; `safe_
 relative_path` blocks traversal/absolute/symlink/NUL escapes
 (`validation/patch.py:270`). `PatchApplier.apply` is atomic (temp + fsync +
-rename) with in-memory rollback journal (`validation/patch.py:675`).
+rename) with in-memory rollback journal (`validation/patch.py:693`).
 
 ### Commit
 On `CRITIQUE_CONCLUDED` verdict `PASS`, orchestrator emits `EXECUTION_COMPLETED`;
