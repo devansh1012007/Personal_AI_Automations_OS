@@ -25,9 +25,9 @@ Plan items P-N0..G1 from docs/plans/2026-11-09-next-spec-revised.md §E → mapp
 | T-N2-5 | N2.5 | security | SURFACE | Secret leak surface untested | tests/coder/test_secret_hygiene.py | redact contract | N1.3,N2.2 | 2b | coder | DONE 3ffb3d2 22 pass/3 skip (leak closed by 9a4a519) | 3ffb3d2 |
 | T-N2-3 | N2.3 | recovery | DEEP | Crash classification impossible w/o persisted intent | ledger/recovery.py, coder/session.py, coder/agent.py | recovery classification | N2.2 | 2c | coder | DONE aac0a48 | aac0a48 |
 | T-N2-6 | N2.6 | ledger | SURFACE | Ledger bloat, no owner for >8KB | coder/journal.py, ledger/events.py | blob SHA contract | N2.2 | 2c | coder | DONE c2d25e3 | c2d25e3 |
-| T-N3-1 | N3.1 | demo | DEEP | S1 never run | examples/fixtures/buggy_calc/, docs/operations/2026-11-09-next-spec/s1-report.md | S1 exit | Wave2 | 3 | coder/operator | DONE (dry-run rung 50/50; real-model NOT RUN — Linux+key) | (ORCH commit pending) | reports/w3-impl/W3-IMPL-01-N3-1.md |
-| T-N3-2 | N3.2 | drill | DEEP | No kill-resume harness | scripts/drill_kill_resume.py, tests/coder/test_recovery_chaos.py | drill oracle | N3.1 | 3 | coder | PENDING | — | — |
-| T-N3-3 | N3.3 | stretch | SURFACE | Cancellation missing | coder/loop.py, coder/shell_tools.py | cancel token | N3.1 | 3 | coder | PENDING | — | — |
+| T-N3-1 | N3.1 | demo | DEEP | S1 never run | examples/fixtures/buggy_calc/, docs/operations/2026-11-09-next-spec/s1-report.md | S1 exit | Wave2 | 3 | coder/operator | DONE (dry-run rung 47/47; real-model NOT RUN — Linux+key) | 2d7f9f6 + 269cbb0 | reports/w3-impl/W3-IMPL-01-N3-1.md |
+| T-N3-2 | N3.2 | drill | DEEP | No kill-resume harness | scripts/drill_kill_resume.py, tests/coder/test_recovery_chaos.py | drill oracle | N3.1 | 3 | coder | DONE (Windows 5x + seed14 6/6; Linux 20x NOT-RUN) | 4c999a7 | reports/w3-impl/W3-IMPL-02-N3-2.md |
+| T-N3-3 | N3.3 | stretch | SURFACE | Cancellation missing | coder/loop.py, coder/shell_tools.py, sandbox/subprocess_backend.py | cancel token | N3.1 | 3 | coder | DONE (seam + tree-kill arm, 4 MINOR deferred) | eb9a68b + 5caddcf | reports/w3-impl/W3-IMPL-03-N3-3.md |
 
 ## Waves
 ### Wave 0a (N0.0-N0.1/N0.2/N0.5)
@@ -69,8 +69,10 @@ Plan items P-N0..G1 from docs/plans/2026-11-09-next-spec-revised.md §E → mapp
 
 ### Wave 3 (N3.1/N3.2/N3.3)
 - WAVE_BASE_SHA: e640481
-- Agents: W3-IMPL-01 (N3.1 S1: fixture + drill_kill_resume.py dry-run 50/50 + s1-report composed by ORCH after subagent interruption; real-model rung NOT RUN — needs Linux/WSL2 + OPENROUTER_API_KEY), then W3-IMPL-02 (N3.2), W3-IMPL-03 (N3.3).
-- Status: N3.1 CODE DONE (dry-run rung), W3-REV-01 dispatched; N3.2/N3.3 depend on S1 harness.
+- Agents: W3-IMPL-01 (N3.1 S1: fixture + drill dry-run 47/47 + s1-report; real-model NOT RUN — Linux+key), W3-REV-01 APPROVE-WITH-CHANGES; W3-IMPL-02 (N3.2 kill driver: Windows 5x + seed14 done, Linux 20x NOT-RUN), W3-REV-02 APPROVE; W3-IMPL-03 (N3.3 cancel seam) + W3-IMPR-01 (sandbox arm), W3-REV-03 APPROVE. ORCH docs d578a30.
+- Gate: gate-w3-1, gate-w3-2.
+- Status: CLOSED 2026-11-10 (all three tasks independently reviewed, 0 BLOCKER/MAJOR).
+- Remaining: G1 decision note (operator), final review, merge approval (operator).
 
 ## Deep dives
 (none yet — classification in table; DEEP rows get Spotlight in SUMMARY.md)
