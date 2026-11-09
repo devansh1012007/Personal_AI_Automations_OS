@@ -258,6 +258,17 @@ class TestProperties:
                     EventType.USER_CORRECTION,
                     EventType.STATE_ROLLBACK_TRIGGERED,
                     EventType.MUTATION_COMMITTED,
+                    # N2.1 (ADR-0046): coder-session / mandate events are
+                    # phase-inert, so replay must stay total over any
+                    # ordering that includes them.
+                    EventType.CODER_SESSION_STARTED,
+                    EventType.TOOL_CALL_PROPOSED,
+                    EventType.TOOL_CALL_DENIED,
+                    EventType.TOOL_CALL_COMPLETED,
+                    EventType.TOOL_CALL_FAILED,
+                    EventType.CODER_SESSION_ENDED,
+                    EventType.MANDATE_GRANTED,
+                    EventType.MANDATE_REFUSED,
                 ]
             ),
             min_size=1,

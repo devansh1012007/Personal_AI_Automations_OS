@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import structlog
 
@@ -274,3 +274,110 @@ class AgentLoop:
 async def _deny_confirm(tool: str, arguments: dict[str, Any], reason: str) -> bool:
     log.warning("agent_loop.ask_auto_denied", tool=tool, reason="no confirm callback provided")
     return False
+
+
+# ---------------------------------------------------------------------------
+# ToolJournal protocol (N2.1 frozen; implemented by N2.2)
+#
+# The journal is the ledger-before-side-effect record of every tool call.
+# N2.1 freezes this protocol — it does not implement it. The implementation
+# lives in coder/journal.py (LedgerToolJournal, N2.2), which translates
+# these three calls into the eight ADR-0046 coder/mandate events:
+#
+#     before(ctx)        -> TOOL_CALL_PROPOSED  (step 1 of the protocol)
+#     denied(ctx, reason)-> TOOL_CALL_DENIED    (permission / ASK refusal)
+#     after(ctx, ok, sha)-> TOOL_CALL_COMPLETED | TOOL_CALL_FAILED
+#
+# The ordering contract mirrors _handle_call's safety ordering: `before`
+# is called after the PRE hook (so args_sha256 and args_preview_redacted
+# attest the post-hook, redacted args, never the pre-hook originals) and
+# before any permission decision or execution; `after` is called after
+# the tool has run (or failed), with `result_sha` the SHA-256 of the
+# tool's result — None when the tool raised, so a FAILED event never
+# attests a partial result hash.
+#
+# Session start/end and mandate grant/refusal are not journal calls: they
+# are emitted by the composition root that builds the agent and the policy
+# that refuses a task, and are not shaped per tool call (see ADR-0046).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCtx:
+    """The per-call context a ToolJournal records.
+
+    Frozen: the journal handed a ToolCtx must not mutate it — the same
+    value must describe the call at PROPOSED time and at outcome time, so
+    any redaction or correction is a new value the caller constructs, not
+    an in-place edit after the fact.
+
+    Field contracts (ADR-0046):
+
+    * ``session_id`` — the coder Session id; together with ``call_id`` it
+      is the idempotency discriminator (`session:call_id:kind`).
+    * ``call_id`` — the model's stable id for this invocation; an empty
+      string is the loop's legacy "no id" and is allowed here only so a
+      hybrid caller can still journal, but the journal MUST NOT dedupe on
+      an empty call_id (a real call_id is required before execution).
+    * ``tool`` — the tool name as dispatched (`ToolCall.name`).
+    * ``args_sha256`` — SHA-256 of the canonical JSON of the post-hook
+      arguments (what the journal attests, always post-redaction).
+    * ``args_preview_redacted`` — a human-readable preview of the args
+      (secret-shaped values already masked); kept short so the ledger
+      stays readable. Never contains a raw secret (N2.5 canary test).
+    * ``isolation_level`` — the containment the execution *actually* ran
+      under (sandbox IsolationLevel actual, never requested); NONE for
+      read-only tools that never leave the process.
+    * ``pre_sha256`` — persisted intent: hash of the target file's bytes
+      before the call, when the call touches a file; None otherwise.
+    * ``post_sha256`` — persisted intent: hash of the target file's bytes
+      after the call as computed *before* execution (the intended result),
+      when the call is a file edit; None otherwise. Recovery (N2.3)
+      compares the live file against pre/post to classify applied /
+      not_applied / unknown.
+    * ``patch_sha256`` — persisted intent: the patch digest
+      (`compute_patch_sha256`) for an apply_patch edit; None otherwise.
+    """
+
+    session_id: str
+    call_id: str
+    tool: str
+    args_sha256: str
+    args_preview_redacted: str
+    isolation_level: IsolationLevel
+    pre_sha256: str | None = None
+    post_sha256: str | None = None
+    patch_sha256: str | None = None
+
+
+class ToolJournal(Protocol):
+    """Ledger-before-side-effect journal for tool calls (N2.1 freeze).
+
+    Implementations are async because the journal performs ledger I/O;
+    the loop's `_handle_call` awaits each hook. An implementation that
+    needs to signal "do not execute" raises, it does not return a flag —
+    there is no third outcome between PROPOSED and DENIED.
+    """
+
+    async def before(self, ctx: ToolCtx) -> None:
+        """Record the PROPOSED event. Called once per call, before execution."""
+        ...
+
+    async def denied(self, ctx: ToolCtx, reason: str) -> None:
+        """Record the DENIED event. Never executes the tool."""
+        ...
+
+    async def after(self, ctx: ToolCtx, ok: bool, result_sha: str | None) -> None:
+        """Record COMPLETED (ok=True) or FAILED (ok=False)."""
+        ...
+
+
+# ``IsolationLevel`` is referenced by ToolCtx above and imported for the type
+# checker only: the value a ToolCtx carries is produced by the ledger journal
+# (N2.2), which binds the enum in its own module, and this module never
+# resolves the annotation at runtime (no isinstance, no pydantic model, no
+# get_type_hints on ToolCtx). A runtime import here would cost every importer
+# of the loop the sandbox tree for one annotation. Placed at the end so the
+# lines above — cited by the docs-references lock — do not move.
+if TYPE_CHECKING:
+    from paa.sandbox.base import IsolationLevel
