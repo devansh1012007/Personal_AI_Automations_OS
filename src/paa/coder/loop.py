@@ -29,6 +29,7 @@ way, exactly as a human collaborator would on being told "no".
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
@@ -254,31 +255,51 @@ class AgentLoop:
         if self._journal is not None and journal_ctx is not None:
             await self._journal.before(journal_ctx)
 
-        # 3. Permission check.
-        decision = self._perms.evaluate(call.name, arguments)
-        if decision.outcome is PermissionOutcome.DENY:
-            if self._journal is not None and journal_ctx is not None:
-                await self._journal.denied(journal_ctx, decision.reason or "permission denied")
-            self._session.tool_result(call.name, f"permission denied: {decision.reason}")
-            return False
-
-        # 4. Human prompt on ASK.
-        if decision.outcome is PermissionOutcome.ASK:
-            approved = await self._confirm(call.name, arguments, decision.reason)
-            if not approved:
+        # 3. Permission check. Steps 3-5 sit inside one CancelledError arm:
+        #    a cancel anywhere after PROPOSED exists must close the call as
+        #    FAILED before propagating, or the recovery sweep later records
+        #    the outcome-less PROPOSED as a crash ("interrupted") rather than
+        #    the operator's cancel. The FAILED row is the frozen-vocabulary
+        #    cancel record — ADR-0046 names no cancel event type, and the
+        #    FAILED discriminator distinctness is what excludes this call
+        #    from the sweep's interrupted set.
+        try:
+            decision = self._perms.evaluate(call.name, arguments)
+            if decision.outcome is PermissionOutcome.DENY:
                 if self._journal is not None and journal_ctx is not None:
-                    await self._journal.denied(journal_ctx, "declined by user")
-                self._session.tool_result(call.name, "declined by user")
+                    await self._journal.denied(
+                        journal_ctx, decision.reason or "permission denied"
+                    )
+                self._session.tool_result(call.name, f"permission denied: {decision.reason}")
                 return False
 
-        # 5. Execute.
-        try:
-            result = await tool.run(arguments)
-        except Exception as exc:
+            # 4. Human prompt on ASK.
+            if decision.outcome is PermissionOutcome.ASK:
+                approved = await self._confirm(call.name, arguments, decision.reason)
+                if not approved:
+                    if self._journal is not None and journal_ctx is not None:
+                        await self._journal.denied(journal_ctx, "declined by user")
+                    self._session.tool_result(call.name, "declined by user")
+                    return False
+
+            # 5. Execute.
+            try:
+                result = await tool.run(arguments)
+            except Exception as exc:
+                if self._journal is not None and journal_ctx is not None:
+                    await self._journal.after(journal_ctx, False, None)
+                self._session.tool_result(call.name, f"error: {exc}")
+                return False
+        except asyncio.CancelledError:
+            # The journal write is shielded: the task is already unwinding,
+            # and a second cancel (a second Ctrl-C) mid-write must not drop
+            # the FAILED row and leave the PROPOSED outcome-less again.
+            # The CancelledError is then re-raised — swallowing it would
+            # report a cancelled run as a completed one to the caller.
             if self._journal is not None and journal_ctx is not None:
-                await self._journal.after(journal_ctx, False, None)
-            self._session.tool_result(call.name, f"error: {exc}")
-            return False
+                await asyncio.shield(self._journal.after(journal_ctx, False, None))
+            self._session.tool_result(call.name, "cancelled by user")
+            raise
 
         # 6. Journal COMPLETED, then the POST hook observes.
         if self._journal is not None and journal_ctx is not None:

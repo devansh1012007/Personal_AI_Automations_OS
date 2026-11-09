@@ -38,6 +38,7 @@ the result's ``isolation_level`` is what the Wave-2 ledger must attest.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import re
@@ -512,6 +513,19 @@ class BashTool:
             )
         try:
             result = await self._sandbox.run(spec)
+        except asyncio.CancelledError:
+            # The loop's cancel seam (N3.3) cancelled this run. The tree
+            # kill belongs to the backend — it owns the child handles —
+            # so this arm only names the cancellation and re-raises: the
+            # loop journals the FAILED row and propagates the cancel; a
+            # fabricated result here would read as a clean timeout.
+            log.warning(
+                "coder.bash.cancelled",
+                backend=backend,
+                isolation_level=isolation.name,
+                timeout_seconds=timeout,
+            )
+            raise
         except SandboxError as exc:
             return located_error(
                 exc.message,
