@@ -43,7 +43,7 @@ CRITICAL finding, **never skipped** (`:342`). `scan_or_raise()` raises
 Pure-Python unified-diff parse/dry-run/apply/rollback with workspace jail
 (`safe_relative_path` blocks traversal/absolute/symlink/NUL, `:270`).
 Transactional apply with in-memory rollback journal (`PatchApplier.apply`,
-`:672`). `compute_patch_sha256` normalises line endings (`:786`).
+`:675`). `compute_patch_sha256` normalises line endings (`:841`).
 
 ### `schema_validator.py` — SchemaValidator
 Pure-Python JSON Schema subset; `$ref`/`if`/`then`/`else` always rejected;
