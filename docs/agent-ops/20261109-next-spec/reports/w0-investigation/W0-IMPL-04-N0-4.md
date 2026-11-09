@@ -1,6 +1,6 @@
 <!-- ORCH-DIGEST:START -->
 agent: W0-IMPL-04 | task: T-N0-4 | status: DONE
-code_commits: c09b0f1 | report_commit: TBD
+code_commits: c09b0f1 | report_commit: 10dbe68
 files_changed: 4 (scripts/status.py, .github/workflows/ci.yml, README.md, reports/w0-investigation/W0-IMPL-04-N0-4.md)
 contracts_changed: none
 tests: added 0, changed 0; scoped run: pass (scripts/status.py print/--check/--write incl. hand-edit negative test, pytest tests/conventions -q 34 passed, ruff 0, mypy src exactly 3 pre-existing)
@@ -124,4 +124,4 @@ Outcome-counts exclusion (§12.1) is a judgment call against the spec's literal 
 
 ## 17. Commits
 - Code: `c09b0f1` — `Add scripts/status.py generator, README status markers, and CI status job (T-N0-4)` (3 files: `scripts/status.py` new, `.github/workflows/ci.yml`, `README.md`). Branch `ops/20261109-next-spec` [RAN `git branch --show-current` -> ops/20261109-next-spec].
-- Report: TBD (this file, docs-only commit following).
+- Report: `10dbe68` (this file; digest SHA recorded here — see fix-up below for the record commit).
