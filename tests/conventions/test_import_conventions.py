@@ -167,6 +167,7 @@ TYPE_CHECKING_CLASSES: dict[str, str] = {
     "paa.api.app": "B",
     "paa.cli.main": "C",
     "paa.coder.agent": "C",
+    "paa.coder.loop": "E",
     "paa.coder.model_adapter": "E",
     "paa.coder.runtime_tools": "C",
     "paa.context.budget": "D",
@@ -222,6 +223,7 @@ TYPE_CHECKING_NOTES: dict[str, str] = {
         "prints its version"
     ),
     "paa.coder.agent": "names paa.runtime among others: +11.4 ms",
+    "paa.coder.loop": "names paa.sandbox.base for IsolationLevel (protocol annotation)",
     "paa.coder.model_adapter": "names paa.core.types and paa.models.router, both loaded: -1.8 ms",
     "paa.coder.runtime_tools": "names paa.runtime: +13.4 ms",
     "paa.context.budget": "names only collections.abc.Iterable",
