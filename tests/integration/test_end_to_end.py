@@ -17,6 +17,7 @@ import pytest
 
 from paa.core.types import ComplexityModality, EventType, PermissionMode
 from paa.ledger.events import LedgerEvent
+from paa.ledger.mandate import explicit_mandate
 from paa.ledger.recovery import RecoveryOutcome
 from paa.ledger.replay import TaskPhase
 from paa.runtime import Runtime
@@ -50,6 +51,7 @@ class TestHappyPath:
         ]
 
         assert events == [
+            EventType.MANDATE_GRANTED,
             EventType.TASK_REQUESTED,
             EventType.TASK_QUEUED,
             EventType.CONTEXT_HYDRATION_REQUESTED,
@@ -61,6 +63,9 @@ class TestHappyPath:
             EventType.EXECUTION_COMPLETED,
             EventType.MUTATION_COMMITTED,
         ]
+        # Implicit mandate at head: runtime proceeded with no asserted authority.
+        head = (await runtime.ledger.read_correlation(outcome.correlation_id))[0]
+        assert head.payload["basis"] == "implicit"
 
     async def test_the_chain_is_intact_after_a_full_run(self, runtime: Runtime) -> None:
         outcome = await runtime.submit_and_run("summarise today's notes")
@@ -212,7 +217,13 @@ class TestSecurityGuard:
         )
         rt = await build_runtime(model=model, mode=PermissionMode.LOCKDOWN)
         try:
-            outcome = await rt.submit_and_run("fetch remote data")
+            # LOCKDOWN forces require_explicit_mandate (mandate.py:232):
+            # an implicit submit is refused before policy evaluation, so the
+            # egress check needs an explicit mandate to reach it.
+            mandate = explicit_mandate(
+                kind="test", requester_id="lockdown-test", policy=rt.settings.policy
+            )
+            outcome = await rt.submit_and_run("fetch remote data", mandate=mandate)
             assert outcome.phase is TaskPhase.BLOCKED
         finally:
             await rt.close()
@@ -276,6 +287,7 @@ class TestHumanGate:
                 e.event_type for e in await rt.ledger.read_correlation(cid)
             ]
             assert events == [
+                EventType.MANDATE_GRANTED,
                 EventType.TASK_REQUESTED,
                 EventType.TASK_QUEUED,
                 EventType.CONTEXT_HYDRATION_REQUESTED,

@@ -375,6 +375,12 @@ class PolicySettings(BaseModel):
     #: (RFC §2.1 agent 4 budget). Breaches are logged, not fatal.
     latency_budget_ms: float = Field(default=50.0, gt=0)
 
+    #: Refuse every non-explicit mandate: an implicit runtime grant is not
+    #: enough authority to proceed. Default false so legacy call sites keep
+    #: working; forced true under LOCKDOWN (see ledger/mandate.py). Set via
+    #: PAA_POLICY__REQUIRE_EXPLICIT_MANDATE.
+    require_explicit_mandate: bool = False
+
 
 class SandboxSettings(BaseModel):
     """Containment. RFC §13, §14.

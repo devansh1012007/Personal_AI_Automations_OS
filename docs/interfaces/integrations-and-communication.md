@@ -100,7 +100,7 @@ Non-blocking at the topology level: the wait graph is a DAG
 ### Orchestrator → agents
 The orchestrator sends `CONTEXT_REQUEST`, `PLAN_PROPOSAL`, `POLICY_CHECK`,
 `EXECUTION_REQUEST`, `REVIEW_RESULT` messages and reads `AgentResult`
-(`orchestrator.py:471`–`:815`).
+(`orchestrator.py:500`–`:844`).
 
 ## 4. Synchronous vs asynchronous communication
 
@@ -115,7 +115,7 @@ The orchestrator sends `CONTEXT_REQUEST`, `PLAN_PROPOSAL`, `POLICY_CHECK`,
 
 There are no long-polling, streaming, or webhook endpoints. `paa serve` runs
 uvicorn over the FastAPI app plus the daemon loops over one shared runtime
-(`cli/main.py:307`).
+(`cli/main.py:350`).
 
 ## 5. Timeouts, retries, idempotency
 

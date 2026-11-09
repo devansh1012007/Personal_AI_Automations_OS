@@ -9,7 +9,7 @@ Traces a task parked on `AWAITING_HUMAN_ATTESTATION` and later cleared via
 
 Two gate points in `ChiefOrchestrator.run()`:
 
-1. **Context hydration** (`orchestrator.py:471`): if the planner context packet's
+1. **Context hydration** (`orchestrator.py:500`): if the planner context packet's
    `routing_directive` is `HARD_STOP_ESCALATE_TO_USER` (density < 0.40), emit
    `AWAITING_HUMAN_ATTESTATION` with `{reason: "insufficient context density",
    vacant_slots: [...]}` and return (`:527`).

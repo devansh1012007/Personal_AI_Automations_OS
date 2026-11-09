@@ -38,7 +38,7 @@ tool names in an enum (`model_adapter.py`).
 `AgentLoop` + `ToolPermissionPolicy` + `HookRegistry` + `Session` (`coder/agent.py:115`).
 `MUTATING_RUNTIME_TOOLS = ("submit_task", "run_task")` — these don't match
 `DEFAULT_MUTATING_TOOLS` globs, so they're added explicitly to keep `--mode plan`
-read-only (`:64`, ADR-0011 context).
+read-only (`:78`, ADR-0011 context).
 `mode` default `ASK`; no `confirm` callback → auto-*deny* (unattended run stops
 at first gated call) (`:134`).
 
@@ -106,7 +106,7 @@ Custom commands from `.md` files with `$ARGUMENTS`/`$1`..`$9` substitution.
 
 - `confirm` callback absent → auto-deny (`loop.py:138`).
 - `max_tokens` never trips (tokens always 0); `max_steps` is the bound
-  (`AGENTS.md:160`, `loop.py:181`).
+  (`AGENTS.md:160`, `loop.py:198`).
 - `--mode plan` read-only: `MUTATING_RUNTIME_TOOLS` included in mutating set
   (`agent.py:235`).
 

@@ -47,7 +47,7 @@ under `--yes`, else `prompt_yes` (blocks on `input`; EOF → deny)
 
 - `submit` default `run=True` (`:64`).
 - `serve` binds loopback only; `api_host` validator enforced at `Settings`
-  construction (`config.py:708`).
+  construction (`config.py:714`).
 - Every command closes the `Runtime` in `finally` (`cli/main.py:99`, `:115`, etc.).
 
 ## Failure behavior
@@ -55,7 +55,7 @@ under `--yes`, else `prompt_yes` (blocks on `input`; EOF → deny)
 - Invalid correlation id → `typer.Exit(1)` (`cli/main.py:377`).
 - Task not awaiting gate → `PaaError` → printed red, exit 1 (`:180`).
 - `paa agent` `PaaError` → `[red]error:[/red]`, exit 1 (`cli/coder.py:194`).
-- Unknown mode → printed red, exit 1 (`cli/main.py:348`, `cli/coder.py:100`).
+- Unknown mode → printed red, exit 1 (`cli/main.py:404`, `cli/coder.py:100`).
 
 ## Modification impact
 

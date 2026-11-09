@@ -8,7 +8,7 @@ and what happens on failure. All paths are verified against source where cited.
 
 ### Creation
 A task originates from a caller (CLI, API, daemon, or coder agent tool).
-`ChiefOrchestrator.submit()` (`orchestrator.py:296`) mints a `CorrelationId`
+`ChiefOrchestrator.submit()` (`orchestrator.py:307`) mints a `CorrelationId`
 and writes `TASK_REQUESTED` then `TASK_QUEUED` to `system_state_ledger` before
 enqueuing to `queue_messages` (`StreamName.ORCHESTRATOR_CORE`). Submission is
 deliberately cheap and always succeeds so the request is durable before any
@@ -192,7 +192,7 @@ rename) with in-memory rollback journal (`validation/patch.py:693`).
 
 ### Commit
 On `CRITIQUE_CONCLUDED` verdict `PASS`, orchestrator emits `EXECUTION_COMPLETED`;
-after all steps, `MUTATION_COMMITTED` (`orchestrator.py:815`). The worker never
+after all steps, `MUTATION_COMMITTED` (`orchestrator.py:844`). The worker never
 applies its own patch — the host validates and commits (`reasoning.py` docstring,
 RFC §14.3).
 

@@ -8,22 +8,22 @@ to `MUTATION_COMMITTED`. All paths verified against `src/paa/agents/orchestrator
 | Trigger | Entry | File |
 |---|---|---|
 | CLI | `paa submit "fix the login bug"` | `cli/main.py:77` → `Runtime.submit()` |
-| API | `POST /tasks?run=true` | `api/app.py:94` → `Runtime.submit()` + `Runtime.run()` |
-| Programmatic | `rt.submit_and_run("...")` | `runtime.py:241` |
+| API | `POST /tasks?run=true` | `api/app.py:107` → `Runtime.submit()` + `Runtime.run()` |
+| Programmatic | `rt.submit_and_run("...")` | `runtime.py:334` |
 
 ## Step-by-step execution
 
 ### 1. Submit — durable intake
 
-`ChiefOrchestrator.submit()` (`orchestrator.py:296`):
+`ChiefOrchestrator.submit()` (`orchestrator.py:307`):
 1. Mint `CorrelationId` (`new_correlation_id()`, `core/types.py:50`).
-2. Classify modality (`_classify()`, `orchestrator.py:355`) — heuristic: keywords
+2. Classify modality (`_classify()`, `orchestrator.py:384`) — heuristic: keywords
    (`refactor`, `implement`, `build`, `debug`, `fix`) → `COMPLEX`; `migrate`/`redesign`
    → `MAX`; target agent + short goal → `SIMPLE`; else `STANDARD`.
-3. Emit `TASK_REQUESTED` (`_emit()`, `orchestrator.py:267`) → `LedgerStore.append()`
+3. Emit `TASK_REQUESTED` (`_emit()`, `orchestrator.py:278`) → `LedgerStore.append()`
    (`ledger/store.py:116`) → row in `system_state_ledger`, head projection upserted.
 4. Apply backpressure (`_apply_backpressure()` — may degrade modality if queue
-   deep, `orchestrator.py:267`; `backpressure.py:77`).
+   deep, `orchestrator.py:278`; `backpressure.py:77`).
 5. Emit `TASK_QUEUED`.
 6. If queue configured: `queue.enqueue(StreamName.ORCHESTRATOR_CORE,
    {correlation_id, goal})` (`orchestrator.py:341`) → `queue_messages`.
@@ -41,7 +41,7 @@ is durable before any work (`orchestrator.py` docstring).
 
 ### 3. Hydrate — build context packet
 
-`_hydrate()` (`orchestrator.py:471`):
+`_hydrate()` (`orchestrator.py:500`):
 1. Skip if `context_packet` already present (resume).
 2. Emit `CONTEXT_HYDRATION_REQUESTED`.
 3. `PlannerContextBuilder.run(message, ctx)` (`context_agents.py:377`):
@@ -87,7 +87,7 @@ is durable before any work (`orchestrator.py` docstring).
 
 ### 6. Execute steps — per step in sandbox
 
-`_execute_steps()` (`orchestrator.py:721`). For each step not in
+`_execute_steps()` (`orchestrator.py:750`). For each step not in
 `completed_steps`:
 
 ```
@@ -113,7 +113,7 @@ until all steps done (`replay.py:240`, ADR-0010). Re-project after each step
 
 ### 7. Commit — terminal
 
-`_commit()` (`orchestrator.py:815`): emit `MUTATION_COMMITTED`
+`_commit()` (`orchestrator.py:844`): emit `MUTATION_COMMITTED`
 {steps_completed, tokens_consumed}; phase `COMMITTED` (terminal).
 
 ## Sequence diagram

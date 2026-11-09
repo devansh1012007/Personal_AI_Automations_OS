@@ -17,10 +17,10 @@ the CLI and API are both thin edges over the same `Runtime` object
 | `paa gate <id> --approve/--reject` | `src/paa/cli/main.py:183` | Clears a task parked on a human gate |
 | `paa recover` | `src/paa/cli/main.py:210` | Runs the post-crash boot sweep |
 | `paa doctor` | `src/paa/cli/main.py:228` | Reports which backends/sandbox are actually live |
-| `paa serve [host] [port]` | `src/paa/cli/main.py:307` | Starts FastAPI API + background daemon over one shared runtime |
+| `paa serve [host] [port]` | `src/paa/cli/main.py:350` | Starts FastAPI API + background daemon over one shared runtime |
 | `paa agent "prompt"` | `src/paa/cli/coder.py:44` | Tool-using coder loop over the runtime |
 | `paa tui` | `src/paa/cli/main.py:370` | Interactive dashboard |
-| `Runtime.build()` | `src/paa/runtime.py:271` | Programmatic composition root (used by all edges) |
+| `Runtime.build()` | `src/paa/runtime.py:353` | Programmatic composition root (used by all edges) |
 
 ## Backend module responsibilities
 
@@ -53,12 +53,12 @@ by:
 1. **CLI one-shot commands** — each builds a `Runtime` (`Runtime.build()`),
    performs one operation, prints, and closes (`cli/main.py:55`).
 2. **`paa serve`** — builds one `Runtime`, starts a `Daemon` and a FastAPI app
-   over it (`cli/main.py:307`). The API delegates to the same `Runtime`.
+   over it (`cli/main.py:350`). The API delegates to the same `Runtime`.
 3. **Programmatic `Runtime`** — `async with await Runtime.build() as rt:
    cid = await rt.submit(...); outcome = await rt.run(cid)`
    (`runtime.py:144`).
 
-All three converge on `ChiefOrchestrator` (`agents/orchestrator.py:189`).
+All three converge on `ChiefOrchestrator` (`agents/orchestrator.py:200`).
 
 ## What the backend does NOT do (honest gaps)
 

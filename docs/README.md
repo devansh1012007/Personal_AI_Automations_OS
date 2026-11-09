@@ -44,13 +44,13 @@ Major subsystems:
 Primary entry points:
 
 * `paa submit "goal"` — submit and run one task to completion (`src/paa/cli/main.py:77`)
-* `paa serve` — FastAPI API + background daemon (`src/paa/cli/main.py:307`)
+* `paa serve` — FastAPI API + background daemon (`src/paa/cli/main.py:350`)
 * `paa doctor` — report live backends/sandbox (`src/paa/cli/main.py:228`)
 * `paa recover` — post-crash boot sweep (`src/paa/cli/main.py:210`)
 * `paa ledger <id>` — walk a task's event chain (`src/paa/cli/main.py:148`)
 * `paa agent "prompt"` — tool-using coder loop (`src/paa/cli/coder.py:56`)
 
-The composition root is `Runtime.build()` (`src/paa/runtime.py:271`).
+The composition root is `Runtime.build()` (`src/paa/runtime.py:353`).
 
 ## B. Start here
 

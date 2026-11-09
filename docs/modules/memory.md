@@ -140,7 +140,7 @@ callable`.
 | `DecaySweeper` → `Database`, `domains` | decay policy + SQL DELETE | Evict stale facts | `decay.py` |
 | `MemoryCreator` → `SignalRepository`, `FactRepository` | claim signals → facts | Ingest signals | `creator.py`, `daemon.py:173` |
 | `Context builders` → `Database` | hand-rolled `LIKE` over the fact tables | Read context | `context_agents.py:190` |
-| `PolicyRiskAgent` → anti-goals (vault) | read `anti_goals.md` | Semantic block | `runtime.py:571`, `policy.py:280` |
+| `PolicyRiskAgent` → anti-goals (vault) | read `anti_goals.md` | Semantic block | `runtime.py:652`, `policy.py:280` |
 
 ## Runtime behavior
 

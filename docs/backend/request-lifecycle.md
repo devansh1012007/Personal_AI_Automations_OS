@@ -10,8 +10,8 @@ outcome through the backend. It reflects the actual execution order in
 |---|---|---|
 | `paa submit "goal"` | `cli/main.py:77` | `submit` → `Runtime.submit()` |
 | `paa run <id>` | `cli/main.py:106` | `run` → `Runtime.run()` |
-| API `POST /tasks` (`?run=true`) | `api/app.py:94` | `submit_task` → `Runtime.submit()` then `Runtime.run()` |
-| API `POST /tasks` (`?run=false`) | `api/app.py:94` | Submit + queue only; daemon drains later |
+| API `POST /tasks` (`?run=true`) | `api/app.py:107` | `submit_task` → `Runtime.submit()` then `Runtime.run()` |
+| API `POST /tasks` (`?run=false`) | `api/app.py:107` | Submit + queue only; daemon drains later |
 | Daemon dispatch loop | `daemon.py:137` | `_claim_and_run()` → `Runtime.run(cid)` |
 | Recovery requeue | `recovery.py:437` | `_requeue()` → queue → daemon dispatch |
 
@@ -26,7 +26,7 @@ modality profile (`_context_for`, `orchestrator.py:445`).
 
 ## Phase 2 — Hydrate context
 
-`_hydrate()` (`orchestrator.py:471`):
+`_hydrate()` (`orchestrator.py:500`):
 - If a context packet already exists, skip.
 - Emits `CONTEXT_HYDRATION_REQUESTED` (`orchestrator.py:498`).
 - Sends `CONTEXT_REQUEST` to the planner context builder
@@ -70,7 +70,7 @@ Every emit re-projects (`project()`) so the next phase reads current state.
 
 ## Phase 5 — Execute steps
 
-`_execute_steps()` (`orchestrator.py:721`). For each step not already in
+`_execute_steps()` (`orchestrator.py:750`). For each step not already in
 `completed_steps` (resume support):
 
 ```
@@ -97,7 +97,7 @@ else (budget exhausted):
 
 ## Phase 6 — Commit
 
-`_commit()` (`orchestrator.py:815`) emits `MUTATION_COMMITTED`
+`_commit()` (`orchestrator.py:844`) emits `MUTATION_COMMITTED`
 {steps_completed, tokens_consumed}; phase becomes `COMMITTED` (terminal).
 
 ## Alternative and failure paths
@@ -114,7 +114,7 @@ else (budget exhausted):
 | Human gate rejected | `HUMAN_GATE_REJECTED` | BLOCKED | Terminal |
 
 `EXECUTION_FAILED` is emitted by the `except PaaError` branch in `run()`
-(`orchestrator.py:428`), which re-projects and returns the error payload.
+(`orchestrator.py:457`), which re-projects and returns the error payload.
 
 ## Sequence diagram
 

@@ -222,16 +222,10 @@ def require_explicit_mandate(policy: PolicySettings) -> bool:
     The configured flag (``PAA_POLICY__REQUIRE_EXPLICIT_MANDATE``, default
     false) requests strictness; ``LOCKDOWN`` forces it — an air-gap posture
     cannot proceed on an implicit grant whatever the flag says.
-
-    The flag itself is read through ``getattr`` with the documented default
-    so this module keeps working against a ``PolicySettings`` that predates
-    the field; once the field lands the read is the field, with the same
-    effective value. (Tracked as the N2.4 deferred dependency on
-    ``src/paa/config.py``.)
     """
     if policy.mode is PermissionMode.LOCKDOWN:
         return True
-    return bool(getattr(policy, "require_explicit_mandate", False))
+    return policy.require_explicit_mandate
 
 
 def _effective_policy(policy: PolicySettings) -> dict[str, Any]:

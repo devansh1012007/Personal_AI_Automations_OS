@@ -82,7 +82,7 @@ Runtime.build()
   └─ ChiefOrchestrator
 ```
 
-`src/paa/runtime.py:271`.
+`src/paa/runtime.py:353`.
 
 ### 2. Optional backends degrade; they never raise
 
@@ -93,7 +93,7 @@ Each is attempted inside `_try_vector` / `_try_graph` / `_try_queue` /
 in-process fallback with a logged warning. The runtime must boot on a laptop
 with only core dependencies installed.
 
-`src/paa/runtime.py:419`, `:432`, `:442`, `:517`.
+`src/paa/runtime.py:500`, `:513`, `:523`, `:598`.
 
 ### 3. No generative reasoning in the control path
 
@@ -146,7 +146,7 @@ TASK_REQUESTED → TASK_QUEUED → CONTEXT_HYDRATED → PLAN_COMPILED
 `README.md:194`. `EXECUTION_COMPLETED` fires **per step**, not per task, and is
 not terminal (`docs/adr/0010`).
 
-Orchestrator phases (`src/paa/agents/orchestrator.py:400`):
+Orchestrator phases (`src/paa/agents/orchestrator.py:429`):
 
 1. `run` — project the lineage; if terminal, return immediately.
 2. `_hydrate` — build the context packet (planner context builder); may park on
@@ -158,7 +158,7 @@ Orchestrator phases (`src/paa/agents/orchestrator.py:400`):
    `max_step_retries`).
 6. `_commit` — `MUTATION_COMMITTED` (terminal).
 
-`src/paa/agents/orchestrator.py:471`–`:815`.
+`src/paa/agents/orchestrator.py:500`–`:844`.
 
 ## Delegation safety
 

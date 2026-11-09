@@ -29,7 +29,7 @@ section cited. Pydantic-settings `Settings` with prefix `PAA_`, nested delimiter
 **Configuration precedence:** explicit kwargs > environment (`PAA_*`) >
 `.env` file > defaults (`config.py:7`).
 
-**Consumers:** `Runtime.build()` (`runtime.py:265`), `PolicyRiskAgent`
+**Consumers:** `Runtime.build()` (`runtime.py:345`), `PolicyRiskAgent`
 (`policy.py:132`), `BackpressureController` (`backpressure.py:86`), model router
 (`router.py:143`), and essentially every subsystem.
 
@@ -116,16 +116,16 @@ boots recovery (`boot`).
 
 **Key logic:**
 - `submit()` writes `TASK_REQUESTED` then `TASK_QUEUED`, applies backpressure,
-  enqueues to `StreamName.ORCHESTRATOR_CORE` (`orchestrator.py:296`).
+  enqueues to `StreamName.ORCHESTRATOR_CORE` (`orchestrator.py:307`).
 - `run()` drives a submitted task to terminal; returns early if already
   terminal (`orchestrator.py:403`).
 - `_execute_steps` retries each step up to `max_step_retries` (default 2)
-  (`orchestrator.py:721`).
+  (`orchestrator.py:750`).
 - Delegation graph enforces depth/cycle/node bounds per correlation
   (`orchestrator.py:837`, `delegation.py:87`).
 
 **Failure behavior:** `PaaError` during execution → `EXECUTION_FAILED` event,
-then re-project (`orchestrator.py:428`).
+then re-project (`orchestrator.py:457`).
 
 ### `reasoning.py` — planner, critic, router, worker
 **Responsibility:** `StrategicPlanner` compiles goals into steps (model or
