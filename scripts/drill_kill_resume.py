@@ -580,7 +580,7 @@ _CHILD_TIMEOUT_S: float = 180.0
 #: Manifest exclusions: the git database and bytecode caches are not
 #: part of the shadow tree the oracle compares (mirrors the dry-run's
 #: ``copytree`` ignore of ``__pycache__``).
-_ORACLE_EXCLUDED_PARTS: frozenset[str] = frozenset({".git", "__pycache__"})
+_ORACLE_EXCLUDED_PARTS: frozenset[str] = frozenset({".git", "__pycache__", ".pytest_cache"})
 
 
 def _fixture_pair() -> tuple[bytes, bytes]:
@@ -629,7 +629,7 @@ def _scripted_turns() -> list[ModelTurn]:
 def tree_manifest(root: Path) -> dict[str, str]:
     """Relative path -> SHA-256 for every oracle-visible file under ``root``.
 
-    ``.git`` and ``__pycache__`` are excluded (see
+    ``.git`` and ``__pycache__`` and ``.pytest_cache`` are excluded (see
     ``_ORACLE_EXCLUDED_PARTS``); everything else — including
     ``.gitignore``, ``fix.patch``, ``README.md`` — is compared. ``*.pyc``
     files only exist inside ``__pycache__`` and go with it.
@@ -683,14 +683,25 @@ def _init_buggy_repo(ws: Path, buggy_bytes: bytes) -> None:
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    """Write one JSON document to ``path``, flushed and closed.
+    """Write one JSON document to ``path``, atomically and flushed.
 
-    The fresh child's marker must survive a ``kill -9``: the parent
-    learns the session id from it after the child is dead, so the
-    write closes the file instead of relying on a later flush.
+    The fresh child's marker and kill-signal must survive a ``kill -9``:
+    the parent learns the session id / kill window from them after the
+    child is dead, so the write closes the file instead of relying on a
+    later flush. The write goes through a temp file + ``os.replace`` so
+    a reader never observes a half-written document — a ``kill -9``
+    landing mid-write leaves either the previous (or no) file, never a
+    truncated one. ``fsync`` on the temp file covers the durable case.
     """
-    with path.open("w", encoding="utf-8") as fh:
+    import os
+    import tempfile
+
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
         fh.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
 
 
 class _KillWindowTool:
@@ -1226,7 +1237,19 @@ async def _one_drill_iteration(
             marker.get("correlation_id") == str(fresh_id),
             "child ran on the parent's correlation",
         )
-        signal = json.loads(signal_path.read_text(encoding="utf-8"))
+        # The child writes the signal atomically (temp + os.replace), so
+        # a reader never sees a half-written document. A short retry loop
+        # covers the remaining race where the parent's poll observed the
+        # path just before the rename landed.
+        signal = None
+        for _ in range(20):
+            try:
+                signal = json.loads(signal_path.read_text(encoding="utf-8"))
+                break
+            except (OSError, json.JSONDecodeError):
+                await asyncio.sleep(0.05)
+        check(signal is not None, "kill-signal file readable")
+        assert signal is not None
         check(signal.get("tool") == expected_tool, "signal names the killed tool")
         check(
             signal.get("kill_at") == kill_at, "signal carries the kill index"

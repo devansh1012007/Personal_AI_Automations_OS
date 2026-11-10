@@ -30,7 +30,37 @@ Pre-run state, verified:
     FAILED test_calc.py::test_divide_returns_fraction
     1 failed, 4 passed
 
-## Dry-run rung (RUN 2026-11-09, Windows host, ScriptedModel)
+## Dry-run rung — Linux/WSL2 real bash (RUN 2026-11-10)
+
+Command (WSL2 Ubuntu 22.04, Python 3.12 venv, dev extra):
+
+    python scripts/drill_kill_resume.py --dry-run
+
+Result: **exit 0, 47/47 checks held**, with real `bash` execution
+through the subprocess sandbox
+(`[INFO] sandbox bash children that actually executed: 2/2
+(host shell: bash=found: /usr/bin/bash)`). This supersedes the
+earlier Windows-host degraded rung (pwsh absent) — every claim in the
+dry-run evidence below is now backed by a real shell run.
+
+## Kill drill — Linux/WSL2 POSIX `kill -9` (RUN 2026-11-10)
+
+Command:
+
+    python scripts/drill_kill_resume.py --iterations 20
+
+Result: **exit 0, 20/20 iterations passed.** Each iteration launches a
+real subprocess, sends `kill -9` at a randomly chosen tool call
+(bash/edit_file/git_stage/git_commit/read_file), restarts with
+`--resume`, and verifies: zero duplicated committed effects, correct
+tree, hash chain, recovery classification (bash/git → unknown by
+design, D-6; edit → applied/not_applied), recovery note names the
+interrupted call.
+
+This closes the Linux rung: real-model S1 is the only remaining
+NOT-RUN item (no `OPENROUTER_API_KEY` on this host).
+
+---
 
 Command:
 
@@ -142,9 +172,9 @@ reported not retried, coder-only lineages are exempt.
 
 ## Status
 
-| S1 exit item | Dry-run rung | Real-model rung |
-|---|---|---|
-| `paa agent --workspace` fixes the fixture's failing test | DONE (47/47) | NOT RUN |
-| Every call logged in ledger with hash + isolation level | DONE (13 events, chain verifies) | NOT RUN |
-| `kill -9` + `--resume` loses / repeats nothing | N2.3 chaos suite green (separate rung) | NOT RUN (N3.2) |
-| Unknown outcomes reported, not retried | N2.3 chaos suite green (separate rung) | NOT RUN (N3.2) |
+| S1 exit item | Dry-run rung | Kill drill rung | Real-model rung |
+|---|---|---|---|
+| `paa agent --workspace` fixes the fixture's failing test | DONE (47/47, real bash) | n/a | NOT RUN |
+| Every call logged in ledger with hash + isolation level | DONE (13 events, chain verifies) | DONE (20/20, hash chains verify) | NOT RUN |
+| `kill -9` + `--resume` loses / repeats nothing | N2.3 chaos suite green | DONE (20/20, zero duplicate effects) | NOT RUN |
+| Unknown outcomes reported, not retried | N2.3 chaos suite green | DONE (20/20, unknown by design) | NOT RUN |
