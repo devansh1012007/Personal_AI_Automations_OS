@@ -88,7 +88,7 @@ def _runner() -> tuple[PytestRunner, _RecordingSandbox]:
 def test_a_missing_pytest_is_a_failure() -> None:
     """Nothing ran, so nothing passed.
 
-    ``python -m pytest`` without pytest installed exits 1 with a greppable
+    ``python3 -m pytest`` without pytest installed exits 1 with a greppable
     ``No module named pytest``; the runner's job is to notice that the
     *runner itself* is missing, not to count zero failures.
     """
@@ -258,7 +258,7 @@ def test_the_result_is_ledger_shaped() -> None:
 
 
 async def test_the_suite_is_run_as_a_module(tmp_path: Path) -> None:
-    """``python -m pytest``, not the ``pytest`` script.
+    """``python3 -m pytest``, not the ``pytest`` script.
 
     The module form guarantees the interpreter and the test runner are the
     same environment, and it fails with a clean, greppable ``No module
@@ -270,7 +270,7 @@ async def test_the_suite_is_run_as_a_module(tmp_path: Path) -> None:
     await runner.run(tmp_path, test_paths=("tests/test_x.py",))
 
     command = sandbox.specs[0].command
-    assert command[:3] == ("python", "-m", "pytest")
+    assert command[:3] == ("python3", "-m", "pytest")
     assert command[-1] == "tests/test_x.py"
 
 
