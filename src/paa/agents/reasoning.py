@@ -442,7 +442,12 @@ class WorkerCell(Agent):
 
         profile = ctx.profile
         spec = SandboxSpec(
-            command=list(step.get("command", [])) or ["python", "-c", "pass"],
+            # ``python`` is not guaranteed on modern Linux (PEP 394); ``python3``
+            # is the reliable name and already lives in the sandbox's minimal,
+            # non-widened PATH (``/usr/local/bin:/usr/bin:/bin``). Using it keeps
+            # the security property of ``build_child_env`` intact while letting a
+            # host that only ships ``python3`` run sandboxed steps.
+            command=list(step.get("command", [])) or ["python3", "-c", "pass"],
             workspace_path=str(ctx.metadata.get("workspace_path", ".")),
             env={},  # never inherit the host environment
             memory_mb=profile.memory_mb,

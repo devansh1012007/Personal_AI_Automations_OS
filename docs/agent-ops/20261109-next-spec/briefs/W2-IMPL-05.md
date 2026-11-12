@@ -1,0 +1,6 @@
+# Brief — W2-IMPL-05 (IMPLEMENTER) · wave 2c · run 20261109-next-spec
+Mission: N2.3 recovery for coder sessions – boot sweep finds PROPOSED with no outcome, closes as FAILED(reason=interrupted), classifies via persisted intent (pre_sha/post_sha/patch_sha: applied/pending/unknown, D-6 never auto-repeat unknown), coder-lineage exemption so coder-only lineages are not requeued as tasks.
+Read first: STANDING-ORDERS, 00-mission, plan N2.3 + D-6, src/paa/ledger/recovery.py, src/paa/coder/session.py, src/paa/coder/agent.py, ADR-0046, W2-IMPL-02 report (persisted intent), W2-REV-02 top risk (sweep exemption).
+Write-set: src/paa/ledger/recovery.py, src/paa/coder/session.py, src/paa/coder/agent.py, tests/coder/test_recovery_chaos.py (new). Do NOT touch journal.py/events.py (N2.6 parallel).
+Acceptance: kill -9 simulation (close DB mid-lineage, reopen) loses/repeats nothing; unknown reported not retried; exemption test (coder-only lineage not requeued); tests pass, ruff 0, mypy 3, conventions 34.
+Report: reports/w2-impl/W2-IMPL-05-N2-3.md. Commits code then report to ops/20261109-next-spec, worktree D:\dev work\coding\Projects\Personal_AI_Automations_OS, explicit paths. Final ≤8 lines.

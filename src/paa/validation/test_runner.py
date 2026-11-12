@@ -121,7 +121,7 @@ class PytestRunner:
         self,
         sandbox: Sandbox,
         *,
-        python_executable: str = "python",
+        python_executable: str = "python3",
         default_timeout_seconds: float = 300.0,
         memory_mb: int = 512,
     ) -> None:
