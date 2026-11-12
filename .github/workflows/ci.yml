@@ -209,8 +209,14 @@ jobs:
       # pip's own retry budget, before the outer loop below decides a
       # failure is real. A slow index gets a long timeout and many
       # attempts, so a marginal network is given every chance.
+      #
+      # `PIP_NO_CACHE_DIR` is deliberately NOT set: the `set up python`
+      # step below uses `actions/setup-python` with `cache: pip`, which
+      # resolves the cache directory by running `pip cache dir` — and
+      # pip refuses to run any cache command while the cache is
+      # disabled, failing the step before the cache can be used. The
+      # action manages the cache itself.
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
-      PIP_NO_CACHE_DIR: "1"
       PIP_RETRIES: "10"
       PIP_TIMEOUT: "120"
 
@@ -464,8 +470,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
+      # `PIP_NO_CACHE_DIR` is deliberately NOT set: the `set up python`
+      # step below uses `actions/setup-python` with `cache: pip`, which
+      # resolves the cache directory by running `pip cache dir` — and
+      # pip refuses to run any cache command while the cache is
+      # disabled, failing the step before the cache can be used. The
+      # action manages the cache itself.
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
-      PIP_NO_CACHE_DIR: "1"
       PIP_RETRIES: "10"
       PIP_TIMEOUT: "120"
 
