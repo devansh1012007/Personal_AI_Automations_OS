@@ -18,20 +18,20 @@ From the repo root, with the dev venv active:
 ```bash
 export OPENROUTER_API_KEY=sk-or-...
 export PAA_MODELS__LOCAL_PROVIDER=openrouter
-export PAA_MODELS__LOCAL_MODEL=openai/gpt-4o-mini
+export PAA_MODELS__LOCAL_MODEL=nvidia/nemotron-3-ultra-550b:a55b:free
 export PAA_MODELS__ESCALATION_PROVIDER=none
 export PAA_HOME="$HOME/.paa-s1"   # throwaway home, never the real one
 
 cp -r examples/fixtures/buggy_calc /tmp/buggy_calc
 cd /tmp/buggy_calc
 
-paa agent --workspace /tmp/buggy_calc --mode ask "fix the failing test"
+paa agent --workspace /tmp/buggy_calc --mode ask --yes "fix the failing test"
 paa ledger <correlation-id>   # printed by the agent run
 ```
 
-Expected: the agent reads `calc.py`, runs the suite, edits the
-one line, re-runs to green, stages and commits — each mutating
-call prompting in ASK mode. The ledger lineage begins with an
+Expected: with `--yes`, the agent reads `calc.py`, runs the suite, edits the
+one line, re-runs to green — each mutating call auto-approved in ASK
+mode (no prompt). The ledger lineage begins with an
 explicit `MANDATE_GRANTED` and every call carries `args_sha256`
 plus the actual `isolation_level` (`PROCESS` with the subprocess
 sandbox; `NAMESPACE`/`VM` where a container backend is live).
