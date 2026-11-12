@@ -1,0 +1,7 @@
+# Brief — W3-IMPL-01 (IMPLEMENTER) · wave 3 · run 20261109-next-spec
+Mission: N3.1 S1 real-model demo: paa agent --workspace fixes examples/fixtures/buggy_calc/, every call logged in ledger with hash + isolation level. Exit: test turns green, lineage head MANDATE_GRANTED basis explicit, CODER_SESSION/TOOL_CALL_* rows with args_sha256 + persisted intent + isolation actual, reproducible via docs/operations/2026-11-09-next-spec/s1-report.md.
+Read first: STANDING-ORDERS, plan N3.1, docs/coder-agent.md, src/paa/cli/coder.py --workspace, src/paa/coder/journal.py, docs/adr/0045/0046, Wave 1/2 reports.
+Env: Linux/WSL2 only for real-model run (owner decision). On Windows host, do skeleton: fixture, s1-report template, dry-run proof with ScriptedModel (no API spend/token), hash+isolation verification, kill-resume dry-run notes. Do NOT claim real-model run without evidence – record NOT-RUN (needs Linux + OPENROUTER_API_KEY) if unavailable.
+Write-set: examples/fixtures/buggy_calc/, docs/operations/2026-11-09-next-spec/s1-report.md, scripts/drill_kill_resume.py (skeleton if needed for N3.2).
+Acceptance: fixture bug + fix patch reproducible, ledger rows verified, ruff 0, mypy 3, conventions 34, scoped tests green.
+Report: reports/w3-impl/W3-IMPL-01-N3-1.md. Commits code then report to ops/20261109-next-spec, worktree D:\dev work\coding\Projects\Personal_AI_Automations_OS, explicit paths. Final ≤8 lines.
