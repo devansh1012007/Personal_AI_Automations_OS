@@ -293,7 +293,7 @@ This sequencing does **not** delete earlier ideas. It prevents a marketplace, al
 | Observability (metrics, tracing, runs, logging) | Built; untested | — |
 
 <!-- STATUS:BEGIN -->
-**Generated status** (`scripts/status.py`): 142 `src/**/*.py` files, 57,326 physical lines; 3,762 tests collected.
+**Generated status** (`scripts/status.py`): 149 `src/**/*.py` files, 62,815 physical lines; 4,173 tests collected.
 Method: physical lines count blank and comment lines (`Path.read_text` + `splitlines` over `src/**/*.py`); collected = `pytest --collect-only -q -o addopts=""`. Outcome counts are not measured here (host-dependent); run `python -m pytest tests/ -q`.
 <!-- STATUS:END -->
 
