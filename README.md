@@ -292,7 +292,10 @@ This sequencing does **not** delete earlier ideas. It prevents a marketplace, al
 | Docker deployment + Postgres/S3 backends | Built; live-server run still needs a pass | Parity + backend |
 | Observability (metrics, tracing, runs, logging) | Built; untested | — |
 
-**Recorded test snapshot:** 1,185 collected — 1,104 passing, 75 skipped, 6 failing. The existing project note attributes the six failures to an environment-specific `python`/`python3` executable mismatch in sandbox worker steps. Verify that diagnosis on the current checkout rather than treating it as a permanent property of the code.
+<!-- STATUS:BEGIN -->
+**Generated status** (`scripts/status.py`): 149 `src/**/*.py` files, 62,815 physical lines; 4,173 tests collected.
+Method: physical lines count blank and comment lines (`Path.read_text` + `splitlines` over `src/**/*.py`); collected = `pytest --collect-only -q -o addopts=""`. Outcome counts are not measured here (host-dependent); run `python -m pytest tests/ -q`.
+<!-- STATUS:END -->
 
 The CLI includes `paa submit/status/ledger/recover/gate/doctor/serve/agent`; the HTTP interface is loopback FastAPI. The background daemon runs boot recovery, drains the task queue, ingests signals, and runs the decay sweep. `Runtime.build()` in `src/paa/runtime.py` is the composition root. The existing integration suite records coverage for full task lifecycle, crash-and-recover, human-gate persistence, deterministic security blocks, and the token ceiling; consult the tests and roadmap for the exact current proof.
 

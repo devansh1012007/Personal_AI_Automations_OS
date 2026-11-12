@@ -29,7 +29,7 @@ from rich.table import Table
 
 from paa import __version__
 from paa.cli.coder import register_agent
-from paa.core.types import ComplexityModality, PermissionMode
+from paa.core.types import ComplexityModality, EventType, PermissionMode
 from paa.memory.touch import touch_recalled
 from paa.models.base import redact
 from paa.sandbox.base import collect_sandbox_facts, sandbox_report_rows
@@ -83,10 +83,25 @@ def submit(
     """Submit a task and (by default) run it to a terminal state."""
 
     async def _do() -> None:
+        from paa.core.errors import PaaError
+        from paa.ledger.mandate import explicit_mandate
+
         rt = await _build_runtime()
         try:
             mod = ComplexityModality(modality.upper()) if modality else None
-            cid = await rt.submit(goal, modality=mod, target_agent=agent)
+            # An operator at the CLI is the explicit requester: the CLI
+            # asserts it, and the server stamps the effective policy
+            # version, so the record cannot claim a policy it never saw.
+            mandate = explicit_mandate(
+                kind="cli", requester_id="operator", policy=rt.settings.policy
+            )
+            try:
+                cid = await rt.submit(
+                    goal, modality=mod, target_agent=agent, mandate=mandate
+                )
+            except PaaError as exc:
+                console.print(f"[red]mandate refused:[/red] {exc.message}")
+                raise typer.Exit(1) from exc
             console.print(f"[bold]correlation:[/bold] {cid}")
             if run:
                 outcome = await rt.run(cid)
@@ -169,6 +184,17 @@ def ledger(correlation_id: str = typer.Argument(...)) -> None:
                     e.recorded_at.strftime("%H:%M:%S"),
                 )
             console.print(table)
+            # The mandate is the lineage's head event (N2.4): name it in
+            # full so the authority for this task is visible without
+            # opening the raw payload. A lineage with no grant says so by
+            # the absence. A head mandate is the first event; scanning the
+            # whole chain first is what "shows mandate at head" means and
+            # stays correct if the record sits behind another event.
+            from paa.ledger.mandate import head_mandate_summary
+
+            summary = head_mandate_summary(events)
+            if summary:
+                console.print(f"[bold]mandate:[/bold] {summary}")
             ok, problems = await rt.ledger.verify_chain(resolved)
             colour = "green" if ok else "red"
             detail = "ok" if ok else str(problems)
@@ -272,6 +298,23 @@ def doctor() -> None:
             else:
                 table.add_row("sandbox", "none (dry-run)")
             table.add_row("open tasks", str(len(await rt.ledger.open_correlations())))
+            # Mandate basis counts (N2.4, D-8): three separate facts, never
+            # folded into one coverage percentage — an implicit mandate is
+            # evidence that no authority was recorded, not evidence of one.
+            from datetime import UTC, datetime
+
+            from paa.ledger.mandate import count_bases
+
+            mandate_events = await rt.ledger.events_since(
+                datetime(1970, 1, 1, tzinfo=UTC),
+                event_types=[EventType.MANDATE_GRANTED, EventType.MANDATE_REFUSED],
+                limit=100_000,
+            )
+            counts = count_bases(mandate_events)
+            table.add_row("mandate explicit", str(counts.explicit))
+            table.add_row("mandate inferred", str(counts.inferred))
+            table.add_row("mandate implicit", str(counts.implicit))
+            table.add_row("mandate refused", str(counts.refused))
             # PLAN:integration-fix:P013 — weekly reflection staleness (T14):
             # the same health format the TUI mirror renders, computed from
             # the live home + enabled flag, not from a setting readout alone.

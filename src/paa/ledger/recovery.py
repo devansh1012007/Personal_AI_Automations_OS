@@ -39,10 +39,16 @@ from paa.storage.relational.database import dumps, loads, to_iso, utc_now
 
 __all__ = [
     "CorrelationRecovery",
+    "InterruptedCall",
+    "InterruptionState",
     "RecoveryEngine",
     "RecoveryOutcome",
     "RecoveryReport",
     "WorkspaceSnapshotter",
+    "classify_interrupted",
+    "close_interrupted_calls",
+    "find_interrupted_calls",
+    "find_interrupted_calls_for_session",
 ]
 
 log = structlog.get_logger(__name__)
@@ -108,6 +114,75 @@ class RecoveryOutcome(str, enum.Enum):
     resumed, rolled back, abandoned or marked terminal (it must stay
     open to receive the next tick's moves)."""
 
+    SKIPPED_CODER_LINEAGE = "SKIPPED_CODER_LINEAGE"
+    """A coder-session / mandate-only lineage: audit, not a task.
+
+    N2.3 (ADR-0046 open item) — a lineage carrying only coder-session
+    and mandate audit events (``CODER_SESSION_*``, ``TOOL_CALL_*``,
+    ``MANDATE_*``) projects to the initial phase and is never terminal,
+    because all eight types are ``_NO_PHASE_CHANGE``. Without an
+    exemption the sweep would find it as resumable work and re-queue it
+    as a task on every boot. It is never re-queued and never folded into
+    phase state; its only sweep work is closing ``PROPOSED`` tool calls
+    that have no outcome (``TOOL_CALL_FAILED(reason=interrupted)``).
+    A previous run's ``RECOVERY_REPLAY_COMPLETED`` audit row on such a
+    lineage is ignored for this determination, because the pre-N2.3
+    sweep could have written one onto a coder lineage it should never
+    have resumed.
+    """
+
+
+class InterruptionState(str, enum.Enum):
+    """What an interrupted tool call did before the crash.
+
+    The states ``applied`` / ``not_applied`` / ``unknown`` are the
+    plan's (N2.3, T-N2-5) and the spec's (``docs/2026-11-09-next-spec``)
+    vocabulary verbatim; the brief's ``pending`` names the same second
+    state — the call never landed, so the work is still pending, and
+    this member is that state under its plan name so a reader can grep
+    one string across spec, plan and code.
+
+    ``unknown`` is the D-6 state: the sweep must report it and must
+    never auto-repeat the call. Repeating a shell or git effect whose
+    outcome is unknown can duplicate a commit or a network call; asking
+    is cheaper than duplicating.
+    """
+
+    APPLIED = "applied"
+    """The tool ran far enough that its effect is on disk."""
+
+    NOT_APPLIED = "not_applied"
+    """The crash landed before the tool ran; the file still matches ``pre``."""
+
+    UNKNOWN = "unknown"
+    """Cannot decide from the persisted intent; never auto-repeat."""
+
+
+@dataclass(slots=True)
+class InterruptedCall:
+    """One ``TOOL_CALL_PROPOSED`` with no outcome, and its classification.
+
+    The identity fields are copied from the PROPOSED payload (the
+    ledger's `session:call_id:kind` discriminator family — a redelivered
+    close dedupes by the same key, so closing is idempotent). ``state``
+    is :class:`InterruptionState`; at sweep time it is ``UNKNOWN`` for
+    every tool, because the ledger carries hashes but never the target
+    path (see :func:`classify_interrupted`), and the precise file-edit
+    verdict is computed at resume time, when the session transcript
+    names the path.
+    """
+
+    correlation_id: uuid.UUID
+    session_id: str
+    call_id: str
+    tool: str
+    state: InterruptionState = InterruptionState.UNKNOWN
+    args_sha256: str | None = None
+    isolation_level: str | None = None
+    pre_sha256: str | None = None
+    post_sha256: str | None = None
+    patch_sha256: str | None = None
+
 
 @dataclass(slots=True)
 class CorrelationRecovery:
@@ -119,6 +194,15 @@ class CorrelationRecovery:
     drifted_paths: list[str] = field(default_factory=list)
     restored_paths: list[str] = field(default_factory=list)
     detail: str | None = None
+    interrupted: list[InterruptedCall] = field(default_factory=list)
+    """Coder tool calls the sweep closed on this lineage (possibly empty).
+
+    Empty when the lineage held no interrupted call — the common case.
+    Present on coder-only (``SKIPPED_CODER_LINEAGE``) and mixed lineages
+    alike: a mixed lineage reports the calls it closed whatever the task
+    outcome is, because "closed but unreported" is the exact gap the
+    resume note exists to close.
+    """
 
 
 @dataclass(slots=True)
@@ -138,6 +222,16 @@ class RecoveryReport:
     def count(self, outcome: RecoveryOutcome) -> int:
         return sum(1 for r in self.recoveries if r.outcome is outcome)
 
+    @property
+    def interrupted_count(self) -> int:
+        """Total interrupted coder calls closed across every lineage.
+
+        Kept off :meth:`summary` so the logged dict keeps its frozen
+        keys; observers that want the number read this property (or the
+        per-lineage ``interrupted`` lists) instead.
+        """
+        return sum(len(r.interrupted) for r in self.recoveries)
+
     def summary(self) -> dict[str, Any]:
         return {
             "scanned": self.scanned,
@@ -145,6 +239,278 @@ class RecoveryReport:
             "outcomes": {o.value: self.count(o) for o in RecoveryOutcome if self.count(o)},
             "chain_problems": len(self.chain_problems),
         }
+
+
+# ---------------------------------------------------------------------------
+# Coder interrupted-call classification (N2.3)
+# ---------------------------------------------------------------------------
+
+#: Tools whose calls touch one jailed file exactly: the persisted intent
+#: (``pre`` / ``post`` hashes of that file) can decide what a crash did.
+#: ``apply_patch`` is deliberately absent — a patch can touch many
+#: files and its intent is only a digest, so no file hash can prove it
+#: landed. Every other tool records three explicit nulls in its
+#: PROPOSED payload for the same reason.
+_CLASSIFIABLE_TOOLS = frozenset({"write_file", "edit_file"})
+
+#: Event types that mark a lineage as coder/mandate audit rather than
+#: task work. All eight ADR-0046 types are ``_NO_PHASE_CHANGE``: none
+#: advances a phase, none is terminal, so a lineage carrying only these
+#: projects to the initial phase exactly like a tier-only one did
+#: (P009). The mandate types are included because a bare
+#: ``MANDATE_GRANTED`` (what ``paa agent`` writes on its own lineage,
+#: once per run) or a ``MANDATE_REFUSED`` refusal lineage is equally
+#: not resumable task work. ``MODEL_ESCALATED`` is included for the
+#: same reason: the router writes it onto the coder lineage whenever
+#: reasoning crosses the privacy boundary, and an unattributed
+#: escalation lands on a lineage of its own (the CLI's
+#: ``correlation_id=None`` path). It is ``_NO_PHASE_CHANGE`` and can
+#: never stand alone as task work — a lineage that holds only these
+#: and escalation rows holds no ``TASK_*`` event, so there is no task
+#: to resume — and task lineages still carry their lifecycle events,
+#: so they stay non-exempt through the subset test below.
+_CODER_EVENT_TYPES = frozenset(
+    {
+        EventType.CODER_SESSION_STARTED,
+        EventType.TOOL_CALL_PROPOSED,
+        EventType.TOOL_CALL_DENIED,
+        EventType.TOOL_CALL_COMPLETED,
+        EventType.TOOL_CALL_FAILED,
+        EventType.CODER_SESSION_ENDED,
+        EventType.MANDATE_GRANTED,
+        EventType.MANDATE_REFUSED,
+        EventType.MODEL_ESCALATED,
+    }
+)
+
+#: The one type ignored when deciding whether a lineage is coder-only:
+#: a pre-N2.3 sweep could have written a ``RECOVERY_REPLAY_COMPLETED``
+#: onto a coder lineage it should never have resumed, and that stale
+#: audit row must not flip the lineage back to "task work".
+_CODER_NEUTRAL_TYPES = frozenset({EventType.RECOVERY_REPLAY_COMPLETED})
+
+#: Outcomes that resolve a tool call: a ``TOOL_CALL_*`` event that is
+#: not ``PROPOSED``, keyed the same way (payload ``session_id`` +
+#: ``call_id``). A ``DENIED`` without a ``PROPOSED`` is proof of
+#: non-execution (the hook-block path journals DENIED alone), never an
+#: interrupted call — it is simply absent from the proposed set, so it
+#: is never reported.
+_OUTCOME_TYPES = frozenset(
+    {
+        EventType.TOOL_CALL_DENIED,
+        EventType.TOOL_CALL_COMPLETED,
+        EventType.TOOL_CALL_FAILED,
+    }
+)
+
+
+def classify_interrupted(
+    tool: str,
+    *,
+    pre_sha256: str | None,
+    post_sha256: str | None,
+    patch_sha256: str | None,
+    live_sha256: str | None = None,
+    live_checked: bool = False,
+) -> InterruptionState:
+    """Classify an interrupted call from its persisted intent (N2.3).
+
+    The verdict is decided by comparing the live file (``live_sha256``)
+    against the hashes the journal persisted at PROPOSED time:
+
+    * a file edit (``write_file`` / ``edit_file``) with a predicted
+      ``post`` that the live file matches is ``APPLIED``; one matching
+      ``pre`` is ``NOT_APPLIED`` (the brief's ``pending`` — the crash
+      landed before the tool ran). A creation whose file is absent is
+      ``NOT_APPLIED`` (``pre`` is ``None`` and nothing exists).
+    * everything else is ``UNKNOWN``: shell / git / ``apply_patch`` /
+      read-only tools (``patch_sha256`` alone can never prove a patch
+      landed, and a null intent proves nothing), an edit whose ``post``
+      was unmakeable (the journal predicts ``None`` when the tool would
+      refuse anyway — a guess there would be a lie), and a live file
+      that matches neither hash (a torn write, a CRLF prior the applier
+      re-joined differently, or a later overwrite) — ``UNKNOWN``, never
+      a guess in either direction, and by D-6 never auto-repeated.
+
+    ``live_checked`` is the ledger-vs-resume distinction, stated once:
+    the boot sweep holds hashes but never the target path (the PROPOSED
+    payload carries no path — the preview is a shape summary by
+    construction), so it passes ``live_checked=False`` and every
+    interrupted call classifies ``UNKNOWN`` at sweep time. The precise
+    file-edit verdict is computed at resume time, when the session
+    transcript names the path and the live hash can actually be read.
+    """
+    if tool not in _CLASSIFIABLE_TOOLS or not live_checked:
+        return InterruptionState.UNKNOWN
+    if post_sha256 is None:
+        # The prediction was unmakeable and the journal refused to
+        # guess; the sweep must not guess either.
+        return InterruptionState.UNKNOWN
+    if live_sha256 is None:
+        # No file at the target. For a creation (``pre`` is ``None``)
+        # that proves the tool never landed. For an edit against an
+        # existing file it proves something deleted the file — not a
+        # verdict either way.
+        return (
+            InterruptionState.NOT_APPLIED if pre_sha256 is None else InterruptionState.UNKNOWN
+        )
+    if live_sha256 == post_sha256:
+        return InterruptionState.APPLIED
+    if pre_sha256 is not None and live_sha256 == pre_sha256:
+        return InterruptionState.NOT_APPLIED
+    return InterruptionState.UNKNOWN
+
+
+def _payload_text(payload: dict[str, Any], key: str) -> str | None:
+    """A payload field as text, or ``None`` when absent or not text.
+
+    The fold is total: a malformed payload (missing keys, wrong types)
+    must not stop the sweep from closing the well-formed calls beside
+    it, so anything unusable reads as absent.
+    """
+    value = payload.get(key)
+    return value if isinstance(value, str) and value else None
+
+
+def find_interrupted_calls(events: list[LedgerEvent]) -> list[InterruptedCall]:
+    """Every PROPOSED with no DENIED / COMPLETED / FAILED, in order.
+
+    Keyed by payload ``(session_id, call_id)`` — the same discriminator
+    family the journal writes — and order-independent by construction:
+    the proposed set and the outcome set are collected first, then
+    subtracted, so a stray outcome that sorts oddly cannot hide a
+    genuinely unclosed call. Malformed rows (a PROPOSED without usable
+    session/call/tool text) are skipped rather than raised: the sweep
+    survives a bad lineage by design, and one bad row must not cost the
+    lineage its well-formed closes.
+    """
+    proposed: dict[tuple[str, str], LedgerEvent] = {}
+    resolved: set[tuple[str, str]] = set()
+    for event in events:
+        payload = event.payload
+        if event.event_type is EventType.TOOL_CALL_PROPOSED:
+            session_id = _payload_text(payload, "session_id")
+            call_id = _payload_text(payload, "call_id")
+            if session_id is None or call_id is None:
+                continue
+            proposed.setdefault((session_id, call_id), event)
+        elif event.event_type in _OUTCOME_TYPES:
+            session_id = _payload_text(payload, "session_id")
+            call_id = _payload_text(payload, "call_id")
+            if session_id is None or call_id is None:
+                continue
+            resolved.add((session_id, call_id))
+    interrupted: list[InterruptedCall] = []
+    for (session_id, call_id), event in proposed.items():
+        if (session_id, call_id) in resolved:
+            continue
+        payload = event.payload
+        tool = _payload_text(payload, "tool") or ""
+        interrupted.append(
+            InterruptedCall(
+                correlation_id=event.correlation_id,
+                session_id=session_id,
+                call_id=call_id,
+                tool=tool,
+                args_sha256=_payload_text(payload, "args_sha256"),
+                isolation_level=_payload_text(payload, "isolation_level"),
+                pre_sha256=_payload_text(payload, "pre_sha256"),
+                post_sha256=_payload_text(payload, "post_sha256"),
+                patch_sha256=_payload_text(payload, "patch_sha256"),
+            )
+        )
+    return interrupted
+
+
+async def find_interrupted_calls_for_session(
+    store: LedgerStore, session_id: str, *, limit: int = 10_000
+) -> list[InterruptedCall]:
+    """Interrupted calls for one coder session, across every lineage.
+
+    A resumed session's calls do not live on the correlation the new
+    agent build mints (`CoderAgent.build` journalises into one, and the
+    CLI passes none on ``--resume`` — see ``cli/coder.py``), so this
+    scans the ledger's tool-call events and keeps the rows whose
+    payload names ``session_id``. Session ids are uuid hex; a payload
+    from another session cannot collide. The scan fetches newest-first
+    (``descending=True``) so the ``limit`` cut evicts the oldest tool
+    events, never the newest: an ascending scan filtered by session
+    here would silently strand the most recent (most resumable)
+    sessions once the ledger passes the bound. The newest-first rows
+    are reversed back to chronological order so the returned calls
+    keep their ledger order. On a local-first home the tool-call set
+    is small and the bound is a safety net, not a path.
+    """
+    since = datetime(1970, 1, 1, tzinfo=UTC)
+    events = await store.events_since(
+        since,
+        event_types=[
+            EventType.TOOL_CALL_PROPOSED,
+            EventType.TOOL_CALL_DENIED,
+            EventType.TOOL_CALL_COMPLETED,
+            EventType.TOOL_CALL_FAILED,
+        ],
+        limit=limit,
+        descending=True,
+    )
+    events.reverse()
+    return [
+        call
+        for call in find_interrupted_calls(
+            [e for e in events if _payload_text(e.payload, "session_id") == session_id]
+        )
+    ]
+
+
+async def close_interrupted_calls(
+    store: LedgerStore, calls: list[InterruptedCall]
+) -> list[InterruptedCall]:
+    """Close each interrupted call as ``FAILED(reason="interrupted")``.
+
+    The row is the golden v1 FAILED shape, field for field (ADR-0046):
+    ``v``, ``session_id``, ``call_id``, ``tool``, ``reason``,
+    ``result_sha256`` (always ``None`` — a failed call attests no
+    partial result), ``args_sha256`` and ``isolation_level``, copied
+    from the PROPOSED row. No ``state`` field is added inside ``v=1``:
+    ADR-0046 rule 4 forbids new fields inside an existing version, and
+    the classification travels in the recovery report and the resume
+    note instead. The discriminator is ``session:call_id:FAILED`` with
+    ``attempt=0``, so a redelivered close dedupes in the store's own
+    transaction and a second sweep is a no-op (each call is also found
+    at most once: the sweep only reports calls with no outcome).
+    """
+    for call in calls:
+        await store.append(
+            LedgerEvent.create(
+                call.correlation_id,
+                EventType.TOOL_CALL_FAILED,
+                attempt=0,
+                discriminator=f"{call.session_id}:{call.call_id}:FAILED",
+                payload={
+                    "v": 1,
+                    "session_id": call.session_id,
+                    "call_id": call.call_id,
+                    "tool": call.tool,
+                    "reason": "interrupted",
+                    "result_sha256": None,
+                    "args_sha256": call.args_sha256,
+                    "isolation_level": call.isolation_level or "NONE",
+                },
+            )
+        )
+    return calls
+
+
+def _is_coder_only_lineage(events: list[LedgerEvent]) -> bool:
+    """Whether a lineage is coder/mandate audit, never task work.
+
+    Every non-neutral event type must be in :data:`_CODER_EVENT_TYPES`
+    and there must be at least one: an empty history (a stale head whose
+    rows were never written) is not evidence of anything, and a pure
+    ``RECOVERY_REPLAY_COMPLETED`` history is not a coder lineage.
+    """
+    kinds = {e.event_type for e in events} - _CODER_NEUTRAL_TYPES
+    return bool(kinds) and kinds <= _CODER_EVENT_TYPES
 
 
 class RecoveryEngine:
@@ -275,7 +641,18 @@ class RecoveryEngine:
         return report
 
     async def recover_correlation(self, head: CorrelationHead) -> CorrelationRecovery:
-        """Recover one lineage. Idempotent."""
+        """Recover one lineage. Idempotent.
+
+        Coder sessions enter through the dedicated branch below
+        (N2.3): a lineage of only coder/mandate audit events is never
+        re-queued as a task, and its unclosed ``TOOL_CALL_PROPOSED``
+        calls are closed as ``FAILED(reason=interrupted)``. A *mixed*
+        lineage (task lifecycle plus coder audit) closes its interrupted
+        coder calls too, then follows the ordinary task path — the
+        closures are phase-neutral audit rows, so they disturb nothing
+        downstream, and every return path below carries them for the
+        operator and the resume note.
+        """
         cid = head.correlation_id
         projection = await project(self._store, cid)
 
@@ -296,6 +673,29 @@ class RecoveryEngine:
                 cid, RecoveryOutcome.SKIPPED_SYSTEM_LINEAGE, projection.phase
             )
 
+        events = await self._store.read_correlation(cid)
+        interrupted = find_interrupted_calls(events)
+        if _is_coder_only_lineage(events):
+            # Coder/mandate audit only (ADR-0046): never task work. No
+            # workspace reconcile — a blanket rollback would discard
+            # applied edits the model must be told about (D-6) — no
+            # requeue, no sweep audit event; the closes below are the
+            # only rows this sweep writes here.
+            await close_interrupted_calls(self._store, interrupted)
+            log.info(
+                "recovery.skipped_coder_lineage",
+                correlation_id=str(cid),
+                interrupted=len(interrupted),
+            )
+            return CorrelationRecovery(
+                cid,
+                RecoveryOutcome.SKIPPED_CODER_LINEAGE,
+                projection.phase,
+                interrupted=interrupted,
+            )
+
+        await close_interrupted_calls(self._store, interrupted)
+
         if projection.phase is TaskPhase.AWAITING_HUMAN:
             # Never auto-clear a human gate. A crash must not be interpretable
             # as consent.
@@ -305,6 +705,7 @@ class RecoveryEngine:
                 RecoveryOutcome.PARKED_HUMAN,
                 projection.phase,
                 detail=projection.awaiting_reason,
+                interrupted=interrupted,
             )
 
         if projection.attempts >= self._max_attempts:
@@ -314,6 +715,7 @@ class RecoveryEngine:
                 RecoveryOutcome.ABANDONED,
                 projection.phase,
                 detail=f"attempts={projection.attempts} >= max={self._max_attempts}",
+                interrupted=interrupted,
             )
 
         drifted, restored = await self._reconcile_workspace(projection)
@@ -326,7 +728,9 @@ class RecoveryEngine:
 
         await self._requeue(projection)
         await self._record_sweep(projection, outcome, drifted)
-        return CorrelationRecovery(cid, outcome, projection.phase, drifted, restored)
+        return CorrelationRecovery(
+            cid, outcome, projection.phase, drifted, restored, interrupted=interrupted
+        )
 
     async def _record_sweep(
         self,

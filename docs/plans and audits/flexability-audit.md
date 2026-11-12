@@ -19,16 +19,16 @@ No tracked files were modified during this audit.
 
 | Capability | Status | Evidence and conclusion |
 |---|---|---|
-| Built-in task lifecycle | **Working** | `src/paa/agents/orchestrator.py:400-443`, `ChiefOrchestrator.run()` directly owns hydrate → plan → policy → execute/critique/retry → commit. |
+| Built-in task lifecycle | **Working** | `src/paa/agents/orchestrator.py:429-472`, `ChiefOrchestrator.run()` directly owns hydrate → plan → policy → execute/critique/retry → commit. |
 | Runtime composition | **Partially supported** | `src/paa/runtime.py:232-345` wires the built-in runtime, but `Runtime.build()` accepts no pipeline registry, pipeline implementation, or arbitrary loop host. |
 | Planner/worker/policy/critic chain | **Working** | `src/paa/agents/orchestrator.py:543-812`; tests in `tests/agents/test_orchestrator.py:64-210` cover ordering, policy blocking, retry, gates, and resumed steps. |
 | Deterministic permissions and risk checks | **Working** | `src/paa/agents/policy.py:122-183`; policy is model-independent and covers permissions, lockdown/network, irreversible operations, protected paths, operator rules, and anti-goals. |
-| Worker sandbox and validation | **Working on the built-in path** | `src/paa/runtime.py:560-619` composes `CriticValidatorAdapter`, `DeterministicValidationEngine`, sandbox, and `WorkerCell`. |
+| Worker sandbox and validation | **Working on the built-in path** | `src/paa/runtime.py:641-700` composes `CriticValidatorAdapter`, `DeterministicValidationEngine`, sandbox, and `WorkerCell`. |
 | Append-only ledger | **Working** | `src/paa/ledger/store.py:102-166` performs idempotency, state versioning, hash chaining, event insertion, and head projection atomically. |
-| Replay and recovery | **Working for ledger-aware orchestrator tasks** | `src/paa/ledger/recovery.py:226-304` and `:354-414`; `tests/ledger/test_recovery.py:71-431` covers recovery, idempotence, gates, drift rollback, and process death. |
+| Replay and recovery | **Working for ledger-aware orchestrator tasks** | `src/paa/ledger/recovery.py:586-625` and `src/paa/ledger/recovery.py:763-805`; `tests/ledger/test_recovery.py:71-431` covers recovery, idempotence, gates, drift rollback, and process death. |
 | Delegation/recursion protection | **Working** | `src/paa/agents/base.py` and orchestrator delegation mediation around `src/paa/agents/orchestrator.py:837+`. |
 | Independent model/tool loop | **Working, but isolated** | `src/paa/coder/loop.py:116-198`; `_handle_call()` at `:200-220` provides tool gating, hooks, denial, and max-step bounds. `tests/coder/test_loop.py:53-215` exercises these. |
-| Coder harness composition | **Partial** | `src/paa/coder/agent.py:105-214` composes a runtime, router-backed model, runtime tools, permissions, hooks, and session, but it is a separate front end rather than an interchangeable runtime pipeline. |
+| Coder harness composition | **Partial** | `src/paa/coder/agent.py:115-248` composes a runtime, router-backed model, runtime tools, permissions, hooks, and session, but it is a separate front end rather than an interchangeable runtime pipeline. |
 | Coder loop ledger integration | **Unsupported** | `src/paa/coder/loop.py:142-198` records to `Session` (`user`, `assistant`, `tool_call`, `tool_result`), not `LedgerEvent`, task projections, workspace checkpoints, or `RecoveryEngine`. |
 | Stable pipeline abstraction | **Design-only** | `docs/EXTENSIBILITY_PIPELINES.md` proposes `Pipeline` and `RuntimeContext`, but there is no `src/paa/pipelines/` implementation, SDK version, context facade, or conformance contract. |
 | Pipeline selection | **Unsupported** | `src/paa/runtime.py:209-211`, `Runtime.run()`, unconditionally calls `self.orchestrator.run(correlation_id)`. `TaskRequest` has no pipeline field and there is no CLI/API `--pipeline`, session default, or global default. |
@@ -51,7 +51,7 @@ A developer can add tools/skills or build a separate application around the code
 
 ### Critical: the orchestrator is the execution strategy, not a host
 
-`ChiefOrchestrator.run()` directly invokes `_hydrate`, `_plan`, `_check_policy`, `_execute_steps`, `_critique`, and `_commit` (`src/paa/agents/orchestrator.py:400-443`). There is no injected loop interface or dispatch boundary. Replacing the strategy requires changing that source or bypassing `Runtime.run()`.
+`ChiefOrchestrator.run()` directly invokes `_hydrate`, `_plan`, `_check_policy`, `_execute_steps`, `_critique`, and `_commit` (`src/paa/agents/orchestrator.py:429-472`). There is no injected loop interface or dispatch boundary. Replacing the strategy requires changing that source or bypassing `Runtime.run()`.
 
 ### Critical: the proposed capability facade does not exist
 

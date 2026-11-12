@@ -91,6 +91,12 @@ def register_agent(app: typer.Typer) -> None:
         list_tools: bool = typer.Option(
             False, "--list-tools", help="Print the tool catalogue and exit."
         ),
+        workspace: str | None = typer.Option(
+            None,
+            "--workspace",
+            help="Jailed working tree for filesystem/shell/git tools. "
+            "Without it only ledger/memory tools are offered.",
+        ),
     ) -> None:
         """Run one turn of the tool-using agent against this runtime."""
 
@@ -161,9 +167,25 @@ def register_agent(app: typer.Typer) -> None:
                 session = Session.resume(latest, transcript_dir)
                 console.print(f"[dim]continued session {session.session_id}[/dim]")
 
+            # The workspace string is resolved at this boundary (the
+            # operator's typed input) so ``CoderAgent.build`` receives the
+            # canonical jailed value, never a raw string. An unresolvable
+            # workspace (missing, not a directory, uncanonicalisable)
+            # fails before any runtime is built.
+            from paa.coder.workspace import Workspace, resolve_workspace
+
+            resolved_workspace: Workspace | None = None
+            if workspace is not None:
+                try:
+                    resolved_workspace = Workspace(root=resolve_workspace(workspace))
+                except PaaError as exc:
+                    console.print(f"[red]invalid workspace[/red] {exc.message}")
+                    raise typer.Exit(1) from exc
+
             built = await CoderAgent.build(
                 settings,
                 session=session,
+                workspace=resolved_workspace,
                 mode=resolved_mode,
                 allow=list(allow or []),
                 deny=list(deny or []),
@@ -183,6 +205,42 @@ def register_agent(app: typer.Typer) -> None:
                 if list_tools:
                     _print_tools(built.tools)
                     return
+
+                # The operator running `paa agent` is the explicit
+                # requester for this session (N2.4): the mandate is
+                # recorded before the first model turn, on the runtime's
+                # ledger, and the server stamps the effective policy
+                # version. `session_id` names the coder session, so the
+                # ledger knows which session the authority covers.
+                # After the --list-tools branch: a catalogue listing must
+                # stay read-only, so it records no authority.
+                from paa.core.types import EventType, new_correlation_id
+                from paa.ledger.events import LedgerEvent
+                from paa.ledger.mandate import explicit_mandate
+
+                mandate = explicit_mandate(
+                    kind="coder",
+                    requester_id="operator",
+                    policy=settings.policy,
+                    workspace=(
+                        str(resolved_workspace.root) if resolved_workspace else None
+                    ),
+                    permission_mode=resolved_mode.value,
+                    budget=max_steps,
+                )
+                await built.runtime.ledger.append(
+                    LedgerEvent(
+                        correlation_id=new_correlation_id(),
+                        event_type=EventType.MANDATE_GRANTED,
+                        payload=mandate.granted_payload(
+                            session_id=built.session.session_id
+                        ),
+                    )
+                )
+                console.print(
+                    "[dim]mandate: explicit (requester asserted: "
+                    "coder/operator)[/dim]"
+                )
 
                 result = await built.ask(prompt or "")
                 console.print()
@@ -344,8 +402,11 @@ async def prompt_yes(tool: str, arguments: dict[str, Any], reason: str) -> bool:
     Only state-changing calls reach this prompt. The read-only half of the
     catalogue is standing-allowed in ASK mode, so what arrives here are the
     tools that write: ``submit_task`` and ``run_task`` write to the ledger and
-    can execute work, and ``remember_fact`` writes to the memory tables. A
-    denied call never gets here — it is refused outright.
+    can execute work, ``remember_fact`` writes to the memory tables, and the
+    work tools (``write_file`` / ``edit_file`` / ``apply_patch`` / ``bash``
+    / ``git_stage`` / ``git_commit``, offered only when ``--workspace`` was
+    given) change the working tree or repository. A denied call never gets
+    here — it is refused outright.
     """
 
     def _ask() -> bool:

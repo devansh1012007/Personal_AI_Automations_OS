@@ -567,7 +567,10 @@ class UnifiedDiffValidator:
         newline = "\r\n" if "\r\n" in text else "\n"
         normalised = text.replace("\r\n", "\n")
         had_trailing_newline = normalised.endswith("\n")
-        original_lines = normalised.split("\n")
+        # An empty prior file has no lines, not one empty line: ''.split('\n')
+        # is [''], and keeping that phantom line made a created file gain a
+        # blank line the diff never described (TASK-2, the strict xfail).
+        original_lines = normalised.split("\n") if normalised else []
         if had_trailing_newline:
             original_lines.pop()  # drop the phantom element after the last \n
 
@@ -582,9 +585,27 @@ class UnifiedDiffValidator:
                 prior_sha256=_sha256_bytes(prior_bytes) if prior_bytes else None,
             )
 
-        wants_trailing = had_trailing_newline or action is PatchAction.CREATE
-        if any(h.new_no_newline for h in file_patch.hunks):
+        # Trailing newline — the *new* side decides (MAJOR-1 fix). The
+        # previous heuristic inherited the prior file's trailing state for
+        # MODIFY, so overwriting an empty or no-trailing-newline file
+        # silently dropped the newline the new content carried (the diff
+        # itself never said otherwise: absence of the no-newline marker on
+        # a new side that reaches the new end of file *is* "ends with a
+        # newline"). A modification that never reaches the new end of file
+        # still inherits the prior state's trailing newline, and CREATE
+        # always ends with one.
+        if action is PatchAction.CREATE:
+            wants_trailing = not any(h.new_no_newline for h in file_patch.hunks)
+        elif any(h.new_no_newline for h in file_patch.hunks):
             wants_trailing = False
+        elif any(
+            h.old_no_newline
+            or (h.new_start - 1 + len(h.target_lines) >= len(new_lines))
+            for h in file_patch.hunks
+        ):
+            wants_trailing = True
+        else:
+            wants_trailing = had_trailing_newline
 
         rebuilt = newline.join(new_lines) + (newline if wants_trailing and new_lines else "")
         new_content = rebuilt.encode("utf-8")
@@ -675,6 +696,16 @@ class PatchApplier:
         Refuses a plan that is not fully clean. Partial application of a patch
         whose author already got something wrong is how a workspace ends up in
         a state no ledger event describes.
+
+        Re-verifies each entry's ``prior_sha256`` against the file as it
+        stands *now* (the N1.2 TOCTOU fix): hashes recorded by the dry run
+        were computed at plan time, so without this check a file changed or
+        created after planning would be silently overwritten. A mismatch is
+        treated as an apply failure — the journal unwinds and the stale
+        reason is carried in the refusal — rather than clobbering work the
+        plan never saw. Hand-built plans that carry no ``prior_sha256``
+        for a modify/delete skip the comparison (there is nothing to
+        compare against); dry-run plans always carry it.
         """
         if not plan.ok:
             reasons = plan.rejected + [
@@ -699,6 +730,7 @@ class PatchApplier:
                         prior_bytes=prior,
                     )
                 )
+                self._verify_prior(entry, existed, prior)
 
                 if entry.action is PatchAction.DELETE:
                     target.unlink()
@@ -706,7 +738,7 @@ class PatchApplier:
 
                 target.parent.mkdir(parents=True, exist_ok=True)
                 _atomic_write(target, entry.new_content or b"")
-        except OSError as exc:
+        except (OSError, ValidationError) as exc:
             log.error(
                 "validation.patch.apply_failed",
                 error=str(exc),
@@ -725,6 +757,47 @@ class PatchApplier:
             patch_sha256=plan.patch_sha256[:12],
         )
         return journal
+
+    @staticmethod
+    def _verify_prior(
+        entry: PatchPlanEntry, existed: bool, prior: bytes | None
+    ) -> None:
+        """Refuse when the file is no longer what the plan assumed.
+
+        Called with the exact bytes just read for the journal, so the
+        comparison is on the read the rollback itself relies on — a
+        mismatch raises :class:`ValidationError`, which ``apply`` routes
+        through the same rollback as a write failure.
+        """
+        if entry.action is PatchAction.CREATE:
+            if existed:
+                raise ValidationError(
+                    "patch plan is stale",
+                    path=entry.relative_path,
+                    reason="target file was created since the plan was computed",
+                )
+            return
+        if entry.prior_sha256 is None:
+            # No expected hash recorded (a hand-built plan): nothing to
+            # compare against. The journal still holds the prior bytes,
+            # so a rollback restores them.
+            return
+        if prior is None:
+            raise ValidationError(
+                "patch plan is stale",
+                path=entry.relative_path,
+                reason="target file no longer exists",
+                expected_sha256=entry.prior_sha256,
+            )
+        actual = _sha256_bytes(prior)
+        if actual != entry.prior_sha256:
+            raise ValidationError(
+                "patch plan is stale",
+                path=entry.relative_path,
+                reason="target file changed since the plan was computed",
+                expected_sha256=entry.prior_sha256,
+                actual_sha256=actual,
+            )
 
     def rollback(self, journal: PatchJournal) -> None:
         """Restore every touched file to its exact prior bytes.

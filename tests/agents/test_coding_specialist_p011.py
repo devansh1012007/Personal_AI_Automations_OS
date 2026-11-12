@@ -168,7 +168,21 @@ class TestToolSurfacePolicy:
             for n in CODING_TOOL_NAMES
             if _matches_any_glob(n, DEFAULT_MUTATING_TOOLS) or n in MUTATING_RUNTIME_TOOLS
         }
-        assert mutating == {"submit_task", "run_task", "remember_fact"}
+        # N1.5 pin growth (deliberate): the pilot now offers the work-tool
+        # catalogue too, so the mutating half is the runtime triple plus the
+        # six glob-matched work-tool mutating names. Any new mutating name
+        # fails here until a human classifies it — see the docstring above.
+        assert mutating == {
+            "submit_task",
+            "run_task",
+            "remember_fact",
+            "write_file",
+            "edit_file",
+            "apply_patch",
+            "bash",
+            "git_stage",
+            "git_commit",
+        }
         read_only = set(CODING_TOOL_NAMES) - mutating
         assert read_only == set(READ_ONLY_TOOLS)
         assert set(CODING_TOOL_NAMES) == read_only | mutating

@@ -7,6 +7,7 @@ they exercise the actual wiring end-to-end without a model server.
 
 from __future__ import annotations
 
+import importlib.util
 import uuid
 from pathlib import Path
 
@@ -16,6 +17,13 @@ from typer.testing import CliRunner
 from paa.cli.main import app
 
 runner = CliRunner()
+
+#: The serve-bind-host tests drive ``paa serve``, which needs the API stack
+#: (fastapi + uvicorn) — the ``paa[api]`` extra. A minimal install has neither,
+#: and the point of the gate is that the extra's absence is a *skip*, not a
+#: failure: the test that asserts on the bind is only meaningful with the
+#: server that owns the bind.
+HAS_UVICORN = importlib.util.find_spec("uvicorn") is not None
 
 
 @pytest.fixture(autouse=True)
@@ -276,6 +284,10 @@ class TestCorrelationIdSpelling:
         assert isinstance(result.exception, SystemExit)
 
 
+@pytest.mark.requires_api
+@pytest.mark.skipif(
+    not HAS_UVICORN, reason="fastapi/uvicorn is not installed (needs the api extra)"
+)
 class TestServeBindHost:
     """``paa serve`` may not open a public listener by accident.
 

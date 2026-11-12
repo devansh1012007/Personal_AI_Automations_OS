@@ -13,7 +13,7 @@ that change `PAA_HOME` must call `reset_settings_cache()` (`config.py:931`).
 ## Two-layer .env reading
 
 `.env` is read by **two** layers:
-1. **pydantic-settings** for `PAA_*` settings fields (`config.py:384`).
+1. **pydantic-settings** for `PAA_*` settings fields (`config.py:390`).
 2. **`dotenv_value(name)`** (`config.py:896`) for variables that are *not*
    settings fields — chiefly each provider's API key, named per registry row
    (`registry.ProviderSpec.api_key_env`). It parses `.env` **without** writing

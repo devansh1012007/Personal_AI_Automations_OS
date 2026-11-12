@@ -44,13 +44,13 @@ Major subsystems:
 Primary entry points:
 
 * `paa submit "goal"` — submit and run one task to completion (`src/paa/cli/main.py:77`)
-* `paa serve` — FastAPI API + background daemon (`src/paa/cli/main.py:307`)
+* `paa serve` — FastAPI API + background daemon (`src/paa/cli/main.py:350`)
 * `paa doctor` — report live backends/sandbox (`src/paa/cli/main.py:228`)
 * `paa recover` — post-crash boot sweep (`src/paa/cli/main.py:210`)
 * `paa ledger <id>` — walk a task's event chain (`src/paa/cli/main.py:148`)
 * `paa agent "prompt"` — tool-using coder loop (`src/paa/cli/coder.py:56`)
 
-The composition root is `Runtime.build()` (`src/paa/runtime.py:271`).
+The composition root is `Runtime.build()` (`src/paa/runtime.py:353`).
 
 ## B. Start here
 
@@ -124,7 +124,7 @@ Review
 Existing (pre-existing) documents retained in `docs/`:
 - [coder-agent.md](coder-agent.md) — the `paa agent` tool loop.
 - [EXTENSIBILITY_PIPELINES.md](EXTENSIBILITY_PIPELINES.md) — pluggable agentic loops design.
-- [ROADMAP.md](ROADMAP.md), [VISION.md](../VISION.md) (`VISION.md` lives at the repository root).
+- [ROADMAP.md](ROADMAP.md), [VISION.md](VISION.md).
 - [deployment/docker.md](deployment/docker.md)
 - [adr/README.md](adr/README.md) — ADR index (0001–0018 and 0019–0026, 0028–0035; 0027 reserved); bodies on disk: 0008, 0010, 0015, 0019–0026, 0028–0035.
 - [memory-polish/plans/Plan1.md](memory-polish/plans/Plan1.md) — dated memory-polish proposal (in scope for the `path:line` lock).
@@ -150,7 +150,7 @@ Agent-ops run 20261106-memory-remembering-agent (run trail, excluded from the `p
 4. Note what is persisted (ledger event, recovery mark, queue message) and what is
    derived (context packet, projection, indexes).
 5. Follow errors: every `PaaError` subclass carries structured `details` written to the
-   ledger; terminal events close a lineage (`core/types.py:242`).
+   ledger; terminal events close a lineage (`core/types.py:273`).
 
 When modifying a component, check its [module page](modules) for upstream callers and
 downstream consumers, then update the corresponding flow trace and this index.

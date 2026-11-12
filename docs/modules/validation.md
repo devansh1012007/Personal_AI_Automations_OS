@@ -43,7 +43,7 @@ CRITICAL finding, **never skipped** (`:342`). `scan_or_raise()` raises
 Pure-Python unified-diff parse/dry-run/apply/rollback with workspace jail
 (`safe_relative_path` blocks traversal/absolute/symlink/NUL, `:270`).
 Transactional apply with in-memory rollback journal (`PatchApplier.apply`,
-`:672`). `compute_patch_sha256` normalises line endings (`:786`).
+`:693`). `compute_patch_sha256` normalises line endings (`:859`).
 
 ### `schema_validator.py` — SchemaValidator
 Pure-Python JSON Schema subset; `$ref`/`if`/`then`/`else` always rejected;
@@ -72,7 +72,7 @@ Manifest capture + drift detection (`hash_file`).
 | Component | Relationship | Why | Source |
 |---|---|---|---|
 | `CriticReviewer` → `Engine` | `validate(output)` | Review step output | `reasoning.py:275` |
-| `CriticValidatorAdapter` (runtime) → `Engine` | adapt call shape | Bridge critic ↔ engine | `runtime.py:80` |
+| `CriticValidatorAdapter` (runtime) → `Engine` | adapt call shape | Bridge critic ↔ engine | `runtime.py:92` |
 | `Engine` → `Scanner/Validator/PytestRunner/Snapshot` | delegate checks | Compose verdict | `engine.py:215` |
 | `USA` → `SchemaValidator` | `validate_tool_output()` | Validate skill output | `usa.py` |
 | `PytestRunner` → `Sandbox` | `run(spec)` | Execute tests contained | `test_runner.py` |
@@ -80,7 +80,7 @@ Manifest capture + drift detection (`hash_file`).
 ## Runtime behavior
 
 - Lazy import in `runtime.py` (`try/except`) — validation unavailable degrades
-  gracefully (`runtime.py:592`).
+  gracefully (`runtime.py:673`).
 - Tests run last and only inside a sandbox (`engine.py:233`).
 - `ok` requires positive evidence; absence of failure ≠ pass (`test_runner.py:81`).
 

@@ -83,8 +83,8 @@ flowchart TD
 
 | Component | Responsibility | Entry point | Key dependencies | Consumers | State / side effects |
 |---|---|---|---|---|---|
-| `Runtime` (`runtime.py:152`) | Composition root; builds and closes the whole runtime; drives tasks | `Runtime.build()` (`runtime.py:271`) | `Database`, `LedgerStore`, agents, model router, storage substrates, recovery engine | CLI, API, daemon, coder agent | Opens DB; creates directories; runs boot recovery |
-| `ChiefOrchestrator` (`agents/orchestrator.py:189`) | Task lifecycle: hydrate → plan → policy → execute → commit; owns delegation graph and backpressure | `ChiefOrchestrator.run()` (`orchestrator.py:400`) | `LedgerStore`, all agents, queue, backpressure, recovery | `Runtime`, API (`/tasks`), daemon dispatch loop | Writes ledger events; enqueues tasks |
+| `Runtime` (`runtime.py:168`) | Composition root; builds and closes the whole runtime; drives tasks | `Runtime.build()` (`runtime.py:353`) | `Database`, `LedgerStore`, agents, model router, storage substrates, recovery engine | CLI, API, daemon, coder agent | Opens DB; creates directories; runs boot recovery |
+| `ChiefOrchestrator` (`agents/orchestrator.py:200`) | Task lifecycle: hydrate → plan → policy → execute → commit; owns delegation graph and backpressure | `ChiefOrchestrator.run()` (`orchestrator.py:429`) | `LedgerStore`, all agents, queue, backpressure, recovery | `Runtime`, API (`/tasks`), daemon dispatch loop | Writes ledger events; enqueues tasks |
 | `LedgerStore` (`ledger/store.py:108`) | Append-only event log; idempotency, state_version, hash chain, head projection | `LedgerStore.append()` (`ledger/store.py:116`) | `Database` | Orchestrator, recovery, replay, API (`/ledger/{id}`), CLI (`paa ledger`) | Appends rows to `system_state_ledger`; updates `system_state_correlation_head` |
 | `Database` (`storage/relational/database.py:110`) | Async SQLite access layer; single writer + read pool; WAL | `Database.connect()` (`storage/relational/database.py:168`) | `aiosqlite`, `sqlite3` | Nearly every storage-writing/reading module | Creates/mutates `paa.db`; applies schema on connect |
 | `StrategicPlanner` (`agents/reasoning.py:62`) | Compiles a goal + context into ordered execution steps | `StrategicPlanner.handle()` (`reasoning.py:78`) | `ModelLike` (model adapter); `MODALITY_PROFILES` | Orchestrator (`_plan`) | Emits no events directly; returns plan dict |
@@ -94,13 +94,13 @@ flowchart TD
 | `PlannerContextBuilder` / `WorkerContextBuilder` (`agents/context_agents.py:296`) | Build context packets (planner: all domains; worker: narrative blocked) | `.handle()` | `Database`, vector, graph, embedder, `BoundedContextGatherer` | Orchestrator (`_hydrate`) | Read-only fetches; no writes |
 | `BoundedContextGatherer` (`context/gatherer.py`) | Enforces hard token ceiling on context packet | `compile()` | `TokenBudget`, `CharEstimator` | Context builders | Pure computation; no persistence |
 | `EscalatingModelRouter` (`models/router.py:165`) | Local-first routing with explicit, logged escalation to frontier | `complete()` / `complete_structured()` | Local provider, optional frontier provider, `LedgerStore` | `RouterModelAdapter` (via agents) | Writes `MODEL_ESCALATED` ledger event before frontier call |
-| `RouterModelAdapter` (`runtime.py:110`) | Bridges agents' `ModelLike` protocol to the escalation router | `complete_structured()` (`runtime.py:133`) | `EscalatingModelRouter` | All reasoning agents | No persistence (router logs escalations) |
-| `RecoveryEngine` (`ledger/recovery.py:150`) | Post-crash boot sweep: replay, reconcile workspace, re-queue | `RecoveryEngine.boot_sweep()` (`recovery.py:226`) | `LedgerStore`, `Database`, optional `WorkspaceSnapshotter`, optional queue requeuer | `ChiefOrchestrator.boot()` (`orchestrator.py:1105`) | Writes `RECOVERY_REPLAY_COMPLETED`/`STATE_ROLLBACK_TRIGGERED`/`TASK_ABANDONED` events; restores workspace |
-| `Daemon` (`daemon.py:53`) | Background loops: dispatch, ingestion, maintenance | `Daemon.start()` (`daemon.py:91`) | `Runtime`, `MemoryCreator`, `DecaySweeper` | `paa serve` (`cli/main.py:307`) | Claims queue messages; runs decay sweep; ingests signals |
+| `RouterModelAdapter` (`runtime.py:125`) | Bridges agents' `ModelLike` protocol to the escalation router | `complete_structured()` (`runtime.py:148`) | `EscalatingModelRouter` | All reasoning agents | No persistence (router logs escalations) |
+| `RecoveryEngine` (`ledger/recovery.py:500`) | Post-crash boot sweep: replay, reconcile workspace, re-queue | `RecoveryEngine.boot_sweep()` (`recovery.py:586`) | `LedgerStore`, `Database`, optional `WorkspaceSnapshotter`, optional queue requeuer | `ChiefOrchestrator.boot()` (`orchestrator.py:1105`) | Writes `RECOVERY_REPLAY_COMPLETED`/`STATE_ROLLBACK_TRIGGERED`/`TASK_ABANDONED` events; restores workspace |
+| `Daemon` (`daemon.py:53`) | Background loops: dispatch, ingestion, maintenance | `Daemon.start()` (`daemon.py:91`) | `Runtime`, `MemoryCreator`, `DecaySweeper` | `paa serve` (`cli/main.py:350`) | Claims queue messages; runs decay sweep; ingests signals |
 | `MemoryCreator` (`memory/creator.py`) | Ingests unprocessed signals into hot-serving facts | `MemoryCreator.run_batch()` | `Database`, `FactRepository` | Daemon ingestion loop | Writes entities/facts |
 | `DecaySweeper` (`memory/decay.py`) | Evicts stale facts via `C(t)=C₀·e⁻ˡᵃᵐᵇᵈᵃ·t` | `DecaySweeper.sweep()` | `Database`, `DomainPolicy` | Daemon maintenance loop | Deletes/archives stale fact rows |
 | `DeterministicValidationEngine` (`validation/engine.py:185`) | Binary PASS/FAIL: schema → AST → patch → drift → tests | `validate()` (`engine.py:208`) | `AstSecurityScanner`, `SchemaValidator`, `UnifiedDiffValidator`, `WorkspaceSnapshot`, optional `PytestRunner`/`Sandbox` | `CriticValidatorAdapter` (`runtime.py:77`) | Runs tests in sandbox (only check that executes code) |
-| `CoderAgent` (`coder/agent.py:71`) | Tool-using loop over the runtime | `CoderAgent.build()` (`coder/agent.py:105`) | `Runtime`, `AgentLoop`, `RouterToolCallingModel`, `ToolPermissionPolicy`, `HookRegistry`, `Session` | `paa agent` CLI (`cli/coder.py`) | Submits/runs tasks via runtime tools; writes session transcripts |
+| `CoderAgent` (`coder/agent.py:85`) | Tool-using loop over the runtime | `CoderAgent.build()` (`coder/agent.py:120`) | `Runtime`, `AgentLoop`, `RouterToolCallingModel`, `ToolPermissionPolicy`, `HookRegistry`, `Session` | `paa agent` CLI (`cli/coder.py`) | Submits/runs tasks via runtime tools; writes session transcripts |
 | `AgentLoop` (`coder/loop.py:116`) | think → act → observe under permissions & hooks | `AgentLoop.run()` (`loop.py:142`) | `ToolCallingModel`, `ToolPermissionPolicy`, `HookRegistry`, `Session` | `CoderAgent.ask()` | Records turns; calls tools; mutates session transcript |
 | `SignalRepository` (`storage/coldlake/signals.py:102`) | Raw signal intake; idempotent on (channel, external_id); CAS offload | `SignalRepository.record()` (`signals.py:127`) | `Database`, `ContentAddressedStore` | API (`/signals`), daemon ingestion | Writes `cold_lake_signals`; offloads blobs to CAS |
 | `ContentAddressedStore` (`storage/coldlake/cas.py:147`) | Content-addressed, zstd-compressed blob store | `put()` / `get()` | `zstandard`, filesystem | `SignalRepository`, `copy_file_into` | Writes blobs under `cold_lake/blobs/<sha2>/<sha>.zst` |
@@ -177,13 +177,13 @@ paa recover / Daemon.start → Runtime.boot_recovery()
 
 ```
 paa agent "prompt" (cli/coder.py:44)
-  → CoderAgent.build() (coder/agent.py:101) → Runtime.build()
+  → CoderAgent.build() (coder/agent.py:115) → Runtime.build()
     → AgentLoop.run() (loop.py:142)
       → RouterToolCallingModel.propose() (model_adapter.py:161)
         → EscalatingModelRouter.complete_structured (router.py:274)
       → for each tool call:
         → HookRegistry.fire(PRE_TOOL_USE) (hooks.py:95)
-        → ToolPermissionPolicy.evaluate() (permissions.py:172)
+        → ToolPermissionPolicy.evaluate() (permissions.py:173)
         → confirm callback on ASK (loop.py:231)
         → tool.run() → build_runtime_tools tool (runtime_tools.py)
           → e.g. submit_task → Runtime.submit() (runtime.py:189)
@@ -212,7 +212,7 @@ paa agent "prompt" (cli/coder.py:44)
 
 - **Ledger before side effect:** Every orchestrator phase writes its event
   (`_emit`) before calling the agent or doing the work
-  (`orchestrator.py:471`–`:815`).
+  (`orchestrator.py:500`–`:844`).
 - **No model in control path:** `PolicyRiskAgent` has no provider dependency
   (`policy.py:7`); routing/gating are pure Python.
 - **Orchestrator mediates all delegation:** Agents call `self.delegate()` which
@@ -220,16 +220,16 @@ paa agent "prompt" (cli/coder.py:44)
   `orchestrator.py:837`); the `DelegationGraph` enforces depth/cycle/node
   bounds (`delegation.py:87`).
 - **Storage substrates degrade, never raise:** `_try_vector/_try_graph/_try_queue`
-  catch all exceptions and return `None` with a warning (`runtime.py:419`).
+  catch all exceptions and return `None` with a warning (`runtime.py:500`).
 - **Sandbox probe is bounded at 5s:** `_acquire_sandbox` uses
   `asyncio.wait_for(..., timeout=5.0)` then falls back to subprocess
-  (`runtime.py:517`).
+  (`runtime.py:598`).
 - **API is an edge layer only:** `create_app` parses/validates and delegates to
   `Runtime`; it holds no application state and makes no model calls
   (`api/app.py:54`).
 - **Everything is injected:** `Runtime.build` accepts `model_adapter`,
   `model_router` overrides; agents take their collaborators in constructors
-  (`runtime.py:271`).
+  (`runtime.py:353`).
 
 ## 6. What would break if changed or removed
 
@@ -242,7 +242,7 @@ paa agent "prompt" (cli/coder.py:44)
 | Make policy model-driven | Violates the "no model in control path / security loop" guarantee (`policy.py:7`) |
 | Remove sandbox from WorkerCell | Worker would execute on host; loses containment (`reasoning.py:441`) |
 | Delete `system_state_correlation_head` | Recovery would have to scan the full ledger instead of open lineages (`ledger/store.py:348`) |
-| Change `TERMINAL_EVENTS` | Recovery sweep would either re-process finished tasks or abandon in-flight ones (`core/types.py:242`) |
+| Change `TERMINAL_EVENTS` | Recovery sweep would either re-process finished tasks or abandon in-flight ones (`core/types.py:273`) |
 
 ## 7. Related documents
 

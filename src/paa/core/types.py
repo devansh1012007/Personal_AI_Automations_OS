@@ -227,6 +227,37 @@ class EventType(str, enum.Enum):
     ATTENTION_ALLOCATED = "ATTENTION_ALLOCATED"
     DRAIN_THROTTLED = "DRAIN_THROTTLED"
 
+    # -- coder session + mandate (ADR-0046) --------------------------------
+    # Coder-session events are the audit record of what the coder agent did
+    # (N2.1, wave 2a of run 20261109-next-spec). They are *informational*,
+    # never lifecycle: all eight map to `_NO_PHASE_CHANGE` in
+    # ledger/replay.py and none of them enters TERMINAL_EVENTS. A coder
+    # session is not a task lineage — it moves no phase, closes nothing,
+    # and must not let the boot sweep requeue it as a task.
+    #
+    # ADR-0046 idempotency: the ledger journal (N2.2, coder/journal.py)
+    # MUST construct each tool-call event with attempt=0 and
+    # discriminator = f"{session_id}:{call_id}:{kind}", where kind is one
+    # of PROPOSED / DENIED / COMPLETED / FAILED — so a redelivered append
+    # of the same logical event dedupes under the ADR-0008 key and the
+    # four outcomes of one call are four distinct events.
+    #
+    # Every payload carries `v` (schema version, currently 1); see ADR-0046
+    # for the forward-compatibility policy and the `_row_to_event` one-way
+    # door. Persisted intent goes in TOOL_CALL_PROPOSED (pre_sha256,
+    # post_sha256, patch_sha256) so recovery (N2.3) can classify an
+    # interrupted call as applied / not_applied / unknown; the COMPLETED /
+    # FAILED / DENIED payloads inherit the call identity
+    # (session_id, call_id, tool) and the intent hashes by reference.
+    CODER_SESSION_STARTED = "CODER_SESSION_STARTED"
+    TOOL_CALL_PROPOSED = "TOOL_CALL_PROPOSED"
+    TOOL_CALL_DENIED = "TOOL_CALL_DENIED"
+    TOOL_CALL_COMPLETED = "TOOL_CALL_COMPLETED"
+    TOOL_CALL_FAILED = "TOOL_CALL_FAILED"
+    CODER_SESSION_ENDED = "CODER_SESSION_ENDED"
+    MANDATE_GRANTED = "MANDATE_GRANTED"
+    MANDATE_REFUSED = "MANDATE_REFUSED"
+
 
 #: Events after which a correlation is closed and needs no recovery sweep.
 #: Used by the recovery engine to decide which lineages are still in flight.

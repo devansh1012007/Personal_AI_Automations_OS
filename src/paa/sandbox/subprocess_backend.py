@@ -409,6 +409,32 @@ class SubprocessSandbox(Sandbox):
                     )
                     await self._kill_tree(proc, job)
                     exit_code = await self._reap(proc)
+        except asyncio.CancelledError:
+            # DECISION: an externally-cancelled run reaps its tree exactly like
+            # a timed-out one (``_kill_tree`` + ``_reap``), then re-raises — the
+            # cancel is the caller's signal, and returning a ``SandboxResult``
+            # here would read as normal completion and hide the cancel (the
+            # loop journals FAILED only because this re-raises). The reader
+            # tasks and the Job Object must be torn down too: returning without
+            # them leaks pending tasks and, on Windows, the job handle (whose
+            # KILL_ON_JOB_CLOSE only fires at host exit — the arm must reap
+            # now, not wait for exit).
+            log.warning(
+                "sandbox.subprocess.cancelled",
+                pid=proc.pid,
+                command=list(spec.command)[:3],
+            )
+            await self._kill_tree(proc, job)
+            await self._reap(proc)
+            stdout_reader.cancel()
+            stderr_reader.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await stdout_reader
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await stderr_reader
+            job.terminate()
+            job.close()
+            raise
         finally:
             await watchdog.stop()
 

@@ -77,7 +77,7 @@ Everything else in this document is plumbing around those two.
 | The toolbox image `paa/toolbox:v1` | **built in Phase 0** | `deploy/toolbox/Dockerfile` — the image MCP servers and plugin commands run in. Carries Node 24, because most published MCP servers are npm packages started with `npx`. |
 | The `paa` daemon image | **can launch containers as of Phase 0** | the Docker client is installed (Docker's official static build, pinned by SHA-256), `/var/run/docker.sock` is mounted, and the socket's GID is added to the container user via `group_add` + `DOCKER_GID`. |
 | Skill registry (DB-backed, reliability, permissions) | **implemented but never constructed** | `src/paa/skills/{registry,usa}.py` — no call site outside `src/paa/skills/` |
-| Coder tool protocol (`name`/`description`/`schema()`/`run(args) -> str`) | **works, live, tested** | `src/paa/coder/loop.py:85-97` |
+| Coder tool protocol (`name`/`description`/`schema()`/`run(args) -> str`) | **works, live, tested** | `src/paa/coder/loop.py:93-105` |
 | Tool permission policy (allow/deny/ask globs, PLAN refuses mutating) | **works** | `src/paa/coder/permissions.py` |
 | `AgentLoop` gate order (hook → permission → confirm → execute → hook) | **works** | `src/paa/coder/loop.py:200-255` |
 | Runtime tool catalogue (9 tools) | **works** | `src/paa/coder/runtime_tools.py:85-107` |

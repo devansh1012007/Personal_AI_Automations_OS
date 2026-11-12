@@ -22,7 +22,7 @@ membership* (whether it is served now).
 The plan adds a T0–T4 ladder with per-tier TTLs. The hard question is not
 the ladder but the replay rule: "replay rebuilds tier state" cannot be
 satisfied by adding two members to `_NO_PHASE_CHANGE` in
-`src/paa/ledger/replay.py:387` alone, because there is nowhere for rebuilt
+`src/paa/ledger/replay.py:407` alone, because there is nowhere for rebuilt
 tier to live. `TaskProjection` is task-lineage state, folded by
 `correlation_id` — tier is **fact-scoped**, moving per `fact_id`, and an
 event fold keyed by task cannot carry it without polluting the task

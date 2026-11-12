@@ -30,7 +30,7 @@ including the test-coverage notes for Phase 0, remains in git history.
 Measured on a clean Linux checkout at commit `4ac96db` (Python 3.12, `.[dev]`, no
 Docker): about 52,000 lines of source, 3,145 tests collected, 2,899 passed, 241
 skipped, 4 xfailed, 1 failed (environmental). Re-measure with the commands in the
-[README](../README.md#status) before quoting any figure.
+[README](../README.md#testing) before quoting any figure.
 
 **True now.** The spine (ledger, replay, recovery, storage, context, sandbox,
 validation, agents, memory, models, skills) is built and tested. One task flows from

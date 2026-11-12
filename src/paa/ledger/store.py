@@ -365,15 +365,27 @@ class LedgerStore:
         *,
         event_types: Sequence[EventType] | None = None,
         limit: int = 10_000,
+        descending: bool = False,
     ) -> list[LedgerEvent]:
-        """Time-ranged scan. Used by the weekly reflection engine."""
+        """Time-ranged scan. Used by the weekly reflection engine.
+
+        ``descending=True`` scans newest-first, so a ``limit`` cut keeps
+        the newest rows (the resume scan in
+        :func:`paa.ledger.recovery.find_interrupted_calls_for_session`
+        filters by session *after* the cut, so an ascending scan would
+        evict the newest, most resumable sessions). The default keeps
+        the previous ascending order for counting/grouping callers.
+        """
         sql = f"SELECT {_SELECT_COLUMNS} FROM system_state_ledger WHERE recorded_at >= ?"
         params: list[Any] = [to_iso(since)]
         if event_types:
             placeholders = ",".join("?" for _ in event_types)
             sql += f" AND event_type IN ({placeholders})"
             params.extend(e.value for e in event_types)
-        sql += " ORDER BY sequence_id ASC LIMIT ?"
+        if descending:
+            sql += " ORDER BY sequence_id DESC LIMIT ?"
+        else:
+            sql += " ORDER BY sequence_id ASC LIMIT ?"
         params.append(limit)
         return [_row_to_event(r) for r in await self._db.fetch_all(sql, params)]
 

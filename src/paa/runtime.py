@@ -38,7 +38,22 @@ from paa.agents.policy import PolicyRiskAgent
 from paa.agents.reasoning import CriticReviewer, StrategicPlanner, TaskRouter, WorkerCell
 from paa.agents.specialists.coding import CodingSpecialist
 from paa.config import Settings, get_settings
-from paa.core.types import ComplexityModality, CorrelationId, PermissionMode
+from paa.core.errors import PaaError
+from paa.core.types import (
+    ComplexityModality,
+    CorrelationId,
+    EventType,
+    PermissionMode,
+    new_correlation_id,
+)
+from paa.ledger.events import LedgerEvent
+from paa.ledger.mandate import (
+    Mandate,
+    MandateBasis,
+    effective_policy_version,
+    implicit_mandate,
+    require_explicit_mandate,
+)
 from paa.ledger.recovery import RecoveryEngine
 from paa.ledger.store import LedgerStore
 from paa.models.base import redact
@@ -234,8 +249,55 @@ class Runtime:
         required_slots: list[str] | None = None,
         workspace_path: str | None = None,
         target_agent: str | None = None,
+        mandate: Mandate | None = None,
     ) -> CorrelationId:
-        """Record a task and return its lineage id. Does not execute it."""
+        """Record a task and return its lineage id. Does not execute it.
+
+        ``mandate`` is the recorded authority for the task (N2.4,
+        ADR-0046). ``None`` — the default, so every existing call site is
+        unchanged — submits under an implicit mandate: the runtime
+        proceeds, and the lineage's head event says plainly that no
+        authority was asserted, so ``paa doctor`` counts it separately
+        rather than as coverage.
+
+        Two refusals can follow, each recorded as a ``MANDATE_REFUSED``
+        event before raising :class:`PaaError`, never silently:
+
+        * **stale policy** — the mandate's policy version does not match
+          the effective policy as of this submit, i.e. the policy changed
+          after the mandate was created (mid-run). Work is not silently
+          applied under new rules for a grant made under old ones.
+        * **strict mode** — ``policy.require_explicit_mandate`` is set, or
+          the mode is ``LOCKDOWN`` (which forces it), and the mandate's
+          basis is not ``explicit``.
+
+        A refusal is its own lineage (no work proceeded under it). Its
+        correlation id is carried in the exception's ``details`` so the
+        caller can find the refusal record again.
+        """
+        effective = effective_policy_version(self.settings.policy)
+        resolved = mandate if mandate is not None else implicit_mandate(self.settings.policy)
+        if resolved.policy_version != effective:
+            refused = await self._refuse_mandate(resolved, reason="policy_changed")
+            raise PaaError(
+                "mandate policy version does not match the effective policy",
+                reason="policy_changed",
+                refusal_correlation_id=str(refused),
+                mandate_policy_version=resolved.policy_version.sha256,
+                effective_policy_version=effective.sha256,
+            )
+        if require_explicit_mandate(self.settings.policy) and (
+            resolved.basis is not MandateBasis.EXPLICIT
+        ):
+            refused = await self._refuse_mandate(
+                resolved, reason="require_explicit_mandate"
+            )
+            raise PaaError(
+                "an explicit mandate is required in this permission mode",
+                reason="require_explicit_mandate",
+                refusal_correlation_id=str(refused),
+                basis=resolved.basis.value,
+            )
         return await self.orchestrator.submit(
             TaskRequest(
                 goal=goal,
@@ -243,8 +305,27 @@ class Runtime:
                 required_slots=required_slots,
                 workspace_path=workspace_path,
                 target_agent=target_agent,
+                mandate=resolved,
             )
         )
+
+    async def _refuse_mandate(self, mandate: Mandate, *, reason: str) -> CorrelationId:
+        """Record a mandate refusal and return its lineage id.
+
+        A refusal is its own lineage — no ``TASK_REQUESTED`` follows it,
+        because no work proceeded under the refused mandate. Emitted
+        through :meth:`LedgerStore.append` like every other event, so the
+        refusal is hash-chained and replayable.
+        """
+        correlation_id = new_correlation_id()
+        await self.ledger.append(
+            LedgerEvent(
+                correlation_id=correlation_id,
+                event_type=EventType.MANDATE_REFUSED,
+                payload=mandate.refused_payload(session_id=None, reason=reason),
+            )
+        )
+        return correlation_id
 
     async def run(self, correlation_id: CorrelationId | uuid.UUID) -> Any:
         """Drive a submitted task to a terminal phase."""

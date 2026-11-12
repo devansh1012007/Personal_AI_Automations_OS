@@ -35,10 +35,10 @@ tool names in an enum (`model_adapter.py`).
 
 ### `agent.py` — CoderAgent
 `CoderAgent.build()` composes `Runtime.build()` + `RouterToolCallingModel` +
-`AgentLoop` + `ToolPermissionPolicy` + `HookRegistry` + `Session` (`coder/agent.py:105`).
+`AgentLoop` + `ToolPermissionPolicy` + `HookRegistry` + `Session` (`coder/agent.py:115`).
 `MUTATING_RUNTIME_TOOLS = ("submit_task", "run_task")` — these don't match
 `DEFAULT_MUTATING_TOOLS` globs, so they're added explicitly to keep `--mode plan`
-read-only (`:64`, ADR-0011 context).
+read-only (`:78`, ADR-0011 context).
 `mode` default `ASK`; no `confirm` callback → auto-*deny* (unattended run stops
 at first gated call) (`:134`).
 
@@ -57,9 +57,9 @@ parses back into `ModelTurn` (`:161`). Tokens always 0 (`:32`–`:38`).
 
 ### `permissions.py` — ToolPermissionPolicy
 Precedence: explicit deny (always wins, even under BYPASS) → explicit allow →
-explicit ask → mode default (`:172`). `PLAN` mode refuses all mutating tools
-(`:186`). `_MUTATING_TOOLS` globs: `write*`, `edit*`, `bash*`, `shell*`,
-`apply_patch*`, `*delete*`, `*write*`, `send_*`, `*_commit*` (`:127`).
+explicit ask → mode default (`:173`). `PLAN` mode refuses all mutating tools
+(`:185`). `_MUTATING_TOOLS` globs: `write*`, `edit*`, `bash*`, `shell*`,
+`apply_patch*`, `*delete*`, `*write*`, `send_*`, `*_commit*`, `git_stage*` (`:127`).
 
 ### `hooks.py` — HookRegistry
 `HookEvent`: SESSION_START/END, USER_PROMPT_SUBMIT, PRE_TOOL_USE,
@@ -93,27 +93,27 @@ Custom commands from `.md` files with `$ARGUMENTS`/`$1`..`$9` substitution.
 
 | Component | Relationship | Why | Source |
 |---|---|---|---|
-| `CoderAgent` → `Runtime.build()` | construct | Real runtime to drive | `coder/agent.py:155` |
-| `CoderAgent` → `RouterToolCallingModel` | `propose()` | Model seam | `agent.py:174` |
+| `CoderAgent` → `Runtime.build()` | construct | Real runtime to drive | `coder/agent.py:188` |
+| `CoderAgent` → `RouterToolCallingModel` | `propose()` | Model seam | `agent.py:210` |
 | `RouterToolCallingModel` → `EscalatingModelRouter` | `complete_structured()` | Inference + escalation | `model_adapter.py:176` |
 | `AgentLoop` → `ToolPermissionPolicy` | `evaluate()` | Gate every call | `loop.py:224` |
-| `AgentLoop` → `HookRegistry` | `fire()` | Hooks pre/post tool | `loop.py:217`, `:246` |
+| `AgentLoop` → `HookRegistry` | `fire()` | Hooks pre/post tool | `loop.py:235`, `:313` |
 | `AgentLoop` → `Session` | record turns | Transcript persistence | `loop.py:144` |
-| runtime tools → `Runtime.submit/run` | drive tasks | Ledger writes | `coder/runtime_tools.py:223`, `:270` |
+| runtime tools → `Runtime.submit/run` | drive tasks | Ledger writes | `coder/runtime_tools.py:290`, `:329` |
 | `cli/coder.py` → `CoderAgent.build` | compose | `paa agent` CLI | `cli/coder.py:103` |
 
 ## Runtime behavior
 
 - `confirm` callback absent → auto-deny (`loop.py:138`).
 - `max_tokens` never trips (tokens always 0); `max_steps` is the bound
-  (`AGENTS.md:160`, `loop.py:181`).
+  (`AGENTS.md:160`, `loop.py:199`).
 - `--mode plan` read-only: `MUTATING_RUNTIME_TOOLS` included in mutating set
-  (`agent.py:192`).
+  (`agent.py:235`).
 
 ## Failure behavior
 
 - Runtime built without a model router → `PaaError` raised loudly
-  (`agent.py:159`).
+  (`agent.py:193`).
 - Hook raising → logged, treated as non-block (`hooks.py:95`).
 - Tool execution exception → recorded as error result, loop continues
   (`loop.py:239`).
@@ -123,7 +123,7 @@ Custom commands from `.md` files with `$ARGUMENTS`/`$1`..`$9` substitution.
 
 - Adding a mutating tool: add to `MUTATING_RUNTIME_TOOLS` or pass via
   `mutating_tools=` to `ToolPermissionPolicy`, otherwise `--mode plan`
-  silently exempts it (`agent.py:192`, AGENTS.md coder section).
+  silently exempts it (`agent.py:235`, AGENTS.md coder section).
 - Changing tool names: must match policy globs and the `turn_schema` enum
   (`model_adapter.py:79`).
 - Tests: `tests/coder/` (91 tests per README).

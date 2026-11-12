@@ -19,7 +19,7 @@ import hashlib
 import json
 import uuid
 from datetime import UTC, datetime
-from typing import Any, Self
+from typing import Any, Final, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
@@ -253,3 +253,260 @@ class LedgerEvent(BaseModel):
             payload=payload or {},
             **kwargs,
         )
+
+
+#: The 8 KB inline limit for one ledger payload (N2.6). A payload whose
+#: canonical form is larger than this is stored as a cold-lake blob and the
+#: row keeps only a descriptor. The value is bytes of the *canonical* form,
+#: not ``len(payload)``: the hash chain commits to those bytes, so the size
+#: the chain protects is the size measured on them.
+BLOB_THRESHOLD_BYTES: Final = 8192
+
+#: Human-orientation characters kept in a descriptor. Bounded so that a
+#: blobbed row stays small no matter how large the original was; the
+#: preview is never used for reconstruction, only for reading.
+BLOB_PREVIEW_CHARS: Final = 200
+
+#: The top-level key holding the blob descriptor in a stub payload.
+#: Payloads must not use this key for any other purpose: a stub-shaped
+#: payload is a stub, and any other use is rejected by the resolver.
+_BLOB_KEY: Final = "blob"
+
+
+class BlobStoreLike(Protocol):
+    """The narrow surface the blob helpers need from a cold-lake store.
+
+    The real stores (:class:`~paa.storage.coldlake.cas.ContentAddressedStore`
+    and the S3 backend) satisfy it structurally; the ledger depends on this
+    two-method shape rather than importing the store classes, so a minimal
+    install that lacks the S3 extra still imports this module. ``put``
+    returns ``Any`` deliberately: callers need only the two facts the
+    descriptor pins (the digest and the raw size), and those are recomputed
+    from ``data`` here, so the exact ``BlobRef`` type — which both
+    implementations mint identically — need not be imported to name the
+    return. ``get`` is the verification point: the stores verify the digest
+    on read and raise their own ``Corrupt`` / ``NotFound`` on mismatch or
+    absence, which this module lets propagate unchanged.
+    """
+
+    def put(self, data: bytes, *, compress: bool = True) -> Any: ...
+
+    def get(self, digest: str) -> bytes: ...
+
+
+def payload_size_bytes(payload: dict[str, Any]) -> int:
+    """Bytes of the canonical form of ``payload``.
+
+    This is the size the hash chain protects, and therefore the size the
+    threshold is measured on: ``canonical_json`` with sorted keys and no
+    whitespace, UTF-8 encoded. Two payloads that hash identically measure
+    identically, which is what makes the threshold reproducible.
+    """
+    return len(canonical_json(payload).encode("utf-8"))
+
+
+def payload_requires_blob(payload: dict[str, Any]) -> bool:
+    """Whether ``payload`` exceeds the inline limit."""
+    return payload_size_bytes(payload) > BLOB_THRESHOLD_BYTES
+
+
+def _preview_of(data: bytes) -> str:
+    """The first :data:`BLOB_PREVIEW_CHARS` of ``data`` as text.
+
+    Decoding is lossy (``errors="replace"``) because the preview is a
+    human hint over bytes that may be binary: a non-UTF-8 blob still gets
+    a bounded preview rather than an exception. The preview is never the
+    record — reconstruction always re-reads the blob — so loss here cannot
+    corrupt a read-back.
+    """
+    text = data.decode("utf-8", errors="replace")
+    if len(text) <= BLOB_PREVIEW_CHARS:
+        return text
+    return text[: BLOB_PREVIEW_CHARS - 1] + "…"
+
+
+def _descriptor_for_bytes(data: bytes) -> dict[str, Any]:
+    """The descriptor pinning one blob of ``data``.
+
+    The digest is over the *raw* bytes, never a compressed frame, matching
+    the cold lake's own rule: the address of a payload does not depend on
+    the compression level in effect when it was written.
+    """
+    return {
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "size_bytes": len(data),
+        "preview": _preview_of(data),
+    }
+
+
+def _is_sha256_hex(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(c in "0123456789abcdef" for c in value)
+    )
+
+
+def _blob_descriptor(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """The descriptor of a blobbed payload, or ``None`` if not blobbed.
+
+    A payload is blobbed only in exactly the stub shape this module writes:
+    the two keys ``v`` and ``blob``, with ``blob`` a dict of exactly the
+    three descriptor fields of the right types. The strictness is the
+    collision guard: a payload that merely happens to carry a ``blob``
+    field of some other shape is an ordinary payload, not a stub, and is
+    returned unchanged rather than fetched.
+    """
+    if set(payload) != {"v", _BLOB_KEY}:
+        return None
+    version = payload["v"]
+    if not isinstance(version, int) or isinstance(version, bool):
+        return None
+    raw = payload[_BLOB_KEY]
+    if not isinstance(raw, dict):
+        return None
+    if set(raw) != {"sha256", "size_bytes", "preview"}:
+        return None
+    if not _is_sha256_hex(raw["sha256"]):
+        return None
+    size = raw["size_bytes"]
+    if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+        return None
+    preview = raw["preview"]
+    if not isinstance(preview, str) or len(preview) > BLOB_PREVIEW_CHARS:
+        return None
+    return raw
+
+
+def is_blobbed_payload(payload: dict[str, Any]) -> bool:
+    """Whether ``payload`` is a well-formed blobbed stub."""
+    return _blob_descriptor(payload) is not None
+
+
+def store_blob_bytes(data: bytes, blob_store: BlobStoreLike) -> dict[str, Any]:
+    """Store ``data`` and return its descriptor.
+
+    The store's own digest is checked against the digest recomputed here:
+    a store that addressed different bytes than it was given must fail
+    loudly rather than pin the wrong address in the ledger. A store that
+    returns no reference object is accepted (test doubles); a store whose
+    reference disagrees is not.
+    """
+    descriptor = _descriptor_for_bytes(data)
+    ref: Any = blob_store.put(data)
+    ref_sha: Any = getattr(ref, "sha256", None)
+    if ref_sha is not None and ref_sha != descriptor["sha256"]:
+        raise ValueError(
+            "blob store addressed different bytes than were written: "
+            f"expected {descriptor['sha256']}, store returned {ref_sha!r}"
+        )
+    return descriptor
+
+
+def read_blob_bytes(descriptor: dict[str, Any], blob_store: BlobStoreLike) -> bytes:
+    """Read the blob named by ``descriptor``, verified before return.
+
+    Two independent checks run before any byte is handed back: the blob
+    store's own digest verification (``get`` raises ``Corrupt`` on a
+    mismatch and propagates unchanged), and the size check below recomputed
+    here from the fetched bytes. A ``size_bytes`` that disagrees with the
+    fetched length is a ``ValueError`` even when the digest matches, so a
+    descriptor edited to lie about the size cannot pass. Malformed
+    descriptors raise ``ValueError`` before any fetch is attempted.
+    """
+    if set(descriptor) != {"sha256", "size_bytes", "preview"}:
+        raise ValueError(f"malformed blob descriptor keys: {sorted(descriptor)}")
+    sha = descriptor["sha256"]
+    if not _is_sha256_hex(sha):
+        raise ValueError(f"malformed blob descriptor sha256: {sha!r}")
+    size = descriptor["size_bytes"]
+    if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+        raise ValueError(f"malformed blob descriptor size_bytes: {size!r}")
+    preview = descriptor["preview"]
+    if not isinstance(preview, str) or len(preview) > BLOB_PREVIEW_CHARS:
+        raise ValueError(f"malformed blob descriptor preview of length {len(preview)}")
+    data = blob_store.get(sha)
+    if len(data) != size:
+        raise ValueError(
+            f"blob size mismatch for {sha}: descriptor pins {size} bytes, "
+            f"store returned {len(data)}"
+        )
+    actual = hashlib.sha256(data).hexdigest()
+    if actual != sha:
+        raise ValueError(f"blob sha256 mismatch: expected {sha}, computed {actual}")
+    return data
+
+
+def maybe_blob_payload(
+    payload: dict[str, Any], blob_store: BlobStoreLike
+) -> dict[str, Any]:
+    """Return ``payload`` unchanged, or a blobbed stub when oversized.
+
+    Small payloads (``<= BLOB_THRESHOLD_BYTES``) are returned as a shallow
+    copy, equal to the input, with nothing stored. Oversized payloads are
+    encoded once as canonical bytes, stored as a blob, and replaced by the
+    two-key stub ``{"v": 1, "blob": descriptor}``. The outer ``v`` is the
+    blob-envelope version (currently ``1``): readers that need the
+    original payload's fields must resolve the blob first, because the
+    stub carries none of them. An already-blobbed payload is returned
+    unchanged (its stub is already small); a stub-shaped payload with a
+    malformed descriptor raises rather than being re-stored.
+    """
+    if is_blobbed_payload(payload):
+        return dict(payload)
+    if set(payload) == {"v", _BLOB_KEY}:
+        raise ValueError("blobbed stub with a malformed descriptor; refusing to re-store")
+    if not payload_requires_blob(payload):
+        return dict(payload)
+    data = canonical_json(payload).encode("utf-8")
+    descriptor = store_blob_bytes(data, blob_store)
+    return {"v": 1, _BLOB_KEY: descriptor}
+
+
+def resolve_blobbed_payload(
+    payload: dict[str, Any], blob_store: BlobStoreLike
+) -> dict[str, Any]:
+    """Return the original payload, verified, for a blobbed stub.
+
+    Non-blobbed payloads are returned as a shallow copy, unchanged; no
+    fetch is attempted. Blobbed stubs are fetched and verified by
+    :func:`read_blob_bytes`, then parsed and checked for canonical form:
+    the decoded bytes must re-encode to themselves, so a blob that holds
+    the right *dict* in non-canonical bytes (different key order or
+    whitespace) is still rejected — the digest protects bytes, and only
+    those bytes are accepted as the original. Replay and verification
+    must go through this function; a caller that reads ``payload["blob"]``
+    directly reads unverified bytes.
+    """
+    descriptor = _blob_descriptor(payload)
+    if descriptor is None:
+        if set(payload) == {"v", _BLOB_KEY}:
+            raise ValueError("blobbed stub with a malformed descriptor")
+        return dict(payload)
+    data = read_blob_bytes(descriptor, blob_store)
+    try:
+        text = data.decode("utf-8")
+        parsed: Any = json.loads(text)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"blobbed payload did not hold JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("blobbed payload did not hold a JSON object")
+    if canonical_json(parsed).encode("utf-8") != data:
+        raise ValueError("blobbed payload bytes are not the canonical form")
+    return parsed
+
+
+__all__.extend(
+    [
+        "BLOB_PREVIEW_CHARS",
+        "BLOB_THRESHOLD_BYTES",
+        "BlobStoreLike",
+        "is_blobbed_payload",
+        "maybe_blob_payload",
+        "payload_requires_blob",
+        "payload_size_bytes",
+        "read_blob_bytes",
+        "resolve_blobbed_payload",
+        "store_blob_bytes",
+    ]
+)

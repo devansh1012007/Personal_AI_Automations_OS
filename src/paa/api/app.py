@@ -110,13 +110,28 @@ def create_app(runtime: Runtime) -> FastAPI:
             raise HTTPException(
                 status_code=429, detail="runtime under backpressure; retry shortly"
             )
-        cid = await runtime.submit(
-            body.goal,
-            modality=body.modality,
-            required_slots=body.required_slots,
-            workspace_path=body.workspace_path,
-            target_agent=body.target_agent,
-        )
+        # The client's mandate asserts the requester and basis only; the
+        # server stamps the effective policy version, so the authority
+        # cannot claim a policy the runtime never had (N2.4). A refused
+        # mandate is a conflict with the effective policy, not a server
+        # failure — 409 with the refusal recorded in the ledger.
+        from paa.core.errors import PaaError
+
+        try:
+            mandate = _mandate_from_body(body.mandate, runtime)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=redact(str(exc))) from exc
+        try:
+            cid = await runtime.submit(
+                body.goal,
+                modality=body.modality,
+                required_slots=body.required_slots,
+                workspace_path=body.workspace_path,
+                target_agent=body.target_agent,
+                mandate=mandate,
+            )
+        except PaaError as exc:
+            raise HTTPException(status_code=409, detail=redact(str(exc))) from exc
         if body.run:
             outcome = await runtime.run(cid)
             return TaskSubmitResponse(
@@ -304,6 +319,36 @@ def create_app(runtime: Runtime) -> FastAPI:
 
 
 # ---------------------------------------------------------------------------
+
+
+def _mandate_from_body(body: Any, runtime: Runtime) -> Any:
+    """The server-side mandate for a submission body, or ``None``.
+
+    The client asserts the requester and basis; the effective policy
+    version is stamped here from the runtime's own settings. ``None`` (no
+    mandate in the body) stays ``None`` — the runtime submits it as
+    implicit, which strict mode may then refuse.
+    """
+    if body is None:
+        return None
+    from paa.ledger.mandate import (
+        Mandate,
+        MandateBasis,
+        RequesterAsserted,
+        Scope,
+        effective_policy_version,
+    )
+
+    return Mandate(
+        requester_asserted=RequesterAsserted(kind=body.kind, id=body.id),
+        basis=MandateBasis(body.basis),
+        policy_version=effective_policy_version(runtime.settings.policy),
+        scope=Scope(
+            workspace=body.workspace,
+            permission_mode=runtime.settings.policy.mode.value,
+            budget=body.budget,
+        ),
+    )
 
 
 async def _admit(runtime: Runtime, *, essential: bool) -> bool:

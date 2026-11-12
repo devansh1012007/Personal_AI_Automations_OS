@@ -8,7 +8,7 @@ and what happens on failure. All paths are verified against source where cited.
 
 ### Creation
 A task originates from a caller (CLI, API, daemon, or coder agent tool).
-`ChiefOrchestrator.submit()` (`orchestrator.py:296`) mints a `CorrelationId`
+`ChiefOrchestrator.submit()` (`orchestrator.py:307`) mints a `CorrelationId`
 and writes `TASK_REQUESTED` then `TASK_QUEUED` to `system_state_ledger` before
 enqueuing to `queue_messages` (`StreamName.ORCHESTRATOR_CORE`). Submission is
 deliberately cheap and always succeeds so the request is durable before any
@@ -53,7 +53,7 @@ append-only. The only "mutation" of the head row is the upsert in
   resets `completed_steps` to steps before `restored_step_index`
   (`replay.py:267`).
 - `TASK_ABANDONED` closes a lineage that exceeded `max_delivery_attempts`
-  (`recovery.py:285`).
+  (`recovery.py:294`).
 - There is no explicit "delete a task" operation; ledger rows are append-only.
 
 ### Failure halfway through
@@ -188,11 +188,11 @@ model is consulted (`engine.py:226`).
 Patch dry-run computes full post-patch content before any write; `safe_
 relative_path` blocks traversal/absolute/symlink/NUL escapes
 (`validation/patch.py:270`). `PatchApplier.apply` is atomic (temp + fsync +
-rename) with in-memory rollback journal (`validation/patch.py:672`).
+rename) with in-memory rollback journal (`validation/patch.py:693`).
 
 ### Commit
 On `CRITIQUE_CONCLUDED` verdict `PASS`, orchestrator emits `EXECUTION_COMPLETED`;
-after all steps, `MUTATION_COMMITTED` (`orchestrator.py:815`). The worker never
+after all steps, `MUTATION_COMMITTED` (`orchestrator.py:844`). The worker never
 applies its own patch — the host validates and commits (`reasoning.py` docstring,
 RFC §14.3).
 

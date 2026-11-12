@@ -116,14 +116,14 @@ responsibility and the files it contains. All paths are repository-relative.
 |---|---|---|
 | `paa` CLI | `src/paa/cli/main.py:42` | `app = typer.Typer(...)`; `__main__` at line 467 |
 | `paa submit` | `src/paa/cli/main.py:77` | `submit` |
-| `paa serve` | `src/paa/cli/main.py:307` | `serve` |
+| `paa serve` | `src/paa/cli/main.py:350` | `serve` |
 | `paa doctor` | `src/paa/cli/main.py:228` | `doctor` |
 | `paa recover` | `src/paa/cli/main.py:210` | `recover` |
 | `paa ledger` | `src/paa/cli/main.py:148` | `ledger` |
 | `paa gate` | `src/paa/cli/main.py:183` | `gate` |
 | `paa agent` | `src/paa/cli/coder.py:53` | `register_agent` → `agent` |
 | `paa tui` | `src/paa/cli/main.py:370` | `tui` |
-| Programmatic runtime | `src/paa/runtime.py:271` | `Runtime.build()` |
+| Programmatic runtime | `src/paa/runtime.py:353` | `Runtime.build()` |
 | API factory | `src/paa/api/app.py:54` | `create_app(runtime)` |
 | Daemon | `src/paa/daemon.py:45` | `Daemon(runtime)` |
 

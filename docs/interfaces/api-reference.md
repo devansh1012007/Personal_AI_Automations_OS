@@ -23,7 +23,7 @@ minimal install.
 
 ### `GET /health`
 **Handler:** `api/app.py:71`
-**Response:** `HealthResponse` (`api/schemas.py:96`)
+**Response:** `HealthResponse` (`api/schemas.py:156`)
 ```json
 {
   "status": "ok",
@@ -40,8 +40,8 @@ minimal install.
 `open_tasks` = `len(await runtime.ledger.open_correlations(limit=10_000))`.
 
 ### `POST /tasks`
-**Handler:** `api/app.py:94`
-**Request:** `TaskRequestBody` (`api/schemas.py:28`)
+**Handler:** `api/app.py:107`
+**Request:** `TaskRequestBody` (`api/schemas.py:51`)
 ```json
 {
   "goal": "string (min 1)",
@@ -55,22 +55,22 @@ minimal install.
 **Behavior:**
 1. Calls `_admit(runtime, essential=False)`; if the queue is deep (SHEDDING),
    returns **HTTP 429** "runtime under backpressure; retry shortly"
-   (`api/app.py:295`).
+   (`api/app.py:354`).
 2. `runtime.submit(goal, modality, required_slots, workspace_path,
    target_agent)` → writes `TASK_REQUESTED` + `TASK_QUEUED`, enqueues to the
-   queue, returns `correlation_id` (`runtime.py:189`, `orchestrator.py:296`).
+   queue, returns `correlation_id` (`runtime.py:244`, `orchestrator.py:307`).
 3. If `body.run` is true: `runtime.run(cid)` drives to terminal; returns
    `queued=False` and the final phase. Otherwise returns `queued=True`,
    `phase="QUEUED"`.
 
-**Response:** `TaskSubmitResponse` (`api/schemas.py:43`)
+**Response:** `TaskSubmitResponse` (`api/schemas.py:67`)
 ```json
 { "correlation_id": "uuid", "phase": "QUEUED|<final phase>", "queued": bool }
 ```
 
 ### `GET /tasks/{correlation_id}`
-**Handler:** `api/app.py:114`
-**Response:** `TaskStatusResponse` (`api/schemas.py:49`)
+**Handler:** `api/app.py:142`
+**Response:** `TaskStatusResponse` (`api/schemas.py:73`)
 ```json
 {
   "correlation_id": "uuid",
@@ -91,8 +91,8 @@ minimal install.
 for the projection. Invalid UUID → 400.
 
 ### `POST /tasks/{correlation_id}/gate`
-**Handler:** `api/app.py:136`
-**Request:** `GateRequest` (`api/schemas.py:64`) `{ "approved": bool, "note": "string|null" }`
+**Handler:** `api/app.py:164`
+**Request:** `GateRequest` (`api/schemas.py:88`) `{ "approved": bool, "note": "string|null" }`
 **Behavior:** `runtime.orchestrator.clear_human_gate(cid, approved, note)`.
 409 if the task is not awaiting human attestation (`PaaError`). Returns the
 updated task status.
@@ -101,14 +101,14 @@ Only an external caller reaches this; nothing in the automated path can clear
 its own gate (`orchestrator.py:1016`).
 
 ### `POST /tasks/{correlation_id}/correction`
-**Handler:** `api/app.py:149`
+**Handler:** `api/app.py:177`
 **Body:** `{ "correction": "string" }` (arbitrary dict; reads `.get("correction", "")`)
 **Behavior:** `runtime.orchestrator.record_correction(cid, correction)` → writes
 `USER_CORRECTION` event. Returns 202 `{"status": "recorded"}`.
 
 ### `GET /ledger/{correlation_id}`
-**Handler:** `api/app.py:156`
-**Response:** list of `LedgerEventView` (`api/schemas.py:85`)
+**Handler:** `api/app.py:184`
+**Response:** list of `LedgerEventView` (`api/schemas.py:145`)
 ```json
 [
   { "sequence_id": int|null, "state_version": int|null, "event_type": "string",
@@ -119,19 +119,19 @@ its own gate (`orchestrator.py:1016`).
 explainability endpoint — walk the causal chain backwards via `causation_id`.
 
 ### `POST /signals`
-**Handler:** `api/app.py:175`
-**Request:** `SignalRequest` (`api/schemas.py:71`)
+**Handler:** `api/app.py:203`
+**Request:** `SignalRequest` (`api/schemas.py:95`)
 ```json
 { "channel": "string (min 1)", "payload": {...}, "external_id": "string|null" }
 ```
-**Response:** `SignalResponse` (`api/schemas.py:79`)
+**Response:** `SignalResponse` (`api/schemas.py:103`)
 ```json
 { "signal_id": "uuid", "channel": "string", "duplicate": bool }
 ```
 **Behavior:**
 1. `_admit(runtime, essential=False)` → 429 under backpressure.
 2. Builds `SignalRepository` over `runtime.db` + cold-lake CAS
-   (`_signal_repo`, `api/app.py:316`); 503 if cold lake not configured.
+   (`_signal_repo`, `api/app.py:375`); 503 if cold lake not configured.
 3. If `external_id` set, checks `get_by_external_id` for a pre-existing row
    (`duplicate` flag).
 4. `repo.record(channel, payload, external_id)` → idempotent insert.
@@ -143,28 +143,28 @@ FastAPI):
 
 | Schema | Fields | File |
 |---|---|---|
-| `TaskRequestBody` | goal, modality?, required_slots?, workspace_path?, target_agent?, run (bool, default false) | `schemas.py:28` |
-| `TaskSubmitResponse` | correlation_id, phase, queued | `schemas.py:43` |
-| `TaskStatusResponse` | correlation_id, phase, modality, plan_steps, completed_steps, current_step_index, attempts, tokens_consumed, awaiting_reason?, policy_reason?, errors[], is_terminal | `schemas.py:49` |
-| `GateRequest` | approved, note? | `schemas.py:64` |
-| `SignalRequest` | channel, payload, external_id? | `schemas.py:71` |
-| `SignalResponse` | signal_id, channel, duplicate | `schemas.py:79` |
-| `LedgerEventView` | sequence_id?, state_version?, event_type, agent_role?, recorded_at, payload | `schemas.py:85` |
-| `HealthResponse` | status, version, backends{}, open_tasks | `schemas.py:96` |
+| `TaskRequestBody` | goal, modality?, required_slots?, workspace_path?, target_agent?, run (bool, default false) | `schemas.py:51` |
+| `TaskSubmitResponse` | correlation_id, phase, queued | `schemas.py:67` |
+| `TaskStatusResponse` | correlation_id, phase, modality, plan_steps, completed_steps, current_step_index, attempts, tokens_consumed, awaiting_reason?, policy_reason?, errors[], is_terminal | `schemas.py:73` |
+| `GateRequest` | approved, note? | `schemas.py:88` |
+| `SignalRequest` | channel, payload, external_id? | `schemas.py:95` |
+| `SignalResponse` | signal_id, channel, duplicate | `schemas.py:103` |
+| `LedgerEventView` | sequence_id?, state_version?, event_type, agent_role?, recorded_at, payload | `schemas.py:145` |
+| `HealthResponse` | status, version, backends{}, open_tasks | `schemas.py:156` |
 
 ## Error responses
 
 | Status | Condition | Source |
 |---|---|---|
-| 400 | Invalid correlation_id UUID | `_parse_uuid` (`api/app.py:338`) |
-| 404 | No such task (head is None / no events) | `task_status` (`api/app.py:114`), `ledger` (`api/app.py:156`) |
-| 409 | Task not awaiting human gate | `clear_gate` (`api/app.py:136`) |
-| 429 | Queue under backpressure (SHEDDING) | `_admit` (`api/app.py:295`) |
-| 503 | Cold lake not configured | `ingest_signal` (`api/app.py:175`) |
+| 400 | Invalid correlation_id UUID | `_parse_uuid` (`api/app.py:397`) |
+| 404 | No such task (head is None / no events) | `task_status` (`api/app.py:142`), `ledger` (`api/app.py:184`) |
+| 409 | Task not awaiting human gate | `clear_gate` (`api/app.py:164`) |
+| 429 | Queue under backpressure (SHEDDING) | `_admit` (`api/app.py:354`) |
+| 503 | Cold lake not configured | `ingest_signal` (`api/app.py:203`) |
 
 Backpressure: essential control-plane traffic is always admitted; only
 discretionary ingestion (`/tasks` without `run`? actually all task submission and signals)
-is shed when depth ≥ `shed_load_depth` (`api/app.py:200`, `backpressure.py:115`).
+is shed when depth ≥ `shed_load_depth` (`api/app.py:354`, `backpressure.py:115`).
 
 ## Authentication / authorization
 

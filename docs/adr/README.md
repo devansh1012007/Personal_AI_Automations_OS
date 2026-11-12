@@ -62,9 +62,10 @@ The records fall into four classes:
 | [0042](0042-embeddings-derived-image.md) | The embeddings image is derived, installs online with retries, and pins the runtime tag | Hardware |
 | [0043](0043-graph-edge-count-reconciliation.md) | The graph has 12 edge types; "9 extra" is a phantom | **Correctness** |
 | [0044](0044-stored-normalisation-closes-adr-0029.md) | Stored normalisation closes ADR-0029 limitations (a), (c) and (d) | **Correctness** |
-
+| [0045](0045-coder-work-tools.md) | Coder work tools (frozen Workspace API) | Direction |
+| [0046](0046-coder-event-forward-compatibility.md) | Coder event forward compatibility (v field, _NO_PHASE_CHANGE, ToolJournal freeze) | Correctness |
 **Which of these records have a body.** The files on disk are 0008, 0010, 0015,
-0019–0026, 0028–0035 and 0036–0044. The other rows are **index-only**: the decision was taken
+0019–0026, 0028–0035 and 0036–0046. The other rows are **index-only**: the decision was taken
 and is recorded — in `README.md`'s account of the RFC's departures, and, for 0001–0014,
 0016 and 0018, in the source's own `SPEC DEVIATION (docs/adr/NNNN)` citation — but the
 record itself is still to be written, which the ROADMAP's cross-cutting *Docs* item

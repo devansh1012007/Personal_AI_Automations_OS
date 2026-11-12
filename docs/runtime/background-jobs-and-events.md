@@ -53,7 +53,7 @@ interval and drains nothing (`daemon.py:154`).
    - terminal → `ALREADY_TERMINAL` (repair head projection) (`recovery.py:268`).
    - `AWAITING_HUMAN` → `PARKED_HUMAN`; a crash is never interpreted as consent
      (`recovery.py:274`).
-   - `attempts >= max_attempts` → `TASK_ABANDONED` (`recovery.py:285`).
+   - `attempts >= max_attempts` → `TASK_ABANDONED` (`recovery.py:294`).
    - `_reconcile_workspace()` — compare disk vs checkpoint manifest; on drift,
      `STATE_ROLLBACK_TRIGGERED` + restore + `ROLLED_BACK`; else `RESUMED`
      (`recovery.py:350`).
@@ -62,7 +62,7 @@ interval and drains nothing (`daemon.py:154`).
      (`recovery.py:437`).
    - `_record_sweep()` — appends `RECOVERY_REPLAY_COMPLETED` audit event,
      suppressed if the latest event is already one (idempotent sweeps;
-     `recovery.py:306`).
+     `recovery.py:315`).
 
 `RecoveryOutcome`: `RESUMED`, `ROLLED_BACK`, `PARKED_HUMAN`, `ABANDONED`,
 `UNRECOVERABLE`, `ALREADY_TERMINAL` (`recovery.py:80`).
@@ -97,11 +97,11 @@ lineages. The event vocabulary (`src/paa/core/types.py:122`):
 - Task status = replayed `TaskProjection.phase` (`TaskPhase`, `replay.py:35`).
 - `attempts` incremented on each `EXECUTION_STARTED` (`replay.py:220`).
 - Per-step retry budget `max_step_retries` (default 2) in
-  `ChiefOrchestrator._execute_steps` (`orchestrator.py:721`).
+  `ChiefOrchestrator._execute_steps` (`orchestrator.py:750`).
 - Queue `max_delivery_attempts` (default 3) governs message redelivery
   (`config.py:651`).
 - Recovery `max_attempts` (default 3, from `QueueSettings.max_delivery_attempts`)
-  governs re-queue retries; beyond it → `TASK_ABANDONED` (`recovery.py:285`).
+  governs re-queue retries; beyond it → `TASK_ABANDONED` (`recovery.py:294`).
 
 ## 5. Concurrency controls
 
@@ -119,7 +119,7 @@ lineages. The event vocabulary (`src/paa/core/types.py:122`):
 |---|---|
 | Daemon loop exception | Logged, loop restarted after 1s (`daemon.py:134`) |
 | Task run exception | Logged, message nacked (redelivery) (`daemon.py:170`) |
-| Orchestrator `PaaError` | `EXECUTION_FAILED` event, re-project, return error (`orchestrator.py:428`) |
+| Orchestrator `PaaError` | `EXECUTION_FAILED` event, re-project, return error (`orchestrator.py:457`) |
 | Sandbox step failure | `VALIDATION_FAILED`; retry up to budget (`orchestrator.py:764`) |
 | Recovery single lineage failure | Logged as `UNRECOVERABLE`; sweep continues (`recovery.py:250`) |
 | Hash-chain problem | Reported in `RecoveryReport.chain_problems`, never repaired (`recovery.py:231`) |

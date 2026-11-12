@@ -25,20 +25,28 @@ to deny.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from paa.coder.fs_read_tools import build_fs_read_tools
+from paa.coder.fs_write_tools import build_fs_write_tools
+from paa.coder.git_tools import build_git_tools
 from paa.coder.hooks import HookRegistry
-from paa.coder.loop import AgentLoop, LoopResult
+from paa.coder.journal import LedgerToolJournal
+from paa.coder.loop import AgentLoop, LoopResult, ToolJournal
 from paa.coder.model_adapter import RouterToolCallingModel
 from paa.coder.permissions import DEFAULT_MUTATING_TOOLS, PermissionMode, ToolPermissionPolicy
 from paa.coder.runtime_tools import READ_ONLY_TOOLS, build_runtime_tools
-from paa.coder.session import Session
+from paa.coder.session import Session, TurnRole
+from paa.coder.shell_tools import build_shell_tools
+from paa.coder.workspace import Workspace, WorkspaceViolation, assert_inside_workspace
 from paa.core.errors import PaaError
-from paa.core.types import ComplexityModality
+from paa.core.types import ComplexityModality, new_correlation_id
+from paa.ledger.recovery import InterruptedCall, InterruptionState, classify_interrupted
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -49,16 +57,23 @@ if TYPE_CHECKING:
     from paa.core.types import CorrelationId
     from paa.runtime import Runtime
 
-__all__ = ["MUTATING_RUNTIME_TOOLS", "CoderAgent", "TranscriptDir"]
+__all__ = [
+    "MUTATING_RUNTIME_TOOLS",
+    "CoderAgent",
+    "TranscriptDir",
+    "build_work_tools",
+]
 
 log = structlog.get_logger(__name__)
 
 TranscriptDir = str | Path
 
 #: The runtime tools that change state. ``submit_task`` writes a lineage,
-#: ``run_task`` executes work, and ``remember_fact`` writes rows into the
-#: memory tables (``hot_serving_entity_index`` / ``hot_serving_active_facts``)
-#: — but none of those names matches the conventional filesystem/shell globs
+#: ``run_task`` executes work, and ``remember_fact`` files an assertion as
+#: a ``cold_lake_signals`` row (the same front door every other channel
+#: uses; the creator then materialises the facts from that row — see
+#: :mod:`paa.coder.runtime_tools`) — but none of those names matches the
+#: conventional filesystem/shell globs
 #: in :data:`~paa.coder.permissions.DEFAULT_MUTATING_TOOLS`, so without this
 #: the plan-mode guarantee would silently exempt exactly the tools that matter
 #: most. ``--mode plan`` has to mean *this* runtime does not change, not just
@@ -123,6 +138,8 @@ class CoderAgent:
         correlation_id: CorrelationId | None = None,
         run_recovery: bool = False,
         model_max_tokens: int = 2048,
+        workspace: Workspace | None = None,
+        journal: ToolJournal | None = None,
     ) -> CoderAgent:
         """Build an agent over a fresh runtime.
 
@@ -148,8 +165,24 @@ class CoderAgent:
         signature matches :meth:`~paa.coder.hooks.HookRegistry.register`: a
         hook with no event has nowhere to fire. Pass ``hook_registry`` instead
         to hand in a pre-wired registry.
-        """
 
+        ``workspace`` is the jailed working tree the filesystem, shell and
+        git tools reach through. ``None`` (the default) builds only the
+        ledger/memory catalogue — the work tools have nothing to jail to
+        without an explicit workspace, so they are not offered rather than
+        offered jailed to an implied directory.
+
+        ``journal`` is the :class:`~paa.coder.loop.ToolJournal` the loop
+        writes through (N2.2). When omitted, the agent builds a
+        :class:`~paa.coder.journal.LedgerToolJournal` over the runtime's
+        own ledger, journalled into ``correlation_id`` (minted fresh when
+        not supplied) — so a built agent journals by default, and the
+        caller that needs a different lineage or a test double passes
+        one explicitly. The default journal is wired to the configured
+        cold lake, so an oversized row is blobbed (N2.6) rather than
+        failing the call closed. The name is explicit (not ``**kwargs``)
+        so the wire is a known parameter, not a renamed one.
+        """
         from paa.runtime import Runtime
 
         runtime = await Runtime.build(settings, run_recovery=run_recovery)
@@ -183,7 +216,27 @@ class CoderAgent:
             force_escalate=force_escalate,
             max_tokens=model_max_tokens,
         )
-        tools = build_runtime_tools(runtime)
+        tools = build_work_tools(runtime, workspace)
+        # The default journal blobs oversized rows into the deployment's own
+        # cold lake (N2.6) instead of failing the tool call closed: without a
+        # store an oversized row raises before any append, which aborts a
+        # call the ledger could have journalled. The store is the same one
+        # the signal/intake path builds — ``get_blob_store`` over
+        # ``settings.storage`` — so the blob a row pins is sha-addressed by
+        # the CAS (or the configured S3 substrate) and resolves wherever the
+        # cold lake is mounted. Imported lazily, mirroring
+        # ``runtime_tools``: a caller-supplied journal (tests) brings its own
+        # store and never pays for this.
+        if journal is not None:
+            active_journal: ToolJournal = journal
+        else:
+            from paa.storage.coldlake import get_blob_store
+
+            active_journal = LedgerToolJournal(
+                runtime.ledger,
+                correlation_id if correlation_id is not None else new_correlation_id(),
+                blob_store=get_blob_store(runtime.settings.storage),
+            )
         loop = AgentLoop(
             model,
             tools,
@@ -205,7 +258,16 @@ class CoderAgent:
             confirm=confirm,
             max_steps=max_steps,
             max_tokens=max_tokens,
+            journal=active_journal,
+            workspace=workspace,
         )
+        # A resumed session (``--resume`` / ``--continue`` with turns on
+        # disk) re-enters a history a crash may have cut mid-call: close
+        # the interrupted ledger calls and tell the model what happened
+        # before it reasons from a transcript that omits them. A fresh
+        # session has no turns, so it skips this entirely.
+        if session.turns:
+            await _inject_resume_recovery_note(runtime, session, workspace)
         return cls(
             runtime=runtime,
             model=model,
@@ -213,3 +275,151 @@ class CoderAgent:
             session=session,
             tools=tools,
         )
+
+
+async def _inject_resume_recovery_note(
+    runtime: Runtime, session: Session, workspace: Workspace | None
+) -> None:
+    """Close interrupted calls on a resumed session and note them.
+
+    The ledger scan is by payload ``session_id`` across lineages
+    (:func:`paa.ledger.recovery.find_interrupted_calls_for_session`):
+    the interrupted calls live on the correlation the *previous* build
+    minted, not on the one this build mints, and the CLI passes no
+    correlation on ``--resume`` — so a per-correlation read would never
+    see them. Each call found is closed as ``FAILED(reason=
+    "interrupted")`` on its own lineage (idempotent: a second resume
+    finds the outcome and appends nothing), classified, and named in
+    one ``SYSTEM`` turn via :meth:`Session.inject_recovery_note`.
+
+    Classification joins the ledger row to the transcript: the record
+    of which file a ``write_file`` / ``edit_file`` targeted exists only
+    in the ``TOOL_CALL`` turn's arguments, so a call is matched by
+    ``(tool, args_sha256)`` — the hash covers the pre-hook args the
+    transcript recorded, and a hook-redacted call therefore (correctly)
+    fails to match and reads ``UNKNOWN`` rather than guessing. The live
+    file is then hashed through the workspace jail, exactly as the
+    journal hashed it at PROPOSED time.
+    """
+    from paa.coder.journal import args_sha256_of
+    from paa.ledger.recovery import (
+        close_interrupted_calls,
+        find_interrupted_calls_for_session,
+    )
+
+    interrupted = await find_interrupted_calls_for_session(
+        runtime.ledger, session.session_id
+    )
+    if not interrupted:
+        return
+    await close_interrupted_calls(runtime.ledger, interrupted)
+    transcript_args: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for turn in session.turns:
+        if turn.role is TurnRole.TOOL_CALL and turn.tool_name is not None:
+            transcript_args.setdefault(
+                (turn.tool_name, args_sha256_of(turn.tool_arguments)), []
+            ).append(turn.tool_arguments)
+    entries = [
+        _resume_entry(call, transcript_args, workspace) for call in interrupted
+    ]
+    session.inject_recovery_note(entries)
+
+
+def _resume_entry(
+    call: InterruptedCall,
+    transcript_args: dict[tuple[str, str], list[dict[str, Any]]],
+    workspace: Workspace | None,
+) -> str:
+    """One note line: which call, and what its classification forbids.
+
+    File edits are hashed at the jailed target when the transcript
+    names it; a named target with no file there is a checked absence
+    (a creation whose file never landed reads ``NOT_APPLIED``); every
+    other case without a checkable live hash (shell / git /
+    ``apply_patch`` / a redacted or unrecorded path / no workspace /
+    an unreadable file) reads ``UNKNOWN`` and the line says so — the
+    model must inspect, never assume.
+    """
+    live_sha256: str | None = None
+    live_checked = False
+    candidates = transcript_args.get((call.tool, call.args_sha256 or ""))
+    if workspace is not None and candidates:
+        args = candidates.pop(0)
+        raw_path = args.get("path")
+        if isinstance(raw_path, str) and raw_path.strip():
+            try:
+                resolved = assert_inside_workspace(
+                    workspace, workspace.root / Path(raw_path)
+                )
+            except (WorkspaceViolation, ValueError, OSError):
+                resolved = None
+            if resolved is not None and resolved.is_file():
+                try:
+                    live_sha256 = hashlib.sha256(resolved.read_bytes()).hexdigest()
+                    live_checked = True
+                except OSError:
+                    live_checked = False
+            elif resolved is not None:
+                # The jailed target is named and there is no file there:
+                # a checked absence. `classify_interrupted` decides from
+                # the recorded intent — a creation (no ``pre``) provably
+                # never landed; an edit whose file vanished stays
+                # ``UNKNOWN`` (something deleted it).
+                live_sha256 = None
+                live_checked = True
+    state = classify_interrupted(
+        call.tool,
+        pre_sha256=call.pre_sha256,
+        post_sha256=call.post_sha256,
+        patch_sha256=call.patch_sha256,
+        live_sha256=live_sha256,
+        live_checked=live_checked,
+    )
+    if state is InterruptionState.APPLIED:
+        guidance = "the edit landed before the crash — do not re-run"
+    elif state is InterruptionState.NOT_APPLIED:
+        guidance = "the call never landed — it is safe to retry"
+    else:
+        guidance = "outcome unknown — do not re-run; inspect the state first"
+    return f"{call.tool} (call {call.call_id}): {state.value} — {guidance}"
+
+
+def build_work_tools(runtime: Runtime, workspace: Workspace | None = None) -> dict[str, Any]:
+    """The full coder catalogue: runtime tools plus the work tools.
+
+    With ``workspace=None`` this is exactly :func:`build_runtime_tools` —
+    the ledger/memory catalogue for a session with no jailed tree to
+    work in. With a workspace it additionally merges the filesystem-read,
+    filesystem-write, shell and git catalogues, each bound to that one
+    workspace, into a single ``{name: Tool}`` dict for the loop. The shell
+    tool runs on the runtime's own sandbox backend when one exists (so a
+    ``NAMESPACE`` backend makes ``allow_network=False`` enforceable) and
+    falls back to the subprocess default otherwise; the backend's actual
+    isolation is what every call reports.
+
+    Tool names must be disjoint across the catalogues: a name claimed by
+    two factories would silently overwrite the first tool under the same
+    key while its name stayed in the model's constrained enum — the loop
+    would then dispatch it to the wrong tool. A collision therefore
+    raises :class:`~paa.core.errors.PaaError` at composition time rather
+    than being absorbed by ``dict.update``.
+    """
+    parts: list[dict[str, Any]] = [build_runtime_tools(runtime)]
+    if workspace is not None:
+        parts.append(build_fs_read_tools(workspace))
+        parts.append(build_fs_write_tools(workspace))
+        sandbox = runtime.sandbox if runtime.sandbox is not None else None
+        parts.append(build_shell_tools(workspace, sandbox=sandbox))
+        parts.append(build_git_tools(workspace))
+
+    tools: dict[str, Any] = {}
+    for part in parts:
+        collisions = tools.keys() & part.keys()
+        if collisions:
+            raise PaaError(
+                "duplicate tool name(s) across catalogues: "
+                f"{sorted(collisions)} — a tool name must be claimed by "
+                "exactly one factory"
+            )
+        tools.update(part)
+    return tools

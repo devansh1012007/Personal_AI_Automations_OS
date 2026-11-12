@@ -1,0 +1,8 @@
+--- a/calc.py
++++ b/calc.py
+@@ -32,4 +32,4 @@
+     """Return ``a`` divided by ``b`` as a float."""
+     if b == 0:
+         raise ValueError("division by zero")
+-    return a // b
++    return a / b

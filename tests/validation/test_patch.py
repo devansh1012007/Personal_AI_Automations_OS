@@ -303,6 +303,39 @@ def test_a_dangling_minus_header_is_refused() -> None:
         UnifiedDiffValidator().parse("--- a/x.txt\n")
 
 
+def test_a_modify_gaining_a_trailing_newline_keeps_it(tmp_path: Path) -> None:
+    """The new side decides, not the prior file (MAJOR-1).
+
+    A hunk whose new side reaches the new end of file and carries no
+    no-newline marker describes a newline-terminated file — even when the
+    prior file had no trailing newline. Before the fix this dry run
+    planned ``b"d"`` and the applied file lost the newline.
+    """
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "file.txt").write_bytes(b"a\nb\nc")
+
+    body = "@@ -3,1 +3,1 @@\n-c\n+d\n"
+    plan = UnifiedDiffValidator().dry_run(_diff("file.txt", "file.txt", body), workspace)
+
+    assert plan.ok
+    assert plan.entries[0].new_content == b"a\nb\nd\n"
+
+
+def test_a_modify_not_reaching_eof_inherits_trailing_state(tmp_path: Path) -> None:
+    """A hunk that never reaches the new end of file does not describe the
+    trailer: a no-trailing-newline prior stays no-trailing."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "file.txt").write_bytes(b"a\nb\nc")
+
+    body = "@@ -1,2 +1,2 @@\n-a\n+a2\n b\n"
+    plan = UnifiedDiffValidator().dry_run(_diff("file.txt", "file.txt", body), workspace)
+
+    assert plan.ok
+    assert plan.entries[0].new_content == b"a2\nb\nc"
+
+
 def test_the_patch_digest_ignores_the_transport_line_endings() -> None:
     """The same logical patch is one patch, whichever platform sent it.
 
@@ -387,17 +420,6 @@ def test_the_journal_records_a_file_that_did_not_exist(tmp_path: Path) -> None:
     assert not (workspace / "new.txt").exists()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "A created file gains one trailing newline it was never given: the planner "
-        "models an empty prior file as one empty line ('' .split('\\n') == ['']), so "
-        "the created content is 'created\\n\\n' instead of 'created\\n'. "
-        "src/paa/validation/patch.py is read-only for T-005; the fix is in "
-        "UnifiedDiffValidator._plan_file — drop the phantom line for an empty prior "
-        "file and let the trailing newline follow the patch body."
-    ),
-)
 def test_a_created_file_contains_exactly_what_the_diff_describes(tmp_path: Path) -> None:
     """The applied bytes are the bytes the diff describes.
 

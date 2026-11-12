@@ -77,7 +77,7 @@ shows K or R pinned at default on every run, the derivation — not the formula
 
 **Allocator decisions are ledger events, not side effects.** The run emits an
 allocator-decision `EventType` (name chosen by the P-007 implementer) that
-maps to `_NO_PHASE_CHANGE` in `src/paa/ledger/replay.py:387`, never to
+maps to `_NO_PHASE_CHANGE` in `src/paa/ledger/replay.py:407`, never to
 `_PHASE_MAP`, and is not named in `TERMINAL_EVENTS`. The reasoning is the
 same as the tier precedent's: an allocation decision is information about a
 task, not a move of the task's lifecycle. Idempotency uses the full ADR-0008

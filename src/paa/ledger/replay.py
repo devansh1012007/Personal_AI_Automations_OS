@@ -282,6 +282,21 @@ def apply_event(state: TaskProjection, event: LedgerEvent) -> TaskProjection:
         case EventType.MODEL_ESCALATED:
             updates["escalation_count"] = state.escalation_count + 1
 
+        case (
+            EventType.CODER_SESSION_STARTED
+            | EventType.TOOL_CALL_PROPOSED
+            | EventType.TOOL_CALL_DENIED
+            | EventType.TOOL_CALL_COMPLETED
+            | EventType.TOOL_CALL_FAILED
+            | EventType.CODER_SESSION_ENDED
+            | EventType.MANDATE_GRANTED
+            | EventType.MANDATE_REFUSED
+        ):
+            # ADR-0046: coder/mandate events are the audit record, not
+            # task-lineage state — no projection field moves. The intent
+            # and outcome live in the payload for N2.3 to classify.
+            pass
+
         case _:
             pass
 
@@ -384,6 +399,11 @@ def apply_tier_event(state: dict[str, str], event: LedgerEvent) -> dict[str, str
 #: fold carries no allocator state into TaskProjection, exactly as the tier
 #: fold carries none (tiers fold via apply_tier_event; allocator decisions
 #: fold to nothing because the decision IS the record).
+#: N2.1 (ADR-0046) — the eight coder-session / mandate events live here too.
+#: A coder session is not a task lineage: its events move no phase, close
+#: nothing, and are never terminal, so a coder-only history projects to the
+#: initial phase exactly like a tier-only one did (P009). The auditable
+#: record is the payload; the fold records nothing into TaskProjection.
 _NO_PHASE_CHANGE = frozenset(
     {
         EventType.HUMAN_GATE_CLEARED,
@@ -395,6 +415,14 @@ _NO_PHASE_CHANGE = frozenset(
         EventType.TIER_ARCHIVED,
         EventType.ATTENTION_ALLOCATED,
         EventType.DRAIN_THROTTLED,
+        EventType.CODER_SESSION_STARTED,
+        EventType.TOOL_CALL_PROPOSED,
+        EventType.TOOL_CALL_DENIED,
+        EventType.TOOL_CALL_COMPLETED,
+        EventType.TOOL_CALL_FAILED,
+        EventType.CODER_SESSION_ENDED,
+        EventType.MANDATE_GRANTED,
+        EventType.MANDATE_REFUSED,
     }
 )
 

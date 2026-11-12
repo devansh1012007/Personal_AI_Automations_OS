@@ -50,7 +50,7 @@ This is the only append-only table. Every state transition is a row. Columns
 | `recorded_at` | TEXT | TIMESTAMPTZ | UTC timestamp |
 
 The hash chain (`prev_hash` → `event_hash`) makes silent history edits
-detectable; verified by `LedgerStore.verify_chain` (`ledger/store.py:385`).
+detectable; verified by `LedgerStore.verify_chain` (`ledger/store.py:397`).
 
 `LedgerStore.append` performs, inside one transaction (`ledger/store.py:116`):
 1. Idempotency suppression by `idempotency_key` — returns the existing event on
@@ -177,7 +177,7 @@ membership in `TERMINAL_EVENTS`.
 `MUTATION_COMMITTED`, `STATE_ROLLBACK_TRIGGERED`, `RECOVERY_REPLAY_COMPLETED`,
 `USER_CORRECTION`, `MODEL_ESCALATED`, `TASK_ABANDONED`.
 
-### `TERMINAL_EVENTS` (`core/types.py:242`)
+### `TERMINAL_EVENTS` (`core/types.py:273`)
 `MUTATION_COMMITTED`, `EXECUTION_FAILED`, `POLICY_BLOCKED`, `SECURITY_VIOLATION`,
 `HUMAN_GATE_REJECTED`, `TASK_ABANDONED`. Notably **not** `EXECUTION_COMPLETED`
 (per-step, non-terminal).

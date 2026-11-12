@@ -209,8 +209,14 @@ jobs:
       # pip's own retry budget, before the outer loop below decides a
       # failure is real. A slow index gets a long timeout and many
       # attempts, so a marginal network is given every chance.
+      #
+      # `PIP_NO_CACHE_DIR` is deliberately NOT set: the `set up python`
+      # step below uses `actions/setup-python` with `cache: pip`, which
+      # resolves the cache directory by running `pip cache dir` — and
+      # pip refuses to run any cache command while the cache is
+      # disabled, failing the step before the cache can be used. The
+      # action manages the cache itself.
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
-      PIP_NO_CACHE_DIR: "1"
       PIP_RETRIES: "10"
       PIP_TIMEOUT: "120"
 
@@ -431,6 +437,92 @@ jobs:
 
       - name: test (pytest)
         run: .venv/bin/python -m pytest tests/ -o addopts="--strict-markers --strict-config" -q
+
+  # ------------------------------------------------------------------
+  # The documentation-truth job (N0.4, H1.7).
+  #
+  # `scripts/status.py --check` compares the README's generated status block
+  # against a fresh generation and fails if a human hand-edited it. It is a
+  # SEPARATE job, not a step in `gate`, for three reasons, all measured:
+  #
+  #   * The collected count depends on the INSTALL SHAPE. A minimal install
+  #     skips whole directories at import (the `dev` extra is what carries
+  #     `paa[api]` and `paa[s3]`), so running --check inside the gate matrix
+  #     would disagree on two of its three shapes. This job pins the
+  #     documented developer shape (`pip install -e ".[dev]"`), and only
+  #     that shape.
+  #
+  #   * It needs NO services. Collecting is not running: tests gated on
+  #     Docker, PostgreSQL or S3 still collect and skip at run time, so
+  #     Docker / server presence does not change the count. The full-suite
+  #     outcome counts (passed/skipped/failed) DO depend on them, which is
+  #     why they are not part of the generated block — embedding them would
+  #     make this job flap per host. The gate job is what runs outcomes.
+  #
+  #   * It does NOT need `python-is-python3`. Nothing here executes a plan
+  #     step through the sandbox; collection only imports test modules.
+  #
+  # The pip retry loop is the repo's network-fragility convention: a build
+  # that dies on a dropped connection says nothing about the code.
+  # ------------------------------------------------------------------
+  status:
+    name: status (--check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # `PIP_NO_CACHE_DIR` is deliberately NOT set: the `set up python`
+      # step below uses `actions/setup-python` with `cache: pip`, which
+      # resolves the cache directory by running `pip cache dir` — and
+      # pip refuses to run any cache command while the cache is
+      # disabled, failing the step before the cache can be used. The
+      # action manages the cache itself.
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_RETRIES: "10"
+      PIP_TIMEOUT: "120"
+
+    steps:
+      - name: check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: set up python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: create the virtualenv
+        run: |
+          set -eu
+          if ! python -m venv .venv; then
+            rm -rf .venv
+            python -m venv --without-pip .venv
+            python -m pip --python .venv/bin/python install pip
+          fi
+          .venv/bin/python -m pip --version
+          .venv/bin/python -m pip install --upgrade pip
+
+      - name: install the package (dev shape)
+        run: |
+          set -eu
+          retry() {
+            attempt=0;
+            until "$@"; do
+              attempt=$((attempt + 1));
+              if [ "$attempt" -ge 5 ]; then
+                echo "giving up after $attempt attempts: $*" >&2;
+                return 1;
+              fi;
+              echo "attempt $attempt failed: $* — retrying in $((attempt * 10))s" >&2;
+              sleep $((attempt * 10));
+            done;
+          }
+          retry .venv/bin/python -m pip install -e ".[dev]"
+
+      - name: check the README status block
+        run: .venv/bin/python scripts/status.py --check
 
   embed-image:
     name: embed image separation
