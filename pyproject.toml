@@ -51,6 +51,10 @@ otel = [
     "opentelemetry-sdk>=1.28",
     "opentelemetry-exporter-otlp-proto-http>=1.28",
 ]
+# The chat TUI front-end (SPEC 2 §3.2). Deliberately optional: `paa chat
+# --plain` runs on the core install, so a minimal deployment never pulls a
+# TUI framework it cannot display.
+tui = ["textual>=8.0"]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
