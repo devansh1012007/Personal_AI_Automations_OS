@@ -4,6 +4,26 @@
 so you (or anyone) can drop in a new agentic loop or pipeline, possibly better
 than the built-in one, and the runtime uses it with no core changes.*
 
+> **Superseded (2026-11-21) — by
+> [docs/plans/2026-11-21-pipeline-platform-spec.md](plans/2026-11-21-pipeline-platform-spec.md),
+> [ADR-0050](adr/0050-pipeline-host-and-call-journal.md),
+> [ADR-0051](adr/0051-facade-and-capability-tokens.md), and
+> [ADR-0052](adr/0052-manifest-slots-overlays-tighten-only.md).** The *goals*
+> below stand; the delivery phases (P1–P6 at the end of this document) and
+> four design decisions do not. What changed: pipelines are primarily
+> **out-of-process** over a JSON-RPC stdio protocol, not in-process Tier 2
+> (containment, languages, crash isolation — the vision's first extension
+> rule); resumption is a **host-side call journal** with divergence detection
+> (ADR-0050), not pipeline-emitted checkpoints; the facade has **typed calls
+> and minted capability tokens, and no `ctx.emit`** (ADR-0051); and there is
+> no `can_handle` auto-selection — a task's mandate scopes which pipelines it
+> may invoke (ADR-0052). The tier ladder below survives as the *trust* story
+> (in-process = trusted code you wrote; container/RPC = everyone else), and
+> the evidence model is new: every pipeline declares an honest evidence tier
+> that the host recomputes from what it can actually observe (spec §3.4) — a
+> bundle may understate what the host sees, never overstate it.
+> This document is retained as the design's history.
+
 ---
 
 ## The goal, stated precisely
@@ -47,7 +67,10 @@ is contained.
 - The model layer is a registry of providers behind one interface.
 - Skills (USA), agents, and marketplace packages already install + register.
 - `coder/AgentLoop` is a *second, self-contained loop* with `ToolCallingModel` +
-  `Tool` protocols — living proof that "a loop is an object with a `run()`" works.
+  `Tool` protocols — living proof that "a loop is an object with a `run()`" works —
+  and since ADR-0046 its tool calls carry the `ToolJournal` (PROPOSED-before-effect,
+  persisted intent, outcome classification), which is the tool-level proof of the
+  journal semantics ADR-0050 generalises.
 - Delegation graph, recursion guards, permission modes, sandbox, validation —
   all reusable scaffolding a pipeline can call.
 
@@ -171,7 +194,9 @@ malicious loop can only *ask* for capabilities, never seize them.
 
 ### The load-bearing refactor (piece 3), in detail
 
-This is the crux and must be done without breaking the 1138 tests. Move the body
+This is the crux and must be done without breaking the full suite (4,173 tests
+collected on 2026-11-21 — the figure the README status block generates; the
+older figure this document carried was 1,138, long stale). Move the body
 of `ChiefOrchestrator.run()` into a class:
 
 ```python
@@ -256,9 +281,16 @@ facade, not the pipeline side.
 
 ## Phased delivery
 
+> **Superseded by the spec's P0–P7 phases** — see
+> [docs/plans/2026-11-21-pipeline-platform-spec.md](plans/2026-11-21-pipeline-platform-spec.md)
+> §8. The phases below are the *original* plan, kept for the record: extraction
+> first (the P1 below survives as the spec's P1, with the suite-unchanged gate);
+> the registry/CLI phases are re-sequenced behind the validation trial, and the
+> auto-selection phase is dropped (ADR-0052).
+
 - **P1 — Extract the abstraction (no new features).** Define `Pipeline` +
   `RuntimeContext`, implement the facade, refactor today's lifecycle into
-  `BuiltinPlanExecutePipeline`, make the orchestrator a host. **Exit: all 1138
+  `BuiltinPlanExecutePipeline`, make the orchestrator a host. **Exit: all 4,173
   tests pass unchanged.** This is pure enabling work and unlocks everything else.
 - **P2 — Registry + Tier-2 pipelines.** `PipelineRegistry`, `--pipeline` flag,
   session/global defaults. Register the coder `AgentLoop` as a second pipeline to
