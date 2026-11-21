@@ -70,7 +70,7 @@ reproducibility (`context_agents.py` module docstring).
   for cross-machine replay determinism (`gather synthesis`).
 - `density >= density_proceed (0.85)` → proceed; `>= density_hydrate (0.40)` →
   background hydration; else `HARD_STOP_ESCALATE_TO_USER`
-  (`config.py:150`, `:154`).
+  (`config.py:185`, `:206`).
 
 ## Failure behavior
 
@@ -85,8 +85,8 @@ reproducibility (`context_agents.py` module docstring).
 - Changing `token_ceiling`/`worker_token_ceiling` affects packet size
   (`config.py:188`, `:192`).
 - Changing `density_proceed`/`density_hydrate` changes routing behavior
-  (`config.py:150`, `:154`) with validator `density_hydrate < density_proceed`
-  (`config.py:160`).
+  (`config.py:185`, `:210`) with validator `density_hydrate < density_proceed`
+  (`config.py:218`).
 - Tests: covered via ledger suite / agents; context engine 353 tests per
   README (`tests/context/`).
 

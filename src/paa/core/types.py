@@ -258,6 +258,40 @@ class EventType(str, enum.Enum):
     MANDATE_GRANTED = "MANDATE_GRANTED"
     MANDATE_REFUSED = "MANDATE_REFUSED"
 
+    # -- chat sessions + memory consults (W4, ADR-0046 pattern) ------------
+    # Chat-session events are the audit record of what the conversational
+    # loop did (SPEC 2 §3.1 C4.2). They are *informational*, never
+    # lifecycle: all eight map to `_NO_PHASE_CHANGE` in ledger/replay.py
+    # and none of them enters TERMINAL_EVENTS. A chat session is not a
+    # task lineage — it moves no phase, closes nothing, and the boot
+    # sweep skips a chat-only lineage the way it skips a coder-only one
+    # (ledger/recovery.py, the N2.3 exemption's mirror).
+    #
+    # One chat session IS one correlation lineage: the session id is the
+    # lineage key, so a session's events project independently and
+    # `read_correlation(session_id)` is the whole session history. Turns
+    # are distinguished inside the lineage by the ADR-0008 discriminator
+    # (`<turn_id>:<KIND>` for turn events), never by a second lineage.
+    #
+    # Every payload carries `v` (schema version, currently 1). Message
+    # text never enters a payload — only its SHA-256, its length and a
+    # shape-only preview, per the coder journal's preview discipline
+    # (coder/journal.py): the ledger must never carry a credential an
+    # opaque secret pattern would miss, and a chat message is exactly
+    # such an opaque input. The verbatim text lives in the cold lake
+    # (`cold_lake_signals`, channel `chat.turn`), the substrate designed
+    # to hold raw input verbatim. No payload carries the exact key
+    # `fact_id` (plural `fact_ids` only): `apply_tier_event` folds any
+    # event naming a scalar `fact_id` into tier state.
+    CHAT_SESSION_STARTED = "CHAT_SESSION_STARTED"
+    CHAT_SESSION_ENDED = "CHAT_SESSION_ENDED"
+    CHAT_TURN_PROPOSED = "CHAT_TURN_PROPOSED"
+    CHAT_TURN_COMPLETED = "CHAT_TURN_COMPLETED"
+    CHAT_TURN_FAILED = "CHAT_TURN_FAILED"
+    CHAT_TURN_CANCELLED = "CHAT_TURN_CANCELLED"
+    MEMORY_RECALL_CONSULTED = "MEMORY_RECALL_CONSULTED"
+    MEMORY_SIGNAL_EXTRACTED = "MEMORY_SIGNAL_EXTRACTED"
+
 
 #: Events after which a correlation is closed and needs no recovery sweep.
 #: Used by the recovery engine to decide which lineages are still in flight.

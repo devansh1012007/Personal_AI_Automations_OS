@@ -68,7 +68,7 @@ that change `PAA_HOME` must call `reset_settings_cache()` (`config.py:931`).
 | `vault_path` | `~/.paa/vault` | World model |
 | `workspace_root` | `~/.paa/workspaces` | Sandbox jail root |
 | `zstd_level` | `3` (1–22) | CAS compression |
-| `zstd_level` validator | ge=1, le=22 | `config.py:124` |
+| `zstd_level` validator | ge=1, le=22 | `config.py:133` |
 | `all_paths()` | — | Directories that must exist before boot |
 
 The pre-ADR-0026 names — `minio_endpoint`, `minio_bucket`, `minio_secure`,

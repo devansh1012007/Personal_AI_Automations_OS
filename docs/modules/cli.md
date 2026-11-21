@@ -47,7 +47,7 @@ under `--yes`, else `prompt_yes` (blocks on `input`; EOF → deny)
 
 - `submit` default `run=True` (`:64`).
 - `serve` binds loopback only; `api_host` validator enforced at `Settings`
-  construction (`config.py:714`).
+  construction (`config.py:901`).
 - Every command closes the `Runtime` in `finally` (`cli/main.py:99`, `:115`, etc.).
 
 ## Failure behavior

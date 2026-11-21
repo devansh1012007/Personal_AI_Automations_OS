@@ -24,6 +24,7 @@ from paa.core.types import ComplexityModality, PermissionMode
 
 __all__ = [
     "AllocatorSettings",
+    "ChatSettings",
     "CodingSettings",
     "ContextSettings",
     "CostGateSettings",
@@ -793,6 +794,54 @@ class ReflectionSettings(BaseModel):
     enabled: bool = False
 
 
+class ChatSettings(BaseModel):
+    """The chat surface (SPEC 2 §3.1 C4.1-C4.3). Offline-first by default.
+
+    ``model`` names a *registry row* (:func:`paa.models.registry.resolve_spec`),
+    not a vendor: the default ``"echo"`` resolves to the deterministic offline
+    provider, so a chat deployment demos with no network, no key and no local
+    model server. Every other registry name (ollama, openai-compatible,
+    anthropic, ...) works through the same seam and needs whatever credential
+    its row names.
+    """
+
+    #: Registry provider name backing chat turns. ``"echo"`` is offline and
+    #: deterministic; it is the default so tests and the offline demo need no
+    #: network (SPEC 2 §3.2 "Offline-first").
+    model: str = "echo"
+
+    #: Hard token ceiling for the chat context bundle (C4.3). ``None`` (the
+    #: default) resolves from the context engine's existing planner ceiling
+    #: (:attr:`ContextSettings.token_ceiling`) at use time, so the chat
+    #: surface inherits the runtime's one budget line instead of growing a
+    #: second one that can drift. An explicit value wins for a deployment
+    #: that wants chat tighter (or looser) than the task planner.
+    token_budget: int | None = Field(default=None, ge=1)
+
+    #: Cross-session episodic reads. ``False`` (the default) makes a
+    #: session's raw turns visible only inside that session; semantic facts
+    #: are global either way, with the originating session stamped in their
+    #: provenance. ``True`` lifts the episodic fence deliberately (the
+    #: operator's word, not a default) — a refusal is recorded on the
+    #: ``MEMORY_RECALL_CONSULTED`` payload either way, so the ledger shows
+    #: the fence worked.
+    cross_session_episodic: bool = False
+
+    #: Stream reply deltas to the caller's callback. The ledger records the
+    #: final reply either way; this only shapes the transport surface.
+    streaming: bool = True
+
+    #: How many of THIS session's most recent turns the bundle carries.
+    last_k_turns: int = Field(default=6, ge=0)
+
+    #: How many semantic facts a turn's recall may consult.
+    recall_k: int = Field(default=5, ge=0)
+
+    #: The persona slot's text. The first thing packed into every bundle and
+    #: the first thing a small ceiling evicts.
+    persona: str = "You are PAA, a local-first assistant with persistent memory."
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -824,6 +873,7 @@ class Settings(BaseSettings):
     vault_sync: VaultSyncSettings = Field(default_factory=VaultSyncSettings)
     specialists: SpecialistsSettings = Field(default_factory=SpecialistsSettings)
     reflection: ReflectionSettings = Field(default_factory=ReflectionSettings)
+    chat: ChatSettings = Field(default_factory=ChatSettings)
 
     #: Bind address for the ingestion API. Loopback only — the RFC's "no public
     #: edge ingestion" constraint is enforced here rather than documented.

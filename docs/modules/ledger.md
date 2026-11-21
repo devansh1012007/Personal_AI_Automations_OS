@@ -108,7 +108,7 @@ from that version.
    latest event is already one (idempotent sweeps; `recovery.py:315`).
 
 `RecoveryOutcome`: `RESUMED`, `ROLLED_BACK`, `PARKED_HUMAN`, `ABANDONED`,
-`UNRECOVERABLE`, `ALREADY_TERMINAL` (`recovery.py:80`).
+`UNRECOVERABLE`, `ALREADY_TERMINAL` (`recovery.py:103`).
 
 ## Inputs and outputs
 

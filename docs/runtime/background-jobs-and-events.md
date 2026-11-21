@@ -65,7 +65,7 @@ interval and drains nothing (`daemon.py:154`).
      `recovery.py:315`).
 
 `RecoveryOutcome`: `RESUMED`, `ROLLED_BACK`, `PARKED_HUMAN`, `ABANDONED`,
-`UNRECOVERABLE`, `ALREADY_TERMINAL` (`recovery.py:80`).
+`UNRECOVERABLE`, `ALREADY_TERMINAL` (`recovery.py:103`).
 
 Idempotent by design — running the sweep twice yields the same end state
 (`recovery.py:17`).

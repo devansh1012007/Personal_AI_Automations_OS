@@ -46,7 +46,7 @@ Focused runs:
   would translate newlines on Windows and report phantom manifest drift.
 - Anything that changes `PAA_HOME` (tests) **must** call
   `reset_settings_cache()` (`config.py:931`).
-- Tests that chdir must call `reset_dotenv_cache()` (`config.py:502`).
+- Tests that chdir must call `reset_dotenv_cache()` (`config.py:992`).
 - `PAA_TEST_VERBOSE=1` un-silences structlog.
 
 ## Hypothesis property tests
