@@ -256,7 +256,13 @@ def percentile(sorted_values: list[float], quantile: float) -> float:
     if lower == upper:
         return float(sorted_values[int(rank)])
     weight = rank - lower
-    return float(sorted_values[lower] * (1.0 - weight) + sorted_values[upper] * weight)
+    # Lerp form (NumPy's), not the convex combination ``a*(1-w) + b*w``:
+    # rounding of ``a*(1-w)`` is not monotone in ``w`` for extreme
+    # magnitudes, so adjacent quantile doubles could invert the result
+    # (caught by the monotonicity property test). ``a + (b - a) * w`` is
+    # monotone: correct rounding is monotone in both terms.
+    lower_value = float(sorted_values[lower])
+    return float(lower_value + (float(sorted_values[upper]) - lower_value) * weight)
 
 
 @dataclass
