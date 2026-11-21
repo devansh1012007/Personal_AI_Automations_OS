@@ -18,10 +18,10 @@ emission — so no agent can skip them (`agents/base.py:296`).
 
 The Chief Orchestrator owns the task lifecycle: hydrate → plan → policy →
 execute → commit, writing a ledger event before every side effect
-(`orchestrator.py:9`).
+(`src/paa/agents/orchestrator.py:9`).
 
 No generative reasoning in the control path: routing/gating are Python, never a
-model (`orchestrator.py:9`, `policy.py:7`).
+model (`src/paa/agents/orchestrator.py:9`, `policy.py:7`).
 
 ## Internal implementation
 
@@ -42,20 +42,21 @@ model (`orchestrator.py:9`, `policy.py:7`).
 
 ### `orchestrator.py` — Chief Orchestrator
 `run(cid)` projects the lineage; if terminal, returns immediately
-(`orchestrator.py:403`). Phases:
-- `_hydrate` (`:500`) — context builder; parks on `AWAITING_HUMAN_ATTESTATION`
-  if density insufficient (`:527`).
-- `_plan` (`:546`) — planner; SIMPLE bypasses model (`:551`); validates
-  `max_plan_nodes()` (`:584`).
-- `_check_policy` (`:604`) — policy agent; blocked → `POLICY_BLOCKED`/
+(`src/paa/agents/orchestrator.py:405`). Phases:
+- `_hydrate` (`src/paa/pipelines/builtin.py:602`) — context builder; parks on
+  `AWAITING_HUMAN_ATTESTATION` if density insufficient (`src/paa/pipelines/builtin.py:662`).
+- `_plan` (`src/paa/pipelines/builtin.py:678`) — planner; SIMPLE bypasses model
+  (`src/paa/pipelines/builtin.py:684`); validates `max_plan_nodes()`
+  (`src/paa/pipelines/builtin.py:308`).
+- `_check_policy` (`src/paa/pipelines/builtin.py:331`) — policy agent; blocked → `POLICY_BLOCKED`/
   `SECURITY_VIOLATION`; human gate → `AWAITING_HUMAN_ATTESTATION`; else
-  `POLICY_CLEARED` (`:711`).
-- `_execute_steps` (`:750`) — per step: `EXECUTION_STARTED` → worker → critic
+  `POLICY_CLEARED` (`src/paa/pipelines/builtin.py:443`).
+- `_execute_steps` (`src/paa/pipelines/builtin.py:712`) — per step: `EXECUTION_STARTED` → worker → critic
   → `EXECUTION_COMPLETED`/`VALIDATION_FAILED`; retry up to `max_step_retries`
-  (default 2, `:214`).
-- `_commit` (`:844`) — `MUTATION_COMMITTED` (terminal).
+  (default 2, `src/paa/agents/orchestrator.py:187`).
+- `_commit` (`src/paa/pipelines/builtin.py:454`) — `MUTATION_COMMITTED` (terminal).
 
-`mediate_delegation()` (`:837`) enforces delegation graph bounds. `clear_human_gate()` (`:1042`) — only external callers clear gates. `boot()` (`:1131`) runs
+`mediate_delegation()` (`src/paa/agents/orchestrator.py:507`) enforces delegation graph bounds. `clear_human_gate()` (`src/paa/agents/orchestrator.py:716`) — only external callers clear gates. `boot()` (`src/paa/agents/orchestrator.py:805`) runs
 recovery.
 
 ### `reasoning.py` — planner, critic, router, worker
@@ -105,8 +106,8 @@ from DB (`:234`), anti-goals (cosine ≥0.82 or phrase match, `:262`). Risk scor
 
 | Component | Relationship | Why | Source |
 |---|---|---|---|
-| `ChiefOrchestrator` → all agents | calls `agent.run(message, ctx)` | Drive lifecycle phases | `orchestrator.py:515`, `:577`, `:670`, `:744`, `:800` |
-| `Agent` → `DelegationRegistry` | `delegate()` | Orchestrator owns delegation graph | `agents/base.py:373`, `orchestrator.py:837` |
+| `ChiefOrchestrator` → all agents | calls `agent.run(message, ctx)` | Drive lifecycle phases | `src/paa/pipelines/builtin.py:647`, `:703`, `:404`, `:738`, `:795` |
+| `Agent` → `DelegationRegistry` | `delegate()` | Orchestrator owns delegation graph | `agents/base.py:373`, `src/paa/agents/orchestrator.py:507` |
 | `Reasoning agents` → `ModelLike` | `complete_structured()` | Model seam | `reasoning.py:95`, `:246`, `:353` |
 | `RouterModelAdapter` | wraps `EscalatingModelRouter` | Bridge `ModelLike` → router | `runtime.py:98` |
 | `PolicyRiskAgent` → `Database` | `fetch_all(hot_serving_policy_rules)` | Operator rules | `policy.py:255` |
@@ -129,15 +130,15 @@ from DB (`:234`), anti-goals (cosine ≥0.82 or phrase match, `:262`). Risk scor
 - Critic deterministic failure → short-circuits, no model call
   (`reasoning.py:226`).
 - Policy block → `POLICY_BLOCKED`/`SECURITY_VIOLATION` event; terminal phase
-  (`orchestrator.py:673`).
-- Step exhaustion → `PaaError` → `EXECUTION_FAILED` (`orchestrator.py:780`).
+  (`src/paa/pipelines/builtin.py:378`).
+- Step exhaustion → `PaaError` → `EXECUTION_FAILED` (`src/paa/pipelines/builtin.py:772`).
 
 ## Modification impact
 
 - Changing an agent's `handle()` signature breaks the `Agent` ABC contract
   (`agents/base.py:296`).
 - Adding a delegation requires `can_delegate = True` and orchestrator
-  registration (`agents/base.py:308`, `orchestrator.py:251`).
+  registration (`agents/base.py:308`, `src/paa/agents/orchestrator.py:213`).
 - Changing `TERMINAL_EVENTS` affects recovery scanning (`core/types.py:273`,
   `ledger/store.py:304`).
 - Tests: `tests/agents/` (70 tests per README).
@@ -146,7 +147,7 @@ from DB (`:234`), anti-goals (cosine ≥0.82 or phrase match, `:262`). Risk scor
 
 - `src/paa/agents/specialists/` is an empty package (`AGENTS.md:146`).
 - Router is optional; when absent, `_classify()` heuristic picks modality
-  (`orchestrator.py:384`).
+  (`src/paa/agents/orchestrator.py:360`).
 - Deterministic planner fallback is crude (splits on conjunctions).
 
 ## Related documents

@@ -58,7 +58,7 @@ by:
    cid = await rt.submit(...); outcome = await rt.run(cid)`
    (`runtime.py:144`).
 
-All three converge on `ChiefOrchestrator` (`agents/orchestrator.py:200`).
+All three converge on `ChiefOrchestrator` (`src/paa/agents/orchestrator.py:162`).
 
 ## What the backend does NOT do (honest gaps)
 

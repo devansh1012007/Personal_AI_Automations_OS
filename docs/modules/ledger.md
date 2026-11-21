@@ -124,7 +124,7 @@ from that version.
 
 | Component | Relationship | Why it connects | Source |
 |---|---|---|---|
-| `ChiefOrchestrator` | calls `LedgerStore.append` | Emits every state transition | `orchestrator.py:276` |
+| `ChiefOrchestrator` | calls `LedgerStore.append` | Emits every state transition | `src/paa/agents/orchestrator.py:255` |
 | `Runtime.build` | constructs `LedgerStore`, `RecoveryEngine` | Composition root | `runtime.py:288`, `:326` |
 | `RecoveryEngine` | uses `LedgerStore`, `Database` | Replay and reconcile | `recovery.py:500` |
 | `replay.project` | reads `LedgerStore.read_correlation` | Build TaskProjection | `replay.py:447` |

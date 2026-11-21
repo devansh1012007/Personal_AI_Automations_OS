@@ -137,7 +137,7 @@ sequenceDiagram
 
 The daemon dispatch loop (`daemon.py:144`) claims the re-queued messages and
 runs each via `Runtime.run(cid)`, which re-projects and resumes at
-`resume_step_index` (`orchestrator.py:726`, `replay.py` `completed_steps`).
+`resume_step_index` (`src/paa/pipelines/builtin.py:721`, `replay.py` `completed_steps`).
 
 ## Failure behavior
 

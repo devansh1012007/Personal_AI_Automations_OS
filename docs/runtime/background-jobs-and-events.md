@@ -42,7 +42,7 @@ interval and drains nothing (`daemon.py:154`).
 ## 2. Recovery boot sweep
 
 `RecoveryEngine.boot_sweep()` (`recovery.py:222`), invoked by
-`ChiefOrchestrator.boot()` (`orchestrator.py:1105`) and by `Runtime.build()`
+`ChiefOrchestrator.boot()` (`src/paa/agents/orchestrator.py:753`) and by `Runtime.build()`
 (`runtime.py:331`) and `Daemon.start()` (`daemon.py:91`):
 
 1. `verify_all_chains()` — hash-chain integrity across all lineages; problems
@@ -97,7 +97,7 @@ lineages. The event vocabulary (`src/paa/core/types.py:122`):
 - Task status = replayed `TaskProjection.phase` (`TaskPhase`, `replay.py:35`).
 - `attempts` incremented on each `EXECUTION_STARTED` (`replay.py:220`).
 - Per-step retry budget `max_step_retries` (default 2) in
-  `ChiefOrchestrator._execute_steps` (`orchestrator.py:750`).
+  the pipeline's `_execute_steps` (`src/paa/pipelines/builtin.py:712`).
 - Queue `max_delivery_attempts` (default 3) governs message redelivery
   (`config.py:651`).
 - Recovery `max_attempts` (default 3, from `QueueSettings.max_delivery_attempts`)
@@ -119,8 +119,8 @@ lineages. The event vocabulary (`src/paa/core/types.py:122`):
 |---|---|
 | Daemon loop exception | Logged, loop restarted after 1s (`daemon.py:134`) |
 | Task run exception | Logged, message nacked (redelivery) (`daemon.py:170`) |
-| Orchestrator `PaaError` | `EXECUTION_FAILED` event, re-project, return error (`orchestrator.py:457`) |
-| Sandbox step failure | `VALIDATION_FAILED`; retry up to budget (`orchestrator.py:764`) |
+| Orchestrator `PaaError` | `EXECUTION_FAILED` event, re-project, return error (`src/paa/agents/orchestrator.py:445`) |
+| Sandbox step failure | `VALIDATION_FAILED`; retry up to budget (`src/paa/pipelines/builtin.py:758`) |
 | Recovery single lineage failure | Logged as `UNRECOVERABLE`; sweep continues (`recovery.py:250`) |
 | Hash-chain problem | Reported in `RecoveryReport.chain_problems`, never repaired (`recovery.py:231`) |
 | Queue enqueue failure in recovery | Logged, non-fatal; ledger already records the task as open (`recovery.py:444`) |

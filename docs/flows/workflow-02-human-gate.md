@@ -7,19 +7,19 @@ Traces a task parked on `AWAITING_HUMAN_ATTESTATION` and later cleared via
 
 ## How a task gets parked
 
-Two gate points in `ChiefOrchestrator.run()`:
+Two gate points in the built-in pipeline's `run()`:
 
-1. **Context hydration** (`orchestrator.py:500`): if the planner context packet's
+1. **Context hydration** (`src/paa/pipelines/builtin.py:602`): if the planner context packet's
    `routing_directive` is `HARD_STOP_ESCALATE_TO_USER` (density < 0.40), emit
    `AWAITING_HUMAN_ATTESTATION` with `{reason: "insufficient context density",
    vacant_slots: [...]}` and return (`:527`).
 
-2. **Policy check** (`orchestrator.py:604`): if `PolicyRiskAgent` returns
+2. **Policy check** (`src/paa/pipelines/builtin.py:331`): if `PolicyRiskAgent` returns
    `requires_human_gate` (e.g. SUPERVISED mode + mutating step, risk ≥ 0.5 in
    ASK, `always_gate_risk_profile ≥ 0.90`, `policy.py:318`), emit
-   `AWAITING_HUMAN_ATTESTATION` with `{reason, ...}` and return (`orchestrator.py:936`).
+   `AWAITING_HUMAN_ATTESTATION` with `{reason, ...}` and return (`src/paa/pipelines/builtin.py:439`).
 
-3. **Post-execution** (`orchestrator.py:422`): after `_execute_steps`, if
+3. **Post-execution** (`src/paa/pipelines/builtin.py:582`): after `_execute_steps`, if
    `state.phase is AWAITING_HUMAN`, return (`:423`).
 
 The `TaskProjection.phase` becomes `AWAITING_HUMAN`; `is_resumable` is
@@ -30,20 +30,20 @@ The `TaskProjection.phase` becomes `AWAITING_HUMAN`; `is_resumable` is
 
 | Event | Payload | File |
 |---|---|---|
-| `AWAITING_HUMAN_ATTESTATION` | `{reason, vacant_slots?}` | `orchestrator.py:934` / `:936` |
-| `HUMAN_GATE_CLEARED` | `{resume_phase, note}` | `orchestrator.py:1098` |
-| `HUMAN_GATE_REJECTED` | `{resume_phase, note}` | `orchestrator.py:1098` |
+| `AWAITING_HUMAN_ATTESTATION` | `{reason, vacant_slots?}` | `src/paa/pipelines/builtin.py:662` / `:664` |
+| `HUMAN_GATE_CLEARED` | `{resume_phase, note}` | `src/paa/agents/orchestrator.py:777` |
+| `HUMAN_GATE_REJECTED` | `{resume_phase, note}` | `src/paa/agents/orchestrator.py:777` |
 
 ## Clearing the gate (external only)
 
 `ChiefOrchestrator.clear_human_gate(cid, approved, resume_phase=EXECUTING,
-note=None)` (`orchestrator.py:1042`):
-1. `project()`; raises `PaaError` if phase is not `AWAITING_HUMAN` (`:1077`).
+note=None)` (`src/paa/agents/orchestrator.py:716`):
+1. `project()`; raises `PaaError` if phase is not `AWAITING_HUMAN` (`src/paa/agents/orchestrator.py:753`).
 2. Emit `HUMAN_GATE_CLEARED` (approved) or `HUMAN_GATE_REJECTED` (rejected)
-   with `{resume_phase, note}` (`:712`).
+   with `{resume_phase, note}` (`src/paa/agents/orchestrator.py:777`).
 3. Return re-projected `TaskProjection`.
 
-**Nothing in the automated path can clear its own gate** (`orchestrator.py:1042`)
+**Nothing in the automated path can clear its own gate** (`src/paa/agents/orchestrator.py:726`)
 — a crash is never interpreted as consent (`replay.py:62`).
 
 Callers:
@@ -110,9 +110,9 @@ sequenceDiagram
 
 | Condition | Behavior | Source |
 |---|---|---|
-| Gate cleared on non-parked task | `PaaError` "task is not awaiting human attestation" → API 409 | `orchestrator.py:703`, `api/app.py:136` |
+| Gate cleared on non-parked task | `PaaError` "task is not awaiting human attestation" → API 409 | `src/paa/pipelines/builtin.py:390`, `api/app.py:136` |
 | Recovery encounters AWAITING_HUMAN | `PARKED_HUMAN`; left across restart | `recovery.py:274` |
-| Automated path tries to clear | Not possible — no internal caller | `orchestrator.py:1042` |
+| Automated path tries to clear | Not possible — no internal caller | `src/paa/agents/orchestrator.py:726` |
 
 ## Persistence
 

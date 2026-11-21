@@ -21,7 +21,7 @@ failure is the only possible one.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol
 
 import structlog
@@ -42,6 +42,12 @@ from paa.core.types import (
 from paa.ledger.events import LedgerEvent
 from paa.ledger.mandate import Mandate
 from paa.ledger.replay import TaskPhase, TaskProjection, project
+from paa.pipelines.base import GateQuestion, PipelineTask
+from paa.pipelines.builtin import (
+    BuiltinPipelineFacade,
+    BuiltinPlanExecuteCritique,
+    StageAgents,
+)
 
 if TYPE_CHECKING:
     from paa.context.allocator import AllocationResult
@@ -71,56 +77,12 @@ _GATE_RESUME_PHASES: dict[str, TaskPhase] = {
 }
 
 
-@dataclass(frozen=True, slots=True)
-class _GateQuestion:
-    """One human-gate question, as a lineage records it.
-
-    A question is *opened* by an ``AWAITING_HUMAN_ATTESTATION`` event and
-    *answered* by the ``HUMAN_GATE_CLEARED`` event that names it. The role is
-    the stage that asked — the subject of the question — and the
-    discriminator names the question within that stage.
-
-    One question is open at a time: a task parks on a question, a human
-    answers it, and only then can the next stage ask its own.
-    """
-
-    role: str
-    discriminator: str | None
-    answered: bool
-    payload: dict[str, Any] = field(default_factory=dict)
-    """What the question was about — the gate event's own payload.
-
-    A question is asked about something, and the answer is an answer *to
-    that*. The policy stage's question carries the reason the plan was gated
-    and the score the policy computed, so a release of that question can say
-    what it was a release *of*: "a human approved a plan the policy scored
-    0.8". Without it the clearance records that a gate was answered and
-    nothing about the thing the human answered.
-
-    Empty for a question whose event carried no payload — a lineage written
-    before the payload said anything, or a stage that asks without saying
-    what about.
-    """
 
 
-def _risk_score_of(payload: dict[str, Any]) -> float | None:
-    """The risk score a payload recorded, if it recorded one.
-
-    ``None`` means **not recorded**, which is not the same as zero. A verdict
-    that never computed a score, and a lineage written before the score was
-    carried, both say "the number is not in the record" — and writing ``0.0``
-    for them would put a number there that nobody measured. A decision
-    without the number it decided about is half a record; a record with an
-    invented number in it is worse.
-    """
-    value = payload.get("risk_score")
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    return float(value)
 
 
 def _released_question(
-    questions: list[_GateQuestion], discriminator: str | None
+    questions: list[GateQuestion], discriminator: str | None
 ) -> int | None:
     """The index of the question a release answers, if it answers one.
 
@@ -246,16 +208,26 @@ class ChiefOrchestrator:
             if agent is not None:
                 self.register(agent)
 
-        self._context_builder = context_builder
-        self._worker_context_builder = worker_context_builder
-        self._planner = planner
-        self._policy = policy
-        self._worker = worker
-        self._critic = critic
-        self._router = router
-        self._coding = coding
-
         self._delegations = DelegationRegistry()
+
+        # P1.2: the strategy is a pipeline; the orchestrator is its host.
+        # The stage agents are captured here, at construction, so a
+        # registration that arrives later cannot change what a run reaches
+        # (the registry serves delegation, not the stage slots). The direct
+        # per-stage references the old code kept are deliberately gone: the
+        # pipeline's StageAgents is the one holder now, and a second copy
+        # here would be write-only state that could drift from it.
+        self._pipeline = BuiltinPlanExecuteCritique(
+            host=self,
+            stages=StageAgents(
+                context_builder=context_builder,
+                planner=planner,
+                policy=policy,
+                worker=worker,
+                critic=critic,
+            ),
+            max_step_retries=max_step_retries,
+        )
 
     # -- registry ----------------------------------------------------------
 
@@ -275,7 +247,7 @@ class ChiefOrchestrator:
 
     # -- ledger helper -----------------------------------------------------
 
-    async def _emit(
+    async def emit(
         self,
         correlation_id: uuid.UUID,
         event_type: EventType,
@@ -302,6 +274,10 @@ class ChiefOrchestrator:
             )
         )
 
+    async def project(self, correlation_id: uuid.UUID) -> TaskProjection:
+        """Re-read a lineage's current projection — the host's R2 read."""
+        return await project(self._ledger, correlation_id)
+
     # -- submission --------------------------------------------------------
 
     async def submit(self, request: TaskRequest) -> CorrelationId:
@@ -321,7 +297,7 @@ class ChiefOrchestrator:
         # applies to authority too — a task that crashed before its grant
         # landed has no authority record and no work.
         if request.mandate is not None:
-            await self._emit(
+            await self.emit(
                 correlation_id,
                 EventType.MANDATE_GRANTED,
                 session_id=request.session_id,
@@ -344,7 +320,7 @@ class ChiefOrchestrator:
         if request.workspace_path:
             payload["workspace_path"] = request.workspace_path
 
-        await self._emit(
+        await self.emit(
             correlation_id,
             EventType.TASK_REQUESTED,
             session_id=request.session_id,
@@ -355,7 +331,7 @@ class ChiefOrchestrator:
 
         modality = await self._apply_backpressure(correlation_id, modality)
 
-        await self._emit(
+        await self.emit(
             correlation_id,
             EventType.TASK_QUEUED,
             session_id=request.session_id,
@@ -387,7 +363,7 @@ class ChiefOrchestrator:
         A deliberately crude heuristic. The RFC gives no classification rule,
         and a wrong guess is cheap to correct — the planner can escalate — so
         spending a model call here would be poor value. When a router agent is
-        configured it can override this; see :meth:`_route`.
+        configured it can override this via delegation.
         """
         goal = request.goal.lower()
         if request.target_agent and len(goal) < 80:
@@ -427,49 +403,67 @@ class ChiefOrchestrator:
     # -- execution ---------------------------------------------------------
 
     async def run(self, correlation_id: CorrelationId | uuid.UUID) -> TaskOutcome:
-        """Drive a submitted task to a terminal phase."""
+        """Drive a submitted task to a terminal phase.
+
+        P1.2: the orchestrator is the *host* — it owns submission,
+        backpressure, recovery, human gates, delegation and failure
+        recording — and the strategy is
+        :class:`~paa.pipelines.builtin.BuiltinPlanExecuteCritique`, driving
+        the same hydrate → plan → policy → execute → commit sequence this
+        method itself used to drive inline. The events, their order and
+        their payloads are unchanged; the migration gate is the full suite
+        passing unchanged
+        (docs/plans/2026-11-21-pipeline-platform-spec.md P1.2).
+
+        The pipeline writes its live projection back onto the per-run task
+        at exactly the points this method used to reassign its local
+        ``state``, so the failure path below still reads the same
+        ``attempts`` count the old code read when a stage raised — the
+        subtlety tests/pipelines/test_builtin.py pins.
+        """
         state = await project(self._ledger, correlation_id)
         if state.is_terminal:
             return TaskOutcome(uuid.UUID(str(correlation_id)), state.phase, state)
 
-        ctx = self._context_for(state)
+        agent_ctx = self._context_for(state)
+        task = PipelineTask(
+            correlation_id=agent_ctx.correlation_id,
+            session_id=agent_ctx.session_id,
+            goal=state.request.get("goal", ""),
+            request=state.request,
+            modality=state.modality,
+            permission_mode=agent_ctx.permission_mode,
+            projection=state,
+        )
 
         try:
-            state = await self._hydrate(state, ctx)
-            # A stage may park the task for a human — the context builder
-            # escalates when the context is too thin to plan from. The park
-            # has to be honoured *here*, before the next stage runs: the
-            # check that used to sit after ``_check_policy`` was the only
-            # one, so an escalation raised earlier in the pipeline was
-            # overwritten by the phase of the very next event and the task
-            # carried on to ``MUTATION_COMMITTED`` (ADR-0034). Each stage
-            # that can park is therefore followed by its own check.
-            if state.phase is TaskPhase.AWAITING_HUMAN:
-                return TaskOutcome(ctx.correlation_id, state.phase, state)
-            state = await self._plan(state, ctx)
-            state = await self._check_policy(state, ctx)
-            if state.phase in (TaskPhase.BLOCKED, TaskPhase.AWAITING_HUMAN):
-                return TaskOutcome(ctx.correlation_id, state.phase, state)
-            state = await self._execute_steps(state, ctx)
-            if state.phase is TaskPhase.AWAITING_HUMAN:
-                return TaskOutcome(ctx.correlation_id, state.phase, state)
-            state = await self._commit(state, ctx)
+            await self._pipeline.run(task, self._facade(agent_ctx))
+            # The pipeline's PipelineResult (status/summary/metrics) is
+            # deliberately not surfaced yet: the TaskOutcome is derived from
+            # the ledger, which is the truth; P4's selection surfaces it.
+            state = await project(self._ledger, correlation_id)
         except PaaError as exc:
-            await self._emit(
-                ctx.correlation_id,
+            await self.emit(
+                agent_ctx.correlation_id,
                 EventType.EXECUTION_FAILED,
-                session_id=ctx.session_id,
+                session_id=agent_ctx.session_id,
                 payload=exc.to_payload(),
-                modality=ctx.modality,
+                modality=agent_ctx.modality,
                 role=AgentRole.ORCHESTRATOR,
-                attempt=state.attempts,
+                attempt=task.projection.attempts
+                if task.projection is not None
+                else state.attempts,
             )
             state = await project(self._ledger, correlation_id)
-            return TaskOutcome(ctx.correlation_id, state.phase, state, exc.to_payload())
+            return TaskOutcome(agent_ctx.correlation_id, state.phase, state, exc.to_payload())
         finally:
-            self._delegations.discard(ctx.correlation_id)
+            self._delegations.discard(agent_ctx.correlation_id)
 
-        return TaskOutcome(ctx.correlation_id, state.phase, state)
+        return TaskOutcome(agent_ctx.correlation_id, state.phase, state)
+
+    def _facade(self, agent_ctx: AgentContext) -> BuiltinPipelineFacade:
+        """Mint the capability facade for one run — the host grants (ADR-0051)."""
+        return BuiltinPipelineFacade(self, self._pipeline.stages, agent_ctx)
 
     def _context_for(self, state: TaskProjection) -> AgentContext:
         profile = MODALITY_PROFILES[state.modality]
@@ -481,7 +475,7 @@ class ChiefOrchestrator:
             tokens_budget=profile.token_ceiling,
         )
 
-    def _message(
+    def message(
         self, state: TaskProjection, ctx: AgentContext, intent: MessageType, payload: dict[str, Any]
     ) -> AgentMessage:
         return AgentMessage(
@@ -497,369 +491,16 @@ class ChiefOrchestrator:
 
     name = AgentRole.ORCHESTRATOR.value
 
-    async def _hydrate(self, state: TaskProjection, ctx: AgentContext) -> TaskProjection:
-        if state.context_packet is not None or self._context_builder is None:
-            return state
-
-        questions = await self._gate_history(ctx.correlation_id)
-        gate = self._stage_question(questions, AgentRole.CONTEXT_BUILDER_PLANNER)
-        if gate is not None:
-            if gate.answered:
-                # A human has already released this stage's question. Asking
-                # the context builder again would raise the same directive,
-                # and the task would park a second time on the answer a human
-                # has already given — the escalation is a question, and the
-                # human answered it (ADR-0034).
-                return state
-            # The question is still open: nobody has answered it. The task
-            # stays parked, and the builder is **not** asked again — a
-            # builder that answered differently this time (the memory store
-            # may have filled a slot since) would otherwise emit a fresh
-            # CONTEXT_HYDRATED and walk the task straight past a gate no
-            # human has released.
-            log.info(
-                "orchestrator.escalation_still_open",
-                correlation_id=str(ctx.correlation_id),
-                reason=state.awaiting_reason,
-            )
-            return state
-
-        await self._emit(
-            ctx.correlation_id,
-            EventType.CONTEXT_HYDRATION_REQUESTED,
-            session_id=ctx.session_id,
-            modality=ctx.modality,
-            role=AgentRole.CONTEXT_BUILDER_PLANNER,
-        )
-
-        message = self._message(
-            state,
-            ctx,
-            MessageType.CONTEXT_REQUEST,
-            {
-                "goal": state.request.get("goal", ""),
-                "required_slots": state.request.get("required_slots", []),
-            },
-        )
-        result = await self._context_builder.run(message, ctx)
-        if not result.ok:
-            raise PaaError("context hydration failed", cause=result.error or {})
-
-        packet = result.value if isinstance(result.value, dict) else {}
-        if packet.get("routing_directive") == "HARD_STOP_ESCALATE_TO_USER":
-            # The context builder is asking for a human, and the request is
-            # a *stop*: the task waits here until a human rules. The event
-            # records the directive verbatim so the ledger says which
-            # question was asked, not merely that some gate opened
-            # (ADR-0034).
-            return await self._open_gate(
-                ctx,
-                AgentRole.CONTEXT_BUILDER_PLANNER,
-                {
-                    "reason": "insufficient context density",
-                    "directive": "HARD_STOP_ESCALATE_TO_USER",
-                    "vacant_slots": packet.get("vacant_slots", []),
-                },
-            )
-
-        await self._emit(
-            ctx.correlation_id,
-            EventType.CONTEXT_HYDRATED,
-            session_id=ctx.session_id,
-            payload={"context_packet": packet},
-            modality=ctx.modality,
-            role=AgentRole.CONTEXT_BUILDER_PLANNER,
-        )
-        return await project(self._ledger, ctx.correlation_id)
-
-    async def _plan(self, state: TaskProjection, ctx: AgentContext) -> TaskProjection:
-        if state.plan_steps or self._planner is None:
-            return state
-
-        # SIMPLE bypasses the model entirely (RFC §9.2: "0 tokens").
-        if ctx.modality is ComplexityModality.SIMPLE:
-            await self._emit(
-                ctx.correlation_id,
-                EventType.PLAN_COMPILED,
-                session_id=ctx.session_id,
-                payload={
-                    "execution_steps": [
-                        {
-                            "index": 0,
-                            "action": state.request.get("goal", ""),
-                            "agent": state.request.get("target_agent") or "worker",
-                        }
-                    ],
-                    "bypassed_planner": True,
-                },
-                modality=ctx.modality,
-                role=AgentRole.STRATEGIC_PLANNER,
-            )
-            return await project(self._ledger, ctx.correlation_id)
-
-        message = self._message(
-            state,
-            ctx,
-            MessageType.PLAN_PROPOSAL,
-            {"goal": state.request.get("goal", ""), "context": state.context_packet or {}},
-        )
-        result = await self._planner.run(message, ctx)
-        if not result.ok:
-            raise PaaError("planning failed", cause=result.error or {})
-
-        plan = result.value if isinstance(result.value, dict) else {}
-        steps = plan.get("execution_steps", [])
-        profile = MODALITY_PROFILES[ctx.modality]
-        if len(steps) > profile.max_plan_nodes():
-            raise RecursionGuardError(
-                "plan exceeds the expanded-node ceiling for this modality",
-                depth=len(steps),
-                ceiling=profile.max_plan_nodes(),
-            )
-
-        await self._emit(
-            ctx.correlation_id,
-            EventType.PLAN_COMPILED,
-            session_id=ctx.session_id,
-            payload={
-                "execution_steps": steps,
-                "step_requirements": plan.get("step_requirements", {}),
-            },
-            modality=ctx.modality,
-            role=AgentRole.STRATEGIC_PLANNER,
-        )
-        return await project(self._ledger, ctx.correlation_id)
-
     async def _check_policy(self, state: TaskProjection, ctx: AgentContext) -> TaskProjection:
-        if state.policy_decision is not None or self._policy is None:
-            return state
+        """Request clearance for a plan, through the facade (P1.2).
 
-        questions = await self._gate_history(ctx.correlation_id)
-        gate = self._stage_question(questions, AgentRole.POLICY_RISK)
-        if gate is not None:
-            if gate.answered:
-                # A human has ruled on this stage's question, and that ruling
-                # *is* the policy decision: the plan is approved. The policy
-                # agent is not asked again, because its second opinion is
-                # not what the human approved — a policy agent that answered
-                # differently on the second consult would either block a task
-                # a human had approved, or (worse) wave through a plan the
-                # human never saw. It would also ask the human the same
-                # question twice, which is the loop ADR-0034 records.
-                #
-                # The decision is recorded with the same event the agent's own
-                # approval uses, so the projection carries it and the stage is
-                # skipped from then on. The payload says who decided: the
-                # human, not the policy agent.
-                #
-                # It also carries **the number the policy computed**, when the
-                # policy computed one. The human's answer is about a plan the
-                # policy judged risky enough to gate, and a clearance that
-                # records only "answered" leaves the audit trail unable to
-                # answer "how risky was the plan a human approved?". The score
-                # is read out of the *question* — the policy agent is not
-                # consulted again, by design — so it is the lineage's own
-                # number and not a number invented here.
-                clearance: dict[str, Any] = {
-                    "decision": "STATUS_APPROVED",
-                    "reason": "human attestation granted",
-                    "released_by": "human",
-                    "gate": gate.discriminator,
-                }
-                if (score := _risk_score_of(gate.payload)) is not None:
-                    clearance["risk_score"] = score
-                await self._emit(
-                    ctx.correlation_id,
-                    EventType.POLICY_CLEARED,
-                    session_id=ctx.session_id,
-                    payload=clearance,
-                    modality=ctx.modality,
-                    role=AgentRole.POLICY_RISK,
-                    discriminator=gate.discriminator,
-                )
-                return await project(self._ledger, ctx.correlation_id)
-            # The question is still open: nobody has answered it. The policy
-            # agent is **not** asked again — a gate that is open is a gate
-            # that is waiting, and a second opinion that disagreed with the
-            # first would replace a question for a human with a block (or
-            # worse, a clearance) that no human ever saw.
-            log.info(
-                "orchestrator.policy_gate_still_open",
-                correlation_id=str(ctx.correlation_id),
-                reason=state.awaiting_reason,
-            )
-            return state
-
-        message = self._message(
-            state,
-            ctx,
-            MessageType.POLICY_CHECK,
-            {"steps": state.plan_steps, "goal": state.request.get("goal", "")},
-        )
-        result = await self._policy.run(message, ctx)
-        verdict = result.value if isinstance(result.value, dict) else {}
-
-        if not result.ok or verdict.get("decision") == "STATUS_BLOCKED":
-            event = (
-                EventType.SECURITY_VIOLATION
-                if verdict.get("anti_goal_match")
-                else EventType.POLICY_BLOCKED
-            )
-            await self._emit(
-                ctx.correlation_id,
-                event,
-                session_id=ctx.session_id,
-                payload={
-                    "decision": "STATUS_BLOCKED",
-                    "reason": verdict.get("reason") or "policy refused the plan",
-                    **(result.error or {}),
-                },
-                modality=ctx.modality,
-                role=AgentRole.POLICY_RISK,
-            )
-            return await project(self._ledger, ctx.correlation_id)
-
-        if verdict.get("requires_human_gate"):
-            # The gate's payload is the *question*, and a question the human
-            # will answer has to say what it is about: the reason the plan
-            # was gated and the score the policy gave it. The score is
-            # carried here because the policy agent is not consulted again
-            # after the gate opens — this is the only place the lineage can
-            # learn it.
-            gate_payload: dict[str, Any] = {
-                "reason": verdict.get("reason", "human attestation required")
-            }
-            if (score := _risk_score_of(verdict)) is not None:
-                gate_payload["risk_score"] = score
-            return await self._open_gate(
-                ctx,
-                AgentRole.POLICY_RISK,
-                gate_payload,
-            )
-
-        await self._emit(
-            ctx.correlation_id,
-            EventType.POLICY_CLEARED,
-            session_id=ctx.session_id,
-            payload={"decision": "STATUS_APPROVED", "risk_score": verdict.get("risk_score", 0.0)},
-            modality=ctx.modality,
-            role=AgentRole.POLICY_RISK,
-        )
-        return await project(self._ledger, ctx.correlation_id)
-
-    async def _execute_steps(self, state: TaskProjection, ctx: AgentContext) -> TaskProjection:
-        if self._worker is None:
-            return state
-
-        for index, step in enumerate(state.plan_steps):
-            if index in state.completed_steps:
-                continue  # resumed task: this step already landed
-
-            for attempt in range(self._max_step_retries + 1):
-                await self._emit(
-                    ctx.correlation_id,
-                    EventType.EXECUTION_STARTED,
-                    session_id=ctx.session_id,
-                    payload={"step_index": index, "step": step},
-                    modality=ctx.modality,
-                    role=AgentRole.WORKER,
-                    attempt=attempt,
-                    discriminator=f"step-{index}",
-                )
-
-                message = self._message(
-                    state, ctx, MessageType.EXECUTION_REQUEST, {"step": step, "index": index}
-                )
-                result = await self._worker.run(message, ctx.child())
-
-                if result.ok and await self._critique(state, ctx, index, result):
-                    await self._emit(
-                        ctx.correlation_id,
-                        EventType.EXECUTION_COMPLETED,
-                        session_id=ctx.session_id,
-                        payload={
-                            "step_index": index,
-                            "tokens_consumed": result.tokens_consumed,
-                        },
-                        modality=ctx.modality,
-                        role=AgentRole.WORKER,
-                        attempt=attempt,
-                        discriminator=f"step-{index}",
-                    )
-                    break
-
-                await self._emit(
-                    ctx.correlation_id,
-                    EventType.VALIDATION_FAILED,
-                    session_id=ctx.session_id,
-                    payload={
-                        "step_index": index,
-                        "attempt": attempt,
-                        **(result.error or {"verdict": "FAIL_REJECT_RETRY"}),
-                    },
-                    modality=ctx.modality,
-                    role=AgentRole.CRITIC,
-                    attempt=attempt,
-                    discriminator=f"step-{index}",
-                )
-            else:
-                raise PaaError(
-                    "step exhausted its retry budget",
-                    step_index=index,
-                    retries=self._max_step_retries,
-                )
-
-            state = await project(self._ledger, ctx.correlation_id)
-
-        return state
-
-    async def _critique(
-        self, state: TaskProjection, ctx: AgentContext, index: int, result: AgentResult[Any]
-    ) -> bool:
-        """Run the critic over a step's output. Returns whether it passed."""
-        if self._critic is None:
-            return True
-
-        message = self._message(
-            state,
-            ctx,
-            MessageType.REVIEW_RESULT,
-            {"step_index": index, "output": result.value},
-        )
-        review = await self._critic.run(message, ctx.child())
-        verdict = (review.value or {}).get("verdict") if isinstance(review.value, dict) else None
-        passed = bool(review.ok and verdict == "PASS")
-
-        await self._emit(
-            ctx.correlation_id,
-            EventType.CRITIQUE_CONCLUDED,
-            session_id=ctx.session_id,
-            payload={"step_index": index, "verdict": verdict or "FAIL_REJECT_RETRY"},
-            modality=ctx.modality,
-            role=AgentRole.CRITIC,
-            discriminator=f"step-{index}",
-        )
-        return passed
-
-    async def _commit(self, state: TaskProjection, ctx: AgentContext) -> TaskProjection:
-        await self._emit(
-            ctx.correlation_id,
-            EventType.MUTATION_COMMITTED,
-            session_id=ctx.session_id,
-            payload={
-                "steps_completed": len(state.completed_steps),
-                "tokens_consumed": state.tokens_consumed,
-            },
-            modality=ctx.modality,
-            role=AgentRole.ORCHESTRATOR,
-        )
-        log.info(
-            "orchestrator.committed",
-            correlation_id=state.correlation_id,
-            steps=len(state.completed_steps),
-            tokens=state.tokens_consumed,
-        )
-        return await project(self._ledger, ctx.correlation_id)
+        The stage's body lives on the facade the host mints — the policy
+        agent is host-side by design, and a pipeline only asks (ADR-0051).
+        The private name is kept because the gate-identity tests call it
+        directly on a parked lineage to assert the policy agent is not
+        consulted while its question is open.
+        """
+        return await self._facade(ctx).check_policy(state)
 
     # -- delegation --------------------------------------------------------
 
@@ -906,7 +547,7 @@ class ChiefOrchestrator:
             # (reason/depth/ceiling alongside the recovery drift keys); the
             # full ADR-0008 key (attempt=0, discriminator naming sender/target/
             # depth) makes a redelivered block idempotent.
-            await self._emit(
+            await self.emit(
                 ctx.correlation_id,
                 EventType.STATE_ROLLBACK_TRIGGERED,
                 session_id=ctx.session_id,
@@ -943,7 +584,7 @@ class ChiefOrchestrator:
 
     # -- human gates -------------------------------------------------------
 
-    async def _open_gate(
+    async def open_gate(
         self, ctx: AgentContext, role: AgentRole, payload: dict[str, Any]
     ) -> TaskProjection:
         """Ask a human a question, and park the task on the answer.
@@ -959,8 +600,8 @@ class ChiefOrchestrator:
         returns is the parked one — the caller does not have to re-read the
         lineage to learn that the task is now waiting for a human.
         """
-        questions = await self._gate_history(ctx.correlation_id)
-        await self._emit(
+        questions = await self.gate_history(ctx.correlation_id)
+        await self.emit(
             ctx.correlation_id,
             EventType.AWAITING_HUMAN_ATTESTATION,
             session_id=ctx.session_id,
@@ -971,7 +612,11 @@ class ChiefOrchestrator:
         )
         return await project(self._ledger, ctx.correlation_id)
 
-    async def _gate_history(self, correlation_id: uuid.UUID) -> list[_GateQuestion]:
+    #: The private name the gate-identity tests call directly; the pipeline
+    #: host protocol reaches for the public one (P1.2).
+    _open_gate = open_gate
+
+    async def gate_history(self, correlation_id: uuid.UUID) -> list[GateQuestion]:
         """Every human-gate question this lineage has asked, in order.
 
         A question is opened by an ``AWAITING_HUMAN_ATTESTATION`` event and
@@ -992,11 +637,11 @@ class ChiefOrchestrator:
         answer can only be "a human has ruled" when a real caller did.
         """
         events = await self._ledger.read_correlation(correlation_id)
-        questions: list[_GateQuestion] = []
+        questions: list[GateQuestion] = []
         for event in events:
             if event.event_type is EventType.AWAITING_HUMAN_ATTESTATION:
                 questions.append(
-                    _GateQuestion(
+                    GateQuestion(
                         role=event.agent_role or "",
                         discriminator=event.discriminator,
                         answered=False,
@@ -1010,9 +655,9 @@ class ChiefOrchestrator:
         return questions
 
     @staticmethod
-    def _stage_question(
-        questions: list[_GateQuestion], role: AgentRole
-    ) -> _GateQuestion | None:
+    def stage_question(
+        questions: list[GateQuestion], role: AgentRole
+    ) -> GateQuestion | None:
         """The question this stage asked most recently, if it asked one.
 
         Per *stage*, not per lineage: a stage's own question is the only one
@@ -1026,7 +671,7 @@ class ChiefOrchestrator:
         return None
 
     @staticmethod
-    def _gate_discriminator(questions: list[_GateQuestion], role: AgentRole) -> str:
+    def _gate_discriminator(questions: list[GateQuestion], role: AgentRole) -> str:
         """The discriminator naming the question a stage is about to ask.
 
         The discriminator is the *request's identity*, and the ledger's
@@ -1111,7 +756,7 @@ class ChiefOrchestrator:
             )
 
         cid = uuid.UUID(str(correlation_id))
-        questions = await self._gate_history(cid)
+        questions = await self.gate_history(cid)
         question = next((q for q in reversed(questions) if not q.answered), None)
         if question is None:
             # The projection says the task is waiting, but the lineage holds
@@ -1124,7 +769,7 @@ class ChiefOrchestrator:
             )
 
         phase = resume_phase or _GATE_RESUME_PHASES.get(question.role, TaskPhase.EXECUTING)
-        await self._emit(
+        await self.emit(
             cid,
             EventType.HUMAN_GATE_CLEARED if approved else EventType.HUMAN_GATE_REJECTED,
             session_id=uuid.UUID(state.session_id) if state.session_id else None,
@@ -1146,7 +791,7 @@ class ChiefOrchestrator:
     ) -> None:
         """Log a user correction — the primary signal the reflection engine reads."""
         state = await project(self._ledger, correlation_id)
-        await self._emit(
+        await self.emit(
             uuid.UUID(str(correlation_id)),
             EventType.USER_CORRECTION,
             payload={"correction": correction},

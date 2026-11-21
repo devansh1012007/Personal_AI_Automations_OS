@@ -15,33 +15,33 @@ to `MUTATION_COMMITTED`. All paths verified against `src/paa/agents/orchestrator
 
 ### 1. Submit — durable intake
 
-`ChiefOrchestrator.submit()` (`orchestrator.py:307`):
+`ChiefOrchestrator.submit()` (`src/paa/agents/orchestrator.py:283`):
 1. Mint `CorrelationId` (`new_correlation_id()`, `core/types.py:50`).
-2. Classify modality (`_classify()`, `orchestrator.py:384`) — heuristic: keywords
+2. Classify modality (`_classify()`, `src/paa/agents/orchestrator.py:360`) — heuristic: keywords
    (`refactor`, `implement`, `build`, `debug`, `fix`) → `COMPLEX`; `migrate`/`redesign`
    → `MAX`; target agent + short goal → `SIMPLE`; else `STANDARD`.
-3. Emit `TASK_REQUESTED` (`_emit()`, `orchestrator.py:278`) → `LedgerStore.append()`
+3. Emit `TASK_REQUESTED` (`emit()`, `src/paa/agents/orchestrator.py:257`) → `LedgerStore.append()`
    (`ledger/store.py:116`) → row in `system_state_ledger`, head projection upserted.
 4. Apply backpressure (`_apply_backpressure()` — may degrade modality if queue
-   deep, `orchestrator.py:278`; `backpressure.py:77`).
+   deep, `src/paa/agents/orchestrator.py:384`; `backpressure.py:77`).
 5. Emit `TASK_QUEUED`.
 6. If queue configured: `queue.enqueue(StreamName.ORCHESTRATOR_CORE,
-   {correlation_id, goal})` (`orchestrator.py:341`) → `queue_messages`.
+   {correlation_id, goal})` (`src/paa/agents/orchestrator.py:317`) → `queue_messages`.
 
 Return `correlation_id` to caller. Submission does **not** execute — the request
 is durable before any work (`orchestrator.py` docstring).
 
 ### 2. Run — project existing state
 
-`ChiefOrchestrator.run(cid)` (`orchestrator.py:403`):
+`ChiefOrchestrator.run(cid)` (`src/paa/agents/orchestrator.py:405`):
 1. `project(ledger, cid)` (`replay.py:422`) → `TaskProjection`.
-2. If `state.is_terminal`, return immediately (`orchestrator.py:403`).
+2. If `state.is_terminal`, return immediately (`src/paa/agents/orchestrator.py:405`).
 3. Build `AgentContext` from `MODALITY_PROFILES[state.modality]` (`_context_for`,
-   `orchestrator.py:445`) — token budget, permission mode, recursion depth.
+   `src/paa/agents/orchestrator.py:468`) — token budget, permission mode, recursion depth.
 
 ### 3. Hydrate — build context packet
 
-`_hydrate()` (`orchestrator.py:500`):
+`_hydrate()` (`src/paa/pipelines/builtin.py:602`):
 1. Skip if `context_packet` already present (resume).
 2. Emit `CONTEXT_HYDRATION_REQUESTED`.
 3. `PlannerContextBuilder.run(message, ctx)` (`context_agents.py:377`):
@@ -52,15 +52,15 @@ is durable before any work (`orchestrator.py` docstring).
    - `_graph_neighbours()` — bounded traversal by `graph_hops`.
    - `BoundedContextGatherer.compile()` packs within `token_ceiling` (1500).
 4. If `routing_directive == HARD_STOP_ESCALATE_TO_USER` → emit
-   `AWAITING_HUMAN_ATTESTATION` (parks; `orchestrator.py:936`), return.
-5. Emit `CONTEXT_HYDRATED` with `context_packet` (`orchestrator.py:538`).
+   `AWAITING_HUMAN_ATTESTATION` (parks; `src/paa/pipelines/builtin.py:659`), return.
+5. Emit `CONTEXT_HYDRATED` with `context_packet` (`src/paa/pipelines/builtin.py:670`).
 
 ### 4. Plan — compile execution steps
 
-`_plan()` (`orchestrator.py:546`):
+`_plan()` (`src/paa/pipelines/builtin.py:678`):
 1. Skip if `plan_steps` already present (resume).
 2. SIMPLE: emit `PLAN_COMPILED` with one step (`{action: goal, agent: worker}`,
-   `bypassed_planner: true`) (`orchestrator.py:551`).
+   `bypassed_planner: true`) (`src/paa/pipelines/builtin.py:315`).
 3. Else `StrategicPlanner.run(message, ctx)` (`reasoning.py:78`):
    - Model `complete_structured` with `_PLAN_SCHEMA` (requires `execution_steps`)
      (`reasoning.py:95`); one retry on failure (`:93`); deterministic fallback
@@ -68,12 +68,12 @@ is durable before any work (`orchestrator.py` docstring).
    - `_normalise()` preserves passthrough keys (`command`, `required_permissions`,
      `path`, `risk_profile`, ...) — security requirement (`:155`).
    - Validate `len(steps) <= max_plan_nodes()`; else `RecursionGuardError`
-     (`orchestrator.py:584`).
-4. Emit `PLAN_COMPILED` with `execution_steps` + `step_requirements` (`orchestrator.py:593`).
+     (`src/paa/pipelines/builtin.py:308`).
+4. Emit `PLAN_COMPILED` with `execution_steps` + `step_requirements` (`src/paa/pipelines/builtin.py:324`).
 
 ### 5. Policy — deterministic risk gate
 
-`_check_policy()` (`orchestrator.py:604`):
+`_check_policy()` (`src/paa/pipelines/builtin.py:331`):
 1. Skip if `policy_decision` already present (resume).
 2. `PolicyRiskAgent.run(message, ctx)` (`policy.py:139`):
    - Permissions check (`:174`), LOCKDOWN network (`:194`), irreversible ops
@@ -81,13 +81,13 @@ is durable before any work (`orchestrator.py` docstring).
      anti-goals (cosine ≥ 0.82 or phrase match, `:262`).
    - Risk score [0,1]; `_needs_gate()` decides human-gate need by mode (`:318`).
 3. Blocked → `POLICY_BLOCKED` (or `SECURITY_VIOLATION` on anti-goal) → phase
-   `BLOCKED` (terminal) (`orchestrator.py:673`).
-4. Human gate required → `AWAITING_HUMAN_ATTESTATION` → phase parks (`orchestrator.py:936`).
-5. Cleared → `POLICY_CLEARED` + `risk_score` → phase `EXECUTING` (`orchestrator.py:711`).
+   `BLOCKED` (terminal) (`src/paa/pipelines/builtin.py:378`).
+4. Human gate required → `AWAITING_HUMAN_ATTESTATION` → phase parks (`src/paa/pipelines/builtin.py:439`).
+5. Cleared → `POLICY_CLEARED` + `risk_score` → phase `EXECUTING` (`src/paa/pipelines/builtin.py:443`).
 
 ### 6. Execute steps — per step in sandbox
 
-`_execute_steps()` (`orchestrator.py:750`). For each step not in
+`_execute_steps()` (`src/paa/pipelines/builtin.py:712`). For each step not in
 `completed_steps`:
 
 ```
@@ -109,11 +109,11 @@ on budget exhausted: raise PaaError → EXECUTION_FAILED (terminal)
 
 `EXECUTION_COMPLETED` fires **per step**, not per task; phase stays `EXECUTING`
 until all steps done (`replay.py:240`, ADR-0010). Re-project after each step
-(`orchestrator.py:783`).
+(`src/paa/pipelines/builtin.py:777`).
 
 ### 7. Commit — terminal
 
-`_commit()` (`orchestrator.py:844`): emit `MUTATION_COMMITTED`
+`_commit()` (`src/paa/pipelines/builtin.py:454`): emit `MUTATION_COMMITTED`
 {steps_completed, tokens_consumed}; phase `COMMITTED` (terminal).
 
 ## Sequence diagram

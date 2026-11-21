@@ -19,14 +19,14 @@ No tracked files were modified during this audit.
 
 | Capability | Status | Evidence and conclusion |
 |---|---|---|
-| Built-in task lifecycle | **Working** | `src/paa/agents/orchestrator.py:429-472`, `ChiefOrchestrator.run()` directly owns hydrate → plan → policy → execute/critique/retry → commit. |
+| Built-in task lifecycle | **Working** | `src/paa/agents/orchestrator.py:405-466` hosts the run; since P1.2 the strategy is `BuiltinPlanExecuteCritique` (`src/paa/pipelines/builtin.py:539-808`) over the frozen facade — hydrate → plan → policy → execute/critique/retry → commit. |
 | Runtime composition | **Partially supported** | `src/paa/runtime.py:232-345` wires the built-in runtime, but `Runtime.build()` accepts no pipeline registry, pipeline implementation, or arbitrary loop host. |
-| Planner/worker/policy/critic chain | **Working** | `src/paa/agents/orchestrator.py:543-812`; tests in `tests/agents/test_orchestrator.py:64-210` cover ordering, policy blocking, retry, gates, and resumed steps. |
+| Planner/worker/policy/critic chain | **Working** | `src/paa/pipelines/builtin.py:602-808`; tests in `tests/agents/test_orchestrator.py:64-210` cover ordering, policy blocking, retry, gates, and resumed steps. |
 | Deterministic permissions and risk checks | **Working** | `src/paa/agents/policy.py:122-183`; policy is model-independent and covers permissions, lockdown/network, irreversible operations, protected paths, operator rules, and anti-goals. |
 | Worker sandbox and validation | **Working on the built-in path** | `src/paa/runtime.py:641-700` composes `CriticValidatorAdapter`, `DeterministicValidationEngine`, sandbox, and `WorkerCell`. |
 | Append-only ledger | **Working** | `src/paa/ledger/store.py:102-166` performs idempotency, state versioning, hash chaining, event insertion, and head projection atomically. |
 | Replay and recovery | **Working for ledger-aware orchestrator tasks** | `src/paa/ledger/recovery.py:586-625` and `src/paa/ledger/recovery.py:763-805`; `tests/ledger/test_recovery.py:71-431` covers recovery, idempotence, gates, drift rollback, and process death. |
-| Delegation/recursion protection | **Working** | `src/paa/agents/base.py` and orchestrator delegation mediation around `src/paa/agents/orchestrator.py:837+`. |
+| Delegation/recursion protection | **Working** | `src/paa/agents/base.py` and orchestrator delegation mediation around `src/paa/agents/orchestrator.py:507`. |
 | Independent model/tool loop | **Working, but isolated** | `src/paa/coder/loop.py:116-198`; `_handle_call()` at `:200-220` provides tool gating, hooks, denial, and max-step bounds. `tests/coder/test_loop.py:53-215` exercises these. |
 | Coder harness composition | **Partial** | `src/paa/coder/agent.py:115-248` composes a runtime, router-backed model, runtime tools, permissions, hooks, and session, but it is a separate front end rather than an interchangeable runtime pipeline. |
 | Coder loop ledger integration | **Unsupported** | `src/paa/coder/loop.py:142-198` records to `Session` (`user`, `assistant`, `tool_call`, `tool_result`), not `LedgerEvent`, task projections, workspace checkpoints, or `RecoveryEngine`. |
@@ -49,9 +49,15 @@ A developer can add tools/skills or build a separate application around the code
 
 ## 3. Architectural blockers
 
-### Critical: the orchestrator is the execution strategy, not a host
+### Critical (closed by P1.2): the orchestrator *was* the execution strategy
 
-`ChiefOrchestrator.run()` directly invokes `_hydrate`, `_plan`, `_check_policy`, `_execute_steps`, `_critique`, and `_commit` (`src/paa/agents/orchestrator.py:429-472`). There is no injected loop interface or dispatch boundary. Replacing the strategy requires changing that source or bypassing `Runtime.run()`.
+At audit time, `ChiefOrchestrator.run()` directly invoked every stage and
+there was no dispatch boundary. P1.2 closed exactly this: the stages moved to
+`BuiltinPlanExecuteCritique` (`src/paa/pipelines/builtin.py:602-808`) behind the
+frozen `CapabilityFacade` (`src/paa/pipelines/builtin.py:331-476`), and the
+orchestrator became the host (submission, backpressure, recovery, gates,
+failure recording). Replacing the strategy is now a pipeline swap, not a
+source change.
 
 ### Critical: the proposed capability facade does not exist
 

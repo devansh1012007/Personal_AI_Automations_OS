@@ -15,62 +15,62 @@ outcome through the backend. It reflects the actual execution order in
 | Daemon dispatch loop | `daemon.py:137` | `_claim_and_run()` → `Runtime.run(cid)` |
 | Recovery requeue | `recovery.py:437` | `_requeue()` → queue → daemon dispatch |
 
-All converge on `ChiefOrchestrator.run()` (`orchestrator.py:403`).
+All converge on `ChiefOrchestrator.run()` (`src/paa/agents/orchestrator.py:405`).
 
 ## Phase 1 — Project existing state
 
 `run(correlation_id)` calls `project(self._ledger, correlation_id)`
-(`orchestrator.py:403`). If the projection is terminal, it returns immediately
-(`orchestrator.py:403`). Otherwise it builds an `AgentContext` from the
-modality profile (`_context_for`, `orchestrator.py:445`).
+(`src/paa/agents/orchestrator.py:405`). If the projection is terminal, it returns immediately
+(`src/paa/agents/orchestrator.py:405`). Otherwise it builds an `AgentContext` from the
+modality profile (`_context_for`, `src/paa/agents/orchestrator.py:468`).
 
 ## Phase 2 — Hydrate context
 
-`_hydrate()` (`orchestrator.py:500`):
+`_hydrate()` (`src/paa/pipelines/builtin.py:602`):
 - If a context packet already exists, skip.
-- Emits `CONTEXT_HYDRATION_REQUESTED` (`orchestrator.py:498`).
+- Emits `CONTEXT_HYDRATION_REQUESTED` (`src/paa/pipelines/builtin.py:631`).
 - Sends `CONTEXT_REQUEST` to the planner context builder
   (`context_agents.py:377`).
 - If the result is `HARD_STOP_ESCALATE_TO_USER` (insufficient density), emits
-  `AWAITING_HUMAN_ATTESTATION` and returns (`orchestrator.py:936`).
-- Otherwise emits `CONTEXT_HYDRATED` with the packet (`orchestrator.py:538`).
+  `AWAITING_HUMAN_ATTESTATION` and returns (`src/paa/pipelines/builtin.py:659`).
+- Otherwise emits `CONTEXT_HYDRATED` with the packet (`src/paa/pipelines/builtin.py:670`).
 
 Every emit re-projects (`project()`) so the next phase reads current state.
 
 ## Phase 3 — Plan
 
-`_plan()` (`orchestrator.py:546`):
+`_plan()` (`src/paa/pipelines/builtin.py:678`):
 - If steps already exist or no planner, skip.
 - SIMPLE modality bypasses the model: emits `PLAN_COMPILED` with a single
   step (`execution_steps: [{action: goal, agent: worker}]`) and
-  `bypassed_planner: true` (`orchestrator.py:551`).
+  `bypassed_planner: true` (`src/paa/pipelines/builtin.py:315`).
 - Otherwise sends `PLAN_PROPOSAL` to the strategic planner
   (`reasoning.py:78`). The planner returns `execution_steps` (and
   `step_requirements`); each step may carry passthrough keys (`command`,
   `required_permissions`, `path`, `risk_profile`, `always_human_gate`) which
   are preserved by `_normalise` (`reasoning.py:155`).
 - Validates `len(steps) <= profile.max_plan_nodes()`; raises
-  `RecursionGuardError` if exceeded (`orchestrator.py:584`).
-- Emits `PLAN_COMPILED` (`orchestrator.py:593`).
+  `RecursionGuardError` if exceeded (`src/paa/pipelines/builtin.py:308`).
+- Emits `PLAN_COMPILED` (`src/paa/pipelines/builtin.py:324`).
 
 ## Phase 4 — Policy check
 
-`_check_policy()` (`orchestrator.py:604`):
+`_check_policy()` (`src/paa/pipelines/builtin.py:331`):
 - If a policy decision already exists or no policy agent, skip.
 - Sends `POLICY_CHECK` to `PolicyRiskAgent` (`policy.py:139`).
 - On blocked verdict (`STATUS_BLOCKED`) or `result.ok == False`:
   - anti-goal match → `SECURITY_VIOLATION`; else `POLICY_BLOCKED`
-    (`orchestrator.py:673`).
+    (`src/paa/pipelines/builtin.py:378`).
   - Returns; phase becomes `BLOCKED` (terminal).
 - On `requires_human_gate`: emits `AWAITING_HUMAN_ATTESTATION`; phase parks
-  (`orchestrator.py:936`). Never auto-clears across restart
+  (`src/paa/agents/orchestrator.py:587`). Never auto-clears across restart
   (`replay.py:62`).
-- Otherwise emits `POLICY_CLEARED` with `risk_score` (`orchestrator.py:711`);
+- Otherwise emits `POLICY_CLEARED` with `risk_score` (`src/paa/pipelines/builtin.py:443`);
   phase becomes `EXECUTING`.
 
 ## Phase 5 — Execute steps
 
-`_execute_steps()` (`orchestrator.py:750`). For each step not already in
+`_execute_steps()` (`src/paa/pipelines/builtin.py:712`). For each step not already in
 `completed_steps` (resume support):
 
 ```
@@ -93,11 +93,11 @@ else (budget exhausted):
 
 `EXECUTION_COMPLETED` fires **per step**, not per task, and is not terminal
 (`ADR-0010`). After each step, the orchestrator re-projects
-(`orchestrator.py:783`).
+(`src/paa/pipelines/builtin.py:777`).
 
 ## Phase 6 — Commit
 
-`_commit()` (`orchestrator.py:844`) emits `MUTATION_COMMITTED`
+`_commit()` (`src/paa/pipelines/builtin.py:454`) emits `MUTATION_COMMITTED`
 {steps_completed, tokens_consumed}; phase becomes `COMMITTED` (terminal).
 
 ## Alternative and failure paths
@@ -114,7 +114,7 @@ else (budget exhausted):
 | Human gate rejected | `HUMAN_GATE_REJECTED` | BLOCKED | Terminal |
 
 `EXECUTION_FAILED` is emitted by the `except PaaError` branch in `run()`
-(`orchestrator.py:457`), which re-projects and returns the error payload.
+(`src/paa/agents/orchestrator.py:445`), which re-projects and returns the error payload.
 
 ## Sequence diagram
 

@@ -48,7 +48,7 @@ never decide whether an action is safe** — that decision is deterministic Pyth
 ### 4. Ledger-before-side-effect
 
 - Every orchestrator phase writes its event before the work it describes
-  (`agents/orchestrator.py:9`, `runtime.py` docstring). A crash between event
+  (`src/paa/agents/orchestrator.py:9`, `runtime.py` docstring). A crash between event
   and work is recoverable; the reverse is not, and that ordering is chosen
   deliberately (`AGENTS.md:36`).
 
@@ -150,7 +150,7 @@ backend.py` `_read_capped`).
 
 `AWAITING_HUMAN_ATTESTATION` parks a task; recovery explicitly never clears it
 (`replay.py:62`, `recovery.py:274`). Only an external caller
-(`clear_human_gate`, `orchestrator.py:1016`) can approve/reject.
+(`clear_human_gate`, `src/paa/agents/orchestrator.py:661`) can approve/reject.
 
 ## Trust boundaries
 
