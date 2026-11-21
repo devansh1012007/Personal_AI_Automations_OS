@@ -56,7 +56,7 @@ ingestion ─────────► cold_lake (immutable CAS blobs)
  (truth)       (recall)      (provenance)    (volatile)      (host disk)
 ```
 
-This diagram is reproduced from `README.md:174` and reflects the actual
+This diagram is reproduced from `README.md:102` and reflects the actual
 substrate topology. `hot_serving` is the relational mutable read path; the
 other three are derived/caches that degrade when their optional extras are
 absent.
@@ -236,13 +236,13 @@ access layer, not business logic).
 ## What is NOT in the architecture (honest gaps)
 
 - Beyond CLI there is a TUI (`src/paa/tui/`) with five panels
-  (`src/paa/tui/snapshot.py:57`, mirrored at `src/paa/api/app.py:99`); no web dashboard (`README.md:250`).
+  (`src/paa/tui/snapshot.py:57`, mirrored at `src/paa/api/app.py:99`); no web dashboard (`README.md:257`).
 - No built-in concrete tools for real work (no file edit, bash, web search,
-  git) wired into the orchestrator yet (`README.md:240`).
+  git) wired into the orchestrator yet (`README.md:247`).
 - Observability code exists but is untested (`AGENTS.md:97`).
 - `src/paa/agents/specialists/` holds the `coding` pilot specialist
   (`src/paa/agents/specialists/coding.py:1`, ADR-0041); others are not built.
-- No auth or multi-user; single-user, single-machine (`README.md:250`).
+- No auth or multi-user; single-user, single-machine (`README.md:257`).
 
 ## Related documents
 

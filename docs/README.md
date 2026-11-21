@@ -37,17 +37,20 @@ Major subsystems:
 | Marketplace | `src/paa/marketplace/` | Signed packages, five-gate installer, registry clients |
 | Observability | `src/paa/observability/` | Logging, metrics, tracing, execution runs |
 | Daemon | `src/paa/daemon.py` | Dispatch, ingestion, maintenance loops |
-| CLI | `src/paa/cli/main.py` | `paa submit/run/status/ledger/recover/doctor/serve/agent/mode/tui` |
+| CLI | `src/paa/cli/main.py` | `paa submit/run/status/ledger/recover/doctor/serve/agent/mode/tui/memory/chat/mcp` |
 | API | `src/paa/api/` | FastAPI ingestion edge (loopback only, port 8787) |
 | TUI | `src/paa/tui/` | Interactive dashboard |
 
 Primary entry points:
 
-* `paa submit "goal"` — submit and run one task to completion (`src/paa/cli/main.py:77`)
-* `paa serve` — FastAPI API + background daemon (`src/paa/cli/main.py:350`)
-* `paa doctor` — report live backends/sandbox (`src/paa/cli/main.py:228`)
-* `paa recover` — post-crash boot sweep (`src/paa/cli/main.py:210`)
-* `paa ledger <id>` — walk a task's event chain (`src/paa/cli/main.py:148`)
+* `paa submit "goal"` — submit and run one task to completion (`src/paa/cli/main.py:79`)
+* `paa serve` — FastAPI API + background daemon (`src/paa/cli/main.py:422`)
+* `paa doctor` — report live backends/sandbox plus the chat model, MCP token env and TUI extra (`src/paa/cli/main.py:256`)
+* `paa recover` — post-crash boot sweep (`src/paa/cli/main.py:238`)
+* `paa ledger <id>` — walk a task's event chain (`src/paa/cli/main.py:165`)
+* `paa memory <subcommand>` — facts/search/signals/drain/world-model (`src/paa/cli/main.py:647`)
+* `paa chat` — the chat surface: TUI, or `--plain` (`src/paa/cli/chat.py:121`)
+* `paa mcp serve` — the stdio MCP server (`src/paa/cli/mcp.py:120`)
 * `paa agent "prompt"` — tool-using coder loop (`src/paa/cli/coder.py:56`)
 
 The composition root is `Runtime.build()` (`src/paa/runtime.py:353`).
@@ -97,6 +100,7 @@ Data and storage
 APIs and integrations
 - [interfaces/api-reference.md](interfaces/api-reference.md)
 - [interfaces/integrations-and-communication.md](interfaces/integrations-and-communication.md)
+- [interfaces/mcp-server.md](interfaces/mcp-server.md) — `paa mcp serve`: spawn config, token auth, the six tools, scripted smoke.
 
 Execution flows
 - [flows/workflow-01-submit-and-run.md](flows/workflow-01-submit-and-run.md)

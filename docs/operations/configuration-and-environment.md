@@ -38,6 +38,9 @@ that change `PAA_HOME` must call `reset_settings_cache()` (`config.py:931`).
 | `models` | `ModelSettings()` | |
 | `queue` | `QueueSettings()` | |
 | `observability` | `ObservabilitySettings()` | |
+| `reflection` | `ReflectionSettings()` | |
+| `chat` | `ChatSettings()` | SPEC 2 W4 chat surface |
+| `mcp` | `MCPSettings()` | SPEC 2 W4 MCP server |
 
 `_propagate_home` re-roots storage paths when `home` is overridden directly
 (`config.py:425`). `ensure_directories()` creates all state dirs
@@ -176,6 +179,31 @@ working. `backend_coldlake` likewise takes `"s3"` or the alias `"minio"`. The
 | `log_json` | `False` | |
 | `trace_retention_days` | `30` | |
 
+### `MCPSettings` (`PAA_MCP__*`)
+
+The MCP server surface (`paa mcp serve`, SPEC 2 §3.1 C4.5): stdio-only, spawned
+by the MCP client, so there is no socket, no bind address, and nothing for the
+loopback rule to widen.
+
+| Field | Default | Notes |
+|---|---|---|
+| `token_env` | `PAA_MCP_TOKEN` | The **name** of the env var holding the token — never the value (the same indirection `s3_secret_key_env` uses). When the named variable holds a non-empty value, every client must present it in `initialize` (`params.token`) before any tool executes; unset, the spawn pipe is the trust boundary. `paa doctor`'s `mcp token env` row reports exactly this variable, set/unset, name only |
+| `default_session` | `None` | Session id that session-less tool calls fall back to. `None` means session-less calls behave session-less: `memory_remember` refuses until the caller names a session |
+
+### `ChatSettings` (`PAA_CHAT__*`)
+
+The chat surface (SPEC 2 §3.1 C4.1–C4.3), offline-first by default.
+
+| Field | Default | Notes |
+|---|---|---|
+| `model` | `echo` | Names a **registry row** (`models/registry.py:resolve_spec`), not a vendor. `echo` resolves to the deterministic offline provider, so chat demos with no network and no key; any other row needs whatever credential its `api_key_env` names. `paa chat --model` overrides per invocation; `paa doctor`'s `chat model` row resolves this through the registry (no network call) and reports the key env **name** set/unset |
+| `token_budget` | `None` (ge=1) | Hard token ceiling for the chat context bundle; `None` inherits `ContextSettings.token_ceiling` at use time so chat carries one budget line, not a second one that drifts |
+| `cross_session_episodic` | `False` | Cross-session episodic reads. `False`: a session's raw turns are visible only inside that session (semantic facts are global either way, with originating session in provenance). `True` lifts the fence deliberately — and the refusal either way is a ledger event |
+| `streaming` | `True` | Stream reply deltas to the caller's callback; the ledger records the final reply either way |
+| `last_k_turns` | `6` (ge=0) | How many of this session's recent turns the bundle carries |
+| `recall_k` | `5` (ge=0) | How many semantic facts a turn's recall may consult |
+| `persona` | `"You are PAA, a local-first assistant with persistent memory."` | First thing packed into every bundle and first thing a small ceiling evicts |
+
 ## Environment variable reference
 
 | Variable | Where read | Purpose |
@@ -190,7 +218,10 @@ working. `backend_coldlake` likewise takes `"s3"` or the alias `"minio"`. The
 | `PAA_MODELS__*` | pydantic-settings | Model providers |
 | `PAA_QUEUE__*` | pydantic-settings | Queue/backpressure |
 | `PAA_OBSERVABILITY__*` | pydantic-settings | Logging/tracing |
+| `PAA_CHAT__*` | pydantic-settings | Chat surface (model, budget, session fence) |
+| `PAA_MCP__*` | pydantic-settings | MCP server (token env name, default session) |
 | `PAA_API_HOST` / `PAA_API_PORT` | pydantic-settings | API bind |
+| `PAA_MCP_TOKEN` | `dotenv_value` via `cli/mcp.py` | The MCP token **value** (the variable *named* by `PAA_MCP__TOKEN_ENV`, default `PAA_MCP_TOKEN`) |
 | `ANTHROPIC_API_KEY` | `dotenv_value` via registry | Escalation provider key |
 | `OPENAI_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, … | `dotenv_value` via registry | Provider keys (named per `api_key_env`) |
 | `PAA_S3_ACCESS_KEY`, `PAA_S3_SECRET_KEY` | `dotenv_value` via registry | S3 credentials (names in config) |
@@ -219,7 +250,8 @@ Provider `api_key_env` tuples are defined per row in `registry.py:_SPECS`
 1. `uv venv --python 3.12 && uv pip install -e ".[dev]"` (`AGENTS.md:8`).
 2. Optionally `cp .env.example .env` and set provider keys.
 3. `.venv/bin/python -m pytest tests/ -q` (`AGENTS.md:11`).
-4. `paa doctor` to confirm which backends are actually live (`cli/main.py:228`).
+4. `paa doctor` to confirm which backends are actually live, plus the chat
+   model resolution, the MCP token env and the TUI extra (`cli/main.py:256`).
 
 ## Deployment vs development
 
@@ -229,7 +261,7 @@ Provider `api_key_env` tuples are defined per row in `registry.py:_SPECS`
 - gVisor is opt-in, Linux-only (`docker compose -f docker-compose.yml -f
   docker-compose.gvisor.yml up -d`).
 - The laptop default is SQLite WAL + embedded fallbacks (idles at ~0MB,
-  `README.md:59`).
+  `README.md:73`).
 
 ## Validation
 

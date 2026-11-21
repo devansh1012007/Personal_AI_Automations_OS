@@ -1,8 +1,10 @@
 # Integrations and communication
 
-PAA communicates over three boundaries: (1) the ingestion API (HTTP, loopback),
-(2) the model provider layer (local + optional frontier), and (3) optional
-external substrates (Qdrant, Kuzu, Redis, the S3 object store). There is no service mesh, no
+PAA communicates over four boundaries: (1) the ingestion API (HTTP, loopback),
+(2) the model provider layer (local + optional frontier), (3) optional
+external substrates (Qdrant, Kuzu, Redis, the S3 object store), and (4) the
+stdio MCP server (`paa mcp serve`), which a harness spawns to reach PAA
+memory and chat as tools ([mcp-server.md](mcp-server.md)). There is no service mesh, no
 message broker beyond the durable SQLite/Redis queue, no webhooks, and no
 ingestion bridges (Telegram/email/Slack) yet (`README.md:247`).
 
@@ -115,7 +117,7 @@ The orchestrator sends `CONTEXT_REQUEST`, `PLAN_PROPOSAL`, `POLICY_CHECK`,
 
 There are no long-polling, streaming, or webhook endpoints. `paa serve` runs
 uvicorn over the FastAPI app plus the daemon loops over one shared runtime
-(`cli/main.py:350`).
+(`cli/main.py:422`).
 
 ## 5. Timeouts, retries, idempotency
 
@@ -129,19 +131,24 @@ uvicorn over the FastAPI app plus the daemon loops over one shared runtime
 
 ## 6. What is NOT integrated (honest gaps)
 
-- No ingestion bridges (Telegram/email/Slack) — CLI/HTTP only (`README.md:247`).
+- No ingestion bridges (Telegram/email/Slack) — CLI/HTTP only (`README.md:254`).
 - No webhooks.
-- No service-to-service RPC beyond in-process agent messages.
+- No network service-to-service RPC beyond in-process agent messages; the one
+  RPC surface is the stdio MCP server (`paa mcp serve`), spawned by its client
+  rather than listening — see [mcp-server.md](mcp-server.md).
+- No ACP server or client: an ACP claim in older docs described code that does
+  not exist; it is planned as W7's ACP v1 (SPEC 2 §6).
 - No API keys, OAuth, or mTLS on the ingestion API (single-user loopback).
 - No pagination on `/ledger/{id}` (returns all events; capped at 10_000 for
   open-correlations count only).
 - Marketplace/skills/coder layers import cleanly but are not wired into the
   orchestrator's main task path; no built-in file-edit/bash/web/git skills
-  (`README.md:160`).
+  (`README.md:247`).
 
 ## Related documents
 
 - [`interfaces/api-reference.md`](api-reference.md) — the FastAPI endpoints.
+- [`interfaces/mcp-server.md`](mcp-server.md) — `paa mcp serve` spawn config and the six tools.
 - [`modules/models.md`](../modules/models.md) — model layer deep dive.
 - [`modules/storage.md`](../modules/storage.md) — optional substrates.
 - [`modules/coder.md`](../modules/coder.md) — `paa agent` tool loop.

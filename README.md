@@ -47,11 +47,15 @@ uv pip install -e ".[dev]"
 Run it from the CLI (for example, with a local model via Ollama, or `echo` when offline):
 
 ```bash
-paa doctor                       # inspect configured backends and sandbox
+paa doctor                       # inspect configured backends, sandbox, and the chat/MCP posture
 paa submit "summarise my notes"  # submit a task
 paa ledger <correlation-id>      # inspect the event chain and causal history
 paa recover                      # run the post-crash recovery sweep
 paa serve                        # FastAPI ingestion + background daemon (loopback only)
+paa chat                         # chat TUI with persistent memory (--plain for terminals only)
+paa mcp serve                    # MCP server over stdio — spawn me from your harness
+paa memory facts                 # read the memory store (facts/search/signals/drain/world-model)
+paa agent "fix the failing test" # the router-backed coder loop
 ```
 
 Optional extras, each with a fallback if skipped:
@@ -61,7 +65,10 @@ uv pip install -e ".[vector]"       # Qdrant embedded, otherwise NumPy brute for
 uv pip install -e ".[graph]"        # KuzuDB, otherwise SQLite recursive CTEs
 uv pip install -e ".[embeddings]"   # real embeddings, otherwise a hash embedder
 uv pip install -e ".[api]"          # FastAPI ingestion
+uv pip install -e ".[tui]"          # the chat TUI (Textual); `paa chat --plain` works without it
 ```
+
+For a tool-style install of the same thing: `uv tool install "paa[tui]"`.
 
 No Docker, server, or GPU is required for the lightweight local setup. Stronger isolation backends may require WSL2 or Docker; see the platform limitations below.
 
@@ -238,7 +245,7 @@ The following are gaps or proposed work, not completed features. The detailed, o
 | Area | Current limitation / next proof |
 |---|---|
 | Real-world capabilities | The coder loop exists, but the permissioned file, shell, and Git tool path must be completed and proven end to end through the ledger and sandbox. |
-| External harnesses | ACP server is experimental; running an external harness behind PAA's sandbox and measuring what activity remains outside observable boundaries is planned. |
+| External harnesses | No ACP server or client exists (an earlier "experimental ACP server" claim described code that was never built); ACP v1 is planned for W7 (SPEC 2 §6). Running an external harness behind PAA's sandbox and measuring what activity remains outside observable boundaries is planned. |
 | Lifecycle accounting | A durable, scope-owned effect registry and crash reconciliation for provider outcomes are proposed; they must be validated before PAA claims general temporal composability. |
 | Dependency resolution | Task-specific declarations, provider resolution, bounded leases, and dependency-loss behavior are proposed; no universal resolver is claimed. |
 | Observability | Metrics and tracing are built but require dedicated validation. |
@@ -247,7 +254,7 @@ The following are gaps or proposed work, not completed features. The detailed, o
 | Ingestion | Minimal event-source integration is planned; broad Telegram/email/Slack and ambient bridges are not a current commitment. |
 | Multimodal | Vision, voice, and general document/audio interaction are parked. |
 | Evaluation | Agent comparison on the user's own tasks with deterministic verification is planned; self-improvement claims are not yet validated. |
-| Product surface | CLI and loopback HTTP exist; a web dashboard, mobile access, and multi-user/team mode are later and conditional. |
+| Product surface | CLI (including the `paa chat` TUI and the `paa mcp serve` stdio server) and loopback HTTP exist; a web dashboard, mobile access, and multi-user/team mode are later and conditional. |
 | Marketplace | Signed package metadata and installer work exist, but publishing and a marketplace economy are conditional platform work, not the immediate product. |
 | Security | The Windows sandbox is weaker than gVisor; stronger isolation and independent security review remain future work. |
 
@@ -255,9 +262,9 @@ The following are gaps or proposed work, not completed features. The detailed, o
 
 The current plan is horizon-based. Existing ideas are retained, but sequenced by dependency and evidence rather than treated as commitments to build every surface immediately.
 
-1. **Horizon 0 — Foundation:** event-sourced ledger, replay and recovery, context and memory, storage, sandbox, policy, model providers, Unified Skill Adapter, API/daemon/CLI, router-backed coder loop, experimental ACP server.
+1. **Horizon 0 — Foundation:** event-sourced ledger, replay and recovery, context and memory, storage, sandbox, policy, model providers, Unified Skill Adapter, API/daemon/CLI, router-backed coder loop. SPEC 2 Wave 4 added the chat front-end and the MCP server on top of it; the ACP server once listed here was never built and remains planned (W7, SPEC 2 §6).
 2. **Horizon 1 — Hands, authority, and honesty:** permissioned file/shell/Git capabilities, coder-to-ledger wiring, mandate events, cancellation, and a real end-to-end task using a frontier model.
-3. **Horizon 2 — Seams:** harden ACP, version the event envelope, add out-of-process hooks and event export, run the first external harness inside the sandbox, test the Executor-port idea, and add a credential broker.
+3. **Horizon 2 — Seams:** build ACP v1 (none exists today to harden; SPEC 2 §6), version the event envelope, add out-of-process hooks and event export, run the first external harness inside the sandbox, test the Executor-port idea, and add a credential broker.
 4. **Horizon 3 — Evidence and attention:** offline-verifiable change bundles, observe mode, watchdog, attention measurement, replay-based regression, and agent evaluation on real repositories.
 5. **Horizon 4 — Reach (conditional):** minimal event intake if needed, dashboard, durable long-horizon task graphs, speculative sandboxed branches, and team support.
 6. **Horizon 5 — Platform (conditional):** out-of-process pipeline SDK, executable package loading, marketplace publishing, stronger default isolation, and third-party security review.
@@ -288,16 +295,19 @@ This sequencing does **not** delete earlier ideas. It prevents a marketplace, al
 | Self-improvement + meta-learning | Tested | 22 |
 | Claude-Code features (permissions, hooks, loop, sessions) | Tested | 39 |
 | Coder agent (`paa agent` — router-backed tool loop) | Tested | 91 |
+| Chat loop, sessions, context bundle (`paa chat` core) | Tested | 116 |
+| Chat TUI + plain fallback (`paa.tui.chat`) | Tested | 1 headless e2e + 2 startup-budget smoke |
+| MCP server (`paa mcp serve` — stdio, token, six tools) | Tested | 48 |
 | FastAPI ingestion + daemon + CLI | Tested | 27 |
 | Docker deployment + Postgres/S3 backends | Built; live-server run still needs a pass | Parity + backend |
 | Observability (metrics, tracing, runs, logging) | Built; untested | — |
 
 <!-- STATUS:BEGIN -->
-**Generated status** (`scripts/status.py`): 152 `src/**/*.py` files, 63,837 physical lines; 4,204 tests collected.
+**Generated status** (`scripts/status.py`): 173 `src/**/*.py` files, 72,010 physical lines; 4,380 tests collected.
 Method: physical lines count blank and comment lines (`Path.read_text` + `splitlines` over `src/**/*.py`); collected = `pytest --collect-only -q -o addopts=""`. Outcome counts are not measured here (host-dependent); run `python -m pytest tests/ -q`.
 <!-- STATUS:END -->
 
-The CLI includes `paa submit/status/ledger/recover/gate/doctor/serve/agent`; the HTTP interface is loopback FastAPI. The background daemon runs boot recovery, drains the task queue, ingests signals, and runs the decay sweep. `Runtime.build()` in `src/paa/runtime.py` is the composition root. The existing integration suite records coverage for full task lifecycle, crash-and-recover, human-gate persistence, deterministic security blocks, and the token ceiling; consult the tests and roadmap for the exact current proof.
+The CLI includes `paa submit/run/status/ledger/recover/gate/doctor/serve/mode/tui/agent/memory/chat/mcp`. `paa chat` is the conversational surface — a Textual TUI with persistent memory over isolated sessions, with `--plain` for terminals without the extra; `paa mcp serve` exposes memory and chat as MCP tools over stdio for harnesses to spawn. The HTTP interface is loopback FastAPI. The background daemon runs boot recovery, drains the task queue, ingests signals, and runs the decay sweep. `Runtime.build()` in `src/paa/runtime.py` is the composition root. The existing integration suite records coverage for full task lifecycle, crash-and-recover, human-gate persistence, deterministic security blocks, and the token ceiling; consult the tests and roadmap for the exact current proof.
 
 ## Layout
 

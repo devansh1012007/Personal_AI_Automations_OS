@@ -113,7 +113,7 @@ invalidates handle on exit (`skills/secrets.py:522`). Audit log of accesses/deni
 
 - Skills is self-contained; no external consumers in `src/` beyond the package
   itself — not wired into the orchestrator's main task path.
-- No marketplace publishing UI or user/payment model yet (`README.md:174`).
+- No marketplace publishing UI or user/payment model yet (`README.md:258`).
 
 ## Related documents
 
@@ -121,4 +121,4 @@ invalidates handle on exit (`skills/secrets.py:522`). Audit log of accesses/deni
 - [`modules/sandbox.md`](sandbox.md) — Claw-Hub containment.
 - [`modules/validation.md`](validation.md) — `SchemaValidator` for output.
 - [`architecture/component-interactions.md`](../architecture/component-interactions.md) — skills not yet in main path.
-- [`README.md:174` marketplace gaps](../../README.md)
+- [`README.md` marketplace gaps](../../README.md)

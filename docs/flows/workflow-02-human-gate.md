@@ -47,7 +47,7 @@ note=None)` (`src/paa/agents/orchestrator.py:712`):
 — a crash is never interpreted as consent (`replay.py:62`).
 
 Callers:
-- CLI `paa gate <id> --approve/--reject` (`cli/main.py:183`)
+- CLI `paa gate <id> --approve/--reject` (`cli/main.py:211`)
 - API `POST /tasks/{id}/gate` (`api/app.py:136`)
 
 ## Replay semantics

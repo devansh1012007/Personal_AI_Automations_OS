@@ -331,6 +331,76 @@ def doctor() -> None:
                     reflection_health(settings.home, enabled=settings.reflection.enabled)
                 ),
             )
+            # SPEC 2 §3.1 C4.6 — the chat/MCP product surface, under the same
+            # rule as every row above: report what is actually live, never
+            # what configuration wishes were live. The model check is a
+            # registry *lookup*, deliberately not a network call; a key is
+            # reported by its environment-variable NAME only, never a value.
+            import importlib.util
+            import os
+
+            from paa.config import dotenv_value
+            from paa.models.registry import UnknownProviderError, resolve_spec
+
+            chat_model = settings.chat.model
+            if chat_model == "echo":
+                table.add_row(
+                    "chat model",
+                    "echo (offline fallback declared; no network, no key)",
+                )
+            else:
+                try:
+                    spec = resolve_spec(chat_model)
+                except UnknownProviderError as exc:
+                    table.add_row("chat model", f"unresolved — {exc}")
+                else:
+                    key_row = next(
+                        (
+                            name
+                            for name in spec.api_key_env
+                            if os.environ.get(name) or dotenv_value(name)
+                        ),
+                        None,
+                    )
+                    if key_row is not None:
+                        table.add_row("chat model", f"{spec.name} ok ({key_row} set)")
+                    elif spec.api_key_env:
+                        table.add_row(
+                            "chat model",
+                            f"{spec.name} ok (key env {'/'.join(spec.api_key_env)} unset)",
+                        )
+                    else:
+                        table.add_row("chat model", f"{spec.name} ok (local row; no key env)")
+            mcp_token_env = settings.mcp.token_env
+            if os.environ.get(mcp_token_env) or dotenv_value(mcp_token_env):
+                table.add_row(
+                    "mcp token env",
+                    f"{mcp_token_env} set (initialize must present it)",
+                )
+            else:
+                table.add_row(
+                    "mcp token env",
+                    f"{mcp_token_env} unset — the spawn pipe is the trust boundary "
+                    "(whoever spawned `paa mcp serve` is the only writer)",
+                )
+            # Presence probe only, and this row can never fail the doctor:
+            # the plain surface needs no extra at all, so a missing Textual
+            # is a capability note, not a broken runtime. The note is escaped
+            # before it enters the table: rich reads ``[tui]`` as a markup
+            # tag, and a diagnostic that renders its own suggestion wrong is
+            # a diagnostic that lies.
+            import rich.markup
+
+            if importlib.util.find_spec("textual") is not None:
+                table.add_row("chat tui", "textual installed")
+            else:
+                table.add_row(
+                    "chat tui",
+                    rich.markup.escape(
+                        'not installed — `paa chat --plain` works; '
+                        '`uv tool install "paa[tui]"` enables the TUI'
+                    ),
+                )
             console.print(table)
         finally:
             await rt.close()
