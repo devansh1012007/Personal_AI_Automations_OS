@@ -15,29 +15,29 @@ to `MUTATION_COMMITTED`. All paths verified against `src/paa/agents/orchestrator
 
 ### 1. Submit — durable intake
 
-`ChiefOrchestrator.submit()` (`src/paa/agents/orchestrator.py:283`):
+`ChiefOrchestrator.submit()` (`src/paa/agents/orchestrator.py:279`):
 1. Mint `CorrelationId` (`new_correlation_id()`, `core/types.py:50`).
-2. Classify modality (`_classify()`, `src/paa/agents/orchestrator.py:360`) — heuristic: keywords
+2. Classify modality (`_classify()`, `src/paa/agents/orchestrator.py:356`) — heuristic: keywords
    (`refactor`, `implement`, `build`, `debug`, `fix`) → `COMPLEX`; `migrate`/`redesign`
    → `MAX`; target agent + short goal → `SIMPLE`; else `STANDARD`.
-3. Emit `TASK_REQUESTED` (`emit()`, `src/paa/agents/orchestrator.py:257`) → `LedgerStore.append()`
+3. Emit `TASK_REQUESTED` (`emit()`, `src/paa/agents/orchestrator.py:253`) → `LedgerStore.append()`
    (`ledger/store.py:116`) → row in `system_state_ledger`, head projection upserted.
 4. Apply backpressure (`_apply_backpressure()` — may degrade modality if queue
-   deep, `src/paa/agents/orchestrator.py:384`; `backpressure.py:77`).
+   deep, `src/paa/agents/orchestrator.py:380`; `backpressure.py:77`).
 5. Emit `TASK_QUEUED`.
 6. If queue configured: `queue.enqueue(StreamName.ORCHESTRATOR_CORE,
-   {correlation_id, goal})` (`src/paa/agents/orchestrator.py:317`) → `queue_messages`.
+   {correlation_id, goal})` (`src/paa/agents/orchestrator.py:313`) → `queue_messages`.
 
 Return `correlation_id` to caller. Submission does **not** execute — the request
 is durable before any work (`orchestrator.py` docstring).
 
 ### 2. Run — project existing state
 
-`ChiefOrchestrator.run(cid)` (`src/paa/agents/orchestrator.py:405`):
+`ChiefOrchestrator.run(cid)` (`src/paa/agents/orchestrator.py:401`):
 1. `project(ledger, cid)` (`replay.py:422`) → `TaskProjection`.
-2. If `state.is_terminal`, return immediately (`src/paa/agents/orchestrator.py:405`).
+2. If `state.is_terminal`, return immediately (`src/paa/agents/orchestrator.py:401`).
 3. Build `AgentContext` from `MODALITY_PROFILES[state.modality]` (`_context_for`,
-   `src/paa/agents/orchestrator.py:468`) — token budget, permission mode, recursion depth.
+   `src/paa/agents/orchestrator.py:464`) — token budget, permission mode, recursion depth.
 
 ### 3. Hydrate — build context packet
 

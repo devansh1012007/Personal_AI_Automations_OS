@@ -66,6 +66,12 @@ surface (spec §3.2, the P1.1 freeze in `src/paa/pipelines/base.py`):
 | `ctx.now` / `ctx.random` | Recorded time and seeded randomness | journalled | Makes ADR-0050's determinism contract satisfiable |
 | `ctx.progress` | Heartbeat and status text | not journalled | Feeds the watchdog and attention ledger |
 
+**Naming.** This table's dotted names (`ctx.plan.submit`, `ctx.policy.check`) are the
+wire vocabulary; the frozen protocol spells them `submit_plan` / `check_policy`
+(and the capability enum `PLAN_SUBMIT` / `POLICY_CHECK`), matching the
+underscored `ctx.use_skill` convention the protocol uses throughout. The two
+spellings name one thing; a third is not to be invented.
+
 **`ctx.use_skill` reuses `TOOL_CALL_*`, not a parallel vocabulary.** The coder
 journal's rows, protocol, and recovery classification (ADR-0046) already carry
 persisted intent, redaction, and isolation attestation for exactly these

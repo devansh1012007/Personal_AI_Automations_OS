@@ -116,16 +116,16 @@ boots recovery (`boot`).
 
 **Key logic:**
 - `submit()` writes `TASK_REQUESTED` then `TASK_QUEUED`, applies backpressure,
-  enqueues to `StreamName.ORCHESTRATOR_CORE` (`src/paa/agents/orchestrator.py:283`).
+  enqueues to `StreamName.ORCHESTRATOR_CORE` (`src/paa/agents/orchestrator.py:279`).
 - `run()` drives a submitted task to terminal; returns early if already
-  terminal (`src/paa/agents/orchestrator.py:405`).
+  terminal (`src/paa/agents/orchestrator.py:401`).
 - The pipeline's `_execute_steps` retries each step up to `max_step_retries`
   (default 2) (`src/paa/pipelines/builtin.py:712`).
 - Delegation graph enforces depth/cycle/node bounds per correlation
-  (`src/paa/agents/orchestrator.py:507`, `delegation.py:87`).
+  (`src/paa/agents/orchestrator.py:503`, `delegation.py:87`).
 
 **Failure behavior:** `PaaError` during execution → `EXECUTION_FAILED` event,
-then re-project (`src/paa/agents/orchestrator.py:445`).
+then re-project (`src/paa/agents/orchestrator.py:441`).
 
 ### `reasoning.py` — planner, critic, router, worker
 **Responsibility:** `StrategicPlanner` compiles goals into steps (model or

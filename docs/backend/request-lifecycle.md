@@ -15,14 +15,14 @@ outcome through the backend. It reflects the actual execution order in
 | Daemon dispatch loop | `daemon.py:137` | `_claim_and_run()` → `Runtime.run(cid)` |
 | Recovery requeue | `recovery.py:437` | `_requeue()` → queue → daemon dispatch |
 
-All converge on `ChiefOrchestrator.run()` (`src/paa/agents/orchestrator.py:405`).
+All converge on `ChiefOrchestrator.run()` (`src/paa/agents/orchestrator.py:401`).
 
 ## Phase 1 — Project existing state
 
 `run(correlation_id)` calls `project(self._ledger, correlation_id)`
-(`src/paa/agents/orchestrator.py:405`). If the projection is terminal, it returns immediately
-(`src/paa/agents/orchestrator.py:405`). Otherwise it builds an `AgentContext` from the
-modality profile (`_context_for`, `src/paa/agents/orchestrator.py:468`).
+(`src/paa/agents/orchestrator.py:401`). If the projection is terminal, it returns immediately
+(`src/paa/agents/orchestrator.py:401`). Otherwise it builds an `AgentContext` from the
+modality profile (`_context_for`, `src/paa/agents/orchestrator.py:464`).
 
 ## Phase 2 — Hydrate context
 
@@ -63,7 +63,7 @@ Every emit re-projects (`project()`) so the next phase reads current state.
     (`src/paa/pipelines/builtin.py:378`).
   - Returns; phase becomes `BLOCKED` (terminal).
 - On `requires_human_gate`: emits `AWAITING_HUMAN_ATTESTATION`; phase parks
-  (`src/paa/agents/orchestrator.py:587`). Never auto-clears across restart
+  (`src/paa/agents/orchestrator.py:583`). Never auto-clears across restart
   (`replay.py:62`).
 - Otherwise emits `POLICY_CLEARED` with `risk_score` (`src/paa/pipelines/builtin.py:443`);
   phase becomes `EXECUTING`.
@@ -114,7 +114,7 @@ else (budget exhausted):
 | Human gate rejected | `HUMAN_GATE_REJECTED` | BLOCKED | Terminal |
 
 `EXECUTION_FAILED` is emitted by the `except PaaError` branch in `run()`
-(`src/paa/agents/orchestrator.py:445`), which re-projects and returns the error payload.
+(`src/paa/agents/orchestrator.py:441`), which re-projects and returns the error payload.
 
 ## Sequence diagram
 

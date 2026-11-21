@@ -8,7 +8,7 @@ and what happens on failure. All paths are verified against source where cited.
 
 ### Creation
 A task originates from a caller (CLI, API, daemon, or coder agent tool).
-`ChiefOrchestrator.submit()` (`src/paa/agents/orchestrator.py:283`) mints a `CorrelationId`
+`ChiefOrchestrator.submit()` (`src/paa/agents/orchestrator.py:279`) mints a `CorrelationId`
 and writes `TASK_REQUESTED` then `TASK_QUEUED` to `system_state_ledger` before
 enqueuing to `queue_messages` (`StreamName.ORCHESTRATOR_CORE`). Submission is
 deliberately cheap and always succeeds so the request is durable before any
@@ -162,7 +162,7 @@ Hard guarantee: `allocated_tokens <= ceiling` (assertion, `gatherer.py:565`).
 
 ### Consumption
 Orchestrator `_hydrate()` reads `routing_directive`; on HARD_STOP it parks the
-task on `AWAITING_HUMAN_ATTESTATION` (`src/paa/agents/orchestrator.py:587`).
+task on `AWAITING_HUMAN_ATTESTATION` (`src/paa/agents/orchestrator.py:583`).
 
 ### Worker packet
 `WorkerContextBuilder.handle()` (`context_agents.py:428`) drops all narrative
@@ -217,7 +217,7 @@ tracks `unprocessed`/`processing`/`processed`/`malformed`/`quarantined`
 
 ### Creation
 Orchestrator `submit()` enqueues `{correlation_id, goal}` to
-`StreamName.ORCHESTRATOR_CORE` (`src/paa/agents/orchestrator.py:317`). Recovery `_requeue()`
+`StreamName.ORCHESTRATOR_CORE` (`src/paa/agents/orchestrator.py:313`). Recovery `_requeue()`
 re-enqueues recovered lineages (`recovery.py:437`).
 
 ### Consumption

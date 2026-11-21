@@ -77,10 +77,6 @@ _GATE_RESUME_PHASES: dict[str, TaskPhase] = {
 }
 
 
-
-
-
-
 def _released_question(
     questions: list[GateQuestion], discriminator: str | None
 ) -> int | None:

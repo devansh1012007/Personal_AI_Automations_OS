@@ -84,7 +84,7 @@ flowchart TD
 | Component | Responsibility | Entry point | Key dependencies | Consumers | State / side effects |
 |---|---|---|---|---|---|
 | `Runtime` (`runtime.py:168`) | Composition root; builds and closes the whole runtime; drives tasks | `Runtime.build()` (`runtime.py:353`) | `Database`, `LedgerStore`, agents, model router, storage substrates, recovery engine | CLI, API, daemon, coder agent | Opens DB; creates directories; runs boot recovery |
-| `ChiefOrchestrator` (`src/paa/agents/orchestrator.py:162`) | Task lifecycle: hydrate → plan → policy → execute → commit; owns delegation graph and backpressure | `ChiefOrchestrator.run()` (`src/paa/agents/orchestrator.py:405`) | `LedgerStore`, all agents, queue, backpressure, recovery | `Runtime`, API (`/tasks`), daemon dispatch loop | Writes ledger events; enqueues tasks |
+| `ChiefOrchestrator` (`src/paa/agents/orchestrator.py:158`) | Host of the task lifecycle: submission, backpressure, recovery, gates, delegation; the strategy is the built-in pipeline (`src/paa/pipelines/builtin.py:539`) | `ChiefOrchestrator.run()` (`src/paa/agents/orchestrator.py:401`) | `LedgerStore`, all agents, queue, backpressure, recovery | `Runtime`, API (`/tasks`), daemon dispatch loop | Writes ledger events; enqueues tasks |
 | `LedgerStore` (`ledger/store.py:108`) | Append-only event log; idempotency, state_version, hash chain, head projection | `LedgerStore.append()` (`ledger/store.py:116`) | `Database` | Orchestrator, recovery, replay, API (`/ledger/{id}`), CLI (`paa ledger`) | Appends rows to `system_state_ledger`; updates `system_state_correlation_head` |
 | `Database` (`storage/relational/database.py:110`) | Async SQLite access layer; single writer + read pool; WAL | `Database.connect()` (`storage/relational/database.py:168`) | `aiosqlite`, `sqlite3` | Nearly every storage-writing/reading module | Creates/mutates `paa.db`; applies schema on connect |
 | `StrategicPlanner` (`agents/reasoning.py:62`) | Compiles a goal + context into ordered execution steps | `StrategicPlanner.handle()` (`reasoning.py:78`) | `ModelLike` (model adapter); `MODALITY_PROFILES` | Orchestrator (`_plan`) | Emits no events directly; returns plan dict |
@@ -95,7 +95,7 @@ flowchart TD
 | `BoundedContextGatherer` (`context/gatherer.py`) | Enforces hard token ceiling on context packet | `compile()` | `TokenBudget`, `CharEstimator` | Context builders | Pure computation; no persistence |
 | `EscalatingModelRouter` (`models/router.py:165`) | Local-first routing with explicit, logged escalation to frontier | `complete()` / `complete_structured()` | Local provider, optional frontier provider, `LedgerStore` | `RouterModelAdapter` (via agents) | Writes `MODEL_ESCALATED` ledger event before frontier call |
 | `RouterModelAdapter` (`runtime.py:125`) | Bridges agents' `ModelLike` protocol to the escalation router | `complete_structured()` (`runtime.py:148`) | `EscalatingModelRouter` | All reasoning agents | No persistence (router logs escalations) |
-| `RecoveryEngine` (`ledger/recovery.py:500`) | Post-crash boot sweep: replay, reconcile workspace, re-queue | `RecoveryEngine.boot_sweep()` (`recovery.py:586`) | `LedgerStore`, `Database`, optional `WorkspaceSnapshotter`, optional queue requeuer | `ChiefOrchestrator.boot()` (`src/paa/agents/orchestrator.py:753`) | Writes `RECOVERY_REPLAY_COMPLETED`/`STATE_ROLLBACK_TRIGGERED`/`TASK_ABANDONED` events; restores workspace |
+| `RecoveryEngine` (`ledger/recovery.py:500`) | Post-crash boot sweep: replay, reconcile workspace, re-queue | `RecoveryEngine.boot_sweep()` (`recovery.py:586`) | `LedgerStore`, `Database`, optional `WorkspaceSnapshotter`, optional queue requeuer | `ChiefOrchestrator.boot()` (`src/paa/agents/orchestrator.py:749`) | Writes `RECOVERY_REPLAY_COMPLETED`/`STATE_ROLLBACK_TRIGGERED`/`TASK_ABANDONED` events; restores workspace |
 | `Daemon` (`daemon.py:53`) | Background loops: dispatch, ingestion, maintenance | `Daemon.start()` (`daemon.py:91`) | `Runtime`, `MemoryCreator`, `DecaySweeper` | `paa serve` (`cli/main.py:350`) | Claims queue messages; runs decay sweep; ingests signals |
 | `MemoryCreator` (`memory/creator.py`) | Ingests unprocessed signals into hot-serving facts | `MemoryCreator.run_batch()` | `Database`, `FactRepository` | Daemon ingestion loop | Writes entities/facts |
 | `DecaySweeper` (`memory/decay.py`) | Evicts stale facts via `C(t)=C₀·e⁻ˡᵃᵐᵇᵈᵃ·t` | `DecaySweeper.sweep()` | `Database`, `DomainPolicy` | Daemon maintenance loop | Deletes/archives stale fact rows |
@@ -112,13 +112,13 @@ flowchart TD
 ```
 CLI `paa submit` (cli/main.py:61)
   → Runtime.submit() (runtime.py:189)
-    → ChiefOrchestrator.submit() (src/paa/agents/orchestrator.py:150)
+    → ChiefOrchestrator.submit() (src/paa/agents/orchestrator.py:146)
       → LedgerStore.append(TASK_REQUESTED) (store.py:113)
       → LedgerStore.append(TASK_QUEUED)
-      → queue.enqueue(StreamName.ORCHESTRATOR_CORE) (src/paa/agents/orchestrator.py:195)
+      → queue.enqueue(StreamName.ORCHESTRATOR_CORE) (src/paa/agents/orchestrator.py:191)
 CLI `paa run <id>` / daemon dispatch / API `?run=true`
   → Runtime.run() (runtime.py:209)
-    → ChiefOrchestrator.run() (src/paa/agents/orchestrator.py:271)
+    → ChiefOrchestrator.run() (src/paa/agents/orchestrator.py:267)
       → project(ledger, cid) (replay.py:322)
       → _hydrate → context builder (context_agents.py:241)
       → _plan → planner (reasoning.py:78)
@@ -161,7 +161,7 @@ Daemon ingestion loop (daemon.py:139)
 
 ```
 paa recover / Daemon.start → Runtime.boot_recovery()
-  → ChiefOrchestrator.boot() (src/paa/agents/orchestrator.py:805)
+  → ChiefOrchestrator.boot() (src/paa/agents/orchestrator.py:801)
     → RecoveryEngine.boot_sweep() (recovery.py:222)
       → verify_all_chains() (store.py:349)
       → open_correlations() (store.py:278)  — from head projection, not queue
@@ -210,8 +210,8 @@ paa agent "prompt" (cli/coder.py:44)
 
 ## 5. Relationship rules observed in this codebase
 
-- **Ledger before side effect:** Every orchestrator phase writes its event
-  (`_emit`) before calling the agent or doing the work
+- **Ledger before side effect:** Every pipeline stage writes its event (via
+  the host's `emit`) before calling the agent or doing the work
   (`src/paa/pipelines/builtin.py:602`–`786`).
 - **No model in control path:** `PolicyRiskAgent` has no provider dependency
   (`policy.py:7`); routing/gating are pure Python.

@@ -87,8 +87,8 @@ views rebuilt by replay (`ledger/replay.py`). Two rules follow and are not negot
 
 Adding an `EventType` means touching, at minimum: `core/types.py` (`EventType`, plus `TERMINAL_EVENTS`
 if it ends a lineage), `ledger/replay.py` (`_PHASE_MAP` and the projection `match`, or `_NO_PHASE_CHANGE`
-if it is informational), and its emitter — `agents/orchestrator.py` for lifecycle events,
-`ledger/recovery.py` for recovery and rollback events, `models/router.py` for `MODEL_ESCALATED`.
+if it is informational), and its emitter — `agents/orchestrator.py` for lifecycle events and
+`pipelines/builtin.py` for the extracted stages, `ledger/recovery.py` for recovery and rollback events, `models/router.py` for `MODEL_ESCALATED`.
 `ledger/store.py` assigns `state_version`, links `prev_hash`, and updates the head projection in one
 transaction — never append outside it.
 

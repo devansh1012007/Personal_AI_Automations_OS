@@ -131,7 +131,7 @@ Configuration: `StorageSettings.backend_queue`, `StorageSettings.redis_url`
 SHEDDING decision on queue depth; control-plane streams always accepted.
 
 Consumers: `Runtime` (`runtime.py:393`), `ChiefOrchestrator.submit` enqueues
-(`src/paa/agents/orchestrator.py:317`), daemon dispatch claims (`daemon.py:159`),
+(`src/paa/agents/orchestrator.py:313`), daemon dispatch claims (`daemon.py:159`),
 recovery requeue (`recovery.py:437`), API backpressure gate
 (`api/app.py:200`).
 
@@ -157,7 +157,7 @@ dependencies installed (`AGENTS.md:60`).
 Degradation impact:
 - No vector → context gatherer semantic search returns `[]` (`context_agents.py:184`).
 - No graph → graph neighbours returns `[]` (`context_agents.py:215`).
-- No queue → orchestrator submit skips enqueue (`src/paa/agents/orchestrator.py:283`); daemon dispatch sleeps (`daemon.py:154`).
+- No queue → orchestrator submit skips enqueue (`src/paa/agents/orchestrator.py:279`); daemon dispatch sleeps (`daemon.py:154`).
 - No S3 → cold lake uses local CAS (`storage/coldlake/__init__.py:68`).
 
 ## 8. Consistency and parity
@@ -175,7 +175,7 @@ Degradation impact:
 - Task projections are derived by replay; snapshots are a cache optimisation
   (`replay.py:93`).
 - Queue (Redis) is volatile; the ledger is authoritative for recovery
-  (`recovery.py:11`, `src/paa/agents/orchestrator.py:780`).
+  (`recovery.py:11`, `src/paa/agents/orchestrator.py:776`).
 
 ## Related documents
 

@@ -307,9 +307,13 @@ class PipelineResult:
     artifacts: list[PipelineArtifact] = field(default_factory=list)
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class RunLimits:
     """The manifest's ``[limits]``, as the host enforces them (P2/P3).
+
+    Frozen because the pipeline carries it as a class-level default and a
+    mutable limit would be shared state across runs; a run that wants
+    different limits gets its own instance.
 
     ``None`` means unbounded at this layer; the host's own watchdog and the
     facade's budget checks are always live regardless.
@@ -406,7 +410,13 @@ class CapabilityFacade(Protocol):
     at the end (``stage_question``/``project``) are the in-process carrier's
     extras — the RPC transport replaces them and they will not survive it,
     which is why they are grouped and marked below rather than left to be
-    mistaken for the contract.
+    mistaken for the contract. Three further members carry in-process-only
+    *types* today and will be reshaped (not renamed) by the RPC transport:
+    ``call_agent``'s message/context parameters, ``gate``'s and
+    ``check_policy``'s ``TaskProjection`` — the wire forms serialise the
+    request and return the verdict, host-side, which is what P3 replaces;
+    ``think``/``use_skill``/``sub_run``/``now``/``random``/``progress`` are
+    already wire-shaped.
     """
 
     # -- run scope -------------------------------------------------------
