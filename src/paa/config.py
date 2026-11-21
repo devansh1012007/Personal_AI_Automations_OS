@@ -28,6 +28,7 @@ __all__ = [
     "CodingSettings",
     "ContextSettings",
     "CostGateSettings",
+    "MCPSettings",
     "MemorySettings",
     "ModelSettings",
     "PolicySettings",
@@ -794,6 +795,38 @@ class ReflectionSettings(BaseModel):
     enabled: bool = False
 
 
+class MCPSettings(BaseModel):
+    """The MCP server surface (``paa mcp serve``, SPEC 2 §3.1 C4.5).
+
+    The server is stdio-only: it is spawned by the MCP client (Claude Code,
+    Codex, Cursor, OpenCode) and speaks JSON-RPC 2.0 over stdin/stdout, so
+    there is no socket, no bind address, and nothing for the loopback rule
+    (:attr:`Settings.allow_non_loopback`) to widen. If a TCP serve mode is
+    ever added, it must mirror that validator — bind 127.0.0.1 only and
+    refuse anything else unless the operator overrides deliberately.
+    """
+
+    #: The NAME of the environment variable holding the MCP token — never the
+    #: token itself. Config stores names of secrets, never values (the same
+    #: indirection :attr:`StorageSettings.s3_secret_key_env` and
+    #: :attr:`ModelSettings.escalation_api_key_env` use): the server reads the
+    #: variable named here at startup, and when it holds a non-empty value
+    #: every client must present that token in its ``initialize`` params
+    #: before any tool executes. Unset, the server runs unauthenticated over
+    #: the spawn pipe — the client it was spawned by is the only writer.
+    #:
+    #: S105: this is the *name* of an environment variable, not a secret value.
+    token_env: str = "PAA_MCP_TOKEN"
+
+    #: The chat session id that session-less tool calls fall back to
+    #: (``memory_remember`` is session-scoped by contract; the memory reads
+    #: journal their consults onto a session lineage when one resolves).
+    #: ``None`` (the default) means session-less calls behave session-less:
+    #: consults land on their own lineage and ``memory_remember`` refuses
+    #: until the caller names a session.
+    default_session: str | None = None
+
+
 class ChatSettings(BaseModel):
     """The chat surface (SPEC 2 §3.1 C4.1-C4.3). Offline-first by default.
 
@@ -874,6 +907,7 @@ class Settings(BaseSettings):
     specialists: SpecialistsSettings = Field(default_factory=SpecialistsSettings)
     reflection: ReflectionSettings = Field(default_factory=ReflectionSettings)
     chat: ChatSettings = Field(default_factory=ChatSettings)
+    mcp: MCPSettings = Field(default_factory=MCPSettings)
 
     #: Bind address for the ingestion API. Loopback only — the RFC's "no public
     #: edge ingestion" constraint is enforced here rather than documented.

@@ -99,7 +99,7 @@ lineages. The event vocabulary (`src/paa/core/types.py:122`):
 - Per-step retry budget `max_step_retries` (default 2) in
   the pipeline's `_execute_steps` (`src/paa/pipelines/builtin.py:712`).
 - Queue `max_delivery_attempts` (default 3) governs message redelivery
-  (`config.py:651`).
+  (`config.py:659`).
 - Recovery `max_attempts` (default 3, from `QueueSettings.max_delivery_attempts`)
   governs re-queue retries; beyond it → `TASK_ABANDONED` (`recovery.py:294`).
 

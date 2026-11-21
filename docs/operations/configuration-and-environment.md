@@ -236,7 +236,7 @@ Provider `api_key_env` tuples are defined per row in `registry.py:_SPECS`
 - `SettingsConfigDict(validate_default=True)` (`config.py:586`) — defaults are
   validated too.
 - `extra="ignore"` — unknown `PAA_*` fields are ignored, not errors
-  (`config.py:389`).
+  (`config.py:889`).
 - A variable defined in `.env.example` but never consumed by the application
   is **not** an active runtime setting.
 
