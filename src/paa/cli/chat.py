@@ -32,11 +32,20 @@ import typer
 from rich.console import Console
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from paa.config import Settings
 
 __all__ = ["app"]
 
 console = Console()
+
+#: Holds the TUI's runtime-log file handle open for the process lifetime —
+#: structlog writes to whatever stream it was last configured with, and a
+#: handle that went out of scope would be closed by the interpreter's final
+#: GC pass mid-session, turning every later log line into a raised
+#: ``ValueError`` on a closed file.
+_log_handle: object | None = None
 
 app = typer.Typer(
     name="chat",
@@ -111,10 +120,40 @@ async def _run_tui(settings: Settings, session_id: uuid.UUID | None) -> None:
     runtime = await Runtime.build(settings)
     try:
         wiring = ChatWiring.from_runtime(runtime, settings=settings.chat)
+        _redirect_runtime_logs_to_file(wiring.home)
         chat_app = ChatApp(wiring, session_id=session_id)
         await chat_app.run_async()
     finally:
         await runtime.close()
+
+
+def _redirect_runtime_logs_to_file(home: Path | None) -> None:
+    """Point structlog at ``PAA_HOME/logs/runtime.log`` before the TUI starts.
+
+    The root CLI callback sends diagnostics to stderr — the right default for
+    every one-shot command. A full-screen Textual app is the one surface where
+    that is wrong: the app owns the terminal, and an INFO line mid-conversation
+    (``memory.signal_processed`` fires every turn) lands raw escape-less text
+    into the middle of the painted screen. The file keeps the trace the F12
+    drawer promises (the journal stays the chat surface's own event stream;
+    this file is the substrate's) without touching the operator's terminal.
+
+    Boot diagnostics printed *before* this redirect already went to stderr —
+    visible, honest, and finished before the first paint. No home means no
+    redirect: the app degrades to stderr rather than losing its logs.
+    """
+    global _log_handle
+    if home is None:
+        return
+    from paa.observability.logging import configure_logging
+
+    try:
+        logs = home / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        _log_handle = (logs / "runtime.log").open("a", encoding="utf-8")
+    except OSError:
+        return  # unwritable home: stderr stays, the turn must not pay for it
+    configure_logging(stream=_log_handle)
 
 
 @app.callback(invoke_without_command=True)

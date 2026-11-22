@@ -345,7 +345,7 @@ substrate, "no match" on the other. Uniform refusal is the property worth
 having, and a name that long is not a name.
 
 **The alias de-duplication folds with the same function.** `_clean_aliases`
-(`facts.py:1172`) folds with `fold_case`, so "one place decides what a fold
+(`facts.py:1189`) folds with `fold_case`, so "one place decides what a fold
 is" holds for the alias column too: a change to the fold would otherwise
 split the gate from the alias de-duplication silently.
 

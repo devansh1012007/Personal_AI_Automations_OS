@@ -34,17 +34,17 @@ Programmatic: `Runtime.build()` (`src/paa/runtime.py:353`):
 4. Model router built (or a `model_adapter` injected); `RouterModelAdapter`
    wraps it.
 5. Optional backends: `_try_vector`, `_try_graph`, `_try_queue` — degrade, never
-   raise (`runtime.py:500`–`:530`).
+   raise (`runtime.py:519`–`:539`).
 6. `_build_agents()` constructs planner, policy, worker, critic, context
-   builders, router (`runtime.py:641`).
-7. `_acquire_sandbox()` — 5s probe, falls back to subprocess (`runtime.py:598`).
+   builders, router (`runtime.py:660`).
+7. `_acquire_sandbox()` — 5s probe, falls back to subprocess (`runtime.py:617`).
 8. `ChiefOrchestrator` assembled with all collaborators (`runtime.py:368`).
 9. `boot_recovery()` runs `RecoveryEngine.boot_sweep()` before accepting work
    (`runtime.py:264`).
 
 CLI one-shot commands build a `Runtime`, do one thing, print, and close
-(`cli/main.py:57`). `paa serve` builds one `Runtime`, starts the `Daemon` and
-FastAPI app over it (`cli/main.py:442`).
+(`cli/main.py:101`). `paa serve` builds one `Runtime`, starts the `Daemon` and
+FastAPI app over it (`cli/main.py:486`).
 
 ## Daemon loops
 
@@ -98,7 +98,7 @@ changes future behaviour; it does not bring deleted facts back. To restore a
 deleted fact, re-run the creator over its persisted signal: facts carry
 `source_signal_id` into `cold_lake_signals` (`src/paa/memory/facts.py:295`),
 and `MemoryCreator.run_batch` claims `unprocessed` signals
-(`src/paa/memory/creator.py:1268`). The operator steps are: set the affected
+(`src/paa/memory/creator.py:1293`). The operator steps are: set the affected
 signal(s) back to `unprocessed`, then `paa memory drain` (or
 `POST /memory/drain`, `src/paa/api/app.py:274`). The creator is
 deterministic and replay-stable (`src/paa/memory/creator.py:196`), so the
@@ -107,11 +107,11 @@ still apply on replay. Code revert restores neither the facts nor the
 retention clocks — `use_count`/`last_queried_at` reset on replay.
 
 **Backlog watch (no throttle dial).** `drain_pending_embeddings` moves one
-batch of 100 per call (`src/paa/memory/creator.py:1533`) and the daemon
+batch of 100 per call (`src/paa/memory/creator.py:1558`) and the daemon
 drain-calls back-to-back while signals keep arriving
 (`src/paa/daemon.py:188`), so a large backlog drains at embedder speed with
 no rate dial — observe `memory.embedding_drain` `pending_count`
-(`src/paa/memory/creator.py:1631`) for backlog size and batch/indexed
+(`src/paa/memory/creator.py:1656`) for backlog size and batch/indexed
 progress. If ingestion starves under a backlog, the backlog size and the
 embedder speed bound the drain time; there is currently no sleep/backoff
 knob to turn.
@@ -140,7 +140,7 @@ All state under `PAA_HOME` (default `~/.paa`, outside the repo):
 ## Health / observability
 
 - `paa doctor` reports live backends and sandbox isolation level
-  (`cli/main.py:256`).
+  (`cli/main.py:300`).
 - `GET /health` returns backend type names and open task count
   (`api/app.py:71`).
 - `src/paa/observability/` (logging, metrics, tracing, runs) is built but

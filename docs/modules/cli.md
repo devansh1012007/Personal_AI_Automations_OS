@@ -38,11 +38,11 @@ the command is inherently long-running):
 
 | Command | Home | Behavior |
 |---|---|---|
-| `paa memory <sub>` | `memory_app` (`cli/main.py:647`) | `facts`/`search`/`signals`/`drain`/`world-model` reads over the memory subsystem |
-| `paa chat` | `cli/chat.py:121` | The chat surface (SPEC 2 §3.1 C4.4): Textual TUI, or `--plain` for terminals without the `[tui]` extra; `--session`/`--resume` name a lineage; `--model` overrides `PAA_CHAT__MODEL` |
+| `paa memory <sub>` | `memory_app` (`cli/main.py:691`) | `facts`/`search`/`signals`/`drain`/`world-model` reads over the memory subsystem |
+| `paa chat` | `cli/chat.py:160` | The chat surface (SPEC 2 §3.1 C4.4): Textual TUI, or `--plain` for terminals without the `[tui]` extra; `--session`/`--resume` name a lineage; `--model` overrides `PAA_CHAT__MODEL` |
 | `paa mcp serve` | `cli/mcp.py:120` | The stdio MCP server (SPEC 2 §3.1 C4.5): JSON-RPC 2.0 over stdin/stdout, spawned by the MCP client; see [`interfaces/mcp-server.md`](../interfaces/mcp-server.md) |
 
-All one-shot commands use `_build_runtime(run_recovery=False)` (`cli/main.py:57`) —
+All one-shot commands use `_build_runtime(run_recovery=False)` (`cli/main.py:101`) —
 recovery is opt-in per command (an operator decision, `coder/agent.py:134`);
 `serve` also does not run recovery at build (daemon does it at start, `daemon.py:91`).
 
@@ -57,14 +57,14 @@ under `--yes`, else `prompt_yes` (blocks on `input`; EOF → deny)
 - `submit` default `run=True` (`:82`).
 - `serve` binds loopback only; `api_host` validator enforced at `Settings`
   construction (`config.py:901`).
-- Every command closes the `Runtime` in `finally` (`cli/main.py:116`, `:117`, etc.).
+- Every command closes the `Runtime` in `finally` (`cli/main.py:160`, `:161`, etc.).
 
 ## Failure behavior
 
-- Invalid correlation id → `typer.Exit(1)` (`cli/main.py:505`).
+- Invalid correlation id → `typer.Exit(1)` (`cli/main.py:549`).
 - Task not awaiting gate → `PaaError` → printed red, exit 1 (`:228`).
 - `paa agent` `PaaError` → `[red]error:[/red]`, exit 1 (`cli/coder.py:194`).
-- Unknown mode → printed red, exit 1 (`cli/main.py:476`, `cli/coder.py:100`).
+- Unknown mode → printed red, exit 1 (`cli/main.py:520`, `cli/coder.py:100`).
 
 ## Modification impact
 

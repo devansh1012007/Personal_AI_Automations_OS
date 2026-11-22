@@ -115,16 +115,16 @@ responsibility and the files it contains. All paths are repository-relative.
 | Entry point | File | Function |
 |---|---|---|
 | `paa` CLI | `src/paa/cli/main.py:44` | `app = typer.Typer(...)`; `__main__` at line 854 |
-| `paa submit` | `src/paa/cli/main.py:79` | `submit` |
-| `paa serve` | `src/paa/cli/main.py:422` | `serve` |
-| `paa doctor` | `src/paa/cli/main.py:256` | `doctor` |
-| `paa recover` | `src/paa/cli/main.py:238` | `recover` |
-| `paa ledger` | `src/paa/cli/main.py:165` | `ledger` |
-| `paa gate` | `src/paa/cli/main.py:211` | `gate` |
+| `paa submit` | `src/paa/cli/main.py:123` | `submit` |
+| `paa serve` | `src/paa/cli/main.py:466` | `serve` |
+| `paa doctor` | `src/paa/cli/main.py:300` | `doctor` |
+| `paa recover` | `src/paa/cli/main.py:282` | `recover` |
+| `paa ledger` | `src/paa/cli/main.py:209` | `ledger` |
+| `paa gate` | `src/paa/cli/main.py:255` | `gate` |
 | `paa agent` | `src/paa/cli/coder.py:53` | `register_agent` → `agent` |
-| `paa tui` | `src/paa/cli/main.py:485` | `tui` |
-| `paa memory` | `src/paa/cli/main.py:647` | `memory_app`: facts/search/signals/drain/world-model |
-| `paa chat` | `src/paa/cli/chat.py:121` | the chat surface — TUI, or `--plain` (SPEC 2 W4) |
+| `paa tui` | `src/paa/cli/main.py:529` | `tui` |
+| `paa memory` | `src/paa/cli/main.py:691` | `memory_app`: facts/search/signals/drain/world-model |
+| `paa chat` | `src/paa/cli/chat.py:160` | the chat surface — TUI, or `--plain` (SPEC 2 W4) |
 | `paa mcp serve` | `src/paa/cli/mcp.py:120` | stdio MCP server (SPEC 2 W4) |
 | Programmatic runtime | `src/paa/runtime.py:353` | `Runtime.build()` |
 | API factory | `src/paa/api/app.py:54` | `create_app(runtime)` |

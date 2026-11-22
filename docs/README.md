@@ -43,13 +43,13 @@ Major subsystems:
 
 Primary entry points:
 
-* `paa submit "goal"` — submit and run one task to completion (`src/paa/cli/main.py:79`)
-* `paa serve` — FastAPI API + background daemon (`src/paa/cli/main.py:422`)
-* `paa doctor` — report live backends/sandbox plus the chat model, MCP token env and TUI extra (`src/paa/cli/main.py:256`)
-* `paa recover` — post-crash boot sweep (`src/paa/cli/main.py:238`)
-* `paa ledger <id>` — walk a task's event chain (`src/paa/cli/main.py:165`)
-* `paa memory <subcommand>` — facts/search/signals/drain/world-model (`src/paa/cli/main.py:647`)
-* `paa chat` — the chat surface: TUI, or `--plain` (`src/paa/cli/chat.py:121`)
+* `paa submit "goal"` — submit and run one task to completion (`src/paa/cli/main.py:123`)
+* `paa serve` — FastAPI API + background daemon (`src/paa/cli/main.py:466`)
+* `paa doctor` — report live backends/sandbox plus the chat model, MCP token env and TUI extra (`src/paa/cli/main.py:300`)
+* `paa recover` — post-crash boot sweep (`src/paa/cli/main.py:282`)
+* `paa ledger <id>` — walk a task's event chain (`src/paa/cli/main.py:209`)
+* `paa memory <subcommand>` — facts/search/signals/drain/world-model (`src/paa/cli/main.py:691`)
+* `paa chat` — the chat surface: TUI, or `--plain` (`src/paa/cli/chat.py:160`)
 * `paa mcp serve` — the stdio MCP server (`src/paa/cli/mcp.py:120`)
 * `paa agent "prompt"` — tool-using coder loop (`src/paa/cli/coder.py:56`)
 

@@ -50,6 +50,50 @@ app = typer.Typer(
 console = Console()
 
 
+@app.callback()
+def _configure_cli_logging() -> None:
+    """The CLI entry point's log configuration: stderr, at the settings level.
+
+    Unconfigured structlog prints to **stdout** at every level, which corrupts
+    the two surfaces whose stdout is a protocol: ``paa mcp serve`` (JSON-RPC
+    frames only — the "stdout discipline" in ``docs/interfaces/mcp-server.md``)
+    and ``paa chat`` (the conversation itself). :mod:`paa.tui.chat.journal`'s
+    design note already states the intent — "the runtime's own log
+    configuration belongs to the CLI entry point" — this callback is that
+    sentence made true. Diagnostics go to stderr; stdout stays a surface.
+
+    Skipped under the test runner (``PYTEST_CURRENT_TEST``): an in-process
+    ``CliRunner`` invocation would otherwise install the production level
+    filter (INFO) into the suite's global structlog, silently dropping the
+    DEBUG events other tests capture with
+    ``structlog.testing.capture_logs`` — the suite owns log configuration
+    inside pytest; the real-process behaviour is proven by
+    ``scripts/mcp_stdio_smoke.py``, which spawns the command as a child.
+
+    Idempotent and cheap: :func:`configure_logging` re-resolves on every call
+    (``cache_logger_on_first_use=False``), so a later surface (the chat TUI
+    redirecting to a file) can still reconfigure without fighting a stale
+    cache.
+    """
+    import os
+
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        return
+
+    from paa.observability.logging import configure_logging
+
+    try:
+        from paa.config import get_settings
+
+        configure_logging(get_settings())
+    except Exception:
+        # Bad settings must surface through the *command* that needs them —
+        # with its own "invalid configuration" message and exit code, not as
+        # a traceback from a logging callback that ran first. Logging falls
+        # back to defaults (stderr, INFO), which is all this callback needs.
+        configure_logging()
+
+
 def _run(coro: Any) -> Any:
     return asyncio.run(coro)
 

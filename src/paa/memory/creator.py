@@ -382,8 +382,10 @@ _PREDICATES = (
     "contains",
     "supports",
     "manages",
+    "freezes",
     "blocks",
     "causes",
+    "freeze",
     "owns",
     "uses",
     "has",
@@ -395,6 +397,24 @@ _PREDICATES = (
 #: The lexicon as a regex alternation, built once so the sentence pattern
 #: below reads as a pattern and the lexicon itself stays in one place.
 _PREDICATE_ALTERNATION = "|".join(_PREDICATES)
+
+#: Leading memory imperatives — how an operator *asks* for a fact to be kept.
+#:
+#: ``"remember that deploys freeze on Fridays"`` is the documented smoke
+#: sentence (:mod:`paa.chat`'s whole pitch is "say it once, recall it forever"),
+#: but the SVO matcher sees ``"remember that deploys"`` as the subject and the
+#: fact lands about an entity nobody will ever query for. Stripping the
+#: imperative recovers the sentence the operator actually asserted.
+#:
+#: Only the ``that``-connected forms are stripped. A bare ``"note ..."`` or
+#: ``"remember ..."`` is left alone on purpose: ``"note contains the answer"``
+#: is a sentence about a subject literally named "note", and stripping the
+#: verb without its "that" would silently destroy it. The connector is what
+#: marks the sentence as an imperative rather than an assertion.
+_MEMORY_IMPERATIVE_RE = re.compile(
+    r"^(?:please\s+)?(?:don'?t\s+forget\s+that|remember\s+that|note\s+that)\s+",
+    re.IGNORECASE,
+)
 
 _SENTENCE_RE = re.compile(
     r"^(?P<subject>.{2,80}?)\s+"
@@ -744,7 +764,12 @@ class RuleBasedExtractor:
         Questions and hedges are rejected before matching: "is the pipeline
         green?" would otherwise parse as a perfectly well-formed assertion that
         the pipeline *is* "green?".
+
+        A leading memory imperative ("remember that …") is stripped before
+        matching — see ``_MEMORY_IMPERATIVE_RE`` for why the ``that``-connected
+        forms are the only ones stripped.
         """
+        line = _MEMORY_IMPERATIVE_RE.sub("", line, count=1)
         if line.endswith("?"):
             self._drops.questions += 1
             return None

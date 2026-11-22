@@ -117,7 +117,7 @@ The orchestrator sends `CONTEXT_REQUEST`, `PLAN_PROPOSAL`, `POLICY_CHECK`,
 
 There are no long-polling, streaming, or webhook endpoints. `paa serve` runs
 uvicorn over the FastAPI app plus the daemon loops over one shared runtime
-(`cli/main.py:422`).
+(`cli/main.py:466`).
 
 ## 5. Timeouts, retries, idempotency
 

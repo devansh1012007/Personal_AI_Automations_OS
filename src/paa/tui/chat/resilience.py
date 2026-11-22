@@ -25,6 +25,7 @@ next action.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
@@ -86,8 +87,17 @@ class ResilientChatModel:
 
     @property
     def breaker_open(self) -> bool:
-        """True while the breaker refuses calls (cooldown window active)."""
-        return asyncio.get_running_loop().time() < self._open_until
+        """True while the breaker refuses calls (cooldown window active).
+
+        ``time.monotonic()``, not ``asyncio.get_running_loop().time()``: the
+        ``--plain`` REPL reads this flag **on the main thread, where no asyncio
+        loop is running** (the loop lives on the plain surface's daemon
+        thread). A loop-clock read raises ``RuntimeError`` there — and the
+        main-thread read is the read that decides whether a turn is submitted
+        at all. ``time.monotonic()`` is the same clock ``loop.time()`` is built
+        on, so the window means the same thing from either thread.
+        """
+        return time.monotonic() < self._open_until
 
     @property
     def attempts(self) -> int:
@@ -152,4 +162,7 @@ class ResilientChatModel:
     def _count_failure(self) -> None:
         self._consecutive_failures += 1
         if self._consecutive_failures >= self._breaker_threshold:
-            self._open_until = asyncio.get_running_loop().time() + self._breaker_cooldown
+            # ``time.monotonic()`` for the same cross-thread reason as
+            # :attr:`breaker_open` — this may be counted on the loop thread and
+            # read from the REPL thread, or vice versa after a ``reset()``.
+            self._open_until = time.monotonic() + self._breaker_cooldown
