@@ -12,7 +12,10 @@ two of its properties are the reason the package exists at all:
 
 Neither property had a test. This file pins the order, the short-circuit,
 the accounting of what was and was not checked, and the rule that a suite
-which did not run is a failure rather than a pass.
+which did not run is a failure rather than a pass. An artifact that
+enables no check at all fails for the same reason — nothing was examined,
+so nothing was approved — which is what keeps the critic's adapter from
+forwarding a worker's empty output as a PASS.
 """
 
 from __future__ import annotations
@@ -215,25 +218,15 @@ async def test_a_skipped_check_is_recorded_with_its_reason() -> None:
     assert report.checks_run == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "An artifact with nothing to check is reported as PASS. The "
-        "ValidationArtifact docstring says 'an empty artifact cannot quietly PASS by "
-        "having nothing to check', and the verdict is what the critic's adapter "
-        "reads: CriticValidatorAdapter.validate builds an artifact from the "
-        "worker's output dict, so an output with no 'source_files', no 'patch' and "
-        "no 'payload_schema' reaches the engine with nothing to check and comes "
-        "back as passed=True. src/paa/validation/engine.py is read-only for T-005; "
-        "the fix is in DeterministicValidationEngine.validate — an artifact for "
-        "which no check ran is a FAIL, not a PASS."
-    ),
-)
 async def test_an_artifact_with_nothing_to_check_does_not_pass() -> None:
     """A gate that checked nothing has not passed anything.
 
     The accounting makes the emptiness visible in the report, but the
-    *verdict* is the thing the caller acts on, and it says PASS.
+    *verdict* is the thing the caller acts on — the critic's adapter maps a
+    worker's empty output dict onto exactly this artifact, and forwarding
+    PASS for it would rubber-stamp a mutation nobody examined. The refusal
+    is the absence itself: no check ran and failed, so ``failed_checks``
+    stays empty while the verdict says FAIL.
     """
     engine = DeterministicValidationEngine()
 
@@ -241,6 +234,28 @@ async def test_an_artifact_with_nothing_to_check_does_not_pass() -> None:
 
     assert report.checks_run == []
     assert report.verdict is ValidationVerdict.FAIL
+    assert report.failed_checks == []
+
+
+async def test_an_all_skipped_report_still_records_its_skip_reasons() -> None:
+    """The empty-artifact refusal does not rewrite the accounting.
+
+    Failing the verdict for an unchecked artifact would be worthless if it
+    came at the cost of hiding *why* nothing ran: the skip reasons are the
+    operator's diagnostic, and they must survive the FAIL verdict that now
+    rides on top of them.
+    """
+    engine = DeterministicValidationEngine()
+
+    report = await engine.validate(ValidationArtifact())
+
+    assert report.verdict is ValidationVerdict.FAIL
+    assert {check.name for check in report.checks if check.skipped} == {
+        "schema",
+        "ast_security",
+        "patch",
+        "workspace_drift",
+    }
 
 
 async def test_a_schema_failure_fails_the_schema_check(workspace: Path) -> None:

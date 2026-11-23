@@ -16,12 +16,16 @@ What is asserted here:
   ``max_string_literal_length`` — because a deny list nobody can adjust is a
   deny list that gets switched off;
 * the **never raises** property over a hostile corpus, which is the property
-  that turns "I could not analyse this" into "this does not run".
+  that turns "I could not analyse this" into "this does not run";
+* the **depth guard** — deep-but-parseable nesting is a CRITICAL finding
+  naming the file and the depth, bounded by a policy number rather than by
+  whichever recursion limit the host happens to have.
 """
 
 from __future__ import annotations
 
 import ast
+import re
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
@@ -50,6 +54,7 @@ from paa.validation.ast_scanner import (
 EXPECTED_RULES: frozenset[str] = frozenset(
     {
         "absolute_path_literal",
+        "ast_depth_exceeded",
         "denied_attribute_import",
         "denied_call",
         "denied_import",
@@ -77,6 +82,7 @@ EXPECTED_RULES: frozenset[str] = frozenset(
 #: snippet that happens to trip several rules is fine, because the assertion
 #: is that the named rule is among the findings.
 RULE_SOURCES: dict[str, str] = {
+    "ast_depth_exceeded": "x = " + ("a." * 2000) + "b",
     "denied_import": "import subprocess\n",
     "wildcard_import": "from os import *\n",
     "denied_attribute_import": "from os import system\n",
@@ -446,22 +452,15 @@ def test_the_scanner_never_raises_on_hostile_source(source: str) -> None:
     assert isinstance(findings, list)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "AstSecurityScanner.scan guards ast.parse against RecursionError but not the "
-        "walk that follows it: a source that parses into a 2000-deep attribute chain "
-        "exhausts the stack inside ast.NodeVisitor.generic_visit, outside the "
-        "try/except at src/paa/validation/ast_scanner.py:364-392. ast_scanner.py is "
-        "read-only for T-005; the fix is to wrap the visitor call in the same guard "
-        "and return the unparseable_source CRITICAL finding."
-    ),
-)
 def test_deeply_nested_source_does_not_escape_as_a_recursion_error() -> None:
     """Deeply nested source is rejected, not fatal.
 
     The module's promise covers source the parser can read but the walker
-    cannot: "I could not analyse this" must mean "this does not run".
+    cannot: "I could not analyse this" must mean "this does not run". A
+    2000-deep attribute chain parses cleanly and used to exhaust the stack
+    inside ``ast.NodeVisitor.generic_visit`` — a scanner that raises has no
+    verdict, so the gate was absent on exactly the hostile input it exists
+    for. Now the walk is depth-bounded by policy and answers with findings.
     """
     source = "x = " + ("a." * 2000) + "b"
 
@@ -469,6 +468,56 @@ def test_deeply_nested_source_does_not_escape_as_a_recursion_error() -> None:
 
     assert findings
     assert all(finding.severity is Severity.CRITICAL for finding in findings)
+
+
+def test_the_depth_finding_names_the_file_and_the_depth() -> None:
+    """The refusal carries the numbers an operator can act on.
+
+    A bare "too deep" is a shrug; "depth 257 in 'deep.py' (limit 256)" is a
+    decision — it names the file, how deep the tree actually got, and the
+    configured limit it tripped, which is what distinguishes a hostile blob
+    from a policy an operator may legitimately want to raise.
+    """
+    source = "x = " + ("a." * 2000) + "b"
+
+    findings = AstSecurityScanner().scan(source, filename="deep.py")
+
+    assert [finding.rule for finding in findings] == ["ast_depth_exceeded"]
+    message = findings[0].message
+    assert "deep.py" in message
+    assert re.search(r"depth \d+ ", message)
+    assert "limit 256" in message
+    assert findings[0].severity is Severity.CRITICAL
+
+
+def test_the_depth_limit_is_configurable() -> None:
+    """A policy that lowers the limit refuses shallower nesting.
+
+    The bound is a policy number, not a constant of the universe: an
+    operator running machine-generated trees can raise it, and one wanting a
+    tighter wall can lower it. The finding must report *that* limit, or the
+    operator cannot tell which knob they are looking at.
+    """
+    policy = ScannerPolicy(max_ast_depth=8)
+    source = "x = " + ("a." * 20) + "b"  # parses to ~22 levels
+
+    findings = AstSecurityScanner(policy).scan(source)
+
+    assert [finding.rule for finding in findings] == ["ast_depth_exceeded"]
+    assert "limit 8" in findings[0].message
+
+
+def test_nesting_below_the_limit_is_not_flagged() -> None:
+    """The guard bounds hostile nesting, not legitimate depth.
+
+    A chain of 200 attributes is far past anything a person writes but well
+    under the default limit, and it is ordinary expression syntax: the
+    scanner must answer "no findings" for it, or the guard has become a
+    false-positive machine that fires on deep-but-innocent code.
+    """
+    source = "x = " + ("a." * 200) + "b"
+
+    assert AstSecurityScanner().scan(source) == []
 
 
 # ---------------------------------------------------------------------------

@@ -179,11 +179,11 @@ the `patch` in the step output (`reasoning.py:469`).
 
 ### Validation
 `CriticValidatorAdapter` (`runtime.py:77`) adapts `DeterministicValidationEngine`
-(`validation/engine.py:208`) to the critic's call shape. Checks in order:
+(`validation/engine.py:214`) to the critic's call shape. Checks in order:
 schema → AST security scan → patch dry-run (`UnifiedDiffValidator.dry_run`,
 `validation/patch.py:467`) → workspace drift → tests (runs last, only inside
 sandbox). Binary PASS/FAIL; deterministic failure short-circuits before the
-model is consulted (`engine.py:226`).
+model is consulted (`engine.py:238`).
 
 Patch dry-run computes full post-patch content before any write; `safe_
 relative_path` blocks traversal/absolute/symlink/NUL escapes

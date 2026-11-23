@@ -29,15 +29,15 @@ Cheap-to-expensive ordering with short-circuit on hard failure:
 ### `engine.py` — DeterministicValidationEngine
 `validate(artifact)` runs checks in order; short-circuits on `severity >=
 CRITICAL` or `structural_failure`; ordinary failures accumulate so one report
-lists everything wrong (`engine.py:208`). `ValidationReport` is binary
+lists everything wrong (`engine.py:214`). `ValidationReport` is binary
 `PASS`/`FAIL`; `raise_for_verdict()` raises `ValidationError` on fail
-(`:173`).
+(`:179`).
 
 ### `ast_scanner.py` — AstSecurityScanner
-Deny-by-default static scan. Denied modules/attributes/builtins (`:122`–`:244`);
+Deny-by-default static scan. Denied modules/attributes/builtins (`:125`–`:247`);
 sensitive paths; obfuscation (decoder + dynamic exec). Unparseable source →
-CRITICAL finding, **never skipped** (`:342`). `scan_or_raise()` raises
-`SecurityScanError` on blocking findings (`:403`).
+CRITICAL finding, **never skipped** (`:360`). `scan_or_raise()` raises
+`SecurityScanError` on blocking findings (`:462`).
 
 ### `patch.py` — UnifiedDiffValidator
 Pure-Python unified-diff parse/dry-run/apply/rollback with workspace jail
@@ -73,7 +73,7 @@ Manifest capture + drift detection (`hash_file`).
 |---|---|---|---|
 | `CriticReviewer` → `Engine` | `validate(output)` | Review step output | `reasoning.py:275` |
 | `CriticValidatorAdapter` (runtime) → `Engine` | adapt call shape | Bridge critic ↔ engine | `runtime.py:92` |
-| `Engine` → `Scanner/Validator/PytestRunner/Snapshot` | delegate checks | Compose verdict | `engine.py:215` |
+| `Engine` → `Scanner/Validator/PytestRunner/Snapshot` | delegate checks | Compose verdict | `engine.py:227` |
 | `USA` → `SchemaValidator` | `validate_tool_output()` | Validate skill output | `usa.py` |
 | `PytestRunner` → `Sandbox` | `run(spec)` | Execute tests contained | `test_runner.py` |
 
@@ -81,16 +81,16 @@ Manifest capture + drift detection (`hash_file`).
 
 - Lazy import in `runtime.py` (`try/except`) — validation unavailable degrades
   gracefully (`runtime.py:692`).
-- Tests run last and only inside a sandbox (`engine.py:233`).
+- Tests run last and only inside a sandbox (`engine.py:245`).
 - `ok` requires positive evidence; absence of failure ≠ pass (`test_runner.py:81`).
 
 ## Failure behavior
 
 - No sandbox/workspace + tests requested → FAIL (unrun suite is not passing)
-  (`engine.py:377`).
-- Patch without workspace → structural failure (`engine.py:328`).
+  (`engine.py:402`).
+- Patch without workspace → structural failure (`engine.py:353`).
 - AST unparseable source → CRITICAL finding, never skipped
-  (`ast_scanner.py:342`).
+  (`ast_scanner.py:360`).
 - Malformed operator rules logged and skipped (policy layer, not validation).
 
 ## Modification impact

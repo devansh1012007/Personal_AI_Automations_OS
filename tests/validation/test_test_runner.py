@@ -25,7 +25,13 @@ from pathlib import Path
 import pytest
 
 from paa.core.errors import SandboxError
-from paa.sandbox.base import IsolationLevel, Sandbox, SandboxResult, SandboxSpec
+from paa.sandbox.base import (
+    IsolationLevel,
+    Sandbox,
+    SandboxResult,
+    SandboxSession,
+    SandboxSpec,
+)
 from paa.validation.test_runner import PytestRunner
 
 
@@ -72,6 +78,11 @@ class _RecordingSandbox(Sandbox):
 
     async def healthcheck(self) -> bool:
         return True
+
+    async def open(self, spec: SandboxSpec) -> SandboxSession:
+        # The ABC gained a real open(); this fake only ever plays run(), and
+        # refusing is the honest answer — the runner under test never asks.
+        raise SandboxError("the recording fake does not implement sessions")
 
 
 def _runner() -> tuple[PytestRunner, _RecordingSandbox]:
