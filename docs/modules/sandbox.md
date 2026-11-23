@@ -6,16 +6,16 @@
 - **Path:** `src/paa/sandbox/`
 - **Main responsibility:** Pluggable containment for agent-executed steps; honest declaration of what containment each backend actually delivers.
 - **Architectural layer:** Control / security
-- **Entrypoints:** `get_sandbox(settings)`, `Sandbox.run(spec)`, `Sandbox.healthcheck()`, `RecursionGuard.register()`
-- **Public interfaces:** `IsolationLevel`, `SandboxSpec`, `SandboxResult`, `Sandbox` ABC, `resolve_workspace`, `assert_inside_workspace`, `build_child_env` (`base.py`); `SubprocessSandbox`, `WslSandbox`, `DockerSandbox`, `DryRunSandbox` (backends); `RecursionGuard` (`recursion.py`); `ResourceWatchdog`, `HeartbeatTracker` (`watchdog.py`)
+- **Entrypoints:** `get_sandbox(settings)`, `Sandbox.run(spec)`, `Sandbox.open(spec)`, `Sandbox.healthcheck()`, `RecursionGuard.register()`
+- **Public interfaces:** `IsolationLevel`, `SandboxSpec`, `SandboxResult`, `Sandbox` ABC, `SandboxSession` ABC, `resolve_workspace`, `assert_inside_workspace`, `build_child_env` (`base.py`); `SubprocessSandbox` (+ `SubprocessSandboxSession`), `WslSandbox`, `DockerSandbox`, `DryRunSandbox` (backends); `RecursionGuard` (`recursion.py`); `ResourceWatchdog`, `HeartbeatTracker` (`watchdog.py`)
 - **Other modules that depend on it:** `agents/reasoning.py` (WorkerCell), `validation/engine.py` (test runner), `runtime.py` (`_acquire_sandbox`), `daemon.py` (indirectly), `skills/adapters/` (Claw-Hub runs entrypoints in sandbox)
 
 ## Purpose and responsibilities
 
 Containment with honesty: `IsolationLevel` (NONE/PROCESS/NAMESPACE/VM) is
-declared per-backend, never aspirational (`sandbox/base.py:58`). gVisor (`runsc`, VM)
+declared per-backend, never aspirational (`sandbox/base.py:59`). gVisor (`runsc`, VM)
 is unavailable on the target Windows machine, so containment is pluggable and
-callers can branch on `isolation_level.is_real_containment` (`sandbox/base.py:97`).
+callers can branch on `isolation_level.is_real_containment` (`sandbox/base.py:98`).
 The sandbox is "a guard against a confused agent, not a hostile one" for the
 subprocess backend (`sandbox/base.py:26`).
 
@@ -26,8 +26,8 @@ subprocess backend (`sandbox/base.py:26`).
   read_only_mounts, env (explicit allowlist), memory_mb, cpu_cores,
   timeout_seconds, allow_network (default False), recursion_depth,
   parent_task_id. `from_profile()` builds limits from `MODALITY_PROFILES`
-  (`:356`). `_reject_ambient_env_smell` trips on `env=dict(os.environ)`
-  (`:337`). Two fields carry containment decisions the caller makes
+  (`:357`). `_reject_ambient_env_smell` trips on `env=dict(os.environ)`
+  (`:338`). Two fields carry containment decisions the caller makes
   explicitly:
   - `network` — the Docker network to attach to. `None` means the backend's
     default (`none` when the network is denied, the daemon's *default bridge*
@@ -37,7 +37,7 @@ subprocess backend (`sandbox/base.py:26`).
     purpose; npm's cache holds executable shims, so an `npx`-started server
     fails with exit 126 on a noexec mount and gets its own path instead.
 - `SandboxResult`: total outcome — a killed run still produces a result, not an
-  exception (`:383`). `ok`, `to_payload()` (ledger-safe, stdout/stderr capped
+  exception (`:384`). `ok`, `to_payload()` (ledger-safe, stdout/stderr capped
   at 2000 chars). `duration_ms` is the **total** wall clock and keeps that
   meaning deliberately: it is the sandbox's *own* measurement of the two
   phases together, and the skill-ranking signal is a **different** field of
@@ -48,9 +48,9 @@ subprocess backend (`sandbox/base.py:26`).
   from `"start_timeout"` (the *start* overran): the first is a workload
   problem, the second a host problem.
 - `resolve_workspace()` / `assert_inside_workspace()`: resolve paths (collapse
-  `..`, follow symlinks) then jail (`:495`, `:518`).
+  `..`, follow symlinks) then jail (`:605`, `:628`).
 - `build_child_env()`: builds from empty; never inherits `os.environ`;
-  Windows bootstrap keys inherited by value only when present (`:550`).
+  Windows bootstrap keys inherited by value only when present (`:660`).
 - `Sandbox.diagnose()`: async, returns the facts for `paa doctor`. The base
   implementation returns `describe()` — the backend's identity and its
   isolation level — because a backend that reports *nothing* renders as
@@ -62,6 +62,19 @@ subprocess backend (`sandbox/base.py:26`).
   a failed diagnostic is normalised identically by the CLI and the TUI.
 - `sandbox_report_rows(facts)`: the one renderer both surfaces use, so the
   two cannot drift into disagreeing about the same host.
+- `SandboxSession` (`sandbox/base.py:491`) + `Sandbox.open` (`:753`) / `Sandbox.run_within`
+  (`:767`): the **duplex, long-lived** execution contract (SPEC 2 C5.2) — `open(spec)`
+  returns a session with `read` (`:544`, one chunk, `b""` = EOF, `TimeoutError`
+  on an empty wait), `write` (`:564`) and `close` (`:577`, idempotent, returns
+  the final `SandboxResult`). A session holds *the one-shot path's containment
+  open*: env allowlist, workspace jail, resource envelope (Job Object or
+  watchdog — no `setrlimit`, see the subprocess backend), whole-tree kill on
+  close/cancel/breach/root death. `timeout_seconds` is a **lifetime** budget,
+  not an idle timeout — silence from a duplex child is not idleness. A backend
+  that cannot deliver a duplex child refuses `open` with `SandboxError`
+  rather than opening something weaker. `run_within(session, spec)` runs a
+  one-shot inside an open session's envelope (jail, env rules, kill list); the
+  base implementation refuses for backends without sessions.
 - `Sandbox.describe()`: sync identity — backend, isolation level, rank,
   `real_containment`. `DockerSandbox` overrides it to add the container
   facts (`container_runtime`, `runtime_available`, `image`, and the start
@@ -74,9 +87,22 @@ subprocess backend (`sandbox/base.py:26`).
 - `SubprocessSandbox` — PROCESS isolation. Windows Job Object memory caps +
   kill-on-job-close; POSIX `ResourceWatchdog` sampled RSS; `asyncio.wait_for`
   timeout; output capped at `max_capture_bytes`; network NOT enforced (policy
-  + AST scanner cover it).
+  + AST scanner cover it). The duplex session is this backend's
+  (`SubprocessSandboxSession`, `subprocess_backend.py:292`): pipes held open,
+  a lifetime wall-clock deadline task, `ResourceWatchdog` running for the
+  session's whole lifetime, a whole-tree kill (SIGTERM grace, then SIGKILL to
+  the root's process group and every `run_within` child's) on
+  close/cancel/timeout/breach/root death, and `run_within`
+  (`subprocess_backend.py:1111`) for one-shots inside the envelope. `run()`
+  (`subprocess_backend.py:1127`) is a thin wrapper over `open()`: seal stdin,
+  drain stdout, await the exit under the spec's budget, `close()` — no spawn
+  logic of its own. There is deliberately **no `setrlimit`**: it would need
+  `preexec_fn`, which is unsafe in a threaded parent, and would make the
+  session's containment a different story from `run()`'s
+  (`subprocess_backend.py:303`).
 - `WslSandbox` — NAMESPACE via WSL2 (`ulimit -v/-t/-c 0`, `unshare` when
-  available).
+  available). Refuses `open` (`wsl_backend.py:272`): no host exists on which
+  a duplex-over-`wsl.exe` session could be tested.
 - `DockerSandbox` — NAMESPACE (VM if `runsc` registered); `--read-only`,
   tmpfs, cap-drop ALL, no-new-privileges, pids-limit, cgroups.
   `runtime_available` is a **tri-state**: `True` / `False` / `None`
@@ -84,7 +110,10 @@ subprocess backend (`sandbox/base.py:26`).
   daemon does not have it" and must not be reported as though it were).
   `diagnose()` probes the daemon and reports whether the requested runtime is
   actually registered, whether the daemon is reachable, and whether the image
-  the sandbox would run is present. `--user` is derived from the workspace's
+  the sandbox would run is present. Refuses `open`
+  (`docker_backend.py:1028`): the plumbing is known but would ship untested
+  (no daemon on the dev machine; the suite exercises the backend behind the
+  `_exec` seam). `--user` is derived from the workspace's
   owner, and the workspace path is translated through
   `SandboxSettings.host_path_map` because the daemon resolves bind mounts
   against the *host*.
@@ -103,13 +132,15 @@ subprocess backend (`sandbox/base.py:26`).
   charged to the caller, which is why the SIMPLE modality's budget was raised
   from 0.25 s to 1.0 s.
 - `DryRunSandbox` — NONE; records what would run, executes nothing (planning
-  mode + tests).
+  mode + tests). Refuses `open` (`dryrun_backend.py:127`): nothing executes,
+  so there is no child to talk to — a fake session would be plausible-looking
+  lies in both directions.
 
 ### `sandbox/__init__.py` — factory
 `get_sandbox(settings)`: explicit backend returned without healthcheck
 (operator wants loud failure); `"auto"` walks order (docker, wsl, subprocess)
 and takes first healthy; unreachable fallback raises `RuntimeError`
-(subprocess always healthy) (`:98`).
+(subprocess always healthy) (`:100`).
 
 ### `_acquire_sandbox` (`runtime.py:617`)
 A bounded probe (`asyncio.wait_for(..., timeout=_SANDBOX_PROBE_BOUND_SECONDS)`,
@@ -138,6 +169,9 @@ enforcement (ADR-0009); heartbeat liveness with miss tolerance
 | Operation | Input | Output | Side effects |
 |---|---|---|---|
 | `Sandbox.run(spec)` | `SandboxSpec` | `SandboxResult` | spawns contained process |
+| `Sandbox.open(spec)` | `SandboxSpec` | `SandboxSession` | spawns duplex child (pipes, deadline, tree kill) |
+| `session.read()/write()/close()` | bytes / — | chunk / — / `SandboxResult` | duplex conversation; `close` kills the whole tree |
+| `Sandbox.run_within(session, spec)` | session + `SandboxSpec` | `SandboxResult` | one-shot inside the session's envelope |
 | `Sandbox.healthcheck()` | — | bool | probes backend availability |
 | `RecursionGuard.register(source, target, depth)` | edge | — (raises on breach) | records edge in graph |
 | `build_child_env(spec)` | spec | `dict[str,str]` | none (pure) |
@@ -156,7 +190,7 @@ enforcement (ADR-0009); heartbeat liveness with miss tolerance
 
 - Backend selected at runtime build; worker reuses the same sandbox instance.
 - `timeout_seconds=None` means "wait forever" (MAX modality, human-attested)
-  (`sandbox/base.py:227`).
+  (`sandbox/base.py:228`).
 - `allow_network=False` on subprocess is not enforced (logged gap); enforced by
   policy + AST scanner.
 - The **start** and the **work** are separate budgets, and only the container
@@ -198,12 +232,17 @@ enforcement (ADR-0009); heartbeat liveness with miss tolerance
   (`__init__.py`).
 - Changing `IsolationLevel` semantics affects callers branching on
   `is_real_containment`.
-- Tests: `tests/sandbox/` (175 tests).
+- Tests: `tests/sandbox/` (201 tests; `test_session.py` holds the duplex
+  contract's 21, including the three C5.2 acceptance tests).
 
 ## Known gaps
 
+- Duplex sessions are subprocess-only for now: Docker, WSL and dry-run refuse
+  `open` loudly (unbuildable/untestable on the hosts this repo can run —
+  `docker_backend.py:1028`, `wsl_backend.py:272`, `dryrun_backend.py:127`);
+  the base `run_within` refuses for them accordingly.
 - Subprocess sandbox cannot enforce `allow_network` or filesystem confinement
-  beyond the cwd jail (`sandbox/base.py:70`, `sandbox/base.py:518`).
+  beyond the cwd jail (`sandbox/base.py:71`, `sandbox/base.py:628`).
 - Windows Job Object assignment races `CreateProcess` (sub-millisecond window,
   documented).
 - Six pre-existing test failures: sandbox runs `python` where only `python3`

@@ -166,7 +166,7 @@ downstream consumers, then update the corresponding flow trace and this index.
 - `src/paa/agents/specialists/` is an empty package.
 - The marketplace/skills/coder layers import cleanly but are not yet wired into the
   orchestrator's main task path (no built-in file-edit/bash/web skills).
-- Windows-host baseline for the 20261106-memory-remembering-agent run: `mypy` 3 pre-existing errors (`sandbox/subprocess_backend.py:548`, win32) and 12 pre-existing pytest failures (see `00-mission.md` in the run folder; Linux CI gate is zero per AGENTS.md). Scoped gates for C01–C07 were green; the full `pytest tests/` suite was not run to completion in the final gate (see the run [SUMMARY.md](agent-ops/20261106-memory-remembering-agent/SUMMARY.md) §5/§14).
+- Windows-host baseline for the 20261106-memory-remembering-agent run: `mypy` 3 pre-existing errors (`sandbox/subprocess_backend.py:1320`, win32) and 12 pre-existing pytest failures (see `00-mission.md` in the run folder; Linux CI gate is zero per AGENTS.md). Scoped gates for C01–C07 were green; the full `pytest tests/` suite was not run to completion in the final gate (see the run [SUMMARY.md](agent-ops/20261106-memory-remembering-agent/SUMMARY.md) §5/§14).
 
 The [documentation audit](reviews/documentation-audit.md) records coverage, unresolved
 questions, and remaining gaps.
