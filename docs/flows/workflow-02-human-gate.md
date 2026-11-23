@@ -38,7 +38,7 @@ The `TaskProjection.phase` becomes `AWAITING_HUMAN`; `is_resumable` is
 
 `ChiefOrchestrator.clear_human_gate(cid, approved, resume_phase=EXECUTING,
 note=None)` (`src/paa/agents/orchestrator.py:712`):
-1. `project()`; raises `PaaError` if phase is not `AWAITING_HUMAN` (`src/paa/agents/orchestrator.py:749`).
+1. `project()`; raises `PaaError` if phase is not `AWAITING_HUMAN` (`src/paa/agents/orchestrator.py:772`).
 2. Emit `HUMAN_GATE_CLEARED` (approved) or `HUMAN_GATE_REJECTED` (rejected)
    with `{resume_phase, note}` (`src/paa/agents/orchestrator.py:773`).
 3. Return re-projected `TaskProjection`.

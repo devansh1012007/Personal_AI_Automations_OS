@@ -147,7 +147,7 @@ from DB (`:234`), anti-goals (cosine ≥0.82 or phrase match, `:262`). Risk scor
 
 - `src/paa/agents/specialists/` is an empty package (`AGENTS.md:146`).
 - Router is optional; when absent, `_classify()` heuristic picks modality
-  (`src/paa/agents/orchestrator.py:356`).
+  (`src/paa/agents/orchestrator.py:365`).
 - Deterministic planner fallback is crude (splits on conjunctions).
 
 ## Related documents

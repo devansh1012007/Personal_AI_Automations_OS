@@ -17,7 +17,7 @@ to `MUTATION_COMMITTED`. All paths verified against `src/paa/agents/orchestrator
 
 `ChiefOrchestrator.submit()` (`src/paa/agents/orchestrator.py:279`):
 1. Mint `CorrelationId` (`new_correlation_id()`, `core/types.py:50`).
-2. Classify modality (`_classify()`, `src/paa/agents/orchestrator.py:356`) — heuristic: keywords
+2. Classify modality (`_classify()`, `src/paa/agents/orchestrator.py:365`) — heuristic: keywords
    (`refactor`, `implement`, `build`, `debug`, `fix`) → `COMPLEX`; `migrate`/`redesign`
    → `MAX`; target agent + short goal → `SIMPLE`; else `STANDARD`.
 3. Emit `TASK_REQUESTED` (`emit()`, `src/paa/agents/orchestrator.py:253`) → `LedgerStore.append()`

@@ -42,7 +42,7 @@ interval and drains nothing (`daemon.py:154`).
 ## 2. Recovery boot sweep
 
 `RecoveryEngine.boot_sweep()` (`recovery.py:222`), invoked by
-`ChiefOrchestrator.boot()` (`src/paa/agents/orchestrator.py:749`) and by `Runtime.build()`
+`ChiefOrchestrator.boot()` (`src/paa/agents/orchestrator.py:825`) and by `Runtime.build()`
 (`runtime.py:331`) and `Daemon.start()` (`daemon.py:91`):
 
 1. `verify_all_chains()` — hash-chain integrity across all lineages; problems
