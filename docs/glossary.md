@@ -107,10 +107,10 @@ Branches: `POLICY_BLOCKED / SECURITY_VIOLATION` (terminal blocked),
 - **IsolationLevel** — Honest ranking of what a backend delivers: `NONE`
   (dryrun), `PROCESS` (subprocess), `NAMESPACE` (WSL/Docker), `VM` (gVisor,
   unavailable on target hardware). Only `NAMESPACE` and above is "real
-  containment". `src/paa/sandbox/base.py:54`.
+  containment". `src/paa/sandbox/base.py:55`.
 - **Workspace jail** — `resolve_workspace` / `assert_inside_workspace` resolve
   paths (collapse `..`, follow symlinks) and confine writes to one directory.
-  `src/paa/sandbox/base.py:495`.
+  `src/paa/sandbox/base.py:605`.
 - **AST pre-scan** — Static rejection of dangerous Python before execution;
   unparseable source is rejected, never skipped. `src/paa/validation/ast_scanner.py`.
 

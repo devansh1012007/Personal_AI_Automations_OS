@@ -78,7 +78,7 @@ under `--yes`, else `prompt_yes` (blocks on `input`; EOF → deny)
 - Batch commands (`paa submit`/`paa run`) print phase lines rather than
   streaming tokens; the chat surface streams reply deltas (`paa chat`).
 - `paa doctor` isolation level reflects the backend's own declaration
-  (`isolation_level`, never aspirational — `sandbox/base.py:404`).
+  (`isolation_level`, never aspirational — `sandbox/base.py:405`).
 
 ## Related documents
 

@@ -248,7 +248,7 @@ The following are gaps or proposed work, not completed features. The detailed, o
 | External harnesses | No ACP server or client exists (an earlier "experimental ACP server" claim described code that was never built); ACP v1 is planned for W7 (SPEC 2 §6). Running an external harness behind PAA's sandbox and measuring what activity remains outside observable boundaries is planned. |
 | Lifecycle accounting | A durable, scope-owned effect registry and crash reconciliation for provider outcomes are proposed; they must be validated before PAA claims general temporal composability. |
 | Dependency resolution | Task-specific declarations, provider resolution, bounded leases, and dependency-loss behavior are proposed; no universal resolver is claimed. |
-| Observability | Metrics and tracing are built but require dedicated validation. |
+| Observability | Metrics, tracing, runs, and logging now have a dedicated suite (tests/observability, 185); the OTLP egress bridge is not exercised offline, and the server substrate's UUID row shapes are covered by a fake backend rather than a live Postgres. |
 | Codebase intelligence | Full repository indexing and LSP/symbol-aware context are not yet complete. |
 | Git workflow | Branch-per-task, conflict awareness, and verified commits remain work to complete. |
 | Ingestion | Minimal event-source integration is planned; broad Telegram/email/Slack and ambient bridges are not a current commitment. |
@@ -283,14 +283,14 @@ This sequencing does **not** delete earlier ideas. It prevents a marketplace, al
 | Event ledger + replay + recovery | Tested | 71 |
 | Bounded context engine (metrics, budget, gatherer, compaction) | Tested | 353 |
 | Storage (vector, graph, cold lake, queue, relational) | Tested | 255 (+5 skipped, Redis) |
-| Sandbox (subprocess/WSL/Docker/dryrun + recursion guard) | Tested | 39 |
+| Sandbox (subprocess/WSL/Docker/dryrun + recursion guard + `SandboxSession` duplex) | Tested | 201 |
 | Memory decay + domains + contradiction | Tested | 37 |
 | Agents (orchestrator, delegation, policy, context, planner, critic, router, worker) | Tested | 70 |
 | Composition root + end-to-end integration | Tested | 16 |
-| Deterministic validation (AST, patch, workspace, tests) | Exercised via agents; no dedicated suite | — |
+| Deterministic validation (AST, patch, workspace, tests) | Tested | 443 |
 | Model providers + escalation router + platform registry | Tested (OpenAI/Groq/Gemini/etc. + localhost) | 71 |
 | Memory creator/curator + world model | Tested | 76 |
-| Unified Skill Adapter (Claw Hub + MCP) | Tested | 51 |
+| Unified Skill Adapter (Claw Hub + MCP; the MCP client spawns through `SandboxSession`) | Tested | 121 |
 | Marketplace (signed packages, 5-gate installer) | Tested | 18 |
 | Self-improvement + meta-learning | Tested | 22 |
 | Claude-Code features (permissions, hooks, loop, sessions) | Tested | 39 |
@@ -300,10 +300,10 @@ This sequencing does **not** delete earlier ideas. It prevents a marketplace, al
 | MCP server (`paa mcp serve` — stdio, token, six tools) | Tested | 48 |
 | FastAPI ingestion + daemon + CLI | Tested | 27 |
 | Docker deployment + Postgres/S3 backends | Built; live-server run still needs a pass | Parity + backend |
-| Observability (metrics, tracing, runs, logging) | Built; untested | — |
+| Observability (metrics, tracing, runs, logging) | Tested — golden + behavioural (tests/observability) | 185; OTLP egress bridge not exercised |
 
 <!-- STATUS:BEGIN -->
-**Generated status** (`scripts/status.py`): 173 `src/**/*.py` files, 72,167 physical lines; 4,386 tests collected.
+**Generated status** (`scripts/status.py`): 173 `src/**/*.py` files, 73,754 physical lines; 4,481 tests collected.
 Method: physical lines count blank and comment lines (`Path.read_text` + `splitlines` over `src/**/*.py`); collected = `pytest --collect-only -q -o addopts=""`. Outcome counts are not measured here (host-dependent); run `python -m pytest tests/ -q`.
 <!-- STATUS:END -->
 

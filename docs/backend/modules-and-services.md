@@ -381,8 +381,8 @@ ABC, `resolve_workspace`/`assert_inside_workspace` (workspace jail).
 **Public interface:** `SandboxSpec`, `SandboxResult`, `IsolationLevel`, `Sandbox`.
 
 **Failure behavior:** `resolve_workspace` raises `SandboxError` if the directory
-doesn't exist (`sandbox/base.py:515`). `SandboxSpec._reject_ambient_env_smell` trips on
-`env=dict(os.environ)` (`sandbox/base.py:337`).
+doesn't exist (`sandbox/base.py:625`). `SandboxSpec._reject_ambient_env_smell` trips on
+`env=dict(os.environ)` (`sandbox/base.py:338`).
 
 ### `sandbox/subprocess_backend.py` — SubprocessSandbox
 **Responsibility:** PROCESS isolation. Windows Job Object memory caps +
@@ -434,8 +434,8 @@ Short-circuits on CRITICAL finding or structural failure.
 `ValidationReport`.
 
 **Failure behavior:** No sandbox/workspace + tests requested → FAIL (unrun
-suite is not passing) (`engine.py:377`). Patch without workspace → structural
-failure (`engine.py:328`).
+suite is not passing) (`engine.py:402`). Patch without workspace → structural
+failure (`engine.py:353`).
 
 ### `validation/ast_scanner.py` — AstSecurityScanner
 **Responsibility:** Deny-by-default static scan. Denied modules/attributes/
@@ -476,7 +476,7 @@ passed>0).
 | Policy violation | `policy.py:153` | `STATUS_BLOCKED` verdict → `POLICY_BLOCKED`/`SECURITY_VIOLATION` event |
 | Missing permission | `agents/base.py:333` | `AgentResult.failure` (`PermissionDeniedError`) |
 | Sandbox step failure | `src/paa/pipelines/builtin.py:758` | `VALIDATION_FAILED`; retry up to `max_step_retries` |
-| Validation failure | `validation/engine.py:236` | Binary FAIL; critic can only downgrade |
+| Validation failure | `validation/engine.py:235` | Binary FAIL; critic can only downgrade |
 | Sandbox memory breach | `watchdog.py` | Kill; `killed_reason="memory"` |
 | Queue depth (backpressure) | `backpressure.py:115` | Degrade modality / shed discretionary ingestion (HTTP 429) |
 | Crash mid-task | `recovery.py:222` | Boot sweep replays lineage, reconciles workspace, re-queues |

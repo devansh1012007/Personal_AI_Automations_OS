@@ -119,7 +119,7 @@ machine, so the default is a workspace jail + Job Object caps + AST pre-scan,
 documented as materially weaker than gVisor. A caller can branch on
 `isolation_level.is_real_containment`.
 
-`src/paa/sandbox/base.py:54`, `docs/adr/0006`.
+`src/paa/sandbox/base.py:55`, `docs/adr/0006`.
 
 ### 6. Provider-agnostic model layer with explicit escalation
 
