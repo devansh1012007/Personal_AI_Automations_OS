@@ -25,6 +25,8 @@ The tests below pin that, and the module's other promises.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import uuid
 from typing import Any
 
@@ -427,3 +429,233 @@ class TestTheRetainedSpans:
         ]
         assert inner.trace_id == outer.trace_id
         assert tracer.spans_for_trace("not-a-trace") == []
+
+
+# ---------------------------------------------------------------------------
+# Context propagation across concurrent tasks
+# ---------------------------------------------------------------------------
+
+
+class TestContextPropagation:
+    """The ContextVar's whole reason for being, as a behaviour.
+
+    ``_CURRENT_SPAN`` is documented as *"per async task"* because parenting
+    must follow the *call* structure, and two concurrent tasks sharing one
+    Tracer must not adopt each other's spans. Nothing tested that: every
+    nesting test above ran its spans sequentially in one task, where a
+    plain instance attribute — or a module global — would have passed
+    just as well. The distinction only exists while two tasks are live
+    at once.
+    """
+
+    async def test_concurrent_children_of_one_parent_do_not_adopt_each_other(
+        self,
+    ) -> None:
+        """Two sibling spans open at the same moment, each its own current span.
+
+        The assertion runs *inside* the body, while both children are
+        live: the current span of each task is its own child, not the
+        sibling that happens to be open beside it. A tracer that kept the
+        active span on the Tracer (rather than per task) would hand the
+        first-finished child's span — or the sibling's — to the other
+        task's ``_begin``, and the parentage of one lineage would be
+        decided by scheduling order.
+        """
+        tracer = Tracer()
+
+        async def work(tag: str) -> Span:
+            async with tracer.span(f"child-{tag}") as span:
+                await asyncio.sleep(0)  # one yield, so both are open together
+                assert current_span() is span
+                return span
+
+        async with tracer.span("parent") as parent:
+            first, second = await asyncio.gather(work("a"), work("b"))
+
+        assert first.parent_span_id == parent.span_id
+        assert second.parent_span_id == parent.span_id
+        assert first.span_id != second.span_id
+        assert first.trace_id == second.trace_id == parent.trace_id
+
+    async def test_a_task_started_outside_a_span_keeps_its_own_trace(self) -> None:
+        """Parenting follows the context at creation, not the await.
+
+        A task created *before* the enclosing span opens runs with a copy
+        of the then-current context — no span in it — so its span gets a
+        fresh trace id, however deeply the caller that awaits it is later
+        nested. The alternative, parenting by await, would splice an
+        unrelated operation into the caller's trace and make the trace
+        tree lie about what ran inside it.
+        """
+        tracer = Tracer()
+
+        async def detached() -> Span:
+            async with tracer.span("detached") as span:
+                return span
+
+        task = asyncio.create_task(detached())
+        async with tracer.span("enclosing") as enclosing:
+            outside = await task
+
+        assert outside.trace_id != enclosing.trace_id
+        assert outside.parent_span_id is None
+
+
+# ---------------------------------------------------------------------------
+# The span record — the published JSON shape
+# ---------------------------------------------------------------------------
+
+
+class TestTheSpanRecord:
+    """``Span.to_dict`` feeds the ``telemetry`` column, so it is a published
+    contract rather than an internal detail: the keys, the grouping of the
+    attributes, and the rounding of the duration are the shape a reader of
+    a run row joins against.
+    """
+
+    async def test_the_finished_record_is_the_documented_shape(self) -> None:
+        tracer = Tracer()
+
+        async with tracer.span("work", k="v") as span:
+            span.set_attribute("attr", 7)
+            span.add_event("checkpoint", phase="mid")
+
+        record = span.to_dict()
+
+        assert set(record) == {
+            "name",
+            "trace_id",
+            "span_id",
+            "parent_span_id",
+            "duration_ms",
+            "status",
+            "error",
+            "attributes",
+            "events",
+        }
+        assert record["name"] == "work"
+        assert record["trace_id"] == span.trace_id
+        assert record["span_id"] == span.span_id
+        assert record["parent_span_id"] is None
+        assert record["status"] == "OK"
+        assert record["error"] is None
+        assert record["attributes"] == {"service.name": "paa-runtime", "k": "v", "attr": 7}
+        assert record["duration_ms"] == round(span.duration_ms, 3)
+        assert len(record["events"]) == 1
+        event = record["events"][0]
+        assert set(event) == {"name", "timestamp_ns", "attributes"}
+        assert event["name"] == "checkpoint"
+        assert event["attributes"] == {"phase": "mid"}
+        assert isinstance(event["timestamp_ns"], int)
+        assert json.dumps(record)
+
+    async def test_an_open_span_reports_a_zero_duration(self) -> None:
+        """The documented degradation for a span that has not ended.
+
+        ``duration_ms`` is documented as *0.0 while the span is still
+        open*, and the record carries the same zero — so an operation
+        that never reported (a process killed mid-span) reads as "no
+        time accounted" in the record, not as an error and not as a
+        negative number. A span cannot be ended twice through the
+        public API (the context manager's ``finally`` ends it exactly
+        once), so the never-ended shape is the one a reader can
+        actually meet.
+        """
+        tracer = Tracer()
+
+        async with tracer.span("held") as span:
+            assert span.duration_ms == 0.0
+            assert span.to_dict()["duration_ms"] == 0.0
+
+    async def test_the_child_names_the_parent_in_the_record(self) -> None:
+        tracer = Tracer()
+
+        async with tracer.span("parent") as parent, tracer.span("child") as child:
+            pass
+
+        assert child.to_dict()["parent_span_id"] == parent.span_id
+        assert parent.to_dict()["parent_span_id"] is None
+
+
+class TestTheMetricsIntegration:
+    """*"When supplied, every finished span's duration is also observed into
+    ``span_duration_ms``"* — the Tracer's second output, beside the ring.
+    """
+
+    async def test_a_finished_span_observes_its_duration_into_the_registry(self) -> None:
+        registry = MetricsRegistry()
+        tracer = Tracer(metrics=registry)
+
+        async with tracer.span("work"):
+            pass
+
+        histogram = registry.get_histogram("span_duration_ms", span="work")
+        assert histogram is not None
+        assert histogram.count == 1
+        assert set(registry.snapshot()["histograms"]) == {"span_duration_ms{span=work}"}
+
+    async def test_a_failed_span_observes_its_duration_too(self) -> None:
+        """A failure that took 30 seconds is exactly the observation worth having.
+
+        Dropping it would make an error path look free — the same reason
+        :meth:`MetricsRegistry.timer` records on the way out of a raising
+        block.
+        """
+        registry = MetricsRegistry()
+        tracer = Tracer(metrics=registry)
+
+        with pytest.raises(ValueError, match="kaboom"):
+            async with tracer.span("failing"):
+                raise ValueError("kaboom")
+
+        histogram = registry.get_histogram("span_duration_ms", span="failing")
+        assert histogram is not None
+        assert histogram.count == 1
+
+
+class TestTheExporter:
+    """The seam the OTLP bridge plugs into.
+
+    An exporter is documented as *"called with each finished Span"* — which
+    one, when, and how often is the bridge's entire contract, and a wrong
+    answer here is a collector that receives half a trace.
+    """
+
+    async def test_the_exporter_receives_the_finished_span(self) -> None:
+        exported: list[Span] = []
+        tracer = Tracer(exporter=exported.append)
+
+        async with tracer.span("work") as span:
+            pass
+
+        assert exported == [span]
+        assert exported[0].is_finished
+
+    async def test_a_disabled_tracer_does_not_export(self) -> None:
+        """``enabled=False`` stops the export, not the bookkeeping.
+
+        The span is still timed and still finished (pinned above); what
+        the switch turns off is everything *downstream* of the record —
+        the ring, the metrics, the exporter.
+        """
+        exported: list[Span] = []
+        tracer = Tracer(ObservabilitySettings(enabled=False), exporter=exported.append)
+
+        assert tracer.enabled is False
+
+        async with tracer.span("work"):
+            pass
+
+        assert exported == []
+
+
+class TestTheServiceName:
+    async def test_the_service_name_comes_from_the_settings(self) -> None:
+        """The attribute on every span is the configured service, not a constant."""
+        tracer = Tracer(ObservabilitySettings(service_name="paa-doctor"))
+
+        assert tracer.service_name == "paa-doctor"
+        async with tracer.span("work") as span:
+            pass
+
+        assert span.attributes["service.name"] == "paa-doctor"

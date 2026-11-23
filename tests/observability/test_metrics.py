@@ -35,6 +35,7 @@ be right by accident on the four numbers somebody wrote down.
 from __future__ import annotations
 
 import json
+import threading
 
 import pytest
 from hypothesis import given
@@ -43,7 +44,10 @@ from hypothesis import strategies as st
 
 from paa.observability.metrics import (
     DEFAULT_PERCENTILES,
+    METRIC_SPECS,
     Histogram,
+    MetricKind,
+    MetricSpec,
     MetricsRegistry,
     percentile,
 )
@@ -702,3 +706,435 @@ class TestTheRegistryRefusesNonsense:
 
         assert json.dumps(snapshot)
         assert json.loads(json.dumps(snapshot)) == snapshot
+
+
+# ---------------------------------------------------------------------------
+# Counters, gauges, and the series a label makes
+# ---------------------------------------------------------------------------
+
+
+class TestCounters:
+    """A counter is a monotonically increasing total.
+
+    These are the numbers an operator watches — ``user_correction_frequency``
+    is the self-improvement loop's primary signal — so the accumulation and
+    the refusal to go down are both operator-visible contracts, not internal
+    bookkeeping.
+    """
+
+    def test_increments_accumulate(self) -> None:
+        registry = MetricsRegistry()
+
+        registry.counter("user_correction_frequency", 2)
+        registry.counter("user_correction_frequency", 3)
+
+        assert registry.get_counter("user_correction_frequency") == pytest.approx(5.0)
+
+    def test_the_default_increment_is_one(self) -> None:
+        """``counter(name)`` counts one event, which is what a call site means."""
+        registry = MetricsRegistry()
+
+        registry.counter("user_correction_frequency")
+        registry.counter("user_correction_frequency")
+
+        assert registry.get_counter("user_correction_frequency") == pytest.approx(2.0)
+
+    def test_a_counter_cannot_decrease(self) -> None:
+        """A negative increment is a bug in the caller, not a correction.
+
+        The :attr:`MetricKind.COUNTER` docstring says so, and the refusal
+        is what keeps a programming mistake from silently rewriting an
+        operator's total downward.
+        """
+        registry = MetricsRegistry()
+        registry.counter("user_correction_frequency", 5)
+
+        with pytest.raises(ValueError, match="cannot decrease"):
+            registry.counter("user_correction_frequency", -1)
+
+        # And the refusal was not a write: the total is what it was.
+        assert registry.get_counter("user_correction_frequency") == pytest.approx(5.0)
+
+    def test_a_counter_that_was_never_incremented_reads_zero(self) -> None:
+        """Zero, not ``None`` and not a ``KeyError``.
+
+        A counter is a total, and the total of no events is zero — a reader
+        rendering a dashboard should not have to distinguish "never
+        incremented" from "incremented zero times".
+        """
+        registry = MetricsRegistry()
+
+        assert registry.get_counter("user_correction_frequency") == 0.0
+
+
+class TestGauges:
+    """A gauge is an instantaneous value that may move in either direction."""
+
+    def test_a_gauge_that_was_never_set_has_no_value(self) -> None:
+        """``None``, not zero.
+
+        This is the deliberate difference from a counter: a queue depth of
+        zero is a *measurement*, and a queue that was never measured has no
+        answer. Reporting ``0`` for both would make an uninstrumented gauge
+        read as "empty and healthy".
+        """
+        registry = MetricsRegistry()
+
+        assert registry.get_gauge("queue_backpressure") is None
+
+    def test_a_gauge_is_set_not_incremented(self) -> None:
+        registry = MetricsRegistry()
+
+        registry.gauge("queue_backpressure", 7)
+        registry.gauge("queue_backpressure", 2)
+
+        assert registry.get_gauge("queue_backpressure") == pytest.approx(2.0)
+
+    def test_a_gauge_may_move_down(self) -> None:
+        """The whole difference from a counter, in one direction.
+
+        A queue drains; refusing the downward move would make the gauge
+        useless for exactly the workload it exists to watch.
+        """
+        registry = MetricsRegistry()
+
+        registry.gauge("queue_backpressure", 9)
+        registry.gauge("queue_backpressure", 4)
+
+        assert registry.get_gauge("queue_backpressure") == pytest.approx(4.0)
+
+    def test_a_histogram_that_was_never_observed_is_absent(self) -> None:
+        registry = MetricsRegistry()
+
+        assert registry.get_histogram("graph_traversal_latency") is None
+
+
+class TestLabels:
+    """A series is a metric name plus its label set.
+
+    The snapshot is the published artefact — it lands in the ``telemetry``
+    column of a run row — so the key a labelled series is filed under is
+    part of the contract, not a rendering detail a consumer can re-derive.
+    """
+
+    def test_labels_make_distinct_series(self) -> None:
+        """Two values of one label are two answers, not one.
+
+        A regression here — folding the label into the name, or dropping it
+        — would overwrite one series with another, and an operator's split
+        by label would silently become a total.
+        """
+        registry = MetricsRegistry()
+
+        registry.counter("user_correction_frequency", 1, source="chat")
+        registry.counter("user_correction_frequency", 1, source="cli")
+        registry.counter("user_correction_frequency", 1, source="chat")
+
+        assert registry.get_counter("user_correction_frequency", source="chat") == (
+            pytest.approx(2.0)
+        )
+        assert registry.get_counter("user_correction_frequency", source="cli") == (
+            pytest.approx(1.0)
+        )
+
+    def test_a_label_value_is_its_text(self) -> None:
+        """``source=2`` and ``source="2"`` are the same series.
+
+        Labels are stringified on the way in, so a caller passing an int
+        and a caller passing the text of that int are talking about the
+        same series — and cannot split one series in two by spelling its
+        label differently.
+        """
+        registry = MetricsRegistry()
+
+        registry.counter("user_correction_frequency", 1, source=2)
+        registry.counter("user_correction_frequency", 1, source="2")
+
+        assert registry.get_counter("user_correction_frequency", source=2) == (
+            pytest.approx(2.0)
+        )
+
+    def test_the_snapshot_renders_a_labelled_series_under_its_key(self) -> None:
+        """The golden shape: ``name{k=v}`` with the labels sorted.
+
+        The key is what the ``telemetry`` column carries, so its spelling
+        is the join a reader makes. A brace instead of a comma, or labels
+        in insertion order rather than sorted, would change the key a
+        series is filed under without changing any number in it.
+        """
+        registry = MetricsRegistry()
+        registry.counter("user_correction_frequency", 2, severity="warn")
+        registry.gauge("queue_backpressure", 5, queue="ingest")
+        registry.observe("graph_traversal_latency", 12.0, hop="two")
+
+        snapshot = registry.snapshot()
+
+        assert snapshot["counters"] == {"user_correction_frequency{severity=warn}": 2.0}
+        assert snapshot["gauges"] == {"queue_backpressure{queue=ingest}": 5.0}
+        assert set(snapshot["histograms"]) == {"graph_traversal_latency{hop=two}"}
+
+    def test_the_snapshot_is_the_three_sections_and_nothing_else(self) -> None:
+        """The top-level golden: counters, gauges, histograms.
+
+        A consumer of the ``telemetry`` column reads these three keys; an
+        extra section would be a silent schema change to the run row, and
+        a missing one would make every consumer's ``get`` fail loudly
+        after having worked quietly.
+        """
+        registry = MetricsRegistry()
+
+        assert set(registry.snapshot()) == {"counters", "gauges", "histograms"}
+        assert registry.snapshot() == {"counters": {}, "gauges": {}, "histograms": {}}
+
+    def test_an_unlabelled_series_is_filed_under_its_bare_name(self) -> None:
+        registry = MetricsRegistry()
+        registry.counter("user_correction_frequency", 1)
+
+        assert set(registry.snapshot()["counters"]) == {"user_correction_frequency"}
+
+
+class TestTheDeclaredKinds:
+    """A declared kind is pinned: an update that contradicts it is refused.
+
+    The point of declaring the RFC §10.1 list up front — the module's own
+    argument — is that ``observe()`` on something declared a counter fails
+    loudly rather than producing a histogram nobody will ever look at.
+    That argument had no test: nothing ever *tried* the wrong kind.
+    """
+
+    def test_observing_into_a_declared_counter_is_refused(self) -> None:
+        registry = MetricsRegistry()
+
+        with pytest.raises(ValueError, match="cannot update it as a histogram"):
+            registry.observe("user_correction_frequency", 1.0)
+
+    def test_gauging_a_declared_counter_is_refused(self) -> None:
+        registry = MetricsRegistry()
+
+        with pytest.raises(ValueError, match="cannot update it as a gauge"):
+            registry.gauge("user_correction_frequency", 1)
+
+    def test_incrementing_a_declared_gauge_is_refused(self) -> None:
+        registry = MetricsRegistry()
+
+        with pytest.raises(ValueError, match="cannot update it as a counter"):
+            registry.counter("queue_backpressure")
+
+    def test_observing_into_a_declared_gauge_is_refused(self) -> None:
+        registry = MetricsRegistry()
+
+        with pytest.raises(ValueError):
+            registry.observe("queue_backpressure", 1.0)
+
+    def test_an_undeclared_metric_is_refused_when_the_registry_refuses(self) -> None:
+        """The typo the declaration list exists to catch.
+
+        ``vram_saturaton`` — one ``i`` short of the real name — would
+        otherwise spring into existence as a new series that silently
+        reads zero forever while the intended one never moves.
+        """
+        registry = MetricsRegistry(allow_undeclared=False)
+
+        with pytest.raises(KeyError, match="vram_saturaton"):
+            registry.gauge("vram_saturaton", 0.5)
+
+    def test_an_undeclared_metric_is_accepted_by_default(self) -> None:
+        """The default posture: a skill's own metrics are not refused.
+
+        The RFC list is the *runtime's* metrics; refusing everything else
+        would make ``register`` the only way in, and a skill's own counter
+        is not a mistake the declaration list exists to catch.
+        """
+        registry = MetricsRegistry()
+
+        registry.counter("a_skills_own_metric")
+
+        assert registry.get_counter("a_skills_own_metric") == pytest.approx(1.0)
+
+    def test_register_declares_a_metric_and_the_kind_is_then_pinned(self) -> None:
+        """The declaration path for a skill's own metrics, end to end.
+
+        Before the ``register`` call, the name is undeclared; after it,
+        the kind is enforced exactly as it is for the RFC list.
+        """
+        registry = MetricsRegistry(allow_undeclared=False)
+        spec = MetricSpec(
+            name="skill_steps",
+            kind=MetricKind.COUNTER,
+            unit="steps",
+            description="A skill's own step count.",
+        )
+
+        with pytest.raises(KeyError):
+            registry.counter("skill_steps")
+        registry.register(spec)
+        registry.counter("skill_steps", 3)
+
+        assert registry.spec("skill_steps") == spec
+        assert registry.get_counter("skill_steps") == pytest.approx(3.0)
+
+    def test_the_rfc_metric_list_declares_the_kinds_it_names(self) -> None:
+        """The RFC §10.1 list, transcribed verbatim and pinned by kind.
+
+        The names are the contract a dashboard or a run row joins on; the
+        kinds are what keep an update path honest. A name that drifted —
+        or a counter that quietly became a gauge — would change what an
+        operator's number *means*, which is worse than changing the
+        number.
+        """
+        for name in (
+            "recursive_budget_exhaustion",
+            "syscall_interception_count",
+            "user_correction_frequency",
+        ):
+            assert METRIC_SPECS[name].kind is MetricKind.COUNTER
+        for name in ("graph_traversal_latency", "crash_recovery_duration"):
+            assert METRIC_SPECS[name].kind is MetricKind.HISTOGRAM
+        assert METRIC_SPECS["queue_backpressure"].kind is MetricKind.GAUGE
+
+        # Every declaration carries the unit and the description a reader
+        # of the registry's own docs would expect to find beside it.
+        for spec_ in METRIC_SPECS.values():
+            assert spec_.unit
+            assert spec_.description
+
+
+class TestReset:
+    """``reset`` drops every series; declarations survive.
+
+    The distinction is the whole point of the method: a test harness or
+    a long-lived worker that resets between jobs wants the *numbers* gone
+    without re-declaring the metric list it was built against.
+    """
+
+    def test_reset_drops_every_series(self) -> None:
+        registry = MetricsRegistry()
+        registry.counter("user_correction_frequency", 2)
+        registry.gauge("queue_backpressure", 5)
+        registry.observe("graph_traversal_latency", 12.0)
+
+        registry.reset()
+
+        assert registry.get_counter("user_correction_frequency") == 0.0
+        assert registry.get_gauge("queue_backpressure") is None
+        assert registry.get_histogram("graph_traversal_latency") is None
+        assert registry.snapshot() == {"counters": {}, "gauges": {}, "histograms": {}}
+
+    def test_reset_survives_the_declarations(self) -> None:
+        """The RFC list is still enforced after a reset.
+
+        A reset that also dropped the declarations would leave the
+        registry in its ``allow_undeclared=True`` posture for the names it
+        was built to police — the kind checks would silently stop firing.
+        """
+        registry = MetricsRegistry()
+        registry.counter("user_correction_frequency", 2)
+
+        registry.reset()
+
+        with pytest.raises(ValueError, match="cannot update it as a histogram"):
+            registry.observe("user_correction_frequency", 1.0)
+
+
+class TestTheTimer:
+    """The context manager that times a block into a histogram."""
+
+    def test_the_timer_records_the_block_into_the_histogram(self) -> None:
+        registry = MetricsRegistry()
+
+        with registry.timer("graph_traversal_latency"):
+            pass
+
+        histogram = registry.get_histogram("graph_traversal_latency")
+        assert histogram is not None
+        assert histogram.count == 1
+        assert histogram.summary()["min"] >= 0.0
+
+    def test_the_timer_records_even_when_the_block_raises(self) -> None:
+        """The docstring's promise, as an assertion.
+
+        *"Records on the way out even when the block raises: a failure that
+        took 30 seconds is exactly the observation worth having, and
+        dropping it would make an error path look free."*
+        """
+        registry = MetricsRegistry()
+
+        with pytest.raises(ValueError, match="kaboom"), registry.timer(
+            "graph_traversal_latency"
+        ):
+            raise ValueError("kaboom")
+
+        histogram = registry.get_histogram("graph_traversal_latency")
+        assert histogram is not None
+        assert histogram.count == 1
+
+
+class TestTheThreadSafety:
+    """The registry's own claim about itself.
+
+    :class:`MetricsRegistry` is documented as *"Thread-safe in-process
+    metric store"*, guarded by a :class:`threading.Lock` chosen explicitly
+    because the sandbox watchdog samples from a real thread. An increment
+    that could be lost between two threads is an operator-visible number
+    that reads lower than the truth — and never obviously.
+    """
+
+    def test_concurrent_increments_lose_none(self) -> None:
+        registry = MetricsRegistry()
+        threads: list[threading.Thread] = []
+
+        def worker() -> None:
+            for _ in range(250):
+                registry.counter("user_correction_frequency")
+
+        for _ in range(4):
+            thread = threading.Thread(target=worker)
+            threads.append(thread)
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert registry.get_counter("user_correction_frequency") == pytest.approx(1000.0)
+
+    def test_a_read_while_series_are_being_added_is_not_a_torn_read(self) -> None:
+        """A snapshot taken from another thread is a whole answer.
+
+        The hazard the lock exists for, concretely: the snapshot iterates
+        ``self._counters`` while a writer inserts *new* series (a fresh
+        label value each time), and iterating a dict that another thread
+        is resizing raises ``RuntimeError: dictionary changed size during
+        iteration`` — an operator's snapshot failing because somebody
+        else dared to emit a metric. The lock makes the two mutually
+        exclusive, so the reader either sees the old series set or the
+        new one, never a half-built iteration.
+        """
+        registry = MetricsRegistry()
+        registry.counter("user_correction_frequency")
+        stop = threading.Event()
+        failures: list[BaseException] = []
+
+        def writer() -> None:
+            for index in range(500):
+                registry.counter("user_correction_frequency", 1, shard=f"shard-{index}")
+
+        def reader() -> None:
+            while not stop.is_set():
+                try:
+                    snapshot = registry.snapshot()
+                    json.dumps(snapshot)
+                except Exception as exc:  # the failure under test, reported below
+                    failures.append(exc)
+                    return
+
+        reader_thread = threading.Thread(target=reader)
+        reader_thread.start()
+        writer_thread = threading.Thread(target=writer)
+        writer_thread.start()
+        writer_thread.join()
+        stop.set()
+        reader_thread.join()
+
+        assert failures == []
+        # The unlabelled series is one; the 500 labelled shards are one each.
+        assert registry.get_counter("user_correction_frequency") == pytest.approx(1.0)
+        assert sum(registry.snapshot()["counters"].values()) == pytest.approx(501.0)

@@ -56,6 +56,8 @@ from paa.core.types import (
     new_correlation_id,
     new_session_id,
 )
+from paa.ledger.events import EventType, LedgerEvent
+from paa.ledger.store import LedgerStore
 from paa.observability.runs import ExecutionRun, ExecutionRunRepository, InvalidTraceIdError
 from paa.observability.tracing import _new_span_id, _new_trace_id
 from paa.storage.relational.database import Database
@@ -1191,3 +1193,310 @@ class TestPurgeOlderThan:
 
         assert await runs.purge_older_than(_BASE + timedelta(days=365)) == 3
         assert await runs.purge_older_than(_BASE + timedelta(days=365)) == 0
+
+
+# ---------------------------------------------------------------------------
+# Duration boundaries
+# ---------------------------------------------------------------------------
+
+
+class TestDurationBoundaries:
+    """The arithmetic a finish computes, at its edges.
+
+    The negative side of the clamp is pinned above; the two boundaries
+    on the *small* side had no test, and both are numbers an operator
+    reads: a zero-duration row and a sub-millisecond row.
+    """
+
+    async def test_a_run_that_ends_when_it_started_has_duration_zero(
+        self, runs: ExecutionRunRepository
+    ) -> None:
+        """A real zero, not an error and not ``None``.
+
+        A skill that finished within the clock's resolution is a
+        legitimate row, and the honest duration of it is zero — the
+        clamp must not turn an exact zero into something else, and the
+        int() must not turn it into a missing value.
+        """
+        started = datetime(2026, 3, 1, 9, 0, tzinfo=UTC)
+        trace_id = await runs.start_run(
+            correlation_id=new_correlation_id(), agent_role="worker", started_at=started
+        )
+
+        finished = await runs.finish_run(trace_id, exit_code=0, ended_at=started)
+
+        assert finished is not None
+        assert finished.duration_ms == 0
+        assert finished.status == "OK"
+
+    async def test_a_run_shorter_than_a_millisecond_truncates_to_zero(
+        self, runs: ExecutionRunRepository
+    ) -> None:
+        """The column is an INTEGER of milliseconds: truncation, not rounding.
+
+        A 999µs run records 0 and a 1000µs run records 1 — the resolution
+        the column promises and no finer. A reader comparing two
+        sub-millisecond runs sees two zeroes, which is what the schema
+        says the answer can be.
+        """
+        started = datetime(2026, 3, 1, 9, 0, tzinfo=UTC)
+        trace_ids = []
+        for microseconds in (999, 1000):
+            trace_id = await runs.start_run(
+                correlation_id=new_correlation_id(), agent_role="worker", started_at=started
+            )
+            await runs.finish_run(
+                trace_id,
+                exit_code=0,
+                ended_at=started + timedelta(microseconds=microseconds),
+            )
+            trace_ids.append(trace_id)
+
+        durations = [(await runs.get_run(t)).duration_ms for t in trace_ids]  # type: ignore[union-attr]
+
+        assert durations == [0, 1]
+
+
+# ---------------------------------------------------------------------------
+# The RFC §10.2 trace record
+# ---------------------------------------------------------------------------
+
+
+class TestTheTraceRecord:
+    """``ExecutionRun.to_trace_json`` — the RFC §10.2 record, as a golden dict.
+
+    Grouped rather than flat (identity, timing, outcome, model,
+    resources) because it is read by a human debugging a run and by the
+    optimiser aggregating many, and both do better with the model-tier
+    facts collected in one place. The grouping is the shape a consumer
+    depends on: flattening it, or moving ``escalated`` out of the model
+    group, is a silent schema change to every reader at once.
+    """
+
+    async def test_a_finished_run_serialises_to_the_grouped_record(
+        self, runs: ExecutionRunRepository
+    ) -> None:
+        started = datetime(2026, 3, 1, 9, 0, tzinfo=UTC)
+        ended = started + timedelta(milliseconds=1500)
+        correlation = new_correlation_id()
+        session = new_session_id()
+        parent_span = _new_span_id()
+
+        trace_id = await runs.start_run(
+            correlation_id=correlation,
+            session_id=session,
+            agent_role="coder",
+            skill_name="deploy",
+            span_parent_id=parent_span,
+            modality=ComplexityModality.STANDARD,
+            permission_mode=PermissionMode.ASK,
+            model_used="local-model",
+            started_at=started,
+        )
+        finished = await runs.finish_run(
+            trace_id,
+            exit_code=0,
+            telemetry={"counters": {"tokens": 3}},
+            tokens_consumed=1234,
+            peak_rss_mb=56.5,
+            escalated=True,
+            ended_at=ended,
+        )
+
+        assert finished is not None
+        assert finished.to_trace_json() == {
+            "trace_id": trace_id,
+            "correlation_id": str(correlation),
+            "session_id": str(session),
+            "parent_span_id": parent_span,
+            "agent_role": "coder",
+            "skill_name": "deploy",
+            "modality": ComplexityModality.STANDARD.value,
+            "permission_mode": PermissionMode.ASK.value,
+            "started_at": "2026-03-01T09:00:00+00:00",
+            "ended_at": "2026-03-01T09:00:01.500000+00:00",
+            "duration_ms": 1500,
+            "status": "OK",
+            "exit_code": 0,
+            "model": {
+                "model_used": "local-model",
+                "escalated": True,
+                "tokens_consumed": 1234,
+            },
+            "resources": {"peak_rss_mb": 56.5},
+            "telemetry": {"counters": {"tokens": 3}},
+            "error": None,
+        }
+
+    async def test_an_open_run_records_what_it_knows_and_nothing_else(
+        self, runs: ExecutionRunRepository
+    ) -> None:
+        """The minimal record a crashed-mid-run process leaves.
+
+        The keys a consumer reads for a finished run are the keys it
+        reads for an in-flight one — with ``ended_at`` null and the
+        status ``IN_FLIGHT``, rather than fields that vanish: a reader
+        that has to write ``record.get("model")`` has already lost the
+        distinction between "not finished" and "not there".
+        """
+        trace_id = await runs.start_run(
+            correlation_id=new_correlation_id(), agent_role="worker"
+        )
+
+        run = await runs.get_run(trace_id)
+        assert run is not None
+
+        record = run.to_trace_json()
+        assert record["session_id"] is None
+        assert record["parent_span_id"] is None
+        assert record["ended_at"] is None
+        assert record["duration_ms"] is None
+        assert record["status"] == "IN_FLIGHT"
+        assert record["telemetry"] == {}
+        assert record["model"] == {
+            "model_used": None,
+            "escalated": False,
+            "tokens_consumed": 0,
+        }
+        assert record["resources"] == {"peak_rss_mb": None}
+
+
+# ---------------------------------------------------------------------------
+# The correction rate — the join the module's headline is about
+# ---------------------------------------------------------------------------
+
+
+class TestTheCorrectionRate:
+    """The one number the optimiser trusts most, and the join that makes it.
+
+    The module's own headline: *"Its correction rate joins against real
+    ``USER_CORRECTION`` events in the ledger rather than reading a column
+    here"* — a correction is something the *user* did to a lineage, not
+    knowledge the run row ever had. That join had no test: no run row
+    and no ledger event were ever made to meet each other.
+    """
+
+    async def test_the_correction_rate_joins_real_ledger_events(
+        self, runs: ExecutionRunRepository, ledger: LedgerStore
+    ) -> None:
+        """One corrected lineage of two: the rate is the share of
+        *correlations* corrected, not of runs.
+        """
+        corrected, untouched = new_correlation_id(), new_correlation_id()
+        for correlation in (corrected, untouched):
+            trace_id = await runs.start_run(
+                correlation_id=correlation, agent_role="worker", skill_name="deploy"
+            )
+            await runs.finish_run(trace_id, exit_code=0)
+        await ledger.append(LedgerEvent.create(corrected, EventType.USER_CORRECTION))
+
+        stats = await runs.skill_stats("deploy")
+
+        assert stats.sample_count == 2
+        assert stats.correction_rate == pytest.approx(0.5)
+
+    async def test_the_rate_is_per_correlation_not_per_run(
+        self, runs: ExecutionRunRepository, ledger: LedgerStore
+    ) -> None:
+        """The fan-out the two-query design exists to avoid.
+
+        Two runs of one lineage, one correction: the rate is 1.0 — the
+        lineage was corrected — and the sample count stays 2, not 4. A
+        join folded into the runs aggregate would multiply the run-side
+        sums by the number of matching ledger events, and produce
+        numbers that look plausible and are wrong by an integer factor.
+        """
+        correlation = new_correlation_id()
+        for _ in range(2):
+            trace_id = await runs.start_run(
+                correlation_id=correlation, agent_role="worker", skill_name="deploy"
+            )
+            await runs.finish_run(trace_id, exit_code=0)
+        await ledger.append(LedgerEvent.create(correlation, EventType.USER_CORRECTION))
+
+        stats = await runs.skill_stats("deploy")
+
+        assert stats.sample_count == 2
+        assert stats.correction_rate == 1.0
+
+    async def test_a_correction_of_an_unfinished_lineage_is_not_counted(
+        self, runs: ExecutionRunRepository, ledger: LedgerStore
+    ) -> None:
+        """The join is against *finished* runs of the skill.
+
+        The subquery says ``ended_at IS NOT NULL``, so a correction of a
+        lineage whose only run of this skill is still open never reaches
+        the numerator — the same rule as the aggregate itself: an open
+        run is not evidence about a skill.
+        """
+        finished_lineage, open_lineage = new_correlation_id(), new_correlation_id()
+        trace_id = await runs.start_run(
+            correlation_id=finished_lineage, agent_role="worker", skill_name="deploy"
+        )
+        await runs.finish_run(trace_id, exit_code=0)
+        await runs.start_run(
+            correlation_id=open_lineage, agent_role="worker", skill_name="deploy"
+        )
+        await ledger.append(LedgerEvent.create(open_lineage, EventType.USER_CORRECTION))
+
+        stats = await runs.skill_stats("deploy")
+
+        assert stats.sample_count == 1
+        assert stats.correction_rate == 0.0
+
+
+# ---------------------------------------------------------------------------
+# The payload the optimiser consumes
+# ---------------------------------------------------------------------------
+
+
+class TestTheStatsPayload:
+    """``SkillStats.to_payload`` — the wire shape the optimiser reads."""
+
+    async def test_the_payload_rounds_the_way_the_contract_says(
+        self, runs: ExecutionRunRepository
+    ) -> None:
+        """The golden payload, and the mean latency pinned exactly.
+
+        The existing aggregate test asserted ``mean_latency_ms >= 0.0``
+        because its runs ended whenever ``utc_now()`` said; here the
+        timestamps are fixed, so the AVG over 1000ms and 3000ms is
+        exactly 2000 — and the rounding the payload promises (4 places
+        on rates, 3 on latency, 2 on tokens) is pinned as the output an
+        optimiser consumer actually parses.
+        """
+        started = datetime(2026, 3, 1, 9, 0, tzinfo=UTC)
+        runs_seeded = (
+            (0, 1, 100),  # exit code, seconds, tokens
+            (1, 3, 300),
+        )
+        for index, (exit_code, seconds, tokens) in enumerate(runs_seeded):
+            at = started + timedelta(hours=index)
+            trace_id = await runs.start_run(
+                correlation_id=new_correlation_id(),
+                agent_role="worker",
+                skill_name="mixed",
+                started_at=at,
+            )
+            await runs.finish_run(
+                trace_id,
+                exit_code=exit_code,
+                tokens_consumed=tokens,
+                ended_at=at + timedelta(seconds=seconds),
+            )
+
+        stats = await runs.skill_stats("mixed")
+
+        assert stats.mean_latency_ms == 2000.0
+        assert stats.mean_tokens == 200.0
+        assert stats.success_rate == pytest.approx(0.5)
+        assert stats.to_payload() == {
+            "skill_name": "mixed",
+            "sample_count": 2,
+            "success_rate": 0.5,
+            "mean_latency_ms": 2000.0,
+            "correction_rate": 0.0,
+            "escalation_rate": 0.0,
+            "mean_tokens": 200.0,
+            "is_significant": False,
+        }
