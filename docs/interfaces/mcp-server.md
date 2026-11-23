@@ -33,6 +33,39 @@ child:
 `env` is merged into the child's environment by the harness; only
 `PAA_MCP_TOKEN` is PAA-specific (any extra keys pass through untouched).
 
+## Hooking Claude Code
+
+Claude Code registers a stdio MCP server with its own CLI — the spawn block
+above in the client's own syntax:
+
+```bash
+claude mcp add paa -- paa mcp serve
+```
+
+The one-liner carries command and args; the JSON form — `.mcp.json` at a
+project root, or the `mcpServers` key of `~/.claude.json` — is the same
+block, and is what you reach for when the token env should ride the spawn:
+
+```json
+{
+  "mcpServers": {
+    "paa": {
+      "command": "paa",
+      "args": ["mcp", "serve"],
+      "env": { "PAA_MCP_TOKEN": "generate-a-long-random-value" }
+    }
+  }
+}
+```
+
+Token guidance is unchanged by the choice of client: `PAA_MCP_TOKEN` rides
+the `env` block and is merged into the child's environment; the *name* is
+configurable per "Token auth" below; the value never enters the ledger.
+Codex, Cursor, and OpenCode each have their own registration surface, and
+this doc does not invent their flags — what every one of them needs is the
+same three keys (command, args, env), so the spawn block above is the
+portable contract and each client's MCP documentation says where to put it.
+
 ## Token auth
 
 - `PAA_MCP__TOKEN_ENV` names the environment variable that holds the token —
@@ -99,15 +132,22 @@ ledger; the verbatim words live in the cold lake.
 
 ## Manual smoke: a harness reads a fact written via `paa chat`
 
-The scripted smoke (SPEC 2 §3.4 G-MVP item 3; echo model, fully offline):
+The manual smoke (SPEC 2 §3.4 G-MVP item 3; echo model, fully offline):
 
 ```bash
-# 1. Write through the chat surface — the turn captures a signal:
+# 1. Write through the chat surface. The turn extracts the fact INLINE: the
+#    turn's remember() runs the MemoryCreator inside the turn and writes the
+#    MEMORY_SIGNAL_EXTRACTED row itself, so the fact is queryable the moment
+#    the turn ends:
 paa chat --plain
 you: remember that deploys freeze on Fridays
 # leave with Ctrl+D
 
-# 2. Materialise the signal into a fact (one MemoryCreator batch):
+# 2. `paa memory drain` is NOT the materialisation step for chat-written
+#    facts — step 1 already extracted them. drain runs one MemoryCreator
+#    batch over unprocessed cold-lake signals; after a chat turn it claims
+#    nothing (a no-op sweep — worth running as a belt-and-braces check over
+#    other channels, expected to report zero claimed):
 paa memory drain
 
 # 3. Configure your harness with the spawn block above (or set
@@ -120,6 +160,20 @@ paa memory drain
 #    journaling notes above). Confirm the fact landed:
 paa memory facts
 ```
+
+The scripted form of this smoke is `python scripts/mcp_stdio_smoke.py` —
+the executable proof, driving the *command* the way a real MCP client does
+rather than the in-process suite: spawn `paa mcp serve` as a child with
+pipes over a throwaway `PAA_HOME`, then `initialize` → `tools/list`
+(asserting the catalogue carries `memory_remember`, `memory_search`, and
+`sessions_list`) → `sessions_list` → `chat_send` ("remember that deploys
+freeze on Fridays", echo model) → `memory_remember` against that session →
+`memory_search`, which must return the fact written this run. Offline by
+design — the echo model, no network, no key — and it fails loudly on any
+non-JSON line on stdout, the stdout-pollution failure mode it exists to
+catch. Exit 0 with a `SMOKE OK` line on success; a non-zero exit names the
+failing step; the server's stderr tail is printed whenever the child wrote
+any.
 
 ## Related documents
 

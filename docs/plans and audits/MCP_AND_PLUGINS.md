@@ -26,11 +26,14 @@ host is never the thing that runs it.
 
 ## 0. The one-paragraph answer
 
-Today PAA has a working MCP client (`src/paa/skills/adapters/mcp.py`) that **spawns the MCP
-server as a host process** — same user, same filesystem, full environment — and a `Sandbox`
-contract (`src/paa/sandbox/base.py`) that is **one-shot** (`run(spec) -> SandboxResult`), so
-it structurally cannot express a long-lived stdio server. Both facts have to change before a
-single third-party tool can be called safely.
+When this plan was written, PAA's working MCP client (`src/paa/skills/adapters/mcp.py`)
+**spawned the MCP server as a host process** — same user, same filesystem, full environment
+— and the `Sandbox` contract (`src/paa/sandbox/base.py`) was **one-shot**
+(`run(spec) -> SandboxResult`), so it structurally could not express a long-lived stdio
+server. The first fact has since changed (C5.3, Wave 5: the client spawns the server through
+a `SandboxSession` — env allowlist, workspace-jail cwd, memory ceiling, whole-tree kill —
+and refuses to run unsandboxed); the second was this plan's load-bearing refactor. Both
+had to change before a single third-party tool could be called safely.
 
 The plan therefore has one load-bearing refactor and one load-bearing decision:
 
@@ -64,16 +67,16 @@ Everything else in this document is plumbing around those two.
 
 | Piece | State | Where |
 |---|---|---|
-| MCP protocol client (JSON-RPC 2.0 over stdio, both framings, robust to crash/timeout/bad JSON) | **works, tested** | `src/paa/skills/adapters/mcp.py` (501 lines) |
-| MCP server → `SkillContract` mapping | **works** | `src/paa/skills/adapters/mcp.py:359-397` |
-| MCP server process launch | **host process, unsandboxed, full env inherited** | `src/paa/skills/adapters/mcp.py:102-110` — `asyncio.create_subprocess_exec(*cmd, stdin=PIPE, stdout=PIPE, stderr=PIPE)`; no cwd, no env allowlist, no timeout, no memory cap, no network control |
-| The claim that this is contained | **false** | `src/paa/skills/adapters/mcp.py:410-411` — *"an MCP server is its own subprocess and provides its own isolation boundary, so there is nothing to mount here."* A host subprocess provides no boundary at all. |
-| Sandbox contract | **one-shot only** | `src/paa/sandbox/base.py:606-632` — `Sandbox.run(spec) -> SandboxResult` |
+| MCP protocol client (JSON-RPC 2.0 over stdio, both framings, robust to crash/timeout/bad JSON) | **works, tested** | `src/paa/skills/adapters/mcp.py` (963 lines) |
+| MCP server → `SkillContract` mapping | **works** | `src/paa/skills/adapters/mcp.py:682-735` |
+| MCP server process launch | **sandboxed via `SandboxSession` — fixed in C5.3 (Wave 5)** | `src/paa/skills/adapters/mcp.py:220-285` — `sandbox.open(spec)` with the `SandboxSpec` env allowlist, workspace-jail cwd, memory ceiling and whole-tree kill on close; the unsandboxed `create_subprocess_exec` this row used to describe is gone, and a dispatch with no sandbox is refused |
+| The claim that this is contained | **was false; the false claim was deleted in C5.3** | the containment story is now stated honestly with the backend's own `IsolationLevel` label — `src/paa/skills/adapters/mcp.py:8-38` — and refusals at the boundary are `TOOL_CALL_DENIED` ledger rows (`manifest ∩ mandate ∩ policy`) |
+| Sandbox contract | **one-shot only** | `src/paa/sandbox/base.py:716-742` — `Sandbox.run(spec) -> SandboxResult` |
 | Docker + gVisor backend | **implemented, honest** | `src/paa/sandbox/docker_backend.py` — adds `--runtime runsc` only when the daemon reports it; reports `IsolationLevel.VM` only then, else `NAMESPACE` |
 | gVisor container hardening | **already good** | `--read-only`, `--tmpfs /tmp`, `--memory`+`--memory-swap`, `--cpus`, `--pids-limit`, `--cap-drop ALL`, `--security-opt no-new-privileges`, `--network none` |
 | `runsc` on this host | **installed, NOT registered** | `~/.local/bin/runsc` → `runsc version release-20261012.0` (official release, checksum-verified). The daemon does not know about it: it is not at `/usr/local/bin/runsc` and `/etc/docker/daemon.json` does not name it, so the daemon reports only `runc`. Registering it needs `sudo` — one of the three root-gated steps at the end of §4. |
 | Docker daemon | **works, `runc` only** | `docker info` → runtimes: `io.containerd.runc.v2`, `runc` |
-| The worker image `paa/base_worker:v4.1` | **built in Phase 0** | `deploy/worker/Dockerfile` — the image `DockerSandbox` launches for a plan step. It never existed before: it was a *string* in `src/paa/sandbox/docker_backend.py:90`, `src/paa/ledger/events.py:166` and the two SQL schemas, with no Dockerfile behind it. |
+| The worker image `paa/base_worker:v4.1` | **built in Phase 0** | `deploy/worker/Dockerfile` — the image `DockerSandbox` launches for a plan step. It never existed before: it was a *string* in `src/paa/sandbox/docker_backend.py:91`, `src/paa/ledger/events.py:166` and the two SQL schemas, with no Dockerfile behind it. |
 | The toolbox image `paa/toolbox:v1` | **built in Phase 0** | `deploy/toolbox/Dockerfile` — the image MCP servers and plugin commands run in. Carries Node 24, because most published MCP servers are npm packages started with `npx`. |
 | The `paa` daemon image | **can launch containers as of Phase 0** | the Docker client is installed (Docker's official static build, pinned by SHA-256), `/var/run/docker.sock` is mounted, and the socket's GID is added to the container user via `group_add` + `DOCKER_GID`. |
 | Skill registry (DB-backed, reliability, permissions) | **implemented but never constructed** | `src/paa/skills/{registry,usa}.py` — no call site outside `src/paa/skills/` |
@@ -91,7 +94,7 @@ Everything else in this document is plumbing around those two.
    "build the *host boundary* MCP needs, then wire it".
 2. **The `Sandbox` ABC cannot express a conversation.** `run()` returns a *total* outcome
    (`SandboxResult`) and closes stdin (`stdin=asyncio.subprocess.DEVNULL` in the Docker
-   backend, `src/paa/sandbox/docker_backend.py:1369`). An MCP stdio server is a duplex pipe held open for the
+   backend, `src/paa/sandbox/docker_backend.py:1395`). An MCP stdio server is a duplex pipe held open for the
    life of a session. **This is the single hardest blocker and the reason the plan leads
    with a sandbox refactor rather than with a tool registry.**
 3. **gVisor is not actually deployed here.** `runsc` is installed but not
@@ -151,8 +154,8 @@ Requires: `runsc` installed **and registered with the Docker daemon**
 
 `DockerSandbox` already does exactly this and already reports honestly: the runtime it
 requests comes from the configuration
-(`src/paa/sandbox/docker_backend.py:238-244`), and the isolation level it reports is
-`VM` only when that runtime is confirmed present (`src/paa/sandbox/docker_backend.py:381-392`).
+(`src/paa/sandbox/docker_backend.py:239-245`), and the isolation level it reports is
+`VM` only when that runtime is confirmed present (`src/paa/sandbox/docker_backend.py:382-393`).
 **No code change needed for L1** — it needs a host that is actually configured.
 
 ### L2 — Namespace + cgroup hardening (already in `DockerSandbox._build_args`)
@@ -204,7 +207,7 @@ between the runtime and the tool.
 
 ### L5 — Environment & secrets
 
-`build_child_env` (`src/paa/sandbox/base.py:550-604`) builds the child env **from empty**. The host
+`build_child_env` (`src/paa/sandbox/base.py:660-714`) builds the child env **from empty**. The host
 env is never inherited. The plugin manifest declares env vars **by name**
 (`token_env = "ACME_API_KEY"`); the host resolves the *value* at spawn time from
 `os.environ` / `config.dotenv_value` and passes only the named ones.
@@ -889,7 +892,7 @@ The current `MCPClient` is stdio-only. Streamable HTTP needs:
   stream**.
 * A **session id** header (`Mcp-Session-Id`) for correlation.
 * **Server-initiated requests** (`sampling/createMessage`, `roots/list`) must be serviceable.
-  The current client explicitly ignores them (`src/paa/skills/adapters/mcp.py:196-200`). Under stdio that is
+  The current client explicitly ignores them (`src/paa/skills/adapters/mcp.py:429-431`). Under stdio that is
   survivable; under HTTP a server that asks for sampling and gets silence behaves badly.
   → *Open question in §7: implement the server-request side, or declare the runtime a
   "no server-initiated requests" client and refuse servers that need them?*

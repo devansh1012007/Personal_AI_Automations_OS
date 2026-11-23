@@ -22,7 +22,7 @@ never decide whether an action is safe** — that decision is deterministic Pyth
 - The critic runs deterministic validation first; the model's verdict can only
   *downgrade*, never upgrade, a failing check. A model saying PASS cannot
   overturn an AST rejection or failing test suite (`agents/reasoning.py:194`,
-  `validation/engine.py:226`).
+  `validation/engine.py:238`).
 - `StructuredOutputError` and AST rejections are authoritative (`base.py`,
   `engine.py`).
 
@@ -54,7 +54,7 @@ never decide whether an action is safe** — that decision is deterministic Pyth
 
 ### 5. Sandbox containment (honestly declared)
 
-`IsolationLevel` (`sandbox/base.py:54`) ranks backends honestly:
+`IsolationLevel` (`sandbox/base.py:59`) ranks backends honestly:
 
 | Level | Backend | Real containment? | Stops |
 |---|---|---|---|
@@ -63,23 +63,23 @@ never decide whether an action is safe** — that decision is deterministic Pyth
 | NAMESPACE (2) | WSL, Docker | Yes (process-level) | Plus filesystem visibility, (with `--network=none`) network |
 | VM (3) | Docker + runsc/gVisor | Yes (syscall boundary) | Syscall interception — **not available on target hardware** |
 
-`is_real_containment` is true only at `NAMESPACE` and above (`sandbox/base.py:97`).
+`is_real_containment` is true only at `NAMESPACE` and above (`sandbox/base.py:98`).
 The subprocess backend runs as the **same OS user** with the same network stack;
 it is "a guard against a confused agent, not a hostile one" (`sandbox/base.py:26`).
 
 ### 6. Workspace jail
 
 `resolve_workspace` / `assert_inside_workspace` resolve paths (collapse `..`,
-follow symlinks) and confine writes to one directory (`sandbox/base.py:495`,
-`:305`). Comparison on resolved paths defeats `..`/symlink escapes.
+follow symlinks) and confine writes to one directory (`sandbox/base.py:605`,
+`:628`). Comparison on resolved paths defeats `..`/symlink escapes.
 
 ### 7. Environment allowlist (no ambient secret leakage)
 
 `build_child_env` builds the child environment from empty; it never inherits
 `os.environ` by copy-and-delete. Only minimal OS bootstrap keys (`PATH`,
 `SystemRoot`, ...) plus the caller's explicit `spec.env` allowlist
-(`sandbox/base.py:337`). `SandboxSpec._reject_ambient_env_smell` trips on
-`env=dict(os.environ)` (`sandbox/base.py:337`).
+(`sandbox/base.py:660`). `SandboxSpec._reject_ambient_env_smell` trips on
+`env=dict(os.environ)` (`sandbox/base.py:338`).
 
 ### 8. AST pre-scan (deny-by-default)
 
@@ -87,9 +87,9 @@ follow symlinks) and confine writes to one directory (`sandbox/base.py:495`,
 Python before execution:
 - Denied modules (subprocess, ctypes, socket/urllib/requests/httpx, boto3,
   pickle, importlib, os.system/popen, shutil.rmtree, eval/exec/compile, …)
-  (`ast_scanner.py:122`–`:244`).
+  (`ast_scanner.py:125`–`:247`).
 - Unparseable source → CRITICAL finding, **never skipped** — a scanner that
-  skips unreadable source gives an attacker a bypass (`ast_scanner.py:342`).
+  skips unreadable source gives an attacker a bypass (`ast_scanner.py:360`).
 - NUL byte, `SyntaxError`, `RecursionError`, `MemoryError` → CRITICAL
   (`ast_scanner.py`).
 
@@ -143,7 +143,7 @@ correlations (`delegation.py:167`).
 
 `max_capture_bytes` (default 8 MiB) bounds stdout/stderr captured from a
 sandbox to prevent RAM exhaustion through the pipe; output beyond the cap is
-dropped but the pipe is still drained (`sandbox/base.py:274`, `subprocess_
+dropped but the pipe is still drained (`config.py:467`, `subprocess_
 backend.py` `_read_capped`).
 
 ### 14. Human gates cannot be auto-cleared

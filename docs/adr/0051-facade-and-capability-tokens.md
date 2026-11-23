@@ -133,8 +133,8 @@ token check → budget/mode check → journal `PROPOSED` (ADR-0050) → executio
 outcome row. The coder loop's ordering
 (`coder/loop.py:218`: PRE hook → `PROPOSED` → permission → prompt → execute →
 outcome) is the `use_skill` instance of this ladder; the MCP client's
-framing (`skills/adapters/mcp.py:136`'s read loop) and request/response
-correlation (`skills/adapters/mcp.py:218`) is the transport P3
+framing (`skills/adapters/mcp.py:336`'s read loop) and request/response
+correlation (`skills/adapters/mcp.py:449`) is the transport P3
 reuses for every other capability over stdio.
 
 ## Consequences

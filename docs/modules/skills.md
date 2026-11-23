@@ -62,7 +62,11 @@ invalidates handle on exit (`skills/secrets.py:522`). Audit log of accesses/deni
 - `native.py`: in-process callables (sync offloaded to thread; `get_secret`
   injected if signature declares it).
 - `mcp.py`: embedded MCP client, JSON-RPC 2.0 over stdio; autodetects framing;
-  `McpServerAdapter` runs start→initialize→work→close per operation.
+  spawns the server through a `SandboxSession` (env allowlist, workspace jail,
+  memory ceiling, tree kill — refuses to run unsandboxed, the claw_hub rule);
+  `McpServerAdapter` runs start→initialize→work→close per operation and gates
+  every tool on `manifest ∩ mandate ∩ policy`, journalling refusals as
+  `TOOL_CALL_DENIED` ledger rows when a ledger is bound.
 - `claw_hub.py`: OpenClaw skill directories (`SKILL.md` + Python scripts);
   runs entrypoints under sandbox with skill dir mounted read-only; args via
   JSON file in argv (`--paa-args`), never env (`skills/adapters/claw_hub.py:78`).
@@ -85,7 +89,7 @@ invalidates handle on exit (`skills/secrets.py:522`). Audit log of accesses/deni
 | `USA` → `SecretBroker` | bound proxy | Skills never get secrets | `usa.py:142` |
 | `USA` → `SchemaValidator` | `validate_tool_output()` | Validate skill output | `usa.py:235` |
 | `ClawHubAdapter` → `Sandbox` | `run(spec)` | Contained skill entrypoint | `claw_hub.py:435` |
-| `MCPClient` → subprocess | stdio JSON-RPC | MCP server session | `mcp.py` |
+| `MCPClient` → `SandboxSession` | stdio JSON-RPC over the duplex session | contained MCP server session | `mcp.py` |
 
 ## Runtime behavior
 
