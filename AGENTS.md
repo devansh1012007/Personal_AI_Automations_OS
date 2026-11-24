@@ -548,3 +548,116 @@ Run the appropriate test suite, inspect the final diff, and report verified resu
 Commits and PRs are permitted. Create focused commits and a PR when appropriate, but only after the mandatory reviews pass. Never commit known unresolved critical issues, claim tests passed without executing them, or bypass review gates to save time.
 
 **Non-negotiable rule:** Context-gathering subagents must run before every change; an independent review subagent must run after every atomic phase and once again at the end. If subagents or required verification are unavailable, stop and report the blocker instead of pretending the workflow was completed.
+
+---
+
+## Live work state — the coordination board
+
+**Who writes here:** the orchestrator agent and every subagent working in this tree.
+Update your row in place when you start, and again when you finish; a row that says
+"verified" must name its evidence (command + result). Rows for finished work move to
+the archive at the bottom. Keep prose out — this is a register, not a report.
+
+### Environment (this development sandbox)
+
+- Repo: `/home/z/my-project/paa`, branch `main` @ `8d4eecf`, clean tree.
+- venv: `/home/z/.venv` — **outside** the persistent project dir; after a sandbox
+  recycle reinstall with `pip install -e ".[dev,tui]"` from the repo root and
+  `export PATH=/home/z/.venv/bin:$PATH`. 2 CPU cores; run at most ~3 parallel jobs.
+- Tooling present: pytest 9.0.2, ruff 0.17.6 (newer than the `>=0.8` floor — see the
+  ruff note in the verified-facts register), mypy (strict, clean).
+
+### Active campaign: W6-LOOPS — SPEC 2 Wave 6: loops everywhere (2026-11-24)
+
+Owner ask: work everything the satisfaction report left "not started / partial" in the
+P and C sections, in wave order. Scope: Wave 6 (C6.1-C6.6 = P1.3, P1.5, P2, P4-lite,
+conformance v0), then Wave 7 as capacity allows. C5.1/G1 stays operator-blocked; P5
+stays gated on a first outside author (the spec's own rule).
+
+| Task ID | Agent | Assignment | Status | Evidence / notes |
+|---|---|---|---|---|
+| W6-C6.2 | orchestrator | CallJournal + PIPELINE_RUN_*/CALL_* events per ADR-0046/0050 | in progress | started 2026-11-24 |
+| W6-C6.1 | orchestrator | coder.tool-loop on the facade; use_skill -> existing ToolJournal | pending | |
+| W6-C6.3 | orchestrator | replay/divergence logic + kill -9 chaos for chat and coder | pending | |
+| W6-C6.4 | orchestrator | slots + overlay loader, tighten-only at load | pending | |
+| W6-C6.5 | orchestrator | registry v0 + paa pipeline list/inspect/run/trace | pending | |
+| W6-C6.6 | orchestrator | conformance v0 for all registered pipelines | pending | |
+| W6-CLOSE | orchestrator | G-LOOPS gate evidence + truth pass + deliverables | pending | |
+
+### Archived campaign: T-VERIFY (2026-11-24, complete)
+
+See git history 5e0a0d8..8d4eecf and the delivered satisfaction report
+(paa-pipeline-platform-spec-satisfaction-report.pdf). T-VERIFY-1..3d all done;
+deliverables: paa-pipeline-platform-work.patch, paa-format-patch-series/ (16),
+the report PDF, this board.
+
+### (archived) T-VERIFY — task rows (2026-11-24)
+
+Owner ask was: check whether `docs/plans/2026-11-21-pipeline-platform-spec.md` (the
+uploaded copy is byte-identical) is satisfied on `main`, and deliver the `.patch`
+files plus a done/left report. Audit range: `5e0a0d8..8d4eecf` (16 commits:
+P0 → P1.1 → P1.2 → SPEC-2 W4 C4.1–C4.7 → W5 C5.2–C5.5 close).
+
+| Task ID | Agent | Assignment | Status | Evidence / notes |
+|---|---|---|---|---|
+| T-VERIFY-1 | orchestrator | Audit the spec phase-by-phase; produce the report | **done** | report built, QA'd (pdf_qa WARN-only, stat-box false positives), visually verified by subagents |
+| T-VERIFY-2a | subagent | Full-suite chunk A (storage, coder, cli, tui, runtime, core, daemon, integration — 1,561 tests) | **verified** | `1318 passed, 244 skipped in 46.71s`, exit 0. Note: the 2 cold-start budget tests in `tests/tui/test_chat_startup.py` flake under CPU contention (wall-clock import budget 2.0 s) and pass in isolation/clean runs — load-induced, not regressions. |
+| T-VERIFY-2b | subagent | Full-suite chunk B (validation, context, memory, sandbox — 1,435 tests) | **verified** | `1435 passed in 68.13s`, exit 0; sandbox kill -9 drills all green |
+| T-VERIFY-2c | subagent | Full-suite chunk C (models, agents, observability, ledger, deployment, skills, chat, api, mcp_server, conventions, pipelines, marketplace, improvement, root — 1,485 tests) | **verified** | `1484 passed, 1 xfailed in 140.40s`, exit 0; the xfail is the known LOCKDOWN air-gap ordering decision (`tests/agents/test_policy.py::TestLockdown`) |
+| T-VERIFY-3b | subagent | Visual QA of the 12-page report (all pages read as images) | **verified** | PASS: no duplication/blank/placeholder/overlap; TOC 16/16 page numbers match footers; 3 cosmetic findings |
+| T-VERIFY-3c | subagent | Re-check after cosmetic fixes (caption orphan, status-column breaks, filename wrap) | **verified** | caption + status fixed; filename fixed after column widening (text-layer verified one line) |
+| T-VERIFY-3d | subagent | Content-accuracy review of the report against the tree | **verified** | APPROVED after fixes: caught 5 stale/misread numbers (base.py 508→518, ADR-0051 166→172, orchestrator churn −575 → net −355, test_session 201 tests is the directory not the file, mcp.py +630 → +546/−84); all corrected and regenerated |
+
+### Verified-facts register (do not re-verify; cite instead)
+
+- P0.4 spike: `scripts/pipeline_journal_spike.py` → 11 PASS, exit 0 (replay serves
+  recorded results with zero re-execution; a changed call is flagged DIVERGED).
+- P0.3 manifest check: `scripts/pipeline_manifest_check.py` → all tighten-only
+  widening rejections PASS, exit 0.
+- P0.5: `docs/EXTENSIBILITY_PIPELINES.md` carries the superseded banner and the
+  corrected test count.
+- P1.1/P1.2 artifacts exist: `src/paa/pipelines/base.py` (518 lines: `Pipeline`,
+  `CapabilityFacade`, `CapabilityToken`/`CapabilitySet`, `compute_grants`,
+  divergence/unknown-outcome errors), `src/paa/pipelines/builtin.py` (808 lines:
+  `PipelineHost`, `BuiltinPipelineFacade`, `BuiltinPlanExecuteCritique`;
+  `src/paa/agents/orchestrator.py` net -355 lines, 1,212 to 857).
+- SPEC-2 W4 live: `paa chat --plain` echo-model two-turn recall works (fact stored
+  turn 1, recalled turn 2); `scripts/mcp_stdio_smoke.py` → SMOKE OK (6 tools,
+  `chat_send`, remember→search hit, spawn path per `docs/interfaces/mcp-server.md`).
+- Gates: mypy `src/paa` → 0 issues in 173 files; ruff `src tests` → clean.
+  ruff 0.17.6 flags 13 findings under `scripts/` (F401, RUF002 en-dash) — version
+  drift + scope: the documented gate is `ruff check src tests`, which passes.
+- Collection: 4,481 tests; **full-suite result (chunked, 2026-11-24): 4,237 passed /
+  243 env-gated skipped / 1 xfailed / 0 failed** (chunk A 1,318+244, chunk B
+  1,435, chunk C 1,484+1x) — an exact match with the W5 close claim in
+  `docs/plans/2026-11-21-next-spec-2.md`.
+- ADR-recorded decisions for the spec's §12 open questions: R3 default + R2 kept
+  for the built-in (ADR-0050); `ctx.use_skill` reuses `TOOL_CALL_*` (ADR-0051);
+  tighten-only overlays (ADR-0052). Still open: NDJSON-vs-LSP framing and first
+  non-Python language (both P3-time), first outside author (P5 gate), sequencing
+  deltas documented in the SPEC-2 plan §2.
+
+### Known left (vs the spec's phases) — do not re-derive
+
+- P1.3 (coder loop on the facade), P1.5 (slot-addressable stages), P2 (CallJournal
+  + replay/chaos), P4-lite registry/CLI, conformance v0 → SPEC-2 Wave 6 (not started).
+- P3 (RPC host/protocol), P5 (distribution), P6 (observe/acp-client adapters),
+  P7 (authoring kit) → Waves 6–8 (not started); `paa-pipeline/1` stays draft —
+  only two pipelines run on the facade today (builtin + chat), rule of three unmet.
+- C5.1/G1 real-model S1: PENDING, operator-blocking (no model key in this sandbox);
+  run book in `docs/operations/2026-11-09-next-spec/g1-decision.md`.
+
+### Deliverables of this campaign
+
+- `/home/z/my-project/download/paa-pipeline-platform-work.patch` — combined diff
+  `5e0a0d8..8d4eecf` (141 files, +23,227/−1,099). Supersedes the earlier
+  partial `pipeline-platform-p0-p1.patch` and `paa-spec2-w4-w5.patch`.
+- `/home/z/my-project/download/paa-format-patch-series/` — 16 per-commit patches
+  (git am ready).
+- `/home/z/my-project/download/paa-pipeline-platform-spec-satisfaction-report.pdf`
+  — the audit report (12 pages: cover, TOC, 8 chapters, 12 tables).
+- `/home/z/my-project/download/paa-report-cover.html` — the report cover source
+  (HTML→PDF dual-deliverable rule).
+- This board (uncommitted by design — tracking state, not product).
+
+### Archive (finished rows)

@@ -292,6 +292,45 @@ class EventType(str, enum.Enum):
     MEMORY_RECALL_CONSULTED = "MEMORY_RECALL_CONSULTED"
     MEMORY_SIGNAL_EXTRACTED = "MEMORY_SIGNAL_EXTRACTED"
 
+    # -- pipeline runs + capability calls (W6, ADR-0046/0050) --------------
+    # Pipeline-platform events are the audit record of one pipeline run and
+    # the host-side call journal that makes it resumable (SPEC 2 Wave 6,
+    # C6.2 = the pipeline spec's P2.1). They are *informational*, never
+    # lifecycle: all seven map to `_NO_PHASE_CHANGE` in ledger/replay.py
+    # and none of them enters TERMINAL_EVENTS. A pipeline run is not a task
+    # lineage — the built-in orchestrator pipeline rides a task lineage and
+    # emits that lineage's TASK_* events through its host; these rows are
+    # the platform's own record of the door, and they must never move a
+    # phase, close a task, or let the boot sweep requeue a pipeline-only
+    # lineage as resumable work.
+    #
+    # ADR-0050's journal contract, in event form:
+    #   PIPELINE_RUN_STARTED   {v, pipeline, version, run_kind}
+    #   PIPELINE_CALL_PROPOSED {v, seq, method, fingerprint, params_shape}
+    #   PIPELINE_CALL_COMPLETED{v, seq, method, result_sha256, result_json?}
+    #   PIPELINE_CALL_FAILED   {v, seq, method, error}
+    #   PIPELINE_RUN_COMPLETED {v, status, summary_shape, metrics}
+    #   PIPELINE_RUN_FAILED    {v, reason}
+    #   PIPELINE_RUN_DIVERGED  {v, seq, expected_fingerprint, actual_fingerprint}
+    #
+    # Idempotency is the full ADR-0008 key: attempt=0 and discriminator
+    # `run:<kind>` / `call:<seq>:<kind>`, so a redelivered append dedupes in
+    # the store while one call's PROPOSED and COMPLETED stay distinct rows.
+    # Payload discipline (ADR-0046): every payload carries `v` (currently 1);
+    # free-text params and results never enter a payload — only their
+    # SHA-256 and a shape-only preview (`<str len=N sha256=xxxxxxxx>`),
+    # with one deliberate exception: `result_json` on COMPLETED, the
+    # recorded result replay serves back (a sha alone cannot reconstruct a
+    # servable value; the blob store takes anything past the inline limit,
+    # exactly as the coder journal does).
+    PIPELINE_RUN_STARTED = "PIPELINE_RUN_STARTED"
+    PIPELINE_RUN_COMPLETED = "PIPELINE_RUN_COMPLETED"
+    PIPELINE_RUN_FAILED = "PIPELINE_RUN_FAILED"
+    PIPELINE_RUN_DIVERGED = "PIPELINE_RUN_DIVERGED"
+    PIPELINE_CALL_PROPOSED = "PIPELINE_CALL_PROPOSED"
+    PIPELINE_CALL_COMPLETED = "PIPELINE_CALL_COMPLETED"
+    PIPELINE_CALL_FAILED = "PIPELINE_CALL_FAILED"
+
 
 #: Events after which a correlation is closed and needs no recovery sweep.
 #: Used by the recovery engine to decide which lineages are still in flight.

@@ -162,7 +162,7 @@ Daemon ingestion loop (daemon.py:139)
 ```
 paa recover / Daemon.start → Runtime.boot_recovery()
   → ChiefOrchestrator.boot() (src/paa/agents/orchestrator.py:801)
-    → RecoveryEngine.boot_sweep() (recovery.py:222)
+    → RecoveryEngine.boot_sweep() (recovery.py:243)
       → verify_all_chains() (store.py:349)
       → open_correlations() (store.py:278)  — from head projection, not queue
       → per lineage: project() (replay.py:322)

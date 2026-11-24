@@ -53,7 +53,7 @@ append-only. The only "mutation" of the head row is the upsert in
   resets `completed_steps` to steps before `restored_step_index`
   (`replay.py:267`).
 - `TASK_ABANDONED` closes a lineage that exceeded `max_delivery_attempts`
-  (`recovery.py:294`).
+  (`recovery.py:315`).
 - There is no explicit "delete a task" operation; ledger rows are append-only.
 
 ### Failure halfway through
@@ -64,7 +64,7 @@ append-only. The only "mutation" of the head row is the upsert in
 - `RecoveryEngine.boot_sweep()` replays open lineages, reconciles the workspace
   against `hot_serving_recovery_marks`, restores drift (`STATE_ROLLBACK_
   TRIGGERED`), re-queues resumable phases, parks `AWAITING_HUMAN`
-  (`recovery.py:263`).
+  (`recovery.py:284`).
 
 ### Can a retry cause duplication?
 Idempotency keys (`SHA-256(correlation_id|event_type|attempt|discriminator)`)
@@ -218,7 +218,7 @@ tracks `unprocessed`/`processing`/`processed`/`malformed`/`quarantined`
 ### Creation
 Orchestrator `submit()` enqueues `{correlation_id, goal}` to
 `StreamName.ORCHESTRATOR_CORE` (`src/paa/agents/orchestrator.py:313`). Recovery `_requeue()`
-re-enqueues recovered lineages (`recovery.py:437`).
+re-enqueues recovered lineages (`recovery.py:513`).
 
 ### Consumption
 Daemon `_claim_and_run()` claims messages (`queue.claim`), runs each via

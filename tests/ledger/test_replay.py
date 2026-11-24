@@ -269,6 +269,17 @@ class TestProperties:
                     EventType.CODER_SESSION_ENDED,
                     EventType.MANDATE_GRANTED,
                     EventType.MANDATE_REFUSED,
+                    # W6 (C6.2, ADR-0050): the pipeline-platform rows are
+                    # phase-inert too, so replay must stay total over any
+                    # ordering that includes them — "all orderings
+                    # including the new types" is this strategy's job.
+                    EventType.PIPELINE_RUN_STARTED,
+                    EventType.PIPELINE_RUN_COMPLETED,
+                    EventType.PIPELINE_RUN_FAILED,
+                    EventType.PIPELINE_RUN_DIVERGED,
+                    EventType.PIPELINE_CALL_PROPOSED,
+                    EventType.PIPELINE_CALL_COMPLETED,
+                    EventType.PIPELINE_CALL_FAILED,
                 ]
             ),
             min_size=1,

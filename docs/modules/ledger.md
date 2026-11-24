@@ -92,9 +92,9 @@ stays `EXECUTING` until all steps are done (`replay.py:240`). This is ADR-0010
 from that version.
 
 ### `recovery.py` — crash recovery
-`RecoveryEngine.boot_sweep()` (`recovery.py:222`):
+`RecoveryEngine.boot_sweep()` (`recovery.py:243`):
 1. `verify_all_chains()` — reports chain problems, never auto-repairs
-   (`recovery.py:231`).
+   (`recovery.py:252`).
 2. `open_correlations()` from head projection (never the queue — `recovery.py:
    11`).
 3. Per lineage: `project()`; terminal → `ALREADY_TERMINAL`;
@@ -103,9 +103,9 @@ from that version.
 4. `_reconcile_workspace()` compares disk vs `hot_serving_recovery_marks`
    checkpoint manifest; drift → `STATE_ROLLBACK_TRIGGERED` + restore.
 5. `_requeue()` enqueues to `StreamName.ORCHESTRATOR_CORE`; failure logged,
-   non-fatal (`recovery.py:444`).
+   non-fatal (`recovery.py:520`).
 6. `_record_sweep()` appends `RECOVERY_REPLAY_COMPLETED`, suppressed if the
-   latest event is already one (idempotent sweeps; `recovery.py:315`).
+   latest event is already one (idempotent sweeps; `recovery.py:336`).
 
 `RecoveryOutcome`: `RESUMED`, `ROLLED_BACK`, `PARKED_HUMAN`, `ABANDONED`,
 `UNRECOVERABLE`, `ALREADY_TERMINAL` (`recovery.py:103`).
@@ -145,9 +145,9 @@ from that version.
   (`ledger/store.py:144`).
 - Concurrent writer race → re-read by key, return what landed
   (`ledger/store.py:174`).
-- Chain verification failure → reported, not repaired (`recovery.py:231`).
+- Chain verification failure → reported, not repaired (`recovery.py:252`).
 - One bad lineage in recovery → logged as `UNRECOVERABLE`, sweep continues
-  (`recovery.py:250`).
+  (`recovery.py:912`).
 
 ## Modification impact
 

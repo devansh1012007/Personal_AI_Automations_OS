@@ -317,6 +317,28 @@ def apply_event(state: TaskProjection, event: LedgerEvent) -> TaskProjection:
             # boot sweep from reading conversation as resumable work.
             pass
 
+        case (
+            EventType.PIPELINE_RUN_STARTED
+            | EventType.PIPELINE_RUN_COMPLETED
+            | EventType.PIPELINE_RUN_FAILED
+            | EventType.PIPELINE_RUN_DIVERGED
+            | EventType.PIPELINE_CALL_PROPOSED
+            | EventType.PIPELINE_CALL_COMPLETED
+            | EventType.PIPELINE_CALL_FAILED
+        ):
+            # W6 (ADR-0046/0050 pattern): pipeline-run / call-journal events
+            # are the audit record of the platform's own door, not
+            # task-lineage state — no projection field moves. The run's own
+            # state (call sequence, outcomes, fingerprints) is folded by
+            # paa.pipelines.journal.fold_call_journal from the payloads,
+            # never here: a pipeline run is not a task, and a run history
+            # replayed through this fold must land exactly where it
+            # started, which is what keeps the boot sweep from reading a
+            # journalled run as resumable task work (ledger/recovery.py's
+            # pipeline-only-lineage exemption is the sweep's half of this
+            # same rule).
+            pass
+
         case _:
             pass
 
@@ -456,6 +478,13 @@ _NO_PHASE_CHANGE = frozenset(
         EventType.CHAT_TURN_CANCELLED,
         EventType.MEMORY_RECALL_CONSULTED,
         EventType.MEMORY_SIGNAL_EXTRACTED,
+        EventType.PIPELINE_RUN_STARTED,
+        EventType.PIPELINE_RUN_COMPLETED,
+        EventType.PIPELINE_RUN_FAILED,
+        EventType.PIPELINE_RUN_DIVERGED,
+        EventType.PIPELINE_CALL_PROPOSED,
+        EventType.PIPELINE_CALL_COMPLETED,
+        EventType.PIPELINE_CALL_FAILED,
     }
 )
 

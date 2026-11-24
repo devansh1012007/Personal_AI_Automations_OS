@@ -84,7 +84,7 @@ restores drift, re-queues resumable tasks, parks human-gated tasks.
 `WorkspaceSnapshotter`/`Requeuer` protocols.
 
 **Failure behavior:** One bad lineage does not abort the sweep
-(`ledger/recovery.py:250`). Recovery is idempotent — running twice yields the same end
+(`ledger/recovery.py:912`). Recovery is idempotent — running twice yields the same end
 state (`recovery.py:17`).
 
 ## 3. Agents — `agents/`
@@ -479,7 +479,7 @@ passed>0).
 | Validation failure | `validation/engine.py:235` | Binary FAIL; critic can only downgrade |
 | Sandbox memory breach | `watchdog.py` | Kill; `killed_reason="memory"` |
 | Queue depth (backpressure) | `backpressure.py:115` | Degrade modality / shed discretionary ingestion (HTTP 429) |
-| Crash mid-task | `recovery.py:222` | Boot sweep replays lineage, reconciles workspace, re-queues |
+| Crash mid-task | `recovery.py:243` | Boot sweep replays lineage, reconciles workspace, re-queues |
 
 ## Related documents
 
