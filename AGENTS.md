@@ -560,17 +560,21 @@ the archive at the bottom. Keep prose out — this is a register, not a report.
 
 ### Environment (this development sandbox)
 
-- Repo: `/home/z/my-project/paa`, branch `main` @ 3478509, clean tree.
-- Full gate at the W6 close: `python -m pytest tests/` → 4,368 passed /
-  244 env-gated skipped / 1 xfailed, 0 failures, exit 0; `mypy src/paa` clean
-  (181 files); `ruff check src tests` clean.
+- Repo: `/home/z/my-project/paa`, branch `main` @ ccb009b, clean tree at
+  the W6 close; C7.1 lands on top of it.
+- Full gate at the W7 C7.1 close: `python -m pytest tests/` → 4,429 passed /
+  244 env-gated skipped / 1 xfailed, 0 failures, exit 0 (4,674 collected;
+  W6 close was 4,368 → +61, exactly the new tests); `mypy src/paa` clean
+  (186 files — after reinstalling the `tui` extra; a recycled sandbox
+  without textual shows 19 phantom Any-errors in tui/chat/*);
+  `ruff check src tests` clean.
 - venv: `/home/z/.venv` — **outside** the persistent project dir; after a sandbox
   recycle reinstall with `pip install -e ".[dev,tui]"` from the repo root and
   `export PATH=/home/z/.venv/bin:$PATH`. 2 CPU cores; run at most ~3 parallel jobs.
 - Tooling present: pytest 9.0.2, ruff 0.17.6 (newer than the `>=0.8` floor — see the
   ruff note in the verified-facts register), mypy (strict, clean).
 
-### Active campaign: W6-LOOPS — SPEC 2 Wave 6: loops everywhere (2026-11-24)
+### Archived campaign: W6-LOOPS — SPEC 2 Wave 6: loops everywhere (2026-11-24, closed)
 
 Owner ask: work everything the satisfaction report left "not started / partial" in the
 P and C sections, in wave order. Scope: Wave 6 (C6.1-C6.6 = P1.3, P1.5, P2, P4-lite,
@@ -590,6 +594,19 @@ pipelines on one facade, conformance + chaos + overlay green, protocol still dra
 | W6-C6.5 | orchestrator | registry v0 + paa pipeline list/inspect/run/trace | **done** | commit b5390ea; builtin+local sources, mandate pipeline scope (Scope.pipelines, golden payload preserved), selection explicit→scope→default; CLI list/inspect/run/trace driven live in tests; 29 tests |
 | W6-C6.6 | orchestrator | conformance v0 for all registered pipelines | **done** | commit 215cb25; six-check standard in each pipeline's own vocabulary (coder: all six real; chat/builtin: real + honest n/a rows naming where pinned); all three GREEN |
 | W6-CLOSE | orchestrator | G-LOOPS gate evidence + truth pass + deliverables | **done** | this commit; full gate 4,368/244/1x/0 exit 0, mypy+ruff clean; conformance+chaos+overlay green; protocol still draft (freezing waits for P3's RPC run — the spec's own rule); docs truth pass (repointed replay.py + shifted line citations); deliverables regenerated |
+
+### Active campaign: W7-EVIDENCE — SPEC 2 Wave 7: the moat goes external (2026-11-24)
+
+Owner ask: continue down the report's "not started / partial" list in wave order;
+Wave 7 rows as capacity allows, C7.1 first (it is also the pipeline spec's P1.4:
+the fourth pipeline the rule-of-three was waiting on).
+
+| Task ID | Agent | Assignment | Status | Evidence / notes |
+|---|---|---|---|---|
+| W7-C7.1 | orchestrator | `paa observe` — H3.2 observer mode, T1 evidence tier, pipeline #4 per P1.4: run any CLI in a workspace, record manifest diff + git changes + transcript, classify state after a crash | **done** | this commit; W7-IMPL-01 report; observer core + `paa-observe-bundle/1` (two-phase write, resume="none", tier="T1") + `builtin.observe` on the facade with an empty capability ask + `paa observe` CLI and `paa pipeline run builtin.observe` through one shared driver; done-when met as tests (fake harness → complete T1 bundle; kill -9/timeout/error/clean classification matrix + chaos); conformance 4 pipelines GREEN; registry/manifests carry the honesty ladder (`[evidence] declares_tier`); 57 observe tests, full gate 4,429/244/1x/0; docs/interfaces/observe-bundle.md + 125 citations re-anchored |
+| W7-C7.2 | orchestrator | attested change bundle + `paa verify` (H3.1) | not started | next row; consumes C7.1's bundle inputs |
+| W7-C7.3 | orchestrator | `paa record` — the harness-neutral flight recorder | not started | depends on C7.2 |
+| W7-C7.4 | orchestrator | cross-harness eval harness | not started | depends on C7.3 |
 
 ### Archived campaign: T-VERIFY (2026-11-24, complete)
 
@@ -648,23 +665,31 @@ P0 → P1.1 → P1.2 → SPEC-2 W4 C4.1–C4.7 → W5 C5.2–C5.5 close).
 
 - ~~P1.3, P1.5, P2, P4-lite, conformance v0~~ → **done in Wave 6** (C6.1-C6.6;
   the rule of three is met: builtin + chat + coder.tool-loop on the facade).
-- P3 (RPC host/protocol), P5 (distribution), P6 (observe/acp-client adapters),
-  P7 (authoring kit) → Waves 7–8 (not started); `paa-pipeline/1` stays draft —
-  freezing waits for P3's RPC run (the spec's own rule).
+- ~~P1.4 (observe as pipeline #4)~~ → **done in Wave 7** (C7.1: `builtin.observe`
+  on the facade, `resume="none"`, `evidence_tier="T1"`; four pipelines
+  registered, conformance GREEN ×4).
+- Wave 7 rest: C7.2 attest + `paa verify`, C7.3 `paa record`, C7.4 evals,
+  C7.5 `paa thread`, C7.6 ACP v1 → not started.
+- P3 (RPC host/protocol), P5 (distribution), the P6 adapters beyond observe
+  (acp-client, mcp-host), P7 (authoring kit) → later waves; `paa-pipeline/1`
+  stays draft — freezing waits for P3's RPC run (the spec's own rule).
 - C5.1/G1 real-model S1: PENDING, operator-blocking (no model key in this sandbox);
   run book in `docs/operations/2026-11-09-next-spec/g1-decision.md`.
 
 ### Deliverables of this campaign
 
-- `/home/z/my-project/download/paa-pipeline-platform-work.patch` — combined diff
-  `5e0a0d8..8d4eecf` (141 files, +23,227/−1,099). Supersedes the earlier
-  partial `pipeline-platform-p0-p1.patch` and `paa-spec2-w4-w5.patch`.
-- `/home/z/my-project/download/paa-format-patch-series/` — 16 per-commit patches
-  (git am ready).
+- `/home/z/my-project/download/paa-spec2-w4-w7.patch` + `.bundle` — combined diff
+  and git bundle of all unpushed commits through the C7.1 close (supersedes the
+  w4-w6 pair).
+- `/home/z/my-project/download/paa-format-patch-series-w7/` — per-commit patches
+  from `origin/main` (git am ready; the w6 series is superseded).
+- `/home/z/my-project/download/paa-observe-demo-bundle.json` — a complete T1
+  bundle from the scripted fake-harness run (the C7.1 done-when, as an artifact).
 - `/home/z/my-project/download/paa-pipeline-platform-spec-satisfaction-report.pdf`
-  — the audit report (12 pages: cover, TOC, 8 chapters, 12 tables).
-- `/home/z/my-project/download/paa-report-cover.html` — the report cover source
-  (HTML→PDF dual-deliverable rule).
-- This board (uncommitted by design — tracking state, not product).
+  — the audit report (3rd edition: Wave 6 rows DONE + the C7.1 row).
+- Earlier ranges (`paa-pipeline-platform-work.patch`, `paa-spec2-w4-w5.*`,
+  `paa-spec2-w4-w6.*`, `pipeline-platform-p0-p1.*`, the w6 series dirs) are
+  superseded; `paa-report-cover.html` remains the report cover source.
+- This board (committed with each wave close — tracking state, not product).
 
 ### Archive (finished rows)

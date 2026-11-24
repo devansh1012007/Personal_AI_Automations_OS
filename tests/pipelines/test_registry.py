@@ -2,14 +2,16 @@
 
 What these tests pin:
 
-* **the registry's two sources** — the three in-process builtins
-  (trust ``builtin``, runnable) and the local directory's manifests
-  (trust ``local``, listed and inspected but never executed — running
-  an out-of-process pipeline is P3's RPC transport);
+* **the registry's two sources** — the four in-process builtins
+  (trust ``builtin``, runnable; Wave 7 adds ``builtin.observe``) and the
+  local directory's manifests (trust ``local``, listed and inspected
+  but never executed — running an out-of-process pipeline is P3's RPC
+  transport);
 * **the manifest contract at load** — an off-contract local manifest
-  (unknown section, undeclarable capability, bad ``run.resume``,
-  missing identity keys, name that does not match its directory) is
-  *named* in ``local_errors``, never silently dropped and never run;
+  (unknown section, undeclarable capability, bad ``run.resume``, bad
+  ``evidence.declares_tier``, off-contract ``[evidence]`` keys, missing
+  identity keys, name that does not match its directory) is *named* in
+  ``local_errors``, never silently dropped and never run;
 * **selection is explicit and mandate-scoped, never scored** — explicit
   name validated against the registry then against the scope; a
   single-pipeline scope with no name selects it; a multi-pipeline
@@ -75,15 +77,36 @@ def _local_home(tmp_path: Path) -> Path:
 
 
 class TestTheRegistry:
-    def test_default_lists_the_three_builtins(self) -> None:
+    def test_default_lists_the_four_builtins(self) -> None:
         registry = PipelineRegistry(local_dir=None)
         rows = registry.list()
         assert [r.name for r in rows] == [
             "builtin.plan-execute-critique",
             "builtin.chat",
             "coder.tool-loop",
+            "builtin.observe",
         ]
         assert all(r.trust == "builtin" and r.runnable for r in rows)
+
+    def test_observe_declares_its_two_special_facts(self) -> None:
+        """Pipeline #4 differs from the other three in exactly two rows.
+
+        ``resume = "none"`` (the spec §6 rule for external-harness
+        adapters) and ``evidence_tier = "T1"`` (the honesty tier) are
+        the declaration's own statements, so a reader never has to infer
+        recoverability from a pipeline's name.
+        """
+        registry = PipelineRegistry(local_dir=None)
+        row = registry.get("builtin.observe")
+        assert row is not None
+        assert row.declaration.resume == "none"
+        assert row.declaration.evidence_tier == "T1"
+        assert row.declaration.capabilities == {}
+        others = [
+            r.declaration for r in registry.list() if r.name != "builtin.observe"
+        ]
+        assert all(d.resume == "journal" for d in others)
+        assert all(d.evidence_tier == "in-process" for d in others)
 
     def test_local_manifests_are_listed_not_run(self, tmp_path: Path) -> None:
         home = _local_home(tmp_path)
@@ -144,6 +167,42 @@ class TestTheRegistry:
         )
         with pytest.raises(LocalManifestError, match="declarable"):
             declaration_from_manifest(manifest)
+        manifest.write_text(original, encoding="utf-8")
+
+    def test_evidence_tier_round_trips_and_off_contract_refuses(
+        self, tmp_path: Path
+    ) -> None:
+        """The spec §6 facts a local adapter may declare (C7.1).
+
+        A declared tier rides the declaration; a tier outside the ladder
+        and an ``[evidence]`` key outside ``declares_tier`` are both
+        refused at load, by name — the honesty ladder is closed
+        vocabulary, not free text.
+        """
+        base = _local_home(tmp_path)
+        manifest = base / "pipelines" / "tdd-loop" / "pipeline.toml"
+        original = manifest.read_text(encoding="utf-8")
+
+        manifest.write_text(
+            original + '\n[evidence]\ndeclares_tier = "T1"\n', encoding="utf-8"
+        )
+        declaration = declaration_from_manifest(manifest)
+        assert declaration.evidence_tier == "T1"
+        assert declaration.resume == "journal"  # unchanged by the tier
+
+        manifest.write_text(
+            original + '\n[evidence]\ndeclares_tier = "T9"\n', encoding="utf-8"
+        )
+        with pytest.raises(LocalManifestError, match="declares_tier"):
+            declaration_from_manifest(manifest)
+
+        manifest.write_text(
+            original + '\n[evidence]\ndeclares_tier = "T1"\nmood = "honest"\n',
+            encoding="utf-8",
+        )
+        with pytest.raises(LocalManifestError, match="declarable set"):
+            declaration_from_manifest(manifest)
+
         manifest.write_text(original, encoding="utf-8")
 
 

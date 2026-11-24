@@ -251,7 +251,7 @@ Provider `api_key_env` tuples are defined per row in `registry.py:_SPECS`
 2. Optionally `cp .env.example .env` and set provider keys.
 3. `.venv/bin/python -m pytest tests/ -q` (`AGENTS.md:11`).
 4. `paa doctor` to confirm which backends are actually live, plus the chat
-   model resolution, the MCP token env and the TUI extra (`cli/main.py:300`).
+   model resolution, the MCP token env and the TUI extra (`cli/main.py:301`).
 
 ## Deployment vs development
 
@@ -261,7 +261,7 @@ Provider `api_key_env` tuples are defined per row in `registry.py:_SPECS`
 - gVisor is opt-in, Linux-only (`docker compose -f docker-compose.yml -f
   docker-compose.gvisor.yml up -d`).
 - The laptop default is SQLite WAL + embedded fallbacks (idles at ~0MB,
-  `README.md:73`).
+  `README.md:74`).
 
 ## Validation
 

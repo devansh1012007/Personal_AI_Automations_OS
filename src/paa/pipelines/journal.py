@@ -242,9 +242,23 @@ class CallJournal:
     # -- run lifecycle ------------------------------------------------------
 
     async def run_started(
-        self, pipeline: str, version: str, *, run_kind: str = "in-process"
+        self,
+        pipeline: str,
+        version: str,
+        *,
+        run_kind: str = "in-process",
+        resume: str | None = None,
+        evidence_tier: str | None = None,
     ) -> LedgerEvent:
-        """Append PIPELINE_RUN_STARTED. Idempotent per run lineage."""
+        """Append PIPELINE_RUN_STARTED. Idempotent per run lineage.
+
+        ``resume`` and ``evidence_tier`` are the external-harness facts
+        (spec §6): an observed adapter declares ``resume="none"`` and its
+        tier, and the row carries both so a reader never has to infer
+        recoverability from the pipeline's name. They are omitted for
+        in-process pipelines — the three keys that were always there stay
+        exactly what they were.
+        """
         payload: dict[str, Any] = {
             "v": 1,
             "run_id": str(self._run_id),
@@ -252,6 +266,10 @@ class CallJournal:
             "version": version,
             "run_kind": run_kind,
         }
+        if resume is not None:
+            payload["resume"] = resume
+        if evidence_tier is not None:
+            payload["evidence_tier"] = evidence_tier
         return await self._append(
             EventType.PIPELINE_RUN_STARTED, payload, "run:STARTED"
         )

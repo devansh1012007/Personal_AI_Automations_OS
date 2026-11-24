@@ -305,7 +305,8 @@ class EventType(str, enum.Enum):
     # lineage as resumable work.
     #
     # ADR-0050's journal contract, in event form:
-    #   PIPELINE_RUN_STARTED   {v, pipeline, version, run_kind}
+    #   PIPELINE_RUN_STARTED   {v, pipeline, version, run_kind
+    #                           [, resume, evidence_tier]}   # spec §6 adapters
     #   PIPELINE_CALL_PROPOSED {v, seq, method, fingerprint, params_shape}
     #   PIPELINE_CALL_COMPLETED{v, seq, method, result_sha256, result_json?}
     #   PIPELINE_CALL_FAILED   {v, seq, method, error}

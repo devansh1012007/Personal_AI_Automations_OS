@@ -96,7 +96,8 @@ def inspect(
         raise typer.Exit(1)
     d: PipelineDeclaration = row.declaration
     console.print(f"[bold]{d.name}[/bold] {d.version}  trust={row.trust}  "
-                  f"runtime {d.requires_runtime}  runnable={row.runnable}")
+                  f"runtime {d.requires_runtime}  runnable={row.runnable}  "
+                  f"resume={d.resume}  evidence={d.evidence_tier}")
     if d.description:
         console.print(f"[dim]{d.description}[/dim]")
 
@@ -235,7 +236,9 @@ def run(
         _run(_run_chat_pipeline(goal, params))
     elif row.name == "coder.tool-loop":
         _run(_run_coder_pipeline(goal, params, mode, yes))
-    else:  # unreachable while the builtins are the three above
+    elif row.name == "builtin.observe":
+        _run(_run_observe_pipeline(goal, params))
+    else:  # unreachable while the builtins are the four above
         console.print(f"[red]no run path for {row.name!r}[/red]")
         raise typer.Exit(1)
 
@@ -361,6 +364,34 @@ async def _run_coder_pipeline(
         console.print(f"[dim]session: {built.session.session_id}[/dim]")
     finally:
         await built.runtime.close()
+
+
+async def _run_observe_pipeline(goal: str, params: dict[str, Any]) -> None:
+    """One ``builtin.observe`` run through the registry's own door.
+
+    The goal is the observed command line (the pipeline splits it); the
+    knobs come from the declaration's params. This is the same driver
+    ``paa observe`` uses, so both doors journal identically and leave
+    the same T1 bundle — first-class in the registry is a fact, not a
+    promise (spec §6).
+    """
+    import shlex
+
+    from paa.cli.observe import run_observe_pipeline
+
+    run_id, result = await run_observe_pipeline(
+        shlex.split(goal),
+        workspace=Path("."),
+        timeout_s=int(params.get("timeout_s", 600)),
+        memory_mb=int(params.get("memory_mb", 512)),
+        transcript_cap_kb=int(params.get("transcript_cap_kb", 2048)),
+    )
+    colour = "green" if result.status.value == "completed" else "yellow"
+    console.print(f"[{colour}]{result.metrics['state']}[/{colour}] {result.summary}")
+    console.print(f"[dim]bundle: {result.metrics['bundle_path']}[/dim]")
+    console.print(f"[dim]correlation: {run_id}[/dim]")
+    if result.status.value != "completed":
+        raise typer.Exit(1)
 
 
 # ---------------------------------------------------------------------------

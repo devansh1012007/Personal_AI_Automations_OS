@@ -169,7 +169,7 @@ backend.py` `_read_capped`).
 - **Subprocess sandbox is not real containment.** On the target (Windows) host,
   the default backend is `PROCESS`: same kernel, same user, same network stack.
   A determined adversary with arbitrary code execution defeats it. Use WSL2 or
-  Docker (NAMESPACE) for untrusted code (`README.md:205`, `sandbox/base.py:25`).
+  Docker (NAMESPACE) for untrusted code (`README.md:206`, `sandbox/base.py:25`).
 - **Network egress on subprocess is not severed.** `allow_network=False` is
   logged as a gap; enforcement is via the `PERM_NET_EGRESS` permission and the
   AST scanner's socket/urllib/requests patterns (`subprocess_backend.py`,

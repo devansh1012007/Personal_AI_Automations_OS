@@ -56,16 +56,25 @@ resume = "journal"
 
 
 class TestListAndInspect:
-    def test_list_names_the_three_builtins(self) -> None:
+    def test_list_names_the_four_builtins(self) -> None:
         result = runner.invoke(app, ["pipeline", "list"])
         assert result.exit_code == 0
         for name in (
             "builtin.plan-execute-critique",
             "builtin.chat",
             "coder.tool-loop",
+            "builtin.observe",
         ):
             assert name in result.stdout
         assert "builtin" in result.stdout
+
+    def test_inspect_shows_the_observes_two_special_facts(self) -> None:
+        """The T1 rows are on the inspect surface, not buried in code."""
+        result = runner.invoke(app, ["pipeline", "inspect", "builtin.observe"])
+        assert result.exit_code == 0
+        assert "builtin.observe" in result.stdout
+        assert "T1" in result.stdout
+        assert "none" in result.stdout
 
     def test_list_names_off_contract_local_manifests(self) -> None:
         from paa.config import get_settings

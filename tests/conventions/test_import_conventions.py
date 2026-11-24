@@ -165,6 +165,7 @@ TYPE_CHECKING_CLASSES: dict[str, str] = {
     "paa.agents.base": "C",
     "paa.agents.orchestrator": "C",
     "paa.cli.chat": "E",
+    "paa.cli.observe": "E",
     "paa.mcp.server": "C",
     "paa.tui.chat.app": "D",
     "paa.tui.chat.plain": "C",
@@ -221,6 +222,11 @@ TYPE_CHECKING_CLASS_KEYS: frozenset[str] = frozenset({"A", "B", "C", "D", "E"})
 #: the table.
 TYPE_CHECKING_NOTES: dict[str, str] = {
     "paa.cli.chat": "names paa.config.Settings, loaded by every CLI path already: ~0 ms",
+    "paa.cli.observe": (
+        "names paa.pipelines.base.PipelineResult for the shared driver's return "
+        "annotation; pipelines.base is inert types, and the import lives behind "
+        "the annotation-only guard so `paa --version` pays nothing"
+    ),
     "paa.mcp.server": "names paa.runtime (the runtime boot) and asyncio.StreamReader: heavy",
     "paa.tui.chat.app": "names only collections.abc.Callable",
     "paa.tui.chat.plain": "names paa.runtime (heavy) beside stdlib and chat types",

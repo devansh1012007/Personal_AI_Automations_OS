@@ -53,6 +53,7 @@ paa ledger <correlation-id>      # inspect the event chain and causal history
 paa recover                      # run the post-crash recovery sweep
 paa serve                        # FastAPI ingestion + background daemon (loopback only)
 paa chat                         # chat TUI with persistent memory (--plain for terminals only)
+paa observe -- pytest -q         # T1 observer: run any CLI, leave the evidence bundle
 paa mcp serve                    # MCP server over stdio — spawn me from your harness
 paa memory facts                 # read the memory store (facts/search/signals/drain/world-model)
 paa agent "fix the failing test" # the router-backed coder loop

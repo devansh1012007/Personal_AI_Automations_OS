@@ -50,8 +50,8 @@ Evidence = current target line content [VERIFIED by read/grep at final numbers].
 
 ### F6 lock-blind (25 verified; brief stated 22 — +3 at data-lifecycle:40, memory.md:90, memory.md:91, all read and stale)
 Types (+36 at enum end):
-- docs/adr/0041-coding-specialist-pilot.md:19 `src/paa/core/types.py:424` → `:479` [types.py:479 `class AgentRole(`; base :424 was `),` end of MODALITY_PROFILES dict — already wrong at base, def per symbol rule]
-- docs/glossary.md:84 `src/paa/core/types.py:375` → `:430` [types.py:430 `MODALITY_PROFILES: Final[...]`; base :375 was SPEC NOTE comment line at 411-cur; sentence names MODALITY_PROFILES → dict def]
+- docs/adr/0041-coding-specialist-pilot.md:19 `src/paa/core/types.py:425` → `:479` [types.py:479 `class AgentRole(`; base :424 was `),` end of MODALITY_PROFILES dict — already wrong at base, def per symbol rule]
+- docs/glossary.md:84 `src/paa/core/types.py:376` → `:430` [types.py:430 `MODALITY_PROFILES: Final[...]`; base :375 was SPEC NOTE comment line at 411-cur; sentence names MODALITY_PROFILES → dict def]
 - docs/glossary.md:86 `src/paa/core/types.py:232` → `:343` [types.py:343 `class ModalityProfile:`; base :232 was `WRITE_HOT` (Permission field) — already wrong at base; gloss's "Nothing in it is advisory" is class docstring verbatim]
 Replay (+8 comment +2 members after :379):
 - docs/adr/0036:77 `src/paa/ledger/replay.py:379` → `:387` [replay.py:387 `_NO_PHASE_CHANGE = frozenset(`]

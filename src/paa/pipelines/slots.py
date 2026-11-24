@@ -87,6 +87,14 @@ class PipelineDeclaration:
     The closed vocabulary of ADR-0052's ``[pipeline]``/``[capabilities]``
     /``[limits]``/``[params]``/``[slots]`` sections, stated in code:
     the overlay loader validates against this and only this.
+
+    ``resume`` and ``evidence_tier`` carry the two facts the external-
+    harness spec (§6) adds to that vocabulary: whether the pipeline can
+    honour the replay contract (``journal``) or honestly cannot
+    (``none`` — the host refuses to mark such a run recoverable), and
+    the honesty tier of the evidence it produces (``T1`` observed,
+    ``T2`` mediated, ``T3`` contained; the in-process built-ins are
+    ``in-process`` — they are not adapters over a foreign mind).
     """
 
     name: str
@@ -98,6 +106,8 @@ class PipelineDeclaration:
     params: Mapping[str, ParamSpec] = field(default_factory=dict)
     slots: Mapping[str, SlotDeclaration] = field(default_factory=dict)
     trust: str = "builtin"
+    resume: str = "journal"
+    evidence_tier: str = "in-process"
 
 
 # ---------------------------------------------------------------------------
@@ -270,10 +280,54 @@ def _coder_declaration() -> PipelineDeclaration:
     )
 
 
+def _observe_declaration() -> PipelineDeclaration:
+    """``builtin.observe``: the T1 observer adapter, pipeline #4 (P1.4/C7.1).
+
+    The external-harness spec's honesty row, in manifest vocabulary: an
+    observed CLI is a pipeline whose mind PAA does not control, so the
+    declaration asks for **no** capabilities (there is nothing to grant —
+    the host runs the child and records what it sees), the evidence tier
+    is the adapter's own ``T1``, and ``resume = "none"`` is the honest
+    statement the spec §6 requires: the host refuses to mark such a run
+    recoverable, and the crash classifier's job is to *name the state the
+    workspace was left in*, never to promise a resume.
+    """
+    return PipelineDeclaration(
+        name="builtin.observe",
+        version="4.1.0",
+        requires_runtime=">=4.1,<5",
+        description=(
+            "the T1 observer: run any CLI in a workspace, record the manifest "
+            "diff, git changes and transcript, classify the state after a crash"
+        ),
+        capabilities={},
+        params={
+            "timeout_s": ParamSpec(
+                type="int", default=600, minimum=1, maximum=86400,
+                description="the observed run's wall-clock budget in seconds",
+            ),
+            "memory_mb": ParamSpec(
+                type="int", default=512, minimum=16, maximum=65536,
+                description="the observed child's memory ceiling in MB",
+            ),
+            "transcript_cap_kb": ParamSpec(
+                type="int", default=2048, minimum=1, maximum=65536,
+                description=(
+                    "per-stream transcript cap in KiB; beyond it the bundle "
+                    "carries the head and says it was truncated"
+                ),
+            ),
+        },
+        resume="none",
+        evidence_tier="T1",
+    )
+
+
 BUILTIN_DECLARATIONS: dict[str, PipelineDeclaration] = {
     _builtin_declaration().name: _builtin_declaration(),
     _chat_declaration().name: _chat_declaration(),
     _coder_declaration().name: _coder_declaration(),
+    _observe_declaration().name: _observe_declaration(),
 }
 
 

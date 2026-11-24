@@ -52,6 +52,7 @@ __all__ = [
     "chat_conformance",
     "coder_conformance",
     "every_builtin_conformance",
+    "observe_conformance",
     "render_reports",
 ]
 
@@ -666,6 +667,247 @@ async def builtin_conformance(ledger: LedgerStore) -> ConformanceReport:
 
 
 # ---------------------------------------------------------------------------
+# builtin.observe — the T1 adapter, pipeline #4 (C7.1)
+# ---------------------------------------------------------------------------
+
+
+async def observe_conformance(ledger: LedgerStore, tmp_path: Path) -> ConformanceReport:
+    """The six checks over ``builtin.observe``, in the observer's vocabulary.
+
+    The observer's honesty limits what can be green here, and the rows say
+    so: a run whose subject is a foreign mind cannot promise the subject's
+    determinism, and an adapter that declares ``resume = "none"`` has no
+    replay to diverge. What the vocabulary *can* promise for real — the
+    observer's own call sequence, the no-auto-retry discipline around a
+    killed child, the wall-clock cancel, the hash-attested transcript —
+    is checked for real against a scripted fake harness on the real
+    subprocess backend.
+    """
+    import shlex
+    import sys
+
+    from paa.observe.pipeline import ObserveFacade, ObservePipeline
+    from paa.pipelines.base import PipelineStatus, PipelineTask
+    from paa.pipelines.journal import CallOutcome
+    from paa.sandbox.subprocess_backend import SubprocessSandbox
+
+    sandbox = SubprocessSandbox()
+    bundle_home = tmp_path / "observe-bundles"
+    bundle_home.mkdir(exist_ok=True)
+
+    async def drive(
+        run_id: uuid.UUID,
+        harness_argv: list[str],
+        *,
+        workspace: Path,
+        timeout_s: int = 30,
+    ) -> Any:
+        journal = CallJournal(ledger, run_id)
+        await journal.run_started(
+            ObservePipeline.name,
+            ObservePipeline.version,
+            run_kind="observe",
+            resume="none",
+            evidence_tier="T1",
+        )
+        facade = ObserveFacade(
+            sandbox=sandbox,
+            journal=journal,
+            workspace=workspace,
+            bundle_home=bundle_home,
+        )
+        task = PipelineTask(
+            correlation_id=run_id,
+            session_id=None,
+            # Quoted so an argv word with spaces (a ``-c`` payload) survives
+            # the pipeline's own shlex round trip exactly.
+            goal=" ".join(shlex.quote(part) for part in harness_argv),
+            params={"timeout_s": timeout_s, "memory_mb": 256},
+        )
+        result = await ObservePipeline().run(task, facade)
+        await journal.run_completed(result.status.value, metrics=dict(result.metrics))
+        return result
+
+    def fresh_workspace(name: str) -> Path:
+        ws = tmp_path / f"ws-{name}-{uuid.uuid4().hex[:6]}"
+        ws.mkdir()
+        (ws / "seed.txt").write_text("seed\n", encoding="utf-8")
+        return ws
+
+    # -- 1. double-run call-sequence equality -----------------------------
+    # The same scripted harness, the same workspace *path* (re-seeded
+    # between runs so the manifest effects match), the same knobs: the
+    # observer's own sequence — what it proposes, what resolves — must be
+    # identical. The child's behaviour is not the observer's to promise.
+    harness = [
+        sys.executable,
+        "-c",
+        "import pathlib; pathlib.Path('made.txt').write_text('by harness'); "
+        "print('harness done')",
+    ]
+    ws_shared = tmp_path / f"ws-shared-{uuid.uuid4().hex[:6]}"
+
+    def reseed() -> Path:
+        import shutil
+
+        if ws_shared.exists():
+            shutil.rmtree(ws_shared)
+        ws_shared.mkdir()
+        (ws_shared / "seed.txt").write_text("seed\n", encoding="utf-8")
+        return ws_shared
+
+    run_a, run_b = uuid.uuid4(), uuid.uuid4()
+    await drive(run_a, harness, workspace=reseed())
+    await drive(run_b, harness, workspace=reseed())
+    fold_a = await read_call_journal(ledger, run_a)
+    fold_b = await read_call_journal(ledger, run_b)
+
+    def shape(records: list[Any]) -> list[tuple[Any, ...]]:
+        return [(r.seq, r.method, r.fingerprint, r.outcome) for r in records]
+
+    if shape(fold_a) == shape(fold_b) and len(fold_a) == 1:
+        double_run = ConformanceCheck.passed(
+            CHECK_NAMES[0],
+            "two observations of the same scripted harness folded to the "
+            "same 1-call sequence — the observer's sequence is the promise, "
+            "not the foreign mind's behaviour",
+        )
+    else:
+        double_run = ConformanceCheck.failed(
+            CHECK_NAMES[0], f"sequences differ: {shape(fold_a)} vs {shape(fold_b)}"
+        )
+
+    # -- 2. divergence halt -----------------------------------------------
+    divergence = ConformanceCheck.na(
+        CHECK_NAMES[1],
+        "the adapter declares resume='none' (spec §6): there is no replay "
+        "to diverge, and the recovery sweep refuses to re-drive the "
+        "lineage — the halt-on-divergence property itself is pinned on "
+        "coder.tool-loop (tests/pipelines/test_replay.py)",
+    )
+
+    # -- 3. unknown outcome never auto-repeats ----------------------------
+    # The observe-vocabulary reading of D-6: a child killed by SIGKILL
+    # mid-run is a *resolved* observation with a named state, not an
+    # unknown outcome to retry — exactly one PROPOSED row exists, and
+    # nothing re-ran the command.
+    killed_id = uuid.uuid4()
+    killed = await drive(
+        killed_id,
+        [
+            sys.executable,
+            "-c",
+            "import os, pathlib, signal; "
+            "pathlib.Path('half.txt').write_text('half'); "
+            "os.kill(os.getpid(), signal.SIGKILL)",
+        ],
+        workspace=fresh_workspace("killed"),
+    )
+    killed_rows = await read_call_journal(ledger, killed_id)
+    if (
+        killed.status is PipelineStatus.FAILED
+        and killed.metrics["state"] == "signalled"
+        and len(killed_rows) == 1
+        and killed_rows[0].outcome is CallOutcome.COMPLETED
+    ):
+        unknown = ConformanceCheck.passed(
+            CHECK_NAMES[2],
+            "a SIGKILLed child resolved to exactly one COMPLETED call with "
+            "state='signalled' — classified, never re-run",
+        )
+    else:
+        unknown = ConformanceCheck.failed(
+            CHECK_NAMES[2],
+            f"killed child left status={killed.status.value} "
+            f"state={killed.metrics.get('state')} rows={len(killed_rows)}",
+        )
+
+    # -- 4. cancel within grace -------------------------------------------
+    # The observer's wall clock is the only cancel this vocabulary has,
+    # and it is real: the whole tree dies, the call resolves TIMED_OUT,
+    # the run lands in a terminal failed state with coherent rows.
+    timed_id = uuid.uuid4()
+    timed = await drive(
+        timed_id,
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        workspace=fresh_workspace("timed"),
+        timeout_s=1,
+    )
+    timed_rows = await read_call_journal(ledger, timed_id)
+    if (
+        timed.status is PipelineStatus.FAILED
+        and timed.metrics["state"] == "timed_out"
+        and len(timed_rows) == 1
+        and timed_rows[0].outcome is CallOutcome.COMPLETED
+    ):
+        cancel = ConformanceCheck.passed(
+            CHECK_NAMES[3],
+            "the 1 s wall clock killed the tree mid-run; the call resolved "
+            "TIMED_OUT with terminal rows, nothing half-closed",
+        )
+    else:
+        cancel = ConformanceCheck.failed(
+            CHECK_NAMES[3],
+            f"timeout left status={timed.status.value} "
+            f"state={timed.metrics.get('state')} rows={len(timed_rows)}",
+        )
+
+    # -- 5. budget exhaustion ---------------------------------------------
+    budget = ConformanceCheck.na(
+        CHECK_NAMES[4],
+        "the observed child's budgets (wall clock, memory ceiling) are the "
+        "sandbox backend's own contract, pinned in tests/sandbox; the "
+        "adapter itself ships unbounded RunLimits like the builtin",
+    )
+
+    # -- 6. no secrets in journal -----------------------------------------
+    secret = _marker()
+    secret_id = uuid.uuid4()
+    observed = await drive(
+        secret_id,
+        [
+            sys.executable,
+            "-c",
+            f"print('{secret}')",
+        ],
+        workspace=fresh_workspace("secret"),
+    )
+    texts = await _payload_texts(ledger, secret_id)
+    leaked = [t for t in texts if secret in t]
+    from paa.observe.bundle import read_bundle
+
+    bundle = read_bundle(Path(observed.metrics["bundle_path"]))
+    positive_control = (
+        bundle.transcript_stdout is not None and secret in bundle.transcript_stdout.text
+    )
+    if not leaked and positive_control:
+        secrets = ConformanceCheck.passed(
+            CHECK_NAMES[5],
+            "the harness's stdout secret rode the bundle (attested by "
+            "SHA-256) and never appeared as payload text on the lineage",
+        )
+    else:
+        secrets = ConformanceCheck.failed(
+            CHECK_NAMES[5],
+            f"leaked={bool(leaked)} positive_control={positive_control}",
+        )
+
+    return ConformanceReport(
+        pipeline=ObservePipeline.name,
+        checks=_checks(
+            **{
+                CHECK_NAMES[0]: double_run,
+                CHECK_NAMES[1]: divergence,
+                CHECK_NAMES[2]: unknown,
+                CHECK_NAMES[3]: cancel,
+                CHECK_NAMES[4]: budget,
+                CHECK_NAMES[5]: secrets,
+            }
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
 # The CI entry
 # ---------------------------------------------------------------------------
 
@@ -678,4 +920,5 @@ async def every_builtin_conformance(
         await builtin_conformance(ledger),
         await chat_conformance(tmp_path),
         await coder_conformance(ledger, tmp_path),
+        await observe_conformance(ledger, tmp_path),
     ]

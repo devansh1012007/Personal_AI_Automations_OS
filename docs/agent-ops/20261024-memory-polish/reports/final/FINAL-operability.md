@@ -45,7 +45,7 @@ Separately, `runtime.py:_build_memory_creator` logs `log.warning("runtime.llm_ex
 
 ## MAJOR — LLM extraction is wired into `Runtime.memory_creator` but exposed nowhere an operator can use
 
-**Files:** `src/paa/runtime.py:739-779` (wiring); `src/paa/cli/main.py:318-357` (drain command); `src/paa/api/app.py:86-93` (`/memory/drain`); `src/paa/daemon.py:170-179` (`_memory_creator`)
+**Files:** `src/paa/runtime.py:739-779` (wiring); `src/paa/cli/main.py:319-358` (drain command); `src/paa/api/app.py:86-93` (`/memory/drain`); `src/paa/daemon.py:170-179` (`_memory_creator`)
 
 **Evidence:** `Runtime.build()` builds `memory_creator = _build_memory_creator(settings, db, model_adapter)` and stores it on the runtime (runtime.py:739, 747). `_build_memory_creator` returns a `MemoryCreator` whose extractor is `LLMFactExtractor` when `settings.memory.extraction_model` is non-empty (runtime.py:772-779). However:
 

@@ -37,18 +37,19 @@ Major subsystems:
 | Marketplace | `src/paa/marketplace/` | Signed packages, five-gate installer, registry clients |
 | Observability | `src/paa/observability/` | Logging, metrics, tracing, execution runs |
 | Daemon | `src/paa/daemon.py` | Dispatch, ingestion, maintenance loops |
-| CLI | `src/paa/cli/main.py` | `paa submit/run/status/ledger/recover/doctor/serve/agent/mode/tui/memory/chat/mcp` |
+| CLI | `src/paa/cli/main.py` | `paa submit/run/status/ledger/recover/doctor/serve/agent/mode/tui/memory/chat/mcp/pipeline/observe` |
 | API | `src/paa/api/` | FastAPI ingestion edge (loopback only, port 8787) |
 | TUI | `src/paa/tui/` | Interactive dashboard |
 
 Primary entry points:
 
-* `paa submit "goal"` — submit and run one task to completion (`src/paa/cli/main.py:123`)
-* `paa serve` — FastAPI API + background daemon (`src/paa/cli/main.py:466`)
-* `paa doctor` — report live backends/sandbox plus the chat model, MCP token env and TUI extra (`src/paa/cli/main.py:300`)
-* `paa recover` — post-crash boot sweep (`src/paa/cli/main.py:282`)
-* `paa ledger <id>` — walk a task's event chain (`src/paa/cli/main.py:209`)
-* `paa memory <subcommand>` — facts/search/signals/drain/world-model (`src/paa/cli/main.py:692`)
+* `paa submit "goal"` — submit and run one task to completion (`src/paa/cli/main.py:124`)
+* `paa serve` — FastAPI API + background daemon (`src/paa/cli/main.py:467`)
+* `paa doctor` — report live backends/sandbox plus the chat model, MCP token env and TUI extra (`src/paa/cli/main.py:301`)
+* `paa recover` — post-crash boot sweep (`src/paa/cli/main.py:283`)
+* `paa ledger <id>` — walk a task's event chain (`src/paa/cli/main.py:210`)
+* `paa memory <subcommand>` — facts/search/signals/drain/world-model (`src/paa/cli/main.py:693`)
+* `paa observe -- <cmd>` — run any CLI under observation, leave the T1 evidence bundle (`src/paa/cli/observe.py:118`)
 * `paa chat` — the chat surface: TUI, or `--plain` (`src/paa/cli/chat.py:160`)
 * `paa mcp serve` — the stdio MCP server (`src/paa/cli/mcp.py:120`)
 * `paa agent "prompt"` — tool-using coder loop (`src/paa/cli/coder.py:56`)

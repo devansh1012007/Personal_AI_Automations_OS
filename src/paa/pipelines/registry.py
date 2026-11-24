@@ -61,6 +61,7 @@ _MANIFEST_CAPABILITY_KEYS = frozenset(
 )
 _RESUME_VALUES = frozenset({"journal", "none"})
 _PARAM_TYPES = frozenset({"int", "bool", "str"})
+_EVIDENCE_TIERS = frozenset({"T1", "T2", "T3"})
 
 
 class LocalManifestError(PipelineError):
@@ -204,6 +205,22 @@ def declaration_from_manifest(path: Path) -> PipelineDeclaration:
             f"run.resume must be one of {sorted(_RESUME_VALUES)}, got {resume!r}"
         )
 
+    evidence = parsed.get("evidence", {})
+    if not isinstance(evidence, dict):
+        raise LocalManifestError("[evidence] must be a table")
+    declares_tier = evidence.get("declares_tier", "unrated")
+    if declares_tier not in _EVIDENCE_TIERS and declares_tier != "unrated":
+        raise LocalManifestError(
+            f"evidence.declares_tier must be one of {sorted(_EVIDENCE_TIERS)}, "
+            f"got {declares_tier!r}",
+        )
+    off_contract_evidence = set(evidence) - {"declares_tier"}
+    if off_contract_evidence:
+        raise LocalManifestError(
+            f"[evidence] carries {sorted(off_contract_evidence)!r} outside "
+            "the declarable set ['declares_tier']",
+        )
+
     capabilities = parsed.get("capabilities", {})
     if not isinstance(capabilities, dict):
         raise LocalManifestError("[capabilities] must be a table")
@@ -246,6 +263,8 @@ def declaration_from_manifest(path: Path) -> PipelineDeclaration:
         params=params,
         slots=slots,
         trust="local",
+        resume=resume,
+        evidence_tier=declares_tier,
     )
 
 

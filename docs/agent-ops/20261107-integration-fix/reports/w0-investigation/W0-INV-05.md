@@ -125,7 +125,7 @@ Sibling reports `W0-INV-01..04.md` exist in `reports/w0-investigation/` (created
 ## Re-verification (per METHOD §11)
 
 - Re-read `Dockerfile:27-30` + `storage/vector/embeddings.py:386-433` — derived-image direction and degraded-fallback claims still hold.
-- Re-ran `grep run_weekly` — still zero production callers; doctor still lacks reflection row (`cli/main.py:246-272`).
+- Re-ran `grep run_weekly` — still zero production callers; doctor still lacks reflection row (`cli/main.py:247-273`).
 - Re-globbed `docs/adr/` — still max 0035; P14 sequence-free claim holds.
 
 ## Scratch files

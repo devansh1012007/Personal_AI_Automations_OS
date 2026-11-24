@@ -14,7 +14,7 @@
   - Daemon loop count "four plus boot" in `daemon.py:1-27` vs 5 loops — AGENTS.md doesn't state count, but dispatcher lists 4 + boot; keep accurate.
   - "26 tables" folklore — schema has 25 `CREATE TABLE`s + 1 FTS virtual table (`schema_sqlite.sql:244`); parity lock is about table+column identity, not count.
   - mypy "0 errors" vs Windows host 3 errors at `sandbox/subprocess_backend.py:548` (POSIX symbols, non-Windows branch) — AGENTS.md says zero-baseline (correct for Linux CI); file must note the host-specific Windows exception so agents don't chase it.
-  - CLI catalogue missing `memory facts|search|signals|drain|world-model` + `gate`/`tui` (`cli/main.py:532-733`).
+  - CLI catalogue missing `memory facts|search|signals|drain|world-model` + `gate`/`tui` (`cli/main.py:533-734`).
 - Missing high-signal pieces a future agent will guess wrong: exact `.[dev]` vs `.` install trap, minimal-shape `mypy --exclude src/paa/api`, `8` pytest markers, no Makefile/pre-commit/uv.lock, retry/# noqa policy details already present — keep, tighten prose.
 
 **Goal:** Rewrite AGENTS.md in place to a compact, verified file where every line answers "would an agent miss this?" Preserve all verified hard invariants (ledger-is-truth, LIKE helper, parity lock, safety invariants, docker footguns, image network-fragility, import-conventions lock, S3 names-a-server rule, gate-on-every-push). Delete fluff / history / dated counts that an agent cannot verify. Add at most a few new verified bullets; keep total length ≤ current (prefer shorter).
