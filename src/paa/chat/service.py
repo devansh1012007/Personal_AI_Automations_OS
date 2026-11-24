@@ -24,7 +24,13 @@ from dataclasses import dataclass
 
 import structlog
 
-from paa.chat.loop import ChatLoop, ChatModel, ChatTurnFacade, build_chat_model
+from paa.chat.loop import (
+    ChatLoop,
+    ChatModel,
+    ChatTurnFacade,
+    ContextProvider,
+    build_chat_model,
+)
 from paa.chat.session import (
     ChatSessionJournal,
     ChatSessionRecord,
@@ -87,6 +93,7 @@ class ChatService:
         context_settings: ContextSettings | None = None,
         model: ChatModel | None = None,
         signals: SignalRepository | None = None,
+        context_provider: ContextProvider | None = None,
     ) -> None:
         self._ledger = ledger
         self._db = db
@@ -101,6 +108,11 @@ class ChatService:
         self._context_settings = context_settings
         self._model = model if model is not None else build_chat_model(settings)
         self._signals = signals
+        # The context-provider slot (C6.4 / P1.5): ``None`` means the
+        # shipped compiler — the facade resolves the default itself, so
+        # this stays "the host may resolve an overlay's ref and hand the
+        # result here", nothing more.
+        self._context_provider = context_provider
 
     @classmethod
     def from_runtime(
@@ -231,6 +243,7 @@ class ChatService:
             permission_mode=self._permission_mode,
             signals=self._signals,
             context_settings=self._context_settings,
+            context_provider=self._context_provider,
         )
         task = PipelineTask(
             correlation_id=session_id,

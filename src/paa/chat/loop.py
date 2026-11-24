@@ -105,6 +105,12 @@ CHAT_CAPABILITIES: Final[frozenset[Capability]] = frozenset(
 #: An async sink for reply deltas. ``None`` means "no streaming wanted".
 DeltaSink = Callable[[str], Awaitable[None]]
 
+#: The context-provider slot's callable shape (C6.4 / P1.5): what
+#: :func:`paa.chat.context_bundle.build_context_bundle` satisfies and an
+#: overlay's replacement must too. Stated as a plain callable because the
+#: slot's contract is "same inputs, same bundle shape out", not a class.
+ContextProvider = Callable[..., Any]
+
 #: Delta size for models without a native token stream. Chunking a finished
 #: reply is a transport presentation, not a claim about the provider: the
 #: ledger records the final reply either way, and per-token SSE plumbing is
@@ -307,6 +313,7 @@ class ChatTurnFacade:
         permission_mode: PermissionMode,
         signals: SignalRepository | None = None,
         context_settings: ContextSettings | None = None,
+        context_provider: ContextProvider | None = None,
     ) -> None:
         self._session_id = session_id
         self._turn_id = turn_id
@@ -318,6 +325,9 @@ class ChatTurnFacade:
         self._db = db
         self._signals = signals
         self._settings = settings
+        self._context_provider = (
+            context_provider if context_provider is not None else build_context_bundle
+        )
         self._grants = CapabilitySet.mint(CHAT_CAPABILITIES, run_id=session_id)
         # One budget line: the operator's chat override, else the context
         # engine's planner ceiling — resolved once, at mint time.
@@ -392,6 +402,29 @@ class ChatTurnFacade:
     def writes(self) -> tuple[dict[str, Any], ...]:
         """This turn's memory writes so far, in the order they landed."""
         return tuple(self._writes)
+
+    def build_context(
+        self,
+        *,
+        persona: str,
+        recalled_facts: list[dict[str, Any]],
+        recent_turns: list[dict[str, Any]],
+        token_ceiling: int,
+    ) -> Any:
+        """Run the context-provider slot: assemble this turn's packet.
+
+        The indirection is the slot, not a convenience: the loop asks the
+        facade (the host-minted object) so the provider the host resolved
+        an overlay's ``context_provider`` ref to is the one that runs —
+        with the shipped compiler as the default when no overlay filled
+        the slot. Pure: same inputs, same packet.
+        """
+        return self._context_provider(
+            persona=persona,
+            recalled_facts=recalled_facts,
+            recent_turns=recent_turns,
+            token_ceiling=token_ceiling,
+        )
 
     # -- capabilities --------------------------------------------------------
 
@@ -799,7 +832,14 @@ class ChatLoop:
         try:
             recalled = await facade.recall(text, k=facade.recall_k)
             turns = await facade.episodic_turns(facade.session_id, k=facade.last_k_turns)
-            bundle = build_context_bundle(
+            # The context-provider slot (C6.4 / P1.5): the packet comes
+            # from whatever the host resolved the slot to — the shipped
+            # compiler by default, an overlay's replacement when the
+            # operator filled the slot. The replacement owns the same
+            # contract: same inputs, a bundle (or bundle-shaped) packet
+            # back, and the packet — not the inputs — is what the prompt
+            # renders below.
+            bundle = facade.build_context(
                 persona=facade.persona,
                 recalled_facts=recalled,
                 recent_turns=turns,
