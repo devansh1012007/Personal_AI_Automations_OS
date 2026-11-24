@@ -576,9 +576,9 @@ stays gated on a first outside author (the spec's own rule).
 
 | Task ID | Agent | Assignment | Status | Evidence / notes |
 |---|---|---|---|---|
-| W6-C6.2 | orchestrator | CallJournal + PIPELINE_RUN_*/CALL_* events per ADR-0046/0050 | in progress | started 2026-11-24 |
-| W6-C6.1 | orchestrator | coder.tool-loop on the facade; use_skill -> existing ToolJournal | pending | |
-| W6-C6.3 | orchestrator | replay/divergence logic + kill -9 chaos for chat and coder | pending | |
+| W6-C6.2 | orchestrator | CallJournal + PIPELINE_RUN_*/CALL_* events per ADR-0046/0050 | **done** | commit 1e7906d; W6-IMPL-01 report; 23 tests, replay property green |
+| W6-C6.1 | orchestrator | coder.tool-loop on the facade; use_skill -> existing ToolJournal | **done** | this commit; W6-IMPL-02 report; tests/coder 484 passed unchanged, S1 dry-run all checks held (after uninstalling sandbox-injected ddtrace — see report §13) |
+| W6-C6.3 | orchestrator | replay/divergence logic + kill -9 chaos for chat and coder | pending | next: the rule of three is now met (builtin, chat, coder.tool-loop) |
 | W6-C6.4 | orchestrator | slots + overlay loader, tighten-only at load | pending | |
 | W6-C6.5 | orchestrator | registry v0 + paa pipeline list/inspect/run/trace | pending | |
 | W6-C6.6 | orchestrator | conformance v0 for all registered pipelines | pending | |

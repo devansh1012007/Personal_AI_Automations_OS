@@ -75,7 +75,9 @@ from paa.pipelines.base import (
     CapabilityNotGrantedError,
     CapabilitySet,
     InvalidCallParamsError,
+    OutcomeUnknownError,
     PipelineArtifact,
+    PipelineDivergedError,
     PipelineResult,
     PipelineStatus,
     PipelineTask,
@@ -83,6 +85,12 @@ from paa.pipelines.base import (
 )
 from paa.pipelines.base import CapabilityFacade as _FacadeProtocol
 from paa.pipelines.journal import CallJournal
+from paa.pipelines.replay import (
+    ReplayAction,
+    ReplayedCallFailedError,
+    ReplayView,
+    ServedToolResults,
+)
 
 __all__ = [
     "CODER_CAPABILITIES",
@@ -154,6 +162,8 @@ class CoderLoopFacade:
         confirm: ConfirmCallback | None = None,
         tool_journal: ToolJournal | None = None,
         workspace: Workspace | None = None,
+        replay: ReplayView | None = None,
+        served_tools: ServedToolResults | None = None,
         modality: ComplexityModality = ComplexityModality.STANDARD,
         permission_mode: PermissionMode = PermissionMode.ASK,
         tokens_budget: int = 0,
@@ -167,6 +177,8 @@ class CoderLoopFacade:
         self._tool_journal = tool_journal
         self._workspace = workspace
         self._call_journal = call_journal
+        self._replay = replay
+        self._served_tools = served_tools
         self._run_id = run_id or uuid.uuid4()
         self._grants = CapabilitySet.mint(CODER_CAPABILITIES, run_id=self._run_id)
         self._agent_ctx = AgentContext(
@@ -181,6 +193,7 @@ class CoderLoopFacade:
         self._recorded_user_row = False
         self.tool_calls = 0
         self.executed_calls = 0
+        self.served_calls = 0
 
     # -- run scope -----------------------------------------------------------
 
@@ -287,8 +300,43 @@ class CoderLoopFacade:
                 json.dumps(window, sort_keys=True).encode("utf-8")
             ).hexdigest(),
         }
+
+        # The replay table (C6.3 / ADR-0050 R3): a recorded call is
+        # answered from the journal — the model is not invoked, no row is
+        # re-appended (the discriminators already exist on this lineage) —
+        # and the session is rebuilt from the recorded result, so the
+        # window the next call renders matches the recorded fingerprint.
+        self._seq += 1
+        if self._replay is not None:
+            decision = self._replay.check(self._seq, "think", params)
+            if decision.action is ReplayAction.SERVE:
+                return self._apply_recorded_turn(decision.result)
+            if decision.action is ReplayAction.DIVERGED:
+                if self._call_journal is not None:
+                    await self._call_journal.run_diverged(
+                        self._seq,
+                        decision.expected_fingerprint or "",
+                        decision.actual_fingerprint or "",
+                    )
+                raise PipelineDivergedError(
+                    self._seq,
+                    decision.expected_fingerprint or "",
+                    decision.actual_fingerprint or "",
+                )
+            if decision.action is ReplayAction.OUTCOME_UNKNOWN:
+                raise OutcomeUnknownError(
+                    "the recorded think call's outcome cannot be classified; "
+                    "the pipeline decides (D-6)",
+                    seq=self._seq,
+                )
+            if decision.action is ReplayAction.FAIL:
+                raise ReplayedCallFailedError(
+                    f"the recorded think call failed: {decision.reason}"
+                )
+            # EXECUTE: a new call, or a pure call whose interrupted
+            # outcome is safe to resolve by re-execution. Fall through.
+
         if self._call_journal is not None:
-            self._seq += 1
             await self._call_journal.call_proposed(self._seq, "think", params)
         try:
             turn = await self._model.propose(window, tool_schemas)
@@ -329,6 +377,25 @@ class CoderLoopFacade:
             "tokens": turn.tokens,
         }
 
+    def _apply_recorded_turn(self, recorded: Any) -> dict[str, Any]:
+        """Rebuild one served think's session rows from the recorded result.
+
+        This is bookkeeping, not execution: the model is not invoked, and
+        the journal rows already exist on the lineage. The recorded dict is
+        the same shape ``think`` returns, so the mind cannot tell a served
+        call from a live one — which is the point: the re-run replays its
+        own history exactly.
+        """
+        result = recorded if isinstance(recorded, dict) else {}
+        text = result.get("text")
+        if isinstance(text, str) and text:
+            self._session.assistant(text, tokens=int(result.get("tokens") or 0))
+        return {
+            "text": text if isinstance(text, str) else "",
+            "tool_calls": list(result.get("tool_calls") or []),
+            "tokens": int(result.get("tokens") or 0),
+        }
+
     async def use_skill(
         self, name: str, args: Mapping[str, Any], *, call_id: str = ""
     ) -> str:
@@ -350,6 +417,20 @@ class CoderLoopFacade:
         self._grants.require(Capability.USE_SKILL)
         self.tool_calls += 1
         self._session.tool_call(name, dict(args))
+
+        # The replay path (C6.3): a redelivered tool call whose result the
+        # crashed run's transcript already holds is served, never executed
+        # — ADR-0050's "no tool execution is re-performed". The session
+        # rows are rebuilt (the transcript is the re-run's own artifact);
+        # the tool journal's rows already exist on this lineage under the
+        # same session:call_id discriminators, so nothing is re-appended
+        # and no gate re-prompts: the recorded decision stands.
+        if self._served_tools is not None:
+            served = self._served_tools.pop_next(name)
+            if served is not None:
+                self._session.tool_result(name, served)
+                self.served_calls += 1
+                return served
 
         tool = self._tools.get(name)
         if tool is None:
@@ -613,7 +694,10 @@ class CoderToolLoopPipeline:
             "steps": steps,
             "tool_calls": facade.tool_calls,
             "executed_calls": facade.executed_calls,
-            "denied_calls": facade.tool_calls - facade.executed_calls,
+            "served_calls": facade.served_calls,
+            "denied_calls": (
+                facade.tool_calls - facade.executed_calls - facade.served_calls
+            ),
             "tokens": facade.session_tokens,
         }
         artifacts: list[PipelineArtifact] = []

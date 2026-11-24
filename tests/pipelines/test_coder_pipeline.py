@@ -36,12 +36,18 @@ from paa.coder.loop import (
     ModelTurn,
     Tool,
     ToolCall,
+    ToolCallingModel,
     ToolCtx,
     ToolJournal,
-    ToolCallingModel,
 )
 from paa.coder.permissions import PermissionMode, ToolPermissionPolicy
-from paa.coder.session import Session, TurnRole
+from paa.coder.pipeline import (
+    CODER_CAPABILITIES,
+    CapabilityNotGrantedError,
+    CoderLoopFacade,
+    CoderToolLoopPipeline,
+)
+from paa.coder.session import Session
 from paa.core.types import EventType
 from paa.ledger.store import LedgerStore
 from paa.pipelines.base import (
@@ -50,14 +56,6 @@ from paa.pipelines.base import (
     PipelineTask,
 )
 from paa.pipelines.journal import CallJournal, CallOutcome, read_call_journal
-from paa.coder.pipeline import (
-    CODER_CAPABILITIES,
-    Capability,
-    CapabilityNotGrantedError,
-    CoderLoopFacade,
-    CoderToolLoopPipeline,
-)
-
 
 # ---------------------------------------------------------------- fixtures
 
@@ -479,12 +477,6 @@ class TestFacadeContract:
         facade = CoderLoopFacade(
             model=ScriptedModel([]), tools={}, session=Session()
         )
-        for refused in (
-            facade.recall("anything"),
-            facade.remember({"fact": "x"}),
-            facade.call_agent.__self__.call_agent,  # noqa: kept simple below
-        ):
-            pass
         with pytest.raises(CapabilityNotGrantedError, match="recall"):
             await facade.recall("anything")
         with pytest.raises(CapabilityNotGrantedError, match="remember"):
