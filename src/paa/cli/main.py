@@ -31,6 +31,7 @@ from paa import __version__
 from paa.cli.chat import app as chat_app
 from paa.cli.coder import register_agent
 from paa.cli.mcp import app as mcp_app
+from paa.cli.pipeline import app as pipeline_app
 from paa.core.types import ComplexityModality, EventType, PermissionMode
 from paa.memory.touch import touch_recalled
 from paa.models.base import redact
@@ -893,6 +894,7 @@ app.add_typer(memory_app, name="memory")
 
 app.add_typer(chat_app, name="chat")
 app.add_typer(mcp_app, name="mcp")
+app.add_typer(pipeline_app, name="pipeline")
 
 
 if __name__ == "__main__":
