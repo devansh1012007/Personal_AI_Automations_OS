@@ -173,7 +173,7 @@ Degradation impact:
 - Context packets are rebuilt per hydration from the ledger + hot serving; not
   stored as truth (`context_agents.py`).
 - Task projections are derived by replay; snapshots are a cache optimisation
-  (`replay.py:93`).
+  (`ledger/replay.py:93`).
 - Queue (Redis) is volatile; the ledger is authoritative for recovery
   (`recovery.py:11`, `src/paa/agents/orchestrator.py:776`).
 

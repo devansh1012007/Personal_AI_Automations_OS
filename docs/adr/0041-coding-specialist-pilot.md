@@ -62,7 +62,7 @@ full ADR-0008 key. The payload carries additive fields only (`reason`,
 `depth`, `ceiling`) alongside the existing drift/restore keys — the
 `reason` distinguishes a delegation block from a crash-drift recovery. No new
 `EventType` member, no replay change. The event stays resolvable through
-`replay.py:167` to `ROLLED_BACK`.
+`ledger/replay.py:167` to `ROLLED_BACK`.
 
 **The gate and the deferrals.** The other four specialists
 (research/writing/data-analysis/ops) ship only if the coding pilot's routing

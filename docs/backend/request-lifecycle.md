@@ -64,7 +64,7 @@ Every emit re-projects (`project()`) so the next phase reads current state.
   - Returns; phase becomes `BLOCKED` (terminal).
 - On `requires_human_gate`: emits `AWAITING_HUMAN_ATTESTATION`; phase parks
   (`src/paa/agents/orchestrator.py:583`). Never auto-clears across restart
-  (`replay.py:62`).
+  (`ledger/replay.py:62`).
 - Otherwise emits `POLICY_CLEARED` with `risk_score` (`src/paa/pipelines/builtin.py:443`);
   phase becomes `EXECUTING`.
 

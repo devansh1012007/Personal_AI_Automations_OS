@@ -40,7 +40,7 @@ already takes seriously:
 The second constraint is the vision's: "no silent capability without a gate"
 and extension rule 6, authority travels with the work. A pipeline's reach must
 be the intersection of what it *asks for* (manifest), what the task's
-authority record *allows* (mandate scope, `ledger/mandate.py:145`), and what
+authority record *allows* (mandate scope, `ledger/mandate.py:125`), and what
 policy *permits* (the active permission mode's grants) — nothing else
 narrows it, and nothing widens it.
 

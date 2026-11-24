@@ -73,7 +73,7 @@ raises on unknown event types (records them in `unknown_events` instead).
 
 **Key logic:** `_PHASE_MAP` maps each `EventType` to a `TaskPhase`; event-specific
 state (plan steps, policy decision, attempts, completed steps, tokens) is
-applied in `apply_event`'s `match` block (`replay.py:171`).
+applied in `apply_event`'s `match` block (`ledger/replay.py:171`).
 
 ### `recovery.py` — crash recovery
 **Responsibility:** `RecoveryEngine.boot_sweep()` — replays open lineages from

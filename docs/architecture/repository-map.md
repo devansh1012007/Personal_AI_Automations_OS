@@ -114,7 +114,7 @@ responsibility and the files it contains. All paths are repository-relative.
 
 | Entry point | File | Function |
 |---|---|---|
-| `paa` CLI | `src/paa/cli/main.py:44` | `app = typer.Typer(...)`; `__main__` at line 854 |
+| `paa` CLI | `src/paa/cli/main.py:45` | `app = typer.Typer(...)`; `__main__` at line 855 |
 | `paa submit` | `src/paa/cli/main.py:123` | `submit` |
 | `paa serve` | `src/paa/cli/main.py:466` | `serve` |
 | `paa doctor` | `src/paa/cli/main.py:300` | `doctor` |
@@ -123,7 +123,7 @@ responsibility and the files it contains. All paths are repository-relative.
 | `paa gate` | `src/paa/cli/main.py:255` | `gate` |
 | `paa agent` | `src/paa/cli/coder.py:53` | `register_agent` → `agent` |
 | `paa tui` | `src/paa/cli/main.py:529` | `tui` |
-| `paa memory` | `src/paa/cli/main.py:691` | `memory_app`: facts/search/signals/drain/world-model |
+| `paa memory` | `src/paa/cli/main.py:692` | `memory_app`: facts/search/signals/drain/world-model |
 | `paa chat` | `src/paa/cli/chat.py:160` | the chat surface — TUI, or `--plain` (SPEC 2 W4) |
 | `paa mcp serve` | `src/paa/cli/mcp.py:120` | stdio MCP server (SPEC 2 W4) |
 | Programmatic runtime | `src/paa/runtime.py:353` | `Runtime.build()` |

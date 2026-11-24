@@ -7,7 +7,7 @@
 - **Main responsibility:** The `paa` Typer command line — the primary human entry point; every command except `serve` is one-shot (build Runtime, do one thing, print, close).
 - **Architectural layer:** Edge
 - **Entrypoints:** `cli/main.py:app` (Typer), `cli/coder.py:register_agent` (`paa agent`), `cli/chat.py:app` (`paa chat`), `cli/mcp.py:app` (`paa mcp`)
-- **Public interfaces:** `app` (`cli/main.py:44`), `register_agent` (`cli/coder.py:53`)
+- **Public interfaces:** `app` (`cli/main.py:45`), `register_agent` (`cli/coder.py:53`)
 - **Other modules that depend on it:** `runtime.py` (all commands build `Runtime`), `coder/agent.py` (`paa agent`)
 
 ## Purpose and responsibilities
@@ -38,11 +38,11 @@ the command is inherently long-running):
 
 | Command | Home | Behavior |
 |---|---|---|
-| `paa memory <sub>` | `memory_app` (`cli/main.py:691`) | `facts`/`search`/`signals`/`drain`/`world-model` reads over the memory subsystem |
+| `paa memory <sub>` | `memory_app` (`cli/main.py:692`) | `facts`/`search`/`signals`/`drain`/`world-model` reads over the memory subsystem |
 | `paa chat` | `cli/chat.py:160` | The chat surface (SPEC 2 §3.1 C4.4): Textual TUI, or `--plain` for terminals without the `[tui]` extra; `--session`/`--resume` name a lineage; `--model` overrides `PAA_CHAT__MODEL` |
 | `paa mcp serve` | `cli/mcp.py:120` | The stdio MCP server (SPEC 2 §3.1 C4.5): JSON-RPC 2.0 over stdin/stdout, spawned by the MCP client; see [`interfaces/mcp-server.md`](../interfaces/mcp-server.md) |
 
-All one-shot commands use `_build_runtime(run_recovery=False)` (`cli/main.py:101`) —
+All one-shot commands use `_build_runtime(run_recovery=False)` (`cli/main.py:102`) —
 recovery is opt-in per command (an operator decision, `coder/agent.py:134`);
 `serve` also does not run recovery at build (daemon does it at start, `daemon.py:91`).
 

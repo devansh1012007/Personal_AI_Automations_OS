@@ -119,7 +119,7 @@ CLI `paa submit` (cli/main.py:61)
 CLI `paa run <id>` / daemon dispatch / API `?run=true`
   → Runtime.run() (runtime.py:209)
     → ChiefOrchestrator.run() (src/paa/agents/orchestrator.py:267)
-      → project(ledger, cid) (replay.py:322)
+      → project(ledger, cid) (ledger/replay.py:322)
       → _hydrate → context builder (context_agents.py:241)
       → _plan → planner (reasoning.py:78)
       → _check_policy → policy agent (policy.py:139)
@@ -165,7 +165,7 @@ paa recover / Daemon.start → Runtime.boot_recovery()
     → RecoveryEngine.boot_sweep() (recovery.py:243)
       → verify_all_chains() (store.py:349)
       → open_correlations() (store.py:278)  — from head projection, not queue
-      → per lineage: project() (replay.py:322)
+      → per lineage: project() (ledger/replay.py:322)
         → if AWAITING_HUMAN → PARKED_HUMAN (never auto-clear)
         → if attempts >= max → TASK_ABANDONED
         → _reconcile_workspace: manifest vs disk; drift → restore + STATE_ROLLBACK_TRIGGERED

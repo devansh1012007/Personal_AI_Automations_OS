@@ -23,7 +23,7 @@ Two gate points in the built-in pipeline's `run()`:
    `state.phase is AWAITING_HUMAN`, return (`:423`).
 
 The `TaskProjection.phase` becomes `AWAITING_HUMAN`; `is_resumable` is
-**False** (`replay.py:62`) — recovery will park it, never auto-clear
+**False** (`ledger/replay.py:62`) — recovery will park it, never auto-clear
 (`recovery.py:295`).
 
 ## Events emitted
@@ -44,7 +44,7 @@ note=None)` (`src/paa/agents/orchestrator.py:712`):
 3. Return re-projected `TaskProjection`.
 
 **Nothing in the automated path can clear its own gate** (`src/paa/agents/orchestrator.py:722`)
-— a crash is never interpreted as consent (`replay.py:62`).
+— a crash is never interpreted as consent (`ledger/replay.py:62`).
 
 Callers:
 - CLI `paa gate <id> --approve/--reject` (`cli/main.py:255`)
@@ -52,13 +52,13 @@ Callers:
 
 ## Replay semantics
 
-`apply_event()` on `HUMAN_GATE_CLEARED` (`replay.py:262`):
+`apply_event()` on `HUMAN_GATE_CLEARED` (`ledger/replay.py:262`):
 - clears `awaiting_reason`;
 - sets phase to `TaskPhase(payload.get("resume_phase", EXECUTING))` — resumes
   where the gate interrupted, defaulting to execution.
 
 On `HUMAN_GATE_REJECTED` → `policy_decision` set, phase `BLOCKED` via
-`_PHASE_MAP` (`replay.py:164`).
+`_PHASE_MAP` (`ledger/replay.py:164`).
 
 ## Recovery behavior
 

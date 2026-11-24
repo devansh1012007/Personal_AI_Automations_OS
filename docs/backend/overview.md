@@ -19,7 +19,7 @@ the CLI and API are both thin edges over the same `Runtime` object
 | `paa doctor` | `src/paa/cli/main.py:300` | Reports which backends/sandbox are actually live, plus the chat model, MCP token env and TUI extra |
 | `paa serve [host] [port]` | `src/paa/cli/main.py:466` | Starts FastAPI API + background daemon over one shared runtime |
 | `paa agent "prompt"` | `src/paa/cli/coder.py:44` | Tool-using coder loop over the runtime |
-| `paa memory <subcommand>` | `src/paa/cli/main.py:691` | Facts/search/signals/drain/world-model reads over the memory subsystem |
+| `paa memory <subcommand>` | `src/paa/cli/main.py:692` | Facts/search/signals/drain/world-model reads over the memory subsystem |
 | `paa chat` | `src/paa/cli/chat.py:160` | The chat surface — Textual TUI, or `--plain` (SPEC 2 W4) |
 | `paa mcp serve` | `src/paa/cli/mcp.py:120` | Stdio MCP server exposing memory + chat as tools (SPEC 2 W4) |
 | `paa tui` | `src/paa/cli/main.py:529` | Interactive dashboard |
@@ -54,7 +54,7 @@ There is no HTTP "business" API surface beyond ingestion. The backend is driven
 by:
 
 1. **CLI one-shot commands** — each builds a `Runtime` (`Runtime.build()`),
-   performs one operation, prints, and closes (`cli/main.py:101`).
+   performs one operation, prints, and closes (`cli/main.py:102`).
 2. **`paa serve`** — builds one `Runtime`, starts a `Daemon` and a FastAPI app
    over it (`cli/main.py:466`). The API delegates to the same `Runtime`.
 3. **Programmatic `Runtime`** — `async with await Runtime.build() as rt:

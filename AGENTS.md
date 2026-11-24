@@ -560,7 +560,10 @@ the archive at the bottom. Keep prose out — this is a register, not a report.
 
 ### Environment (this development sandbox)
 
-- Repo: `/home/z/my-project/paa`, branch `main` @ `8d4eecf`, clean tree.
+- Repo: `/home/z/my-project/paa`, branch `main` @ 3478509, clean tree.
+- Full gate at the W6 close: `python -m pytest tests/` → 4,368 passed /
+  244 env-gated skipped / 1 xfailed, 0 failures, exit 0; `mypy src/paa` clean
+  (181 files); `ruff check src tests` clean.
 - venv: `/home/z/.venv` — **outside** the persistent project dir; after a sandbox
   recycle reinstall with `pip install -e ".[dev,tui]"` from the repo root and
   `export PATH=/home/z/.venv/bin:$PATH`. 2 CPU cores; run at most ~3 parallel jobs.
@@ -574,15 +577,19 @@ P and C sections, in wave order. Scope: Wave 6 (C6.1-C6.6 = P1.3, P1.5, P2, P4-l
 conformance v0), then Wave 7 as capacity allows. C5.1/G1 stays operator-blocked; P5
 stays gated on a first outside author (the spec's own rule).
 
+**WAVE 6 CLOSED (2026-11-24):** all six rows done, G-LOOPS gate met — three
+pipelines on one facade, conformance + chaos + overlay green, protocol still draft
+(freezing waits for P3's RPC run, per the spec's own rule).
+
 | Task ID | Agent | Assignment | Status | Evidence / notes |
 |---|---|---|---|---|
 | W6-C6.2 | orchestrator | CallJournal + PIPELINE_RUN_*/CALL_* events per ADR-0046/0050 | **done** | commit 1e7906d; W6-IMPL-01 report; 23 tests, replay property green |
 | W6-C6.1 | orchestrator | coder.tool-loop on the facade; use_skill -> existing ToolJournal | **done** | this commit; W6-IMPL-02 report; tests/coder 484 passed unchanged, S1 dry-run all checks held (after uninstalling sandbox-injected ddtrace — see report §13) |
-| W6-C6.3 | orchestrator | replay/divergence logic + kill -9 chaos for chat and coder | pending | next: the rule of three is now met (builtin, chat, coder.tool-loop) |
-| W6-C6.4 | orchestrator | slots + overlay loader, tighten-only at load | pending | |
-| W6-C6.5 | orchestrator | registry v0 + paa pipeline list/inspect/run/trace | pending | |
-| W6-C6.6 | orchestrator | conformance v0 for all registered pipelines | pending | |
-| W6-CLOSE | orchestrator | G-LOOPS gate evidence + truth pass + deliverables | pending | |
+| W6-C6.3 | orchestrator | replay/divergence logic + kill -9 chaos for chat and coder | **done** | commit f535071; ReplayView+ServedToolResults on the facade; coder chaos matrix (5 boundaries: sweep twice → resume, zero duplicate effects) + chat redelivery chaos (3 tests); 22 tests |
+| W6-C6.4 | orchestrator | slots + overlay loader, tighten-only at load | **done** | commit b87234e; slots.py declarations + overlay.py loader (every widening rejected at load by name); chat context-provider slot; the behaviour proof as a test; 31 tests |
+| W6-C6.5 | orchestrator | registry v0 + paa pipeline list/inspect/run/trace | **done** | commit b5390ea; builtin+local sources, mandate pipeline scope (Scope.pipelines, golden payload preserved), selection explicit→scope→default; CLI list/inspect/run/trace driven live in tests; 29 tests |
+| W6-C6.6 | orchestrator | conformance v0 for all registered pipelines | **done** | commit 215cb25; six-check standard in each pipeline's own vocabulary (coder: all six real; chat/builtin: real + honest n/a rows naming where pinned); all three GREEN |
+| W6-CLOSE | orchestrator | G-LOOPS gate evidence + truth pass + deliverables | **done** | this commit; full gate 4,368/244/1x/0 exit 0, mypy+ruff clean; conformance+chaos+overlay green; protocol still draft (freezing waits for P3's RPC run — the spec's own rule); docs truth pass (repointed replay.py + shifted line citations); deliverables regenerated |
 
 ### Archived campaign: T-VERIFY (2026-11-24, complete)
 
@@ -639,11 +646,11 @@ P0 → P1.1 → P1.2 → SPEC-2 W4 C4.1–C4.7 → W5 C5.2–C5.5 close).
 
 ### Known left (vs the spec's phases) — do not re-derive
 
-- P1.3 (coder loop on the facade), P1.5 (slot-addressable stages), P2 (CallJournal
-  + replay/chaos), P4-lite registry/CLI, conformance v0 → SPEC-2 Wave 6 (not started).
+- ~~P1.3, P1.5, P2, P4-lite, conformance v0~~ → **done in Wave 6** (C6.1-C6.6;
+  the rule of three is met: builtin + chat + coder.tool-loop on the facade).
 - P3 (RPC host/protocol), P5 (distribution), P6 (observe/acp-client adapters),
-  P7 (authoring kit) → Waves 6–8 (not started); `paa-pipeline/1` stays draft —
-  only two pipelines run on the facade today (builtin + chat), rule of three unmet.
+  P7 (authoring kit) → Waves 7–8 (not started); `paa-pipeline/1` stays draft —
+  freezing waits for P3's RPC run (the spec's own rule).
 - C5.1/G1 real-model S1: PENDING, operator-blocking (no model key in this sandbox);
   run book in `docs/operations/2026-11-09-next-spec/g1-decision.md`.
 

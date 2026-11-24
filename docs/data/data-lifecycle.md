@@ -37,7 +37,7 @@ updated in the same transaction. `state_version` is per-correlation and dense;
 
 ### Retrieval
 `LedgerStore.read_correlation()` returns all events for a lineage ordered by
-`state_version` (`ledger/store.py:149`). `project()` (`replay.py:422`) folds them into
+`state_version` (`ledger/store.py:149`). `project()` (`ledger/replay.py:422`) folds them into
 a `TaskProjection`. `LedgerStore.head()` reads the head projection for status
 (`ledger/store.py:341`).
 
@@ -51,7 +51,7 @@ append-only. The only "mutation" of the head row is the upsert in
   skips `is_terminal = 1` rows (`ledger/store.py:357`).
 - `STATE_ROLLBACK_TRIGGERED` restores a workspace to a checkpoint manifest and
   resets `completed_steps` to steps before `restored_step_index`
-  (`replay.py:267`).
+  (`ledger/replay.py:267`).
 - `TASK_ABANDONED` closes a lineage that exceeded `max_delivery_attempts`
   (`recovery.py:315`).
 - There is no explicit "delete a task" operation; ledger rows are append-only.
