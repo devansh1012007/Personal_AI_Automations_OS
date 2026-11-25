@@ -360,6 +360,111 @@ class TestTheRendering:
         assert _json_lines(buffer)[0]["event"] == "a line"
 
 
+class TestIdempotence:
+    """*"Configure structlog from ``settings``. Idempotent."*
+
+    The existing reconfiguration test pinned that the *second* call takes
+    effect; idempotence is the other half — that reconfiguring does not
+    *stack*. A configure that appended its processor chain to whatever
+    was already installed would run every processor twice, and the
+    symptom would only appear from the second configuration on.
+    """
+
+    @staticmethod
+    def _processor_names() -> list[str]:
+        names = [
+            getattr(processor, "__name__", type(processor).__name__)
+            for processor in structlog.get_config()["processors"]
+        ]
+        return names
+
+    def test_a_second_call_does_not_duplicate_the_processor_chain(self) -> None:
+        buffer = io.StringIO()
+        configure_logging(ObservabilitySettings(log_json=True), stream=buffer)
+
+        once = self._processor_names()
+        configure_logging(ObservabilitySettings(log_json=True), stream=buffer)
+        twice = self._processor_names()
+
+        assert twice == once
+        # No processor appears twice — the correlation injector once, the
+        # renderer once, and nothing duplicated anywhere in the chain.
+        assert once.count("_inject_correlation") == 1
+        assert once.count("JSONRenderer") == 1
+        assert len(set(once)) == len(once)
+
+    def test_a_second_console_call_does_not_duplicate_either(self) -> None:
+        """The same rule on the default rendering path."""
+        buffer = io.StringIO()
+        configure_logging(ObservabilitySettings(log_json=False), stream=buffer)
+
+        once = self._processor_names()
+        configure_logging(ObservabilitySettings(log_json=False), stream=buffer)
+        twice = self._processor_names()
+
+        assert twice == once
+        assert once.count("ConsoleRenderer") == 1
+        assert len(set(once)) == len(once)
+
+
+class TestTheDefaultLevel:
+    """The posture a process boots into when nothing was configured."""
+
+    def test_no_settings_at_all_means_info_and_debug_is_absent(self) -> None:
+        """The ``settings=None`` path: defaults all the way down.
+
+        DEBUG is the noise level and INFO the signal; a runtime that
+        started emitting DEBUG by default would fill an operator's
+        terminal with the one thing they did not ask for. The level the
+        suite exercises elsewhere is always configured *explicitly* —
+        the default itself had no test.
+        """
+        buffer = io.StringIO()
+        configure_logging(stream=buffer)
+
+        log.debug("the noise")
+        log.info("the signal")
+
+        output = buffer.getvalue()
+        assert "the signal" in output
+        assert "the noise" not in output
+        assert len(output.splitlines()) == 1
+
+
+class TestTheJsonLineShape:
+    """The golden JSON line — the whole key set, not its members one by one.
+
+    The existing tests assert *fields* of the record; the shape is the
+    stronger contract: a log shipper parses the line wholesale, so a
+    field that quietly vanishes (or appears) changes what every consumer
+    downstream sees, and only the set comparison notices.
+    """
+
+    def test_a_json_line_carries_exactly_the_documented_fields(self) -> None:
+        buffer = io.StringIO()
+        configure_logging(ObservabilitySettings(log_json=True), stream=buffer)
+
+        with bind_correlation("correlation-123", "trace-456"):
+            log.info("a line", extra="value")
+
+        lines = buffer.getvalue().splitlines()
+        assert len(lines) == 1  # one record per line — a shipper splits on newlines
+
+        record = json.loads(lines[0])
+        assert set(record) == {
+            "event",
+            "level",
+            "timestamp",
+            "correlation_id",
+            "trace_id",
+            "extra",
+        }
+        # The keys are sorted in the written line — JSONRenderer's
+        # sort_keys — so the bytes a shipper sees are stable for the
+        # same record, whatever order the call site mentioned them in.
+        assert list(record) == sorted(record)
+
+
 class TestTheNameCollision:
     """The module is named ``logging`` and imports the standard library's.
 

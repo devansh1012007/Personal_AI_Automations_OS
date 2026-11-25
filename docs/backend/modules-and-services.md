@@ -73,7 +73,7 @@ raises on unknown event types (records them in `unknown_events` instead).
 
 **Key logic:** `_PHASE_MAP` maps each `EventType` to a `TaskPhase`; event-specific
 state (plan steps, policy decision, attempts, completed steps, tokens) is
-applied in `apply_event`'s `match` block (`replay.py:171`).
+applied in `apply_event`'s `match` block (`ledger/replay.py:171`).
 
 ### `recovery.py` — crash recovery
 **Responsibility:** `RecoveryEngine.boot_sweep()` — replays open lineages from
@@ -84,7 +84,7 @@ restores drift, re-queues resumable tasks, parks human-gated tasks.
 `WorkspaceSnapshotter`/`Requeuer` protocols.
 
 **Failure behavior:** One bad lineage does not abort the sweep
-(`ledger/recovery.py:250`). Recovery is idempotent — running twice yields the same end
+(`ledger/recovery.py:912`). Recovery is idempotent — running twice yields the same end
 state (`recovery.py:17`).
 
 ## 3. Agents — `agents/`
@@ -381,8 +381,8 @@ ABC, `resolve_workspace`/`assert_inside_workspace` (workspace jail).
 **Public interface:** `SandboxSpec`, `SandboxResult`, `IsolationLevel`, `Sandbox`.
 
 **Failure behavior:** `resolve_workspace` raises `SandboxError` if the directory
-doesn't exist (`sandbox/base.py:515`). `SandboxSpec._reject_ambient_env_smell` trips on
-`env=dict(os.environ)` (`sandbox/base.py:337`).
+doesn't exist (`sandbox/base.py:625`). `SandboxSpec._reject_ambient_env_smell` trips on
+`env=dict(os.environ)` (`sandbox/base.py:338`).
 
 ### `sandbox/subprocess_backend.py` — SubprocessSandbox
 **Responsibility:** PROCESS isolation. Windows Job Object memory caps +
@@ -434,8 +434,8 @@ Short-circuits on CRITICAL finding or structural failure.
 `ValidationReport`.
 
 **Failure behavior:** No sandbox/workspace + tests requested → FAIL (unrun
-suite is not passing) (`engine.py:377`). Patch without workspace → structural
-failure (`engine.py:328`).
+suite is not passing) (`engine.py:402`). Patch without workspace → structural
+failure (`engine.py:353`).
 
 ### `validation/ast_scanner.py` — AstSecurityScanner
 **Responsibility:** Deny-by-default static scan. Denied modules/attributes/
@@ -476,10 +476,10 @@ passed>0).
 | Policy violation | `policy.py:153` | `STATUS_BLOCKED` verdict → `POLICY_BLOCKED`/`SECURITY_VIOLATION` event |
 | Missing permission | `agents/base.py:333` | `AgentResult.failure` (`PermissionDeniedError`) |
 | Sandbox step failure | `src/paa/pipelines/builtin.py:758` | `VALIDATION_FAILED`; retry up to `max_step_retries` |
-| Validation failure | `validation/engine.py:236` | Binary FAIL; critic can only downgrade |
+| Validation failure | `validation/engine.py:235` | Binary FAIL; critic can only downgrade |
 | Sandbox memory breach | `watchdog.py` | Kill; `killed_reason="memory"` |
 | Queue depth (backpressure) | `backpressure.py:115` | Degrade modality / shed discretionary ingestion (HTTP 429) |
-| Crash mid-task | `recovery.py:222` | Boot sweep replays lineage, reconciles workspace, re-queues |
+| Crash mid-task | `recovery.py:888` | Boot sweep replays lineage, reconciles workspace, re-queues |
 
 ## Related documents
 

@@ -297,6 +297,48 @@ def apply_event(state: TaskProjection, event: LedgerEvent) -> TaskProjection:
             # and outcome live in the payload for N2.3 to classify.
             pass
 
+        case (
+            EventType.CHAT_SESSION_STARTED
+            | EventType.CHAT_SESSION_ENDED
+            | EventType.CHAT_TURN_PROPOSED
+            | EventType.CHAT_TURN_COMPLETED
+            | EventType.CHAT_TURN_FAILED
+            | EventType.CHAT_TURN_CANCELLED
+            | EventType.MEMORY_RECALL_CONSULTED
+            | EventType.MEMORY_SIGNAL_EXTRACTED
+        ):
+            # W4 (ADR-0046 pattern): chat-session / memory-consult events
+            # are the audit record, not task-lineage state — no projection
+            # field moves. The session's own state (turn counts, status)
+            # is folded by paa.chat.session.fold_session from the payloads,
+            # never here: a chat session is not a task, and a session
+            # history replayed through this fold must land exactly where
+            # it started (CREATED, attempts 0), which is what keeps the
+            # boot sweep from reading conversation as resumable work.
+            pass
+
+        case (
+            EventType.PIPELINE_RUN_STARTED
+            | EventType.PIPELINE_RUN_COMPLETED
+            | EventType.PIPELINE_RUN_FAILED
+            | EventType.PIPELINE_RUN_DIVERGED
+            | EventType.PIPELINE_CALL_PROPOSED
+            | EventType.PIPELINE_CALL_COMPLETED
+            | EventType.PIPELINE_CALL_FAILED
+        ):
+            # W6 (ADR-0046/0050 pattern): pipeline-run / call-journal events
+            # are the audit record of the platform's own door, not
+            # task-lineage state — no projection field moves. The run's own
+            # state (call sequence, outcomes, fingerprints) is folded by
+            # paa.pipelines.journal.fold_call_journal from the payloads,
+            # never here: a pipeline run is not a task, and a run history
+            # replayed through this fold must land exactly where it
+            # started, which is what keeps the boot sweep from reading a
+            # journalled run as resumable task work (ledger/recovery.py's
+            # pipeline-only-lineage exemption is the sweep's half of this
+            # same rule).
+            pass
+
         case _:
             pass
 
@@ -404,6 +446,11 @@ def apply_tier_event(state: dict[str, str], event: LedgerEvent) -> dict[str, str
 #: nothing, and are never terminal, so a coder-only history projects to the
 #: initial phase exactly like a tier-only one did (P009). The auditable
 #: record is the payload; the fold records nothing into TaskProjection.
+#: W4 (ADR-0046 pattern) — the eight chat-session / memory-consult events
+#: live here for the same reason: a chat session is not a task lineage, its
+#: events move no phase and are never terminal, and a chat-only history
+#: projects to the initial phase. The session's own state is folded by
+#: paa.chat.session.fold_session, not here.
 _NO_PHASE_CHANGE = frozenset(
     {
         EventType.HUMAN_GATE_CLEARED,
@@ -423,6 +470,21 @@ _NO_PHASE_CHANGE = frozenset(
         EventType.CODER_SESSION_ENDED,
         EventType.MANDATE_GRANTED,
         EventType.MANDATE_REFUSED,
+        EventType.CHAT_SESSION_STARTED,
+        EventType.CHAT_SESSION_ENDED,
+        EventType.CHAT_TURN_PROPOSED,
+        EventType.CHAT_TURN_COMPLETED,
+        EventType.CHAT_TURN_FAILED,
+        EventType.CHAT_TURN_CANCELLED,
+        EventType.MEMORY_RECALL_CONSULTED,
+        EventType.MEMORY_SIGNAL_EXTRACTED,
+        EventType.PIPELINE_RUN_STARTED,
+        EventType.PIPELINE_RUN_COMPLETED,
+        EventType.PIPELINE_RUN_FAILED,
+        EventType.PIPELINE_RUN_DIVERGED,
+        EventType.PIPELINE_CALL_PROPOSED,
+        EventType.PIPELINE_CALL_COMPLETED,
+        EventType.PIPELINE_CALL_FAILED,
     }
 )
 

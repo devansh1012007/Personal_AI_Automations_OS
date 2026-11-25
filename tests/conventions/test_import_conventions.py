@@ -164,6 +164,15 @@ FAMILY = (
 TYPE_CHECKING_CLASSES: dict[str, str] = {
     "paa.agents.base": "C",
     "paa.agents.orchestrator": "C",
+    "paa.cli.chat": "E",
+    "paa.cli.observe": "E",
+    "paa.mcp.server": "C",
+    "paa.tui.chat.app": "D",
+    "paa.tui.chat.plain": "C",
+    "paa.tui.chat.resilience": "E",
+    "paa.tui.chat.screens": "A",
+    "paa.tui.chat.widgets": "E",
+    "paa.tui.chat.wiring": "C",
     "paa.api.app": "B",
     "paa.cli.main": "C",
     "paa.coder.agent": "C",
@@ -212,6 +221,24 @@ TYPE_CHECKING_CLASS_KEYS: frozenset[str] = frozenset({"A", "B", "C", "D", "E"})
 #: disagrees with a class can re-run the measurement rather than argue with
 #: the table.
 TYPE_CHECKING_NOTES: dict[str, str] = {
+    "paa.cli.chat": "names paa.config.Settings, loaded by every CLI path already: ~0 ms",
+    "paa.cli.observe": (
+        "names paa.pipelines.base.PipelineResult for the shared driver's return "
+        "annotation; pipelines.base is inert types, and the import lives behind "
+        "the annotation-only guard so `paa --version` pays nothing"
+    ),
+    "paa.mcp.server": "names paa.runtime (the runtime boot) and asyncio.StreamReader: heavy",
+    "paa.tui.chat.app": "names only collections.abc.Callable",
+    "paa.tui.chat.plain": "names paa.runtime (heavy) beside stdlib and chat types",
+    "paa.tui.chat.resilience": (
+        "names paa.chat.loop, which its callers import at runtime anyway: ~0 ms"
+    ),
+    "paa.tui.chat.screens": (
+        "names paa.tui.chat.app.ChatApp, and app.py imports this module at runtime, "
+        "so a runtime import here closes the cycle"
+    ),
+    "paa.tui.chat.widgets": "names paa.chat.session.ChatSessionRecord, light: ~0 ms",
+    "paa.tui.chat.wiring": "names paa.runtime (the runtime boot) beside chat/memory types",
     "paa.agents.base": "names paa.ledger.store, which it does not otherwise import: +39.7 ms",
     "paa.agents.orchestrator": (
         "names paa.ledger.store, which the module already pulls in by another route: +1.1 ms"

@@ -47,8 +47,12 @@ __all__ = [
     "WorkspaceSnapshotter",
     "classify_interrupted",
     "close_interrupted_calls",
+    "close_interrupted_chat_turns",
+    "close_interrupted_pipeline_calls",
     "find_interrupted_calls",
     "find_interrupted_calls_for_session",
+    "find_interrupted_chat_turns",
+    "find_interrupted_pipeline_calls",
 ]
 
 log = structlog.get_logger(__name__)
@@ -129,6 +133,41 @@ class RecoveryOutcome(str, enum.Enum):
     lineage is ignored for this determination, because the pre-N2.3
     sweep could have written one onto a coder lineage it should never
     have resumed.
+    """
+
+    SKIPPED_CHAT_LINEAGE = "SKIPPED_CHAT_LINEAGE"
+    """A chat-session-only lineage: conversation, not a task.
+
+    W4 (the N2.3 exemption's mirror) — a lineage carrying only chat and
+    memory-consult audit events (``CHAT_*``, ``MEMORY_RECALL_CONSULTED``,
+    ``MEMORY_SIGNAL_EXTRACTED``) projects to the initial phase and is
+    never terminal, because all eight types are ``_NO_PHASE_CHANGE``.
+    Without the exemption the sweep would re-queue every open chat
+    session as a task on every boot — and a session that ended still
+    reads non-terminal, so it would be re-queued forever. It is never
+    re-queued and never folded into phase state; its only sweep work is
+    closing a ``CHAT_TURN_PROPOSED`` turn that has no outcome
+    (``CHAT_TURN_FAILED(reason=interrupted)``), so a crash mid-turn
+    reads as an interrupted turn and not as an eternally open one.
+    """
+
+    SKIPPED_PIPELINE_LINEAGE = "SKIPPED_PIPELINE_LINEAGE"
+    """A pipeline-run-only lineage: the call journal, not a task.
+
+    W6 (C6.2, the N2.3 exemption's second mirror) — a lineage carrying
+    only the pipeline platform's own audit events
+    (``PIPELINE_RUN_*``, ``PIPELINE_CALL_*``) projects to the initial
+    phase and is never terminal, because all seven types are
+    ``_NO_PHASE_CHANGE``. The registry's run driver (C6.5) journals one
+    run per fresh lineage; without an exemption the boot sweep would
+    read every open run as resumable task work and re-queue it — a
+    pipeline run is re-driven by replaying its journal
+    (``paa.pipeline.replay``), never by re-queuing it as a task. Its
+    only sweep work is closing ``PIPELINE_CALL_PROPOSED`` calls that
+    have no outcome (``PIPELINE_CALL_FAILED(reason=interrupted)``), so
+    a crash mid-call reads as an interrupted call — which is exactly
+    what the replay path then classifies as the unknown outcome it must
+    never auto-repeat (ADR-0050's D-6 rule).
     """
 
 
@@ -289,6 +328,79 @@ _CODER_EVENT_TYPES = frozenset(
 #: audit row must not flip the lineage back to "task work".
 _CODER_NEUTRAL_TYPES = frozenset({EventType.RECOVERY_REPLAY_COMPLETED})
 
+#: W4 — the chat-session / memory-consult audit vocabulary. A lineage of
+#: only these is conversation, never task work (see
+#: :attr:`RecoveryOutcome.SKIPPED_CHAT_LINEAGE`).
+_CHAT_EVENT_TYPES = frozenset(
+    {
+        EventType.CHAT_SESSION_STARTED,
+        EventType.CHAT_SESSION_ENDED,
+        EventType.CHAT_TURN_PROPOSED,
+        EventType.CHAT_TURN_COMPLETED,
+        EventType.CHAT_TURN_FAILED,
+        EventType.CHAT_TURN_CANCELLED,
+        EventType.MEMORY_RECALL_CONSULTED,
+        EventType.MEMORY_SIGNAL_EXTRACTED,
+    }
+)
+
+#: A pre-W4 sweep could never have written chat rows, but the neutral rule
+#: is kept symmetric with the coder determination anyway: a stale recovery
+#: audit row must not flip a chat lineage back to "task work".
+_CHAT_NEUTRAL_TYPES = frozenset({EventType.RECOVERY_REPLAY_COMPLETED})
+
+#: W6 — the pipeline platform's own audit vocabulary: the run lifecycle
+#: and the host-side call journal (C6.2, ADR-0050). A lineage of only
+#: these is a journalled run, never task work (see
+#: :attr:`RecoveryOutcome.SKIPPED_PIPELINE_LINEAGE`). The loops a run
+#: drives journal their own vocabularies on their own lineages
+#: (``CHAT_*`` on the session, ``TOOL_CALL_*`` on the coder session),
+#: so a run lineage stays pipeline-only by construction; a lineage that
+#: mixes these with ``TASK_*`` rows is a task lineage the ordinary path
+#: recovers, and the phase-inert PIPELINE rows disturb nothing there.
+_PIPELINE_EVENT_TYPES = frozenset(
+    {
+        EventType.PIPELINE_RUN_STARTED,
+        EventType.PIPELINE_RUN_COMPLETED,
+        EventType.PIPELINE_RUN_FAILED,
+        EventType.PIPELINE_RUN_DIVERGED,
+        EventType.PIPELINE_CALL_PROPOSED,
+        EventType.PIPELINE_CALL_COMPLETED,
+        EventType.PIPELINE_CALL_FAILED,
+    }
+)
+
+#: Symmetric with the coder/chat neutral rule: a stale recovery audit
+#: row must not flip a pipeline lineage back to "task work".
+_PIPELINE_NEUTRAL_TYPES = frozenset({EventType.RECOVERY_REPLAY_COMPLETED})
+
+#: The call-row kinds the interrupted-call scan reads (proposal + its
+#: two outcomes), for :func:`find_interrupted_pipeline_calls`.
+_PIPELINE_CALL_KINDS = frozenset(
+    {
+        EventType.PIPELINE_CALL_PROPOSED,
+        EventType.PIPELINE_CALL_COMPLETED,
+        EventType.PIPELINE_CALL_FAILED,
+    }
+)
+
+#: Call events that resolve a proposal, keyed by payload ``seq``.
+_PIPELINE_CALL_OUTCOME_TYPES = frozenset(
+    {
+        EventType.PIPELINE_CALL_COMPLETED,
+        EventType.PIPELINE_CALL_FAILED,
+    }
+)
+
+#: Turn events that resolve a proposal, keyed by payload ``turn_id``.
+_CHAT_TURN_OUTCOME_TYPES = frozenset(
+    {
+        EventType.CHAT_TURN_COMPLETED,
+        EventType.CHAT_TURN_FAILED,
+        EventType.CHAT_TURN_CANCELLED,
+    }
+)
+
 #: Outcomes that resolve a tool call: a ``TOOL_CALL_*`` event that is
 #: not ``PROPOSED``, keyed the same way (payload ``session_id`` +
 #: ``call_id``). A ``DENIED`` without a ``PROPOSED`` is proof of
@@ -370,6 +482,18 @@ def _payload_text(payload: dict[str, Any], key: str) -> str | None:
     """
     value = payload.get(key)
     return value if isinstance(value, str) and value else None
+
+
+def _payload_int(payload: dict[str, Any], key: str) -> int | None:
+    """A payload field as an int, or ``None`` when absent or not an int.
+
+    ``True`` is not 1 and a float is not a seq: both read as absent,
+    keeping the fold total the same way :func:`_payload_text` does.
+    """
+    value = payload.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
 
 
 def find_interrupted_calls(events: list[LedgerEvent]) -> list[InterruptedCall]:
@@ -511,6 +635,168 @@ def _is_coder_only_lineage(events: list[LedgerEvent]) -> bool:
     """
     kinds = {e.event_type for e in events} - _CODER_NEUTRAL_TYPES
     return bool(kinds) and kinds <= _CODER_EVENT_TYPES
+
+
+def _is_chat_only_lineage(events: list[LedgerEvent]) -> bool:
+    """Whether a lineage is chat/memory-consult audit, never task work.
+
+    Same shape as :func:`_is_coder_only_lineage`, deliberately: one rule
+    per audit vocabulary, both readable at a glance, neither clever. A
+    lineage mixing chat rows with task rows is *not* exempt — the task
+    half decides, and the ordinary path recovers it.
+    """
+    kinds = {e.event_type for e in events} - _CHAT_NEUTRAL_TYPES
+    return bool(kinds) and kinds <= _CHAT_EVENT_TYPES
+
+
+def _is_pipeline_only_lineage(events: list[LedgerEvent]) -> bool:
+    """Whether a lineage is pipeline-platform audit, never task work.
+
+    Same shape as the coder/chat determinations, deliberately. A run's
+    lineage carries the call journal; a lineage mixing these rows with
+    ``TASK_*`` rows is a task lineage the ordinary path recovers, and
+    the phase-inert PIPELINE rows disturb nothing there.
+    """
+    kinds = {e.event_type for e in events} - _PIPELINE_NEUTRAL_TYPES
+    return bool(kinds) and kinds <= _PIPELINE_EVENT_TYPES
+
+
+def find_interrupted_pipeline_calls(events: list[LedgerEvent]) -> list[LedgerEvent]:
+    """Every ``PIPELINE_CALL_PROPOSED`` with no outcome, in ledger order.
+
+    Keyed by payload ``seq`` — the journal's own call identity — and
+    collected set-against-set exactly like
+    :func:`find_interrupted_chat_turns`, so ordering cannot hide a
+    genuinely unclosed call. Malformed rows (a proposal without a usable
+    integer seq) are skipped, never raised: the sweep survives a bad
+    lineage. ``PIPELINE_RUN_DIVERGED`` is a run-level row, not a call
+    outcome, so it resolves nothing here.
+    """
+    proposed: dict[int, LedgerEvent] = {}
+    resolved: set[int] = set()
+    for event in events:
+        if event.event_type not in _PIPELINE_CALL_KINDS:
+            continue
+        seq = _payload_int(event.payload, "seq")
+        if seq is None:
+            continue
+        if event.event_type is EventType.PIPELINE_CALL_PROPOSED:
+            proposed.setdefault(seq, event)
+        elif event.event_type in _PIPELINE_CALL_OUTCOME_TYPES:
+            resolved.add(seq)
+    return [proposed[seq] for seq in proposed if seq not in resolved]
+
+
+async def close_interrupted_pipeline_calls(
+    store: LedgerStore, calls: list[LedgerEvent]
+) -> list[LedgerEvent]:
+    """Close each interrupted call as ``PIPELINE_CALL_FAILED(reason="interrupted")``.
+
+    The row is the golden v1 FAILED shape, field for field: ``v``,
+    ``run_id``, ``seq``, ``method``, ``reason``. The discriminator is
+    ``call:<seq>:FAILED`` with ``attempt=0``, so a redelivered close
+    dedupes in the store's own transaction and a second sweep is a
+    no-op — and a call the driver already closed as FAILED is in the
+    resolved set and never reaches here, which is what makes the sweep
+    safe to run beside a live run.
+    """
+    for event in calls:
+        seq = _payload_int(event.payload, "seq")
+        method = _payload_text(event.payload, "method")
+        run_text = _payload_text(event.payload, "run_id")
+        if seq is None:  # pragma: no cover — find_* already filtered
+            continue
+        await store.append(
+            LedgerEvent.create(
+                event.correlation_id,
+                EventType.PIPELINE_CALL_FAILED,
+                session_id=_session_uuid_of(run_text),
+                attempt=0,
+                discriminator=f"call:{seq}:FAILED",
+                payload={
+                    "v": 1,
+                    "run_id": run_text,
+                    "seq": seq,
+                    "method": method or "",
+                    "reason": "interrupted",
+                },
+            )
+        )
+    return calls
+
+
+def find_interrupted_chat_turns(events: list[LedgerEvent]) -> list[LedgerEvent]:
+    """Every ``CHAT_TURN_PROPOSED`` with no outcome, in ledger order.
+
+    Keyed by payload ``turn_id`` — the same discriminator family the chat
+    journal writes — and collected set-against-set like
+    :func:`find_interrupted_calls`, so ordering cannot hide a genuinely
+    unclosed turn. Malformed rows (a proposal without a usable turn id)
+    are skipped, never raised: the sweep survives a bad lineage.
+    """
+    proposed: dict[str, LedgerEvent] = {}
+    resolved: set[str] = set()
+    for event in events:
+        turn_id = _payload_text(event.payload, "turn_id")
+        if turn_id is None:
+            continue
+        if event.event_type is EventType.CHAT_TURN_PROPOSED:
+            proposed.setdefault(turn_id, event)
+        elif event.event_type in _CHAT_TURN_OUTCOME_TYPES:
+            resolved.add(turn_id)
+    return [proposed[turn_id] for turn_id in proposed if turn_id not in resolved]
+
+
+async def close_interrupted_chat_turns(
+    store: LedgerStore, turns: list[LedgerEvent]
+) -> list[LedgerEvent]:
+    """Close each interrupted turn as ``CHAT_TURN_FAILED(reason="interrupted")``.
+
+    The row is the golden v1 FAILED shape, field for field: ``v``,
+    ``session_id``, ``turn_id``, ``reason``. The discriminator is
+    ``<turn_id>:FAILED`` with ``attempt=0``, so a redelivered close dedupes
+    in the store's own transaction, a second sweep is a no-op, and — the
+    subtlety that makes the sweep safe to run beside a live session — a
+    turn the *loop* already closed as FAILED is in the resolved set and
+    never reaches here.
+    """
+    for event in turns:
+        turn_id = _payload_text(event.payload, "turn_id")
+        session_text = _payload_text(event.payload, "session_id")
+        if turn_id is None:  # pragma: no cover — find_* already filtered
+            continue
+        await store.append(
+            LedgerEvent.create(
+                event.correlation_id,
+                EventType.CHAT_TURN_FAILED,
+                session_id=_session_uuid_of(session_text),
+                attempt=0,
+                discriminator=f"{turn_id}:FAILED",
+                payload={
+                    "v": 1,
+                    "session_id": session_text,
+                    "turn_id": turn_id,
+                    "reason": "interrupted",
+                },
+            )
+        )
+    return turns
+
+
+def _session_uuid_of(value: str | None) -> uuid.UUID | None:
+    """Parse a payload session id back to a uuid, or ``None``.
+
+    The chat journal writes ``str(uuid4)`` into every payload, so this
+    round-trips for anything this tree wrote; a malformed row degrades to
+    ``None`` instead of aborting the sweep — one corrupt payload must not
+    cost the well-formed closes beside it.
+    """
+    if value is None:
+        return None
+    try:
+        return uuid.UUID(value)
+    except ValueError:
+        return None
 
 
 class RecoveryEngine:
@@ -690,6 +976,50 @@ class RecoveryEngine:
             return CorrelationRecovery(
                 cid,
                 RecoveryOutcome.SKIPPED_CODER_LINEAGE,
+                projection.phase,
+                interrupted=interrupted,
+            )
+
+        if _is_chat_only_lineage(events):
+            # Chat/memory-consult audit only (W4): never task work, for the
+            # same reason a coder lineage is not — all eight types are
+            # phase-inert, so without the exemption every open session
+            # would be re-queued as a task on every boot, forever. No
+            # workspace reconcile (a conversation never had one), no
+            # requeue, no sweep audit event; the only rows written here
+            # close turns a crash left proposed-but-outcome-less.
+            interrupted_turns = find_interrupted_chat_turns(events)
+            await close_interrupted_chat_turns(self._store, interrupted_turns)
+            log.info(
+                "recovery.skipped_chat_lineage",
+                correlation_id=str(cid),
+                interrupted_turns=len(interrupted_turns),
+            )
+            return CorrelationRecovery(
+                cid,
+                RecoveryOutcome.SKIPPED_CHAT_LINEAGE,
+                projection.phase,
+                interrupted=interrupted,
+            )
+
+        if _is_pipeline_only_lineage(events):
+            # Pipeline-platform audit only (W6, C6.2): never task work. A
+            # journalled run resumes by replaying its call journal
+            # (paa.pipelines.replay), never by re-queuing it as a task;
+            # no workspace reconcile, no requeue, no sweep audit event.
+            # The only rows written here close calls a crash left
+            # proposed-but-outcome-less, so the replay path sees a FAILED
+            # row it can classify instead of an eternal proposal.
+            interrupted_calls = find_interrupted_pipeline_calls(events)
+            await close_interrupted_pipeline_calls(self._store, interrupted_calls)
+            log.info(
+                "recovery.skipped_pipeline_lineage",
+                correlation_id=str(cid),
+                interrupted_calls=len(interrupted_calls),
+            )
+            return CorrelationRecovery(
+                cid,
+                RecoveryOutcome.SKIPPED_PIPELINE_LINEAGE,
                 projection.phase,
                 interrupted=interrupted,
             )

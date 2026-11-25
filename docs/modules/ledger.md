@@ -76,25 +76,25 @@ Snapshots: `save_snapshot`/`load_snapshot` (`ledger/store.py:450`) checkpoint a
 `TaskProjection` as a replay optimisation; safe to delete.
 
 ### `replay.py` — deterministic projection
-`TaskProjection` (`replay.py:89`) is the derived read model. `TaskPhase`
-(`replay.py:35`) is the coarse lifecycle position (`CREATED`…`ABANDONED`).
+`TaskProjection` (`ledger/replay.py:89`) is the derived read model. `TaskPhase`
+(`ledger/replay.py:35`) is the coarse lifecycle position (`CREATED`…`ABANDONED`).
 
-`apply_event()` (`replay.py:171`) is pure and total: never raises on unknown
-events (records them in `unknown_events`). `_PHASE_MAP` (`replay.py:150`) maps
+`apply_event()` (`ledger/replay.py:171`) is pure and total: never raises on unknown
+events (records them in `unknown_events`). `_PHASE_MAP` (`ledger/replay.py:150`) maps
 each `EventType` to a phase; event-specific state (plan steps, policy decision,
 attempts, completed steps, tokens) applied in the `match` block.
 
 `EXECUTION_COMPLETED` fires per step and updates `completed_steps`; the phase
-stays `EXECUTING` until all steps are done (`replay.py:240`). This is ADR-0010
+stays `EXECUTING` until all steps are done (`ledger/replay.py:240`). This is ADR-0010
 — treating `EXECUTION_COMPLETED` as terminal would skip remaining steps.
 
-`project()` (`replay.py:422`) loads a snapshot (if compatible) then replays
+`project()` (`ledger/replay.py:512`) loads a snapshot (if compatible) then replays
 from that version.
 
 ### `recovery.py` — crash recovery
-`RecoveryEngine.boot_sweep()` (`recovery.py:222`):
+`RecoveryEngine.boot_sweep()` (`recovery.py:888`):
 1. `verify_all_chains()` — reports chain problems, never auto-repairs
-   (`recovery.py:231`).
+   (`recovery.py:897`).
 2. `open_correlations()` from head projection (never the queue — `recovery.py:
    11`).
 3. Per lineage: `project()`; terminal → `ALREADY_TERMINAL`;
@@ -103,12 +103,12 @@ from that version.
 4. `_reconcile_workspace()` compares disk vs `hot_serving_recovery_marks`
    checkpoint manifest; drift → `STATE_ROLLBACK_TRIGGERED` + restore.
 5. `_requeue()` enqueues to `StreamName.ORCHESTRATOR_CORE`; failure logged,
-   non-fatal (`recovery.py:444`).
+   non-fatal (`recovery.py:1226`).
 6. `_record_sweep()` appends `RECOVERY_REPLAY_COMPLETED`, suppressed if the
-   latest event is already one (idempotent sweeps; `recovery.py:315`).
+   latest event is already one (idempotent sweeps; `recovery.py:1088`).
 
 `RecoveryOutcome`: `RESUMED`, `ROLLED_BACK`, `PARKED_HUMAN`, `ABANDONED`,
-`UNRECOVERABLE`, `ALREADY_TERMINAL` (`recovery.py:80`).
+`UNRECOVERABLE`, `ALREADY_TERMINAL` (`recovery.py:90`).
 
 ## Inputs and outputs
 
@@ -126,10 +126,10 @@ from that version.
 |---|---|---|---|
 | `ChiefOrchestrator` | calls `LedgerStore.append` | Emits every state transition | `src/paa/agents/orchestrator.py:251` |
 | `Runtime.build` | constructs `LedgerStore`, `RecoveryEngine` | Composition root | `runtime.py:288`, `:326` |
-| `RecoveryEngine` | uses `LedgerStore`, `Database` | Replay and reconcile | `recovery.py:500` |
-| `replay.project` | reads `LedgerStore.read_correlation` | Build TaskProjection | `replay.py:447` |
+| `RecoveryEngine` | uses `LedgerStore`, `Database` | Replay and reconcile | `recovery.py:802` |
+| `replay.project` | reads `LedgerStore.read_correlation` | Build TaskProjection | `ledger/replay.py:537` |
 | `API /ledger/{id}` | calls `read_correlation` | Explainability endpoint | `api/app.py:156` |
-| `CLI paa ledger` | calls `read_correlation` + `verify_chain` | Terminal explainability | `cli/main.py:148` |
+| `CLI paa ledger` | calls `read_correlation` + `verify_chain` | Terminal explainability | `cli/main.py:210` |
 | `Database` | used by `LedgerStore` | SQLite persistence | `storage/relational/database.py:110` |
 
 ## Runtime behavior
@@ -145,9 +145,9 @@ from that version.
   (`ledger/store.py:144`).
 - Concurrent writer race → re-read by key, return what landed
   (`ledger/store.py:174`).
-- Chain verification failure → reported, not repaired (`recovery.py:231`).
+- Chain verification failure → reported, not repaired (`recovery.py:897`).
 - One bad lineage in recovery → logged as `UNRECOVERABLE`, sweep continues
-  (`recovery.py:250`).
+  (`recovery.py:912`).
 
 ## Modification impact
 
@@ -164,7 +164,7 @@ from that version.
   (`ADR-0010`, `types.py:242`).
 - `open_correlations` reads the head projection, which can lag if a crash
   lands between ledger insert and head upsert; recovery repairs it
-  (`recovery.py:269`).
+  (`recovery.py:949`).
 
 ## Related documents
 

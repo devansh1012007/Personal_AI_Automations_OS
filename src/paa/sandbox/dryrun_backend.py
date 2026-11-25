@@ -25,10 +25,12 @@ from typing import Any
 
 import structlog
 
+from paa.core.errors import SandboxError
 from paa.sandbox.base import (
     IsolationLevel,
     Sandbox,
     SandboxResult,
+    SandboxSession,
     SandboxSpec,
     build_child_env,
 )
@@ -121,6 +123,24 @@ class DryRunSandbox(Sandbox):
     @property
     def last_invocation(self) -> dict[str, Any] | None:
         return self.invocations[-1] if self.invocations else None
+
+    async def open(self, spec: SandboxSpec) -> SandboxSession:
+        """Refused: nothing executes here, so there is no child to talk to.
+
+        A duplex session's entire point is a live child at the other end of
+        the pipes. Faking one would hand the caller a session object whose
+        every ``read`` reports a stream nobody is writing and whose
+        ``close`` reports the death of a process that never existed —
+        plausible-looking lies in both directions. The honest answer is the
+        refusal, and a caller branching on it routes to a backend that can
+        actually spawn the child, exactly as it already branches on this
+        backend's ``IsolationLevel.NONE`` before trusting it with work.
+        """
+        raise SandboxError(
+            "the dry-run backend executes nothing, so it cannot open a duplex session",
+            backend=self.name,
+            workspace_path=str(spec.workspace_path),
+        )
 
     def reset(self) -> None:
         self.invocations.clear()

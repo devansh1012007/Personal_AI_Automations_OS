@@ -260,7 +260,7 @@ tmp dir) and never prints a real secret. The real-sandbox tests are
   passed!`** (ruff 0).
 - [RAN] `.venv/Scripts/python -m pytest tests/conventions -q` → **1
   FAILED**: `test_every_referenced_line_is_not_blank`, citing blank
-  lines in `src/paa/cli/main.py:636` and `src/paa/agents/orchestrator.py`
+  lines in `src/paa/cli/main.py:637` and `src/paa/agents/orchestrator.py`
   — both uncommitted W2-IMPL-03 edits, not this agent's file; retried
   once, still red (§13 FINDING).
 - Initial run hit a transient `NameError: TYPE_CHECKING` from
@@ -311,7 +311,7 @@ tmp dir) and never prints a real secret. The real-sandbox tests are
    to opaque, model-copied values — still a credential in the ledger.
 2. **FINDING (conventions red, not mine):** `tests/conventions` fails on
    `test_every_referenced_line_is_not_blank` for blank citations in
-   `src/paa/cli/main.py:636` and `src/paa/agents/orchestrator.py` —
+   `src/paa/cli/main.py:637` and `src/paa/agents/orchestrator.py` —
    both files carry uncommitted W2-IMPL-03 edits shifting lines.
    Retried once per standing order 18; posted FINDING; not fixed
    (outside write-set).

@@ -40,7 +40,7 @@ already takes seriously:
 The second constraint is the vision's: "no silent capability without a gate"
 and extension rule 6, authority travels with the work. A pipeline's reach must
 be the intersection of what it *asks for* (manifest), what the task's
-authority record *allows* (mandate scope, `ledger/mandate.py:145`), and what
+authority record *allows* (mandate scope, `ledger/mandate.py:125`), and what
 policy *permits* (the active permission mode's grants) — nothing else
 narrows it, and nothing widens it.
 
@@ -133,8 +133,8 @@ token check → budget/mode check → journal `PROPOSED` (ADR-0050) → executio
 outcome row. The coder loop's ordering
 (`coder/loop.py:218`: PRE hook → `PROPOSED` → permission → prompt → execute →
 outcome) is the `use_skill` instance of this ladder; the MCP client's
-framing (`skills/adapters/mcp.py:136`'s read loop) and request/response
-correlation (`skills/adapters/mcp.py:218`) is the transport P3
+framing (`skills/adapters/mcp.py:336`'s read loop) and request/response
+correlation (`skills/adapters/mcp.py:449`) is the transport P3
 reuses for every other capability over stdio.
 
 ## Consequences

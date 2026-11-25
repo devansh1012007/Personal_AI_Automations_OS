@@ -744,6 +744,30 @@ class TestSearchFactsByText:
             "back\\slash"
         ]
 
+    async def test_a_phrase_spanning_subject_and_verb_finds_the_fact(
+        self, db: Database
+    ) -> None:
+        """The rendered statement is a search arm, not just predicate/object.
+
+        "deploys freeze" names the subject and the verb of the fact
+        "deploys freeze on Fridays" — the documented smoke query. Without the
+        statement arm the phrase lives in no single column and the search
+        returns nothing for a fact the operator just asked to remember.
+        """
+
+        repo = FactRepository(db)
+        eid = await repo.upsert_entity("process", "deploys")
+        await repo.add_fact(eid, "freeze", "on Fridays", confidence=0.9)
+
+        found = await repo.search_facts_by_text("deploys freeze")
+
+        assert len(found) == 1
+        assert found[0].statement == "deploys freeze on Fridays"
+        # The single-column arms still work on their own.
+        assert [
+            f.object_value for f in await repo.search_facts_by_text("Fridays")
+        ] == ["on Fridays"]
+
     async def test_like_metacharacters_do_not_widen_the_scan(self, db: Database) -> None:
         """A stray ``%`` must not turn a keyword search into a table dump."""
 

@@ -95,13 +95,13 @@ flowchart TD
 | `BoundedContextGatherer` (`context/gatherer.py`) | Enforces hard token ceiling on context packet | `compile()` | `TokenBudget`, `CharEstimator` | Context builders | Pure computation; no persistence |
 | `EscalatingModelRouter` (`models/router.py:165`) | Local-first routing with explicit, logged escalation to frontier | `complete()` / `complete_structured()` | Local provider, optional frontier provider, `LedgerStore` | `RouterModelAdapter` (via agents) | Writes `MODEL_ESCALATED` ledger event before frontier call |
 | `RouterModelAdapter` (`runtime.py:125`) | Bridges agents' `ModelLike` protocol to the escalation router | `complete_structured()` (`runtime.py:148`) | `EscalatingModelRouter` | All reasoning agents | No persistence (router logs escalations) |
-| `RecoveryEngine` (`ledger/recovery.py:500`) | Post-crash boot sweep: replay, reconcile workspace, re-queue | `RecoveryEngine.boot_sweep()` (`recovery.py:586`) | `LedgerStore`, `Database`, optional `WorkspaceSnapshotter`, optional queue requeuer | `ChiefOrchestrator.boot()` (`src/paa/agents/orchestrator.py:749`) | Writes `RECOVERY_REPLAY_COMPLETED`/`STATE_ROLLBACK_TRIGGERED`/`TASK_ABANDONED` events; restores workspace |
-| `Daemon` (`daemon.py:53`) | Background loops: dispatch, ingestion, maintenance | `Daemon.start()` (`daemon.py:91`) | `Runtime`, `MemoryCreator`, `DecaySweeper` | `paa serve` (`cli/main.py:350`) | Claims queue messages; runs decay sweep; ingests signals |
+| `RecoveryEngine` (`ledger/recovery.py:802`) | Post-crash boot sweep: replay, reconcile workspace, re-queue | `RecoveryEngine.boot_sweep()` (`recovery.py:888`) | `LedgerStore`, `Database`, optional `WorkspaceSnapshotter`, optional queue requeuer | `ChiefOrchestrator.boot()` (`src/paa/agents/orchestrator.py:825`) | Writes `RECOVERY_REPLAY_COMPLETED`/`STATE_ROLLBACK_TRIGGERED`/`TASK_ABANDONED` events; restores workspace |
+| `Daemon` (`daemon.py:53`) | Background loops: dispatch, ingestion, maintenance | `Daemon.start()` (`daemon.py:91`) | `Runtime`, `MemoryCreator`, `DecaySweeper` | `paa serve` (`cli/main.py:467`) | Claims queue messages; runs decay sweep; ingests signals |
 | `MemoryCreator` (`memory/creator.py`) | Ingests unprocessed signals into hot-serving facts | `MemoryCreator.run_batch()` | `Database`, `FactRepository` | Daemon ingestion loop | Writes entities/facts |
 | `DecaySweeper` (`memory/decay.py`) | Evicts stale facts via `C(t)=C₀·e⁻ˡᵃᵐᵇᵈᵃ·t` | `DecaySweeper.sweep()` | `Database`, `DomainPolicy` | Daemon maintenance loop | Deletes/archives stale fact rows |
-| `DeterministicValidationEngine` (`validation/engine.py:185`) | Binary PASS/FAIL: schema → AST → patch → drift → tests | `validate()` (`engine.py:208`) | `AstSecurityScanner`, `SchemaValidator`, `UnifiedDiffValidator`, `WorkspaceSnapshot`, optional `PytestRunner`/`Sandbox` | `CriticValidatorAdapter` (`runtime.py:77`) | Runs tests in sandbox (only check that executes code) |
+| `DeterministicValidationEngine` (`validation/engine.py:191`) | Binary PASS/FAIL: schema → AST → patch → drift → tests | `validate()` (`engine.py:214`) | `AstSecurityScanner`, `SchemaValidator`, `UnifiedDiffValidator`, `WorkspaceSnapshot`, optional `PytestRunner`/`Sandbox` | `CriticValidatorAdapter` (`runtime.py:77`) | Runs tests in sandbox (only check that executes code) |
 | `CoderAgent` (`coder/agent.py:85`) | Tool-using loop over the runtime | `CoderAgent.build()` (`coder/agent.py:120`) | `Runtime`, `AgentLoop`, `RouterToolCallingModel`, `ToolPermissionPolicy`, `HookRegistry`, `Session` | `paa agent` CLI (`cli/coder.py`) | Submits/runs tasks via runtime tools; writes session transcripts |
-| `AgentLoop` (`coder/loop.py:116`) | think → act → observe under permissions & hooks | `AgentLoop.run()` (`loop.py:142`) | `ToolCallingModel`, `ToolPermissionPolicy`, `HookRegistry`, `Session` | `CoderAgent.ask()` | Records turns; calls tools; mutates session transcript |
+| `AgentLoop` (`coder/loop.py:116`) | think → act → observe under permissions & hooks | `AgentLoop.run()` (`coder/loop.py:142`) | `ToolCallingModel`, `ToolPermissionPolicy`, `HookRegistry`, `Session` | `CoderAgent.ask()` | Records turns; calls tools; mutates session transcript |
 | `SignalRepository` (`storage/coldlake/signals.py:102`) | Raw signal intake; idempotent on (channel, external_id); CAS offload | `SignalRepository.record()` (`signals.py:127`) | `Database`, `ContentAddressedStore` | API (`/signals`), daemon ingestion | Writes `cold_lake_signals`; offloads blobs to CAS |
 | `ContentAddressedStore` (`storage/coldlake/cas.py:147`) | Content-addressed, zstd-compressed blob store | `put()` / `get()` | `zstandard`, filesystem | `SignalRepository`, `copy_file_into` | Writes blobs under `cold_lake/blobs/<sha2>/<sha>.zst` |
 
@@ -119,7 +119,7 @@ CLI `paa submit` (cli/main.py:61)
 CLI `paa run <id>` / daemon dispatch / API `?run=true`
   → Runtime.run() (runtime.py:209)
     → ChiefOrchestrator.run() (src/paa/agents/orchestrator.py:267)
-      → project(ledger, cid) (replay.py:322)
+      → project(ledger, cid) (ledger/replay.py:512)
       → _hydrate → context builder (context_agents.py:241)
       → _plan → planner (reasoning.py:78)
       → _check_policy → policy agent (policy.py:139)
@@ -162,10 +162,10 @@ Daemon ingestion loop (daemon.py:139)
 ```
 paa recover / Daemon.start → Runtime.boot_recovery()
   → ChiefOrchestrator.boot() (src/paa/agents/orchestrator.py:801)
-    → RecoveryEngine.boot_sweep() (recovery.py:222)
+    → RecoveryEngine.boot_sweep() (recovery.py:888)
       → verify_all_chains() (store.py:349)
       → open_correlations() (store.py:278)  — from head projection, not queue
-      → per lineage: project() (replay.py:322)
+      → per lineage: project() (ledger/replay.py:512)
         → if AWAITING_HUMAN → PARKED_HUMAN (never auto-clear)
         → if attempts >= max → TASK_ABANDONED
         → _reconcile_workspace: manifest vs disk; drift → restore + STATE_ROLLBACK_TRIGGERED
@@ -183,7 +183,7 @@ paa agent "prompt" (cli/coder.py:44)
         → EscalatingModelRouter.complete_structured (router.py:274)
       → for each tool call:
         → HookRegistry.fire(PRE_TOOL_USE) (hooks.py:95)
-        → ToolPermissionPolicy.evaluate() (permissions.py:173)
+        → ToolPermissionPolicy.evaluate() (permissions.py:220)
         → confirm callback on ASK (loop.py:231)
         → tool.run() → build_runtime_tools tool (runtime_tools.py)
           → e.g. submit_task → Runtime.submit() (runtime.py:189)
@@ -220,10 +220,10 @@ paa agent "prompt" (cli/coder.py:44)
   `src/paa/pipelines/builtin.py:803`); the `DelegationGraph` enforces depth/cycle/node
   bounds (`delegation.py:87`).
 - **Storage substrates degrade, never raise:** `_try_vector/_try_graph/_try_queue`
-  catch all exceptions and return `None` with a warning (`runtime.py:500`).
-- **Sandbox probe is bounded at 5s:** `_acquire_sandbox` uses
-  `asyncio.wait_for(..., timeout=5.0)` then falls back to subprocess
-  (`runtime.py:598`).
+  catch all exceptions and return `None` with a warning (`runtime.py:519`).
+- **Sandbox probe is bounded at 30s:** `_acquire_sandbox` uses
+  `asyncio.wait_for(..., timeout=_SANDBOX_PROBE_BOUND_SECONDS)` then falls
+  back to subprocess (`runtime.py:617`).
 - **API is an edge layer only:** `create_app` parses/validates and delegates to
   `Runtime`; it holds no application state and makes no model calls
   (`api/app.py:54`).

@@ -1066,3 +1066,107 @@ class TestClassification:
             ComplexityModality.COMPLEX,
             ComplexityModality.MAX,
         )
+
+
+class _FixedDepthQueue:
+    """A queue stand-in whose ``ORCHESTRATOR_CORE`` depth is fixed.
+
+    The backpressure decision is a pure function of the observed depth, so
+    the fake pins exactly the input under test — nothing else about the
+    queue is exercised here (the queue suite owns that).
+    """
+
+    def __init__(self, depth: int | Exception) -> None:
+        self._depth = depth
+
+    async def depth(self, stream: object) -> int:
+        if isinstance(self._depth, Exception):
+            raise self._depth
+        return self._depth
+
+    async def enqueue(self, stream: object, payload: dict, **kw: object) -> None:
+        """No-op: submit's post-queueing handoff, not under test here."""
+
+
+class TestBackpressureDegradation:
+    """Modality degrades under real queue pressure, and not without it.
+
+    The regression this class pins: ``_apply_backpressure`` computed the
+    depth and then degraded the modality *unconditionally* — the depth was
+    only ever used in the warning log line. Every queue-backed submit was
+    silently stepped down one rung (STANDARD became a planner-bypassed
+    SIMPLE) regardless of pressure, and the vacuous-PASS validation of the
+    time hid it; the honest empty-artifact refusal (Wave 5 C5.4) exposed
+    the silent degradation by failing the bypassed task instead.
+    """
+
+    def _orchestrator_with_queue(
+        self, ledger: LedgerStore, depth: int | Exception
+    ) -> ChiefOrchestrator:
+        from paa.storage.queue.backpressure import BackpressureController
+
+        controller = BackpressureController()
+        return ChiefOrchestrator(
+            ledger,
+            queue=_FixedDepthQueue(depth),
+            backpressure=controller,
+            permission_mode=PermissionMode.AUTO,
+        )
+
+    async def _queued_modality(self, ledger: LedgerStore, depth: int | Exception) -> str:
+        orch = self._orchestrator_with_queue(ledger, depth)
+        cid = await orch.submit(
+            TaskRequest(goal="write the summary", modality=ComplexityModality.STANDARD)
+        )
+        events = await ledger.read_correlation(cid)
+        queued = [e for e in events if e.event_type is EventType.TASK_QUEUED]
+        assert len(queued) == 1, "submit must record exactly one TASK_QUEUED row"
+        assert queued[0].execution_mode is not None
+        return queued[0].execution_mode.value
+
+    async def test_an_idle_queue_does_not_degrade_the_requested_modality(
+        self, ledger: LedgerStore
+    ) -> None:
+        """Depth below the threshold keeps STANDARD as submitted.
+
+        The fixed bug: an empty queue still degraded STANDARD to SIMPLE.
+        """
+        assert await self._queued_modality(ledger, 0) == "STANDARD"
+
+    async def test_a_deep_queue_degrades_exactly_one_rung(
+        self, ledger: LedgerStore
+    ) -> None:
+        """Depth at or above ``backpressure_depth`` steps down one rung.
+
+        The ladder's own contract: degradation proportional to sustained
+        pressure — STANDARD falls to SIMPLE (the planner bypass), never
+        further, and only while the pressure lasts.
+        """
+        assert await self._queued_modality(ledger, 10) == "SIMPLE"
+
+    async def test_a_shedding_queue_still_degrades_only_one_rung(
+        self, ledger: LedgerStore
+    ) -> None:
+        """Shedding-level depth degrades one rung, not to the floor.
+
+        The ladder has no shortcut from MAX past COMPLEX: shedding refuses
+        *new non-essential work*; the work already admitted steps down once.
+        """
+        orch = self._orchestrator_with_queue(ledger, 500)
+        cid = await orch.submit(
+            TaskRequest(goal="refactor the module", modality=ComplexityModality.MAX)
+        )
+        events = await ledger.read_correlation(cid)
+        queued = next(e for e in events if e.event_type is EventType.TASK_QUEUED)
+        assert queued.execution_mode is ComplexityModality.COMPLEX
+
+    async def test_a_failing_depth_probe_keeps_the_requested_modality(
+        self, ledger: LedgerStore
+    ) -> None:
+        """Backpressure is an optimisation: a broken probe never blocks work.
+
+        The depth call raising must not refuse or rewrite the task — the
+        caller's requested modality is the fallback, exactly as the
+        except-branch promises.
+        """
+        assert await self._queued_modality(ledger, RuntimeError("probe broken")) == "STANDARD"

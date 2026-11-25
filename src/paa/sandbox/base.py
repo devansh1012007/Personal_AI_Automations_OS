@@ -47,6 +47,7 @@ __all__ = [
     "IsolationLevel",
     "Sandbox",
     "SandboxResult",
+    "SandboxSession",
     "SandboxSpec",
     "build_child_env",
     "collect_sandbox_facts",
@@ -487,6 +488,115 @@ class SandboxResult(BaseModel):
         }
 
 
+class SandboxSession(abc.ABC):
+    """A long-lived, **duplex** contained child — the ``open(spec)`` contract.
+
+    ``run(spec)`` is a one-shot: the caller hands over a command and gets the
+    whole transcript back at the end. That contract cannot express Wave 5's
+    first consumer — a sandboxed MCP client (C5.3) that spawns an MCP server
+    and speaks NDJSON over its stdio, staying up for the length of a
+    conversation — and the pipeline RPC host (W6/P3) and the ACP client (W7)
+    want the same shape. One contract, three consumers, so the contract lives
+    here rather than in any one of them.
+
+    What a session guarantees is *the one-shot path's containment, held open*:
+
+    * the child env is the :func:`build_child_env` allowlist — never ambient
+      ``os.environ``;
+    * the cwd is the resolved workspace jail;
+    * the resource envelope is whatever that backend's ``run`` enforces
+      (kernel Job Object or sampled watchdog — there is no quieter deal);
+    * the whole process **tree** dies with the session, however it ends:
+      caller close, wall-clock overrun, resource breach, or the root's own
+      death. A grandchild that outlives the session is exactly the orphan
+      the tree-kill exists to prevent.
+
+    And what it does not guarantee: an *idle* timeout. ``timeout_seconds``
+    on a session is a **lifetime** budget — silence from the child is not
+    idleness (an MCP server legitimately waits minutes between requests), so
+    detecting "stopped making progress" stays the heartbeat layer's job.
+    ``None`` means no deadline: the session waits forever, exactly as
+    ``run()`` would.
+
+    A backend that cannot honestly deliver a duplex child refuses at
+    :meth:`Sandbox.open` rather than opening something weaker — a session
+    is a longer-lived commitment than a one-shot, so degrading it silently
+    would be a worse lie than the one ``IsolationLevel`` already prevents.
+    """
+
+    @property
+    @abc.abstractmethod
+    def pid(self) -> int | None:
+        """The root child's PID, or ``None`` before one exists.
+
+        Stays readable after the session ends, deliberately: the callers
+        that most need it are the post-mortem ones ("is anything from that
+        tree still running?"), and on POSIX the PID *is* the process-group
+        ID for a session whose root is a session leader.
+        """
+
+    @property
+    @abc.abstractmethod
+    def alive(self) -> bool:
+        """Whether the root child has not yet exited."""
+
+    @abc.abstractmethod
+    async def read(self, *, timeout: float | None = None) -> bytes:
+        """One chunk of stdout bytes, as soon as any is available.
+
+        Returns a single pipe-read of raw bytes the moment data exists; a
+        **line-framing protocol is the caller's business**, not the
+        sandbox's — the sandbox transports bytes, the caller's NDJSON (or
+        ACP, or pipeline RPC) framing reassembles them. ``timeout`` bounds
+        the *empty* wait and raises ``TimeoutError`` when no bytes arrive
+        within it; ``None`` waits indefinitely (the session's own wall-clock
+        deadline remains the outer bound).
+
+        ``b""`` is end-of-stream, not an error: the child closed stdout and
+        everything it wrote has been delivered. Making it a value rather
+        than an exception is what lets a duplex caller detect child exit
+        the same way every stdio protocol does. Reading after
+        :meth:`close` — pipes actually gone — raises
+        :class:`~paa.core.errors.SandboxError`.
+        """
+
+    @abc.abstractmethod
+    async def write(self, data: bytes) -> None:
+        """Write ``data`` to the child's stdin.
+
+        Raises :class:`~paa.core.errors.SandboxError` when the pipe is gone
+        — the session is closed, or the child has exited so nothing can
+        consume what is written. Backpressure is real and deliberate: a
+        child that never reads will eventually block the writer, and the
+        session's wall-clock deadline is the backstop that unwedges it
+        (dropping bytes mid-stream instead would corrupt the caller's
+        framing protocol silently, which is a worse failure than slow).
+        """
+
+    @abc.abstractmethod
+    async def close(self) -> SandboxResult:
+        """Terminate the session's whole tree, idempotently, and report it.
+
+        Killing only the root is the bug this exists to prevent: the child
+        may have children of its own — an MCP server spawning helpers is
+        the concrete case — and an orphan keeps running with the workspace
+        open after the ledger says the work ended. The kill is therefore
+        whole-tree, SIGKILL after a short SIGTERM grace on platforms that
+        have process groups, so a well-behaved child can flush first.
+
+        Idempotent: every call after the first returns the same final
+        result. The result carries ``killed_reason`` when the *session*
+        ended by a kill — ``"timeout"`` for the wall-clock deadline,
+        ``"memory"`` for a resource breach, ``"closed"`` when the caller
+        closed a still-live tree — and ``killed_reason=None`` when the root
+        exited on its own; a root killed by something *outside* the session
+        says so through its signal exit code instead.
+        """
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(pid={self.pid})"
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers — every backend needs these and they must not drift apart.
 # ---------------------------------------------------------------------------
@@ -608,6 +718,14 @@ class Sandbox(abc.ABC):
 
     Implementations must be safe to reuse across runs and safe to call
     concurrently; nothing here holds per-run state on the instance.
+
+    There are two execution contracts, one shape: :meth:`run` for one-shots
+    (hand a command over, get a finished result back) and :meth:`open` for
+    long-lived duplex children (:class:`SandboxSession`). A backend
+    implements both or refuses :meth:`open` loudly — there is no third
+    answer, because a session that silently offered less containment than
+    the one-shot path would be exactly the quiet downgrade
+    :class:`IsolationLevel` exists to prevent.
     """
 
     @property
@@ -630,6 +748,35 @@ class Sandbox(abc.ABC):
         needs, because "the workload failed" and "containment failed" demand
         opposite responses.
         """
+
+    @abc.abstractmethod
+    async def open(self, spec: SandboxSpec) -> SandboxSession:
+        """Open a long-lived duplex child under ``spec``'s containment.
+
+        The session carries the same containment facts as :meth:`run` —
+        env allowlist, workspace jail, resource envelope, whole-tree kill —
+        held open for as long as the caller talks to the child. See
+        :class:`SandboxSession` for the contract and its honest limits.
+
+        A backend that cannot deliver that must *refuse here* with
+        :class:`~paa.core.errors.SandboxError` naming itself: a caller
+        branching on the refusal routes to a backend that can, which only
+        works if the refusal is loud.
+        """
+
+    async def run_within(self, session: SandboxSession, spec: SandboxSpec) -> SandboxResult:
+        """Run ``spec`` as a one-shot inside an open session's envelope.
+
+        The base implementation refuses, on purpose: a backend that cannot
+        :meth:`open` a session has no envelope to run within, and accepting
+        the call would be the same silent downgrade :meth:`open`'s refusal
+        exists to prevent. Backends with real sessions override this.
+        """
+        raise SandboxError(
+            "run_within is not implemented for this backend yet: it cannot open "
+            "duplex sessions, so there is no session envelope to run within",
+            backend=self.name,
+        )
 
     @abc.abstractmethod
     async def healthcheck(self) -> bool:

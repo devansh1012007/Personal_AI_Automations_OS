@@ -48,6 +48,7 @@ from paa.sandbox.base import (
     IsolationLevel,
     Sandbox,
     SandboxResult,
+    SandboxSession,
     SandboxSpec,
     build_child_env,
     resolve_workspace,
@@ -1023,6 +1024,31 @@ class DockerSandbox(Sandbox):
         suffix = uuid.uuid4().hex[:8]
         stem = f"paa-{spec.parent_task_id or 'task'}"
         return f"{stem[: 63 - len(suffix) - 1]}-{suffix}"
+
+    async def open(self, spec: SandboxSpec) -> SandboxSession:
+        """Refused, honestly, for now — the plumbing is known but unbuilt.
+
+        The shape a real implementation would take is not a mystery:
+        ``docker run -di`` with the stdio attached (``-i`` keeps stdin open,
+        ``-d`` detaches so the caller gets the prompt back), a name to
+        address the container by, reads off the attached stream, writes
+        through it, and ``docker kill`` for the whole-tree death the session
+        contract requires. None of it is *hard* — and that is precisely the
+        problem: every line of it would ship untested, because there is no
+        daemon on the dev machine and this suite exercises the backend
+        entirely behind the ``_exec`` seam. A duplex session is a
+        longer-lived containment commitment than a one-shot, so an
+        untested one is a worse claim than the one-shot path ever makes.
+        The refusal is the implementation until a daemon exists to test
+        against; the subprocess backend
+        (:meth:`paa.sandbox.subprocess_backend.SubprocessSandbox.open`) is
+        the session implementation to use meanwhile.
+        """
+        raise SandboxError(
+            "duplex sessions are not implemented for the Docker backend yet",
+            backend=self.name,
+            image=self._image,
+        )
 
     async def run(self, spec: SandboxSpec) -> SandboxResult:
         """Execute ``spec`` in a container.

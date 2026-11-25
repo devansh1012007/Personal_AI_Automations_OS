@@ -112,11 +112,11 @@ from DB (`:234`), anti-goals (cosine ≥0.82 or phrase match, `:262`). Risk scor
 | `RouterModelAdapter` | wraps `EscalatingModelRouter` | Bridge `ModelLike` → router | `runtime.py:98` |
 | `PolicyRiskAgent` → `Database` | `fetch_all(hot_serving_policy_rules)` | Operator rules | `policy.py:255` |
 | `Context builders` → `Database`/vector/graph | fetch facts/semantic/graph | Build context packet | `context_agents.py:144`, `:244`, `:341` |
-| `Runtime.build` | constructs all agents | Composition root | `runtime.py:641` |
+| `Runtime.build` | constructs all agents | Composition root | `runtime.py:660` |
 
 ## Runtime behavior
 
-- Initialized by `Runtime.build()` → `_build_agents()` (`runtime.py:641`).
+- Initialized by `Runtime.build()` → `_build_agents()` (`runtime.py:660`).
 - Each `Agent.run()` is async, applies cross-cutting guarantees, returns
   `AgentResult`.
 - Delegation is mediated, non-blocking at topology level (DAG wait graph).
@@ -147,7 +147,7 @@ from DB (`:234`), anti-goals (cosine ≥0.82 or phrase match, `:262`). Risk scor
 
 - `src/paa/agents/specialists/` is an empty package (`AGENTS.md:146`).
 - Router is optional; when absent, `_classify()` heuristic picks modality
-  (`src/paa/agents/orchestrator.py:356`).
+  (`src/paa/agents/orchestrator.py:365`).
 - Deterministic planner fallback is crude (splits on conjunctions).
 
 ## Related documents

@@ -23,8 +23,8 @@ Two gate points in the built-in pipeline's `run()`:
    `state.phase is AWAITING_HUMAN`, return (`:423`).
 
 The `TaskProjection.phase` becomes `AWAITING_HUMAN`; `is_resumable` is
-**False** (`replay.py:62`) — recovery will park it, never auto-clear
-(`recovery.py:274`).
+**False** (`ledger/replay.py:62`) — recovery will park it, never auto-clear
+(`recovery.py:1035`).
 
 ## Events emitted
 
@@ -38,33 +38,33 @@ The `TaskProjection.phase` becomes `AWAITING_HUMAN`; `is_resumable` is
 
 `ChiefOrchestrator.clear_human_gate(cid, approved, resume_phase=EXECUTING,
 note=None)` (`src/paa/agents/orchestrator.py:712`):
-1. `project()`; raises `PaaError` if phase is not `AWAITING_HUMAN` (`src/paa/agents/orchestrator.py:749`).
+1. `project()`; raises `PaaError` if phase is not `AWAITING_HUMAN` (`src/paa/agents/orchestrator.py:772`).
 2. Emit `HUMAN_GATE_CLEARED` (approved) or `HUMAN_GATE_REJECTED` (rejected)
    with `{resume_phase, note}` (`src/paa/agents/orchestrator.py:773`).
 3. Return re-projected `TaskProjection`.
 
 **Nothing in the automated path can clear its own gate** (`src/paa/agents/orchestrator.py:722`)
-— a crash is never interpreted as consent (`replay.py:62`).
+— a crash is never interpreted as consent (`ledger/replay.py:62`).
 
 Callers:
-- CLI `paa gate <id> --approve/--reject` (`cli/main.py:183`)
+- CLI `paa gate <id> --approve/--reject` (`cli/main.py:256`)
 - API `POST /tasks/{id}/gate` (`api/app.py:136`)
 
 ## Replay semantics
 
-`apply_event()` on `HUMAN_GATE_CLEARED` (`replay.py:262`):
+`apply_event()` on `HUMAN_GATE_CLEARED` (`ledger/replay.py:262`):
 - clears `awaiting_reason`;
 - sets phase to `TaskPhase(payload.get("resume_phase", EXECUTING))` — resumes
   where the gate interrupted, defaulting to execution.
 
 On `HUMAN_GATE_REJECTED` → `policy_decision` set, phase `BLOCKED` via
-`_PHASE_MAP` (`replay.py:164`).
+`_PHASE_MAP` (`ledger/replay.py:164`).
 
 ## Recovery behavior
 
-`RecoveryEngine.recover_correlation()` (`recovery.py:263`):
+`RecoveryEngine.recover_correlation()` (`recovery.py:929`):
 - `projection.phase is AWAITING_HUMAN` → `PARKED_HUMAN`, left waiting
-  (`:274`). Never auto-cleared.
+  (`recovery.py:1035`). Never auto-cleared.
 
 ## Sequence diagram
 
@@ -111,7 +111,7 @@ sequenceDiagram
 | Condition | Behavior | Source |
 |---|---|---|
 | Gate cleared on non-parked task | `PaaError` "task is not awaiting human attestation" → API 409 | `src/paa/pipelines/builtin.py:390`, `api/app.py:136` |
-| Recovery encounters AWAITING_HUMAN | `PARKED_HUMAN`; left across restart | `recovery.py:274` |
+| Recovery encounters AWAITING_HUMAN | `PARKED_HUMAN`; left across restart | `recovery.py:1035` |
 | Automated path tries to clear | Not possible — no internal caller | `src/paa/agents/orchestrator.py:722` |
 
 ## Persistence

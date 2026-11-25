@@ -193,8 +193,10 @@ class VectorPoint(BaseModel):
 
     id: str = Field(min_length=1, max_length=512)
     # Annotated with the bare ``np.ndarray`` rather than the parametrised
-    # :data:`FloatArray` alias: pydantic cannot build a schema for a subscripted
-    # numpy generic, and the dtype is enforced at write time anyway.
+    # :data:`FloatArray` alias: the dtype is enforced at write time anyway, and
+    # current numpy stubs give ``ndarray`` default shape/dtype type arguments,
+    # so strict mypy accepts the bare form without a suppression. The old
+    # ``type-arg`` ignores were needed only by the pre-default stubs.
     vector: list[float] | np.ndarray
     payload: dict[str, Any] = Field(default_factory=dict)
 

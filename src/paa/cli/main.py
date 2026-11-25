@@ -28,7 +28,11 @@ from rich.console import Console
 from rich.table import Table
 
 from paa import __version__
+from paa.cli.chat import app as chat_app
 from paa.cli.coder import register_agent
+from paa.cli.mcp import app as mcp_app
+from paa.cli.observe import observe as observe_command
+from paa.cli.pipeline import app as pipeline_app
 from paa.core.types import ComplexityModality, EventType, PermissionMode
 from paa.memory.touch import touch_recalled
 from paa.models.base import redact
@@ -46,6 +50,50 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
+
+
+@app.callback()
+def _configure_cli_logging() -> None:
+    """The CLI entry point's log configuration: stderr, at the settings level.
+
+    Unconfigured structlog prints to **stdout** at every level, which corrupts
+    the two surfaces whose stdout is a protocol: ``paa mcp serve`` (JSON-RPC
+    frames only — the "stdout discipline" in ``docs/interfaces/mcp-server.md``)
+    and ``paa chat`` (the conversation itself). :mod:`paa.tui.chat.journal`'s
+    design note already states the intent — "the runtime's own log
+    configuration belongs to the CLI entry point" — this callback is that
+    sentence made true. Diagnostics go to stderr; stdout stays a surface.
+
+    Skipped under the test runner (``PYTEST_CURRENT_TEST``): an in-process
+    ``CliRunner`` invocation would otherwise install the production level
+    filter (INFO) into the suite's global structlog, silently dropping the
+    DEBUG events other tests capture with
+    ``structlog.testing.capture_logs`` — the suite owns log configuration
+    inside pytest; the real-process behaviour is proven by
+    ``scripts/mcp_stdio_smoke.py``, which spawns the command as a child.
+
+    Idempotent and cheap: :func:`configure_logging` re-resolves on every call
+    (``cache_logger_on_first_use=False``), so a later surface (the chat TUI
+    redirecting to a file) can still reconfigure without fighting a stale
+    cache.
+    """
+    import os
+
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        return
+
+    from paa.observability.logging import configure_logging
+
+    try:
+        from paa.config import get_settings
+
+        configure_logging(get_settings())
+    except Exception:
+        # Bad settings must surface through the *command* that needs them —
+        # with its own "invalid configuration" message and exit code, not as
+        # a traceback from a logging callback that ran first. Logging falls
+        # back to defaults (stderr, INFO), which is all this callback needs.
+        configure_logging()
 
 
 def _run(coro: Any) -> Any:
@@ -329,6 +377,76 @@ def doctor() -> None:
                     reflection_health(settings.home, enabled=settings.reflection.enabled)
                 ),
             )
+            # SPEC 2 §3.1 C4.6 — the chat/MCP product surface, under the same
+            # rule as every row above: report what is actually live, never
+            # what configuration wishes were live. The model check is a
+            # registry *lookup*, deliberately not a network call; a key is
+            # reported by its environment-variable NAME only, never a value.
+            import importlib.util
+            import os
+
+            from paa.config import dotenv_value
+            from paa.models.registry import UnknownProviderError, resolve_spec
+
+            chat_model = settings.chat.model
+            if chat_model == "echo":
+                table.add_row(
+                    "chat model",
+                    "echo (offline fallback declared; no network, no key)",
+                )
+            else:
+                try:
+                    spec = resolve_spec(chat_model)
+                except UnknownProviderError as exc:
+                    table.add_row("chat model", f"unresolved — {exc}")
+                else:
+                    key_row = next(
+                        (
+                            name
+                            for name in spec.api_key_env
+                            if os.environ.get(name) or dotenv_value(name)
+                        ),
+                        None,
+                    )
+                    if key_row is not None:
+                        table.add_row("chat model", f"{spec.name} ok ({key_row} set)")
+                    elif spec.api_key_env:
+                        table.add_row(
+                            "chat model",
+                            f"{spec.name} ok (key env {'/'.join(spec.api_key_env)} unset)",
+                        )
+                    else:
+                        table.add_row("chat model", f"{spec.name} ok (local row; no key env)")
+            mcp_token_env = settings.mcp.token_env
+            if os.environ.get(mcp_token_env) or dotenv_value(mcp_token_env):
+                table.add_row(
+                    "mcp token env",
+                    f"{mcp_token_env} set (initialize must present it)",
+                )
+            else:
+                table.add_row(
+                    "mcp token env",
+                    f"{mcp_token_env} unset — the spawn pipe is the trust boundary "
+                    "(whoever spawned `paa mcp serve` is the only writer)",
+                )
+            # Presence probe only, and this row can never fail the doctor:
+            # the plain surface needs no extra at all, so a missing Textual
+            # is a capability note, not a broken runtime. The note is escaped
+            # before it enters the table: rich reads ``[tui]`` as a markup
+            # tag, and a diagnostic that renders its own suggestion wrong is
+            # a diagnostic that lies.
+            import rich.markup
+
+            if importlib.util.find_spec("textual") is not None:
+                table.add_row("chat tui", "textual installed")
+            else:
+                table.add_row(
+                    "chat tui",
+                    rich.markup.escape(
+                        'not installed — `paa chat --plain` works; '
+                        '`uv tool install "paa[tui]"` enables the TUI'
+                    ),
+                )
             console.print(table)
         finally:
             await rt.close()
@@ -774,6 +892,15 @@ def world_model(
 
 
 app.add_typer(memory_app, name="memory")
+
+app.add_typer(chat_app, name="chat")
+app.add_typer(mcp_app, name="mcp")
+app.add_typer(pipeline_app, name="pipeline")
+
+# ``paa observe`` is a single command, not a group: the front door reads
+# ``paa observe -- pytest -q``, so the command is registered directly
+# rather than nested behind a one-command sub-app.
+app.command(name="observe")(observe_command)
 
 
 if __name__ == "__main__":

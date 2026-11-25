@@ -56,7 +56,7 @@ ingestion ─────────► cold_lake (immutable CAS blobs)
  (truth)       (recall)      (provenance)    (volatile)      (host disk)
 ```
 
-This diagram is reproduced from `README.md:174` and reflects the actual
+This diagram is reproduced from `README.md:103` and reflects the actual
 substrate topology. `hot_serving` is the relational mutable read path; the
 other three are derived/caches that degrade when their optional extras are
 absent.
@@ -93,7 +93,7 @@ Each is attempted inside `_try_vector` / `_try_graph` / `_try_queue` /
 in-process fallback with a logged warning. The runtime must boot on a laptop
 with only core dependencies installed.
 
-`src/paa/runtime.py:500`, `:513`, `:523`, `:598`.
+`src/paa/runtime.py:519`, `:532`, `:542`, `:617`.
 
 ### 3. No generative reasoning in the control path
 
@@ -119,7 +119,7 @@ machine, so the default is a workspace jail + Job Object caps + AST pre-scan,
 documented as materially weaker than gVisor. A caller can branch on
 `isolation_level.is_real_containment`.
 
-`src/paa/sandbox/base.py:54`, `docs/adr/0006`.
+`src/paa/sandbox/base.py:55`, `docs/adr/0006`.
 
 ### 6. Provider-agnostic model layer with explicit escalation
 
@@ -143,7 +143,7 @@ TASK_REQUESTED → TASK_QUEUED → CONTEXT_HYDRATED → PLAN_COMPILED
                 └── STATE_ROLLBACK_TRIGGERED             (drift → restore)
 ```
 
-`README.md:194`. `EXECUTION_COMPLETED` fires **per step**, not per task, and is
+`README.md:195`. `EXECUTION_COMPLETED` fires **per step**, not per task, and is
 not terminal (`docs/adr/0010`).
 
 Orchestrator phases (`src/paa/agents/orchestrator.py:401`):
@@ -192,8 +192,8 @@ These are deliberate, documented, and cited in source:
 
 | Deviation | Where | Rationale |
 |---|---|---|
-| Embedded SQLite/Qdrant/Kuzu instead of Postgres/Redis/S3 | ADR-0001–0005, `config.py:66` | Target machine has ~3.5 GB free RAM, no Docker |
-| gVisor unavailable; pluggable sandbox | ADR-0006, `config.py:281` | Windows target, no runsc |
+| Embedded SQLite/Qdrant/Kuzu instead of Postgres/Redis/S3 | ADR-0001–0005, `config.py:65` | Target machine has ~3.5 GB free RAM, no Docker |
+| gVisor unavailable; pluggable sandbox | ADR-0006, `config.py:387` | Windows target, no runsc |
 | Provider-agnostic models; explicit escalation | ADR-0007/0015, `config.py:476` | vLLM needs CUDA + 8.5 GB VRAM |
 | Idempotency key includes `attempt` + `discriminator` | ADR-0008, `events.py:68` | Retries must be possible |
 | Head projection replaces partial recovery index | ADR-0010, `ledger/store.py:48` | Partial index never shrinks |
@@ -236,13 +236,13 @@ access layer, not business logic).
 ## What is NOT in the architecture (honest gaps)
 
 - Beyond CLI there is a TUI (`src/paa/tui/`) with five panels
-  (`src/paa/tui/snapshot.py:57`, mirrored at `src/paa/api/app.py:99`); no web dashboard (`README.md:250`).
+  (`src/paa/tui/snapshot.py:57`, mirrored at `src/paa/api/app.py:99`); no web dashboard (`README.md:257`).
 - No built-in concrete tools for real work (no file edit, bash, web search,
-  git) wired into the orchestrator yet (`README.md:240`).
+  git) wired into the orchestrator yet (`README.md:247`).
 - Observability code exists but is untested (`AGENTS.md:97`).
 - `src/paa/agents/specialists/` holds the `coding` pilot specialist
   (`src/paa/agents/specialists/coding.py:1`, ADR-0041); others are not built.
-- No auth or multi-user; single-user, single-machine (`README.md:250`).
+- No auth or multi-user; single-user, single-machine (`README.md:257`).
 
 ## Related documents
 

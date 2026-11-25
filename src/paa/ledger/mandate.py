@@ -128,17 +128,52 @@ class Scope:
     ``workspace`` is the jailed tree the work may touch (``None`` when no
     single tree bounds it); ``permission_mode`` is the coder/task policy
     posture the grant was made under; ``budget`` is the step budget the
-    grant covers (``None`` when unbounded). Kept to three fields: anything
-    narrower than the work it describes is a claim the ledger cannot defend.
+    grant covers (``None`` when unbounded); ``pipelines`` is the closed
+    set of pipelines the grant selects (``None`` when unconstrained —
+    any registered pipeline; a non-empty tuple is the operator's
+    explicit selection list, and a run asking for a pipeline outside it
+    is refused, per the C6.5 rule: authority limits pipelines, an
+    overlay never widens them, and nothing auto-scores). Anything
+    narrower than the work it describes is a claim the ledger cannot
+    defend — these four fields are all of it.
     """
 
     workspace: str | None = None
     permission_mode: str | None = None
     budget: int | None = None
+    pipelines: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         if self.budget is not None and self.budget < 0:
             raise ValueError(f"mandate budget must be non-negative, got {self.budget}")
+        if self.pipelines is not None and not self.pipelines:
+            raise ValueError(
+                "mandate pipeline scope must name at least one pipeline; "
+                "an empty list grants nothing and is almost certainly a typo"
+            )
+        if self.pipelines is not None and any(
+            not name.strip() for name in self.pipelines
+        ):
+            raise ValueError("mandate pipeline scope entries must be non-empty")
+
+
+def scope_payload(scope: Scope) -> dict[str, Any]:
+    """The mandate payload's ``scope`` block.
+
+    The golden v1 shape (workspace, permission_mode, budget) is emitted
+    byte-for-byte for an unconstrained scope; a pipeline scope adds its
+    key only when it exists, so payloads without one — every mandate
+    granted before C6.5 — read back unchanged. Readers use ``.get``;
+    writers never widen the golden shape by adding nulls.
+    """
+    payload: dict[str, Any] = {
+        "workspace": redact(scope.workspace) if scope.workspace is not None else None,
+        "permission_mode": scope.permission_mode,
+        "budget": scope.budget,
+    }
+    if scope.pipelines is not None:
+        payload["pipelines"] = list(scope.pipelines)
+    return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,13 +223,7 @@ class Mandate:
             "basis": self.basis.value,
             "policy_version": self.policy_version.sha256,
             "policy_label": self.policy_version.label,
-            "scope": {
-                "workspace": redact(self.scope.workspace)
-                if self.scope.workspace is not None
-                else None,
-                "permission_mode": self.scope.permission_mode,
-                "budget": self.scope.budget,
-            },
+            "scope": scope_payload(self.scope),
         }
 
     def refused_payload(self, *, session_id: str | None, reason: str) -> dict[str, Any]:
@@ -261,6 +290,7 @@ def explicit_mandate(
     workspace: str | None = None,
     permission_mode: str | None = None,
     budget: int | None = None,
+    pipelines: list[str] | None = None,
 ) -> Mandate:
     """An explicitly asserted mandate, stamped with the effective policy.
 
@@ -277,6 +307,7 @@ def explicit_mandate(
             workspace=workspace,
             permission_mode=permission_mode or policy.mode.value,
             budget=budget,
+            pipelines=tuple(pipelines) if pipelines is not None else None,
         ),
     )
 

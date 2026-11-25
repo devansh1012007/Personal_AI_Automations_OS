@@ -8,6 +8,7 @@ they exercise the actual wiring end-to-end without a model server.
 from __future__ import annotations
 
 import importlib.util
+import json
 import uuid
 from pathlib import Path
 
@@ -17,6 +18,65 @@ from typer.testing import CliRunner
 from paa.cli.main import app
 
 runner = CliRunner()
+
+#: The sandbox command the offline echo plan's step runs: a minimal,
+#: well-formed new-file patch (``/dev/null`` source, one hunk, one
+#: insertion). The honest validation engine refuses an artifact that
+#: enables no check — a gate that checked nothing has not passed anything —
+#: so the offline lifecycle test needs its one step to produce something
+#: real to validate, exactly as a diff-producing step would.
+_OFFLINE_PATCH_COMMAND = (
+    "import sys; sys.stdout.write('--- /dev/null\\n"
+    "+++ b/summary.txt\\n"
+    "@@ -0,0 +1 @@\\n"
+    "+notes: three items\\n"
+    "')"
+)
+
+
+def _patch_offline_plan(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give the offline echo plan's one step a patch-producing command.
+
+    The echo provider honours a schema offline by returning its *minimal
+    instance* — valid, not meaningful — so its plan carries a step with no
+    command and the WorkerCell runs the ``python3 -c pass`` default: an
+    artifact with nothing to check. The honest validation engine refuses
+    exactly that (a gate that checked nothing has not passed anything),
+    so the offline lifecycle needs its step to emit a real, minimal,
+    new-file patch — the same shape a diff-producing step would carry,
+    over the same plumbing (sandbox, journal, ledger) the test exists to
+    prove. Every other echo reply (critic verdict, and so on) is left on
+    the provider's own defaults.
+
+    The patch engages only on the planner path, so the lifecycle tests
+    submit at ``--modality standard``: the SIMPLE bypass synthesises its
+    step without a command (0 tokens, by design), and the honest engine
+    refuses that step's empty artifact — the refusal is the rule, not a
+    bug to monkeypatch around.
+    """
+    from paa.models.echo_provider import EchoProvider
+
+    plan = {
+        "execution_steps": [
+            {
+                "index": 0,
+                "action": "write the summary file",
+                "agent": "worker",
+                "mutates": True,
+                "command": ["python3", "-c", _OFFLINE_PATCH_COMMAND],
+            }
+        ],
+        "step_requirements": {},
+    }
+    original_render = EchoProvider._render
+
+    def _plan_then_echo(self: EchoProvider, request: object) -> str:
+        schema = getattr(request, "json_schema", None)
+        if isinstance(schema, dict) and "execution_steps" in schema.get("properties", {}):
+            return json.dumps(plan, sort_keys=True, separators=(",", ":"))
+        return original_render(self, request)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(EchoProvider, "_render", _plan_then_echo)
 
 #: The serve-bind-host tests drive ``paa serve``, which needs the API stack
 #: (fastapi + uvicorn) — the ``paa[api]`` extra. A minimal install has neither,
@@ -149,14 +209,24 @@ class TestTaskLifecycle:
         assert "subprocess (PROCESS)" in result.stdout
         assert "dry-run" not in result.stdout
 
-    def test_submit_runs_to_committed(self) -> None:
-        result = runner.invoke(app, ["submit", "write a greeting", "--agent", "worker"])
+    def test_submit_runs_to_committed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch_offline_plan(monkeypatch)
+        result = runner.invoke(
+            app,
+            ["submit", "write a greeting", "--agent", "worker", "--modality", "standard"],
+        )
         assert result.exit_code == 0
         assert "correlation:" in result.stdout
         assert "COMMITTED" in result.stdout
 
-    def test_submit_then_status_and_ledger(self) -> None:
-        submit = runner.invoke(app, ["submit", "do a thing", "--agent", "worker"])
+    def test_submit_then_status_and_ledger(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_offline_plan(monkeypatch)
+        submit = runner.invoke(
+            app,
+            ["submit", "do a thing", "--agent", "worker", "--modality", "standard"],
+        )
         assert submit.exit_code == 0
         cid = _extract_cid(submit.stdout)
 

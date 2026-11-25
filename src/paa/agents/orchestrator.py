@@ -100,7 +100,7 @@ def _released_question(
 
 
 class BackpressureLike(Protocol):
-    """The one thing the orchestrator asks of a backpressure controller.
+    """What the orchestrator asks of a backpressure controller.
 
     A protocol rather than a direct import of
     :class:`paa.storage.queue.backpressure.BackpressureController`, so the
@@ -109,7 +109,16 @@ class BackpressureLike(Protocol):
     the contract the orchestrator depends on is stated: a modality goes in
     and a modality comes out. Returning anything else would silently
     corrupt the modality the rest of the lifecycle runs under.
+
+    ``assess`` arrives with the depth-gated degradation fix: the ladder is
+    consulted only when the observed depth actually says the queue is
+    degraded or shedding — the state is the *input* to the decision, and a
+    controller that cannot state it is not a backpressure controller.
     """
+
+    def assess(self, depth: int) -> Any:
+        """The queue's pressure state at ``depth`` (degraded/shedding or not)."""
+        ...
 
     def degrade_modality(self, modality: ComplexityModality) -> ComplexityModality: ...
 
@@ -373,14 +382,29 @@ class ChiefOrchestrator:
     async def _apply_backpressure(
         self, correlation_id: uuid.UUID, modality: ComplexityModality
     ) -> ComplexityModality:
-        """Degrade modality when the queue is deep. RFC §6.2."""
+        """Degrade modality when the queue is deep. RFC §6.2.
+
+        One rung down the scheduler's own ladder, and only once the depth
+        reaches its ``backpressure_depth`` threshold (``assess`` returns a
+        degraded-or-shedding state) — degradation proportional to sustained
+        pressure, per the ladder's own contract. The depth is the *input* to
+        that decision, not a number for the log line: degrading on every
+        submit regardless of depth silently turned every queue-backed
+        STANDARD task into a planner-bypassed SIMPLE one, and the honest
+        validation engine then refused its empty artifact — a task that
+        "succeeded" without doing anything is the failure mode this gate
+        exists to catch.
+        """
         if self._backpressure is None or self._queue is None:
             return modality
         try:
             from paa.storage.queue.base import StreamName
 
             depth = await self._queue.depth(StreamName.ORCHESTRATOR_CORE)
-            degraded = self._backpressure.degrade_modality(modality)
+            state = self._backpressure.assess(depth)
+            degraded = (
+                self._backpressure.degrade_modality(modality) if state.is_degraded else modality
+            )
             if degraded is not modality:
                 log.warning(
                     "orchestrator.backpressure_degraded",

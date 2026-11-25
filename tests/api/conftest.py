@@ -21,6 +21,21 @@ if TYPE_CHECKING:
 
 pytest.importorskip("fastapi", reason="needs the api extra")
 
+#: The sandbox command the default scripted step runs. It prints a minimal,
+#: well-formed new-file patch — ``/dev/null`` source, one hunk, one insertion —
+#: which the validation engine can actually check (the patcher's own
+#: CREATE/DELETE/MODIFY vocabulary), so a scripted "full run" exercises the
+#: same mutating-step path a real diff-producing step takes instead of riding
+#: an empty artifact through a vacuous PASS (the honest engine refuses an
+#: artifact that enables no check — same rule as the integration conftest).
+_SUMMARY_PATCH_COMMAND = (
+    "import sys; sys.stdout.write('--- /dev/null\\n"
+    "+++ b/summary.txt\\n"
+    "@@ -0,0 +1 @@\\n"
+    "+notes: three items\\n"
+    "')"
+)
+
 
 class ScriptedModel:
     """Deterministic ModelLike returning valid structured outputs."""
@@ -35,7 +50,19 @@ class ScriptedModel:
         props = schema.get("properties", {})
         if "execution_steps" in props:
             return {
-                "execution_steps": [{"index": 0, "action": "do it", "agent": "worker"}],
+                "execution_steps": [
+                    {
+                        "index": 0,
+                        "action": "write the summary file",
+                        "agent": "worker",
+                        "mutates": True,
+                        # A real mutating step must leave something for
+                        # validation to check; the command prints a minimal,
+                        # well-formed new-file patch and the WorkerCell
+                        # surfaces sandbox stdout as the step's patch.
+                        "command": ["python3", "-c", _SUMMARY_PATCH_COMMAND],
+                    }
+                ],
                 "step_requirements": {},
             }
         if "verdict" in props:

@@ -98,8 +98,8 @@ Embeddings (`models/embeddings.py` → `storage/vector/embeddings.py`):
 
 Collections (`store.py`): `ACTIVE_FACTS` and `RFC_COLLECTIONS`.
 
-Consumers: `Runtime._try_vector` (`runtime.py:500`), `MemoryCreator` (embeds
-new facts, `creator.py:1491`), context gatherer semantic search
+Consumers: `Runtime._try_vector` (`runtime.py:519`), `MemoryCreator` (embeds
+new facts, `creator.py:1516`), context gatherer semantic search
 (`context_agents.py:183`).
 
 ## 4. Graph — `src/paa/storage/graph/`
@@ -109,7 +109,7 @@ new facts, `creator.py:1491`), context gatherer semantic search
 - Explicit `"kuzu"`: raises `ImportError` if kuzu absent.
 - `"sqlite"`: always succeeds (recursive CTE traversal).
 
-Consumers: `Runtime._try_graph` (`runtime.py:513`), context builder graph
+Consumers: `Runtime._try_graph` (`runtime.py:532`), context builder graph
 neighbours (`context_agents.py:206`, bounded by `graph_hops` from modality
 profile).
 
@@ -132,7 +132,7 @@ SHEDDING decision on queue depth; control-plane streams always accepted.
 
 Consumers: `Runtime` (`runtime.py:393`), `ChiefOrchestrator.submit` enqueues
 (`src/paa/agents/orchestrator.py:313`), daemon dispatch claims (`daemon.py:159`),
-recovery requeue (`recovery.py:437`), API backpressure gate
+recovery requeue (`recovery.py:1196`), API backpressure gate
 (`api/app.py:200`).
 
 ## 6. Writes, transactions, and durability
@@ -151,7 +151,7 @@ recovery requeue (`recovery.py:437`), API backpressure gate
 Every optional-backend factory (`_try_vector`, `_try_graph`, `_try_queue`,
 `get_blob_store`) catches `Exception` and returns `None`/fallback with a logged
 warning — never raises for a missing optional backend in `auto` mode
-(`runtime.py:500`–`:530`). The runtime must boot on a laptop with only core
+(`runtime.py:519`–`:539`). The runtime must boot on a laptop with only core
 dependencies installed (`AGENTS.md:60`).
 
 Degradation impact:
@@ -173,7 +173,7 @@ Degradation impact:
 - Context packets are rebuilt per hydration from the ledger + hot serving; not
   stored as truth (`context_agents.py`).
 - Task projections are derived by replay; snapshots are a cache optimisation
-  (`replay.py:93`).
+  (`ledger/replay.py:93`).
 - Queue (Redis) is volatile; the ledger is authoritative for recovery
   (`recovery.py:11`, `src/paa/agents/orchestrator.py:776`).
 

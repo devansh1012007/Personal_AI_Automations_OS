@@ -72,7 +72,7 @@ repository was never edited).
   Reversal R2 turns eight tests red.
 * *can any automated path clear its own gate?* — **no.** `clear_human_gate`
   is called only from `src/paa/api/app.py:139`, `src/paa/tui/runner.py:182`
-  and `src/paa/cli/main.py:192` — all human-initiated — and
+  and `src/paa/cli/main.py:193` — all human-initiated — and
   `test_a_task_parked_on_a_second_gate_is_not_walked_past` asserts that the
   automated path wrote exactly one `HUMAN_GATE_CLEARED` (the human's).
 * *does a task that parks, is answered, resumes and meets a second gate park

@@ -43,6 +43,7 @@ from paa.sandbox.base import (
     IsolationLevel,
     Sandbox,
     SandboxResult,
+    SandboxSession,
     SandboxSpec,
     build_child_env,
     resolve_workspace,
@@ -267,6 +268,27 @@ class WslSandbox(Sandbox):
             flags = " ".join(unshare_flags)
             return f"unshare {flags} sh -c {_shell_quote(inner)}"
         return f"sh -c {_shell_quote(inner)}"
+
+    async def open(self, spec: SandboxSpec) -> SandboxSession:
+        """Refused, honestly, for now: duplex over ``wsl.exe`` is unshippable here.
+
+        The plumbing would plausibly work — ``wsl.exe`` forwards a Linux
+        child's stdio, and the whole-tree kill this contract requires would
+        become a process-group kill inside the distro — but every line of
+        it would ship untested: this backend's hosts are Windows without
+        WSL (the dev box) and Linux without ``wsl.exe`` (the suite's), so
+        there is no machine on which the session path could ever run once.
+        A containment claim with no evidence behind it is exactly what
+        this package refuses to make — the refusal is the implementation
+        until a WSL host exists to test against, and the subprocess
+        backend (:meth:`paa.sandbox.subprocess_backend.SubprocessSandbox.open`)
+        is the session implementation to use instead.
+        """
+        raise SandboxError(
+            "duplex sessions are not implemented for the WSL backend yet",
+            backend=self.name,
+            distro=self._distro,
+        )
 
     async def run(self, spec: SandboxSpec) -> SandboxResult:
         """Execute ``spec`` inside the WSL2 distro."""

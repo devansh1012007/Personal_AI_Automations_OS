@@ -18,7 +18,10 @@ attacker a trivially reusable bypass: emit source the scanner's parser chokes
 on but the *executing* interpreter accepts — a version-specific syntax, an
 encoding declaration the tokenizer disagrees about, a null byte — and the file
 sails through unscanned. "I could not analyse this" must mean "this does not
-run", not "this is fine".
+run", not "this is fine". The same rule covers a tree that parses but cannot
+be walked: nesting past the configured depth limit is a CRITICAL finding
+naming the file and the depth, and the interpreter's own recursion limit is
+never the gate — it is a host property, not a security control.
 
 **Findings, not exceptions, from :meth:`scan`.** The engine wants to collect
 everything wrong with an artifact in one pass for the ledger.
@@ -297,6 +300,21 @@ class ScannerPolicy(BaseModel):
     512 is comfortably above a long SQL statement or docstring line and well
     below a base64-packed payload."""
 
+    max_ast_depth: int = Field(default=256, ge=1)
+    """Maximum AST nesting the walk will descend into.
+
+    A tree deeper than this is a CRITICAL ``ast_depth_exceeded`` finding
+    naming the file and the depth — a number an operator can reason about,
+    which the interpreter's own recursion limit is not (it varies by host and
+    frame size, and it is not a security control). The default sits far above
+    human-written nesting — the deepest legitimate chains, fluent builders
+    and long concatenations, stay well under a hundred levels — and below
+    the ~500 visit-stack levels the default recursion limit affords, so the
+    guard fires by policy before the stack is anywhere near exhausted. An
+    operator with machine-generated trees deeper than this can raise it
+    knowingly rather than discovering the limit as a refusal.
+    """
+
     blocking_severity: Severity = Severity.HIGH
     allow_absolute_paths: bool = False
 
@@ -343,7 +361,8 @@ class AstSecurityScanner:
         """Analyse ``source`` and return every finding.
 
         Never raises for bad input — a syntax error becomes a ``CRITICAL``
-        finding. See the module docstring for why that must not be a skip.
+        finding, and so does a tree too deep to walk. See the module docstring
+        for why neither must be a skip.
         """
         findings: list[Finding] = []
 
@@ -393,7 +412,47 @@ class AstSecurityScanner:
 
         lines = source.splitlines()
         visitor = _SecurityVisitor(self._policy, self._sensitive, lines)
-        visitor.visit(tree)
+        try:
+            visitor.visit(tree)
+        except _AstDepthExceeded as exc:
+            # Depth, not stack: the guard fired by policy, and the findings
+            # the walk had already collected are still true statements about
+            # the part it did see — they ride along rather than being dropped.
+            findings.extend(visitor.findings)
+            findings.append(
+                Finding(
+                    rule="ast_depth_exceeded",
+                    severity=Severity.CRITICAL,
+                    lineno=getattr(exc.node, "lineno", 1),
+                    col=getattr(exc.node, "col_offset", 0),
+                    snippet=visitor._snippet(exc.node),
+                    message=(
+                        f"AST nesting reaches depth {exc.depth} in {filename!r} "
+                        f"(limit {self._policy.max_ast_depth}); rejected rather than "
+                        "walked"
+                    ),
+                )
+            )
+            findings.sort(key=lambda f: (-f.severity.rank, f.lineno, f.col))
+            return findings
+        except (ValueError, RecursionError, MemoryError) as exc:
+            # The parse guard's twin, for the walk: a tree that parses but
+            # cannot be walked (a host whose interpreter limit sits below the
+            # policy's, or a policy limit raised past it) is rejected, never
+            # escaped and never skipped — same rule, second site.
+            return [
+                Finding(
+                    rule="unparseable_source",
+                    severity=Severity.CRITICAL,
+                    lineno=1,
+                    col=0,
+                    snippet=type(exc).__name__,
+                    message=(
+                        f"source tree could not be walked ({exc}); "
+                        "rejected rather than skipped"
+                    ),
+                )
+            ]
         findings.extend(visitor.findings)
         findings.extend(visitor.finalize())
 
@@ -454,6 +513,22 @@ class AstSecurityScanner:
         return self.scan(source, filename=kwargs.pop("filename", str(path)), **kwargs)
 
 
+class _AstDepthExceeded(Exception):
+    """Control flow, never an answer: the walk passed the depth limit.
+
+    Carries the node where the limit was reached and the depth it would have
+    been, so :meth:`AstSecurityScanner.scan` can turn them into a CRITICAL
+    finding that names the file and the depth. It never escapes ``scan`` —
+    the module's contract is findings, not exceptions, and this class is the
+    mechanism that keeps the contract on hostile input that *parses*.
+    """
+
+    def __init__(self, node: ast.AST, depth: int) -> None:
+        super().__init__(depth)
+        self.node = node
+        self.depth = depth
+
+
 class _SecurityVisitor(ast.NodeVisitor):
     """Walks the tree collecting findings. One instance per scan."""
 
@@ -476,8 +551,30 @@ class _SecurityVisitor(ast.NodeVisitor):
         self.saw_decoder = False
         self.saw_dynamic_exec = False
         self._decoder_node: ast.AST | None = None
+        #: Current generic-visit nesting depth, one per AST level.
+        self._depth = 0
 
     # -- helpers -----------------------------------------------------------
+
+    def generic_visit(self, node: ast.AST) -> None:
+        """Depth-bounded descent: the limit is policy, not the stack.
+
+        ``NodeVisitor``'s default walk is bounded only by the interpreter's
+        own recursion limit — a host property that varies with frame size and
+        platform, and therefore not a security control: a tree that survives
+        the walk on one host raises ``RecursionError`` on another, and a
+        scanner that raises has no verdict at all. Counting the descent here
+        makes the bound a number the policy owns, one that fires well before
+        the default limit could be exhausted, so hostile nesting is answered
+        with a finding instead of a stack trace.
+        """
+        if self._depth >= self.policy.max_ast_depth:
+            raise _AstDepthExceeded(node, self._depth + 1)
+        self._depth += 1
+        try:
+            super().generic_visit(node)
+        finally:
+            self._depth -= 1
 
     def _snippet(self, node: ast.AST) -> str:
         lineno = getattr(node, "lineno", 0)

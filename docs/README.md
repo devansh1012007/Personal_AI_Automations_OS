@@ -37,18 +37,22 @@ Major subsystems:
 | Marketplace | `src/paa/marketplace/` | Signed packages, five-gate installer, registry clients |
 | Observability | `src/paa/observability/` | Logging, metrics, tracing, execution runs |
 | Daemon | `src/paa/daemon.py` | Dispatch, ingestion, maintenance loops |
-| CLI | `src/paa/cli/main.py` | `paa submit/run/status/ledger/recover/doctor/serve/agent/mode/tui` |
+| CLI | `src/paa/cli/main.py` | `paa submit/run/status/ledger/recover/doctor/serve/agent/mode/tui/memory/chat/mcp/pipeline/observe` |
 | API | `src/paa/api/` | FastAPI ingestion edge (loopback only, port 8787) |
 | TUI | `src/paa/tui/` | Interactive dashboard |
 
 Primary entry points:
 
-* `paa submit "goal"` — submit and run one task to completion (`src/paa/cli/main.py:77`)
-* `paa serve` — FastAPI API + background daemon (`src/paa/cli/main.py:350`)
-* `paa doctor` — report live backends/sandbox (`src/paa/cli/main.py:228`)
-* `paa recover` — post-crash boot sweep (`src/paa/cli/main.py:210`)
-* `paa ledger <id>` — walk a task's event chain (`src/paa/cli/main.py:148`)
-* `paa agent "prompt"` — tool-using coder loop (`src/paa/cli/coder.py:56`)
+* `paa submit "goal"` — submit and run one task to completion (`src/paa/cli/main.py:124`)
+* `paa serve` — FastAPI API + background daemon (`src/paa/cli/main.py:467`)
+* `paa doctor` — report live backends/sandbox plus the chat model, MCP token env and TUI extra (`src/paa/cli/main.py:301`)
+* `paa recover` — post-crash boot sweep (`src/paa/cli/main.py:283`)
+* `paa ledger <id>` — walk a task's event chain (`src/paa/cli/main.py:210`)
+* `paa memory <subcommand>` — facts/search/signals/drain/world-model (`src/paa/cli/main.py:693`)
+* `paa observe -- <cmd>` — run any CLI under observation, leave the T1 evidence bundle (`src/paa/cli/observe.py:147`)
+* `paa chat` — the chat surface: TUI, or `--plain` (`src/paa/cli/chat.py:160`)
+* `paa mcp serve` — the stdio MCP server (`src/paa/cli/mcp.py:120`)
+* `paa agent "prompt"` — tool-using coder loop (`src/paa/cli/coder.py:58`)
 
 The composition root is `Runtime.build()` (`src/paa/runtime.py:353`).
 
@@ -97,6 +101,7 @@ Data and storage
 APIs and integrations
 - [interfaces/api-reference.md](interfaces/api-reference.md)
 - [interfaces/integrations-and-communication.md](interfaces/integrations-and-communication.md)
+- [interfaces/mcp-server.md](interfaces/mcp-server.md) — `paa mcp serve`: spawn config, token auth, the six tools, scripted smoke.
 
 Execution flows
 - [flows/workflow-01-submit-and-run.md](flows/workflow-01-submit-and-run.md)
@@ -162,7 +167,7 @@ downstream consumers, then update the corresponding flow trace and this index.
 - `src/paa/agents/specialists/` is an empty package.
 - The marketplace/skills/coder layers import cleanly but are not yet wired into the
   orchestrator's main task path (no built-in file-edit/bash/web skills).
-- Windows-host baseline for the 20261106-memory-remembering-agent run: `mypy` 3 pre-existing errors (`sandbox/subprocess_backend.py:548`, win32) and 12 pre-existing pytest failures (see `00-mission.md` in the run folder; Linux CI gate is zero per AGENTS.md). Scoped gates for C01–C07 were green; the full `pytest tests/` suite was not run to completion in the final gate (see the run [SUMMARY.md](agent-ops/20261106-memory-remembering-agent/SUMMARY.md) §5/§14).
+- Windows-host baseline for the 20261106-memory-remembering-agent run: `mypy` 3 pre-existing errors (`sandbox/subprocess_backend.py:1320`, win32) and 12 pre-existing pytest failures (see `00-mission.md` in the run folder; Linux CI gate is zero per AGENTS.md). Scoped gates for C01–C07 were green; the full `pytest tests/` suite was not run to completion in the final gate (see the run [SUMMARY.md](agent-ops/20261106-memory-remembering-agent/SUMMARY.md) §5/§14).
 
 The [documentation audit](reviews/documentation-audit.md) records coverage, unresolved
 questions, and remaining gaps.

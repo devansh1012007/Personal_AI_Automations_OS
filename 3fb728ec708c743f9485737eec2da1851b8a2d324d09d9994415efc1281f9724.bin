@@ -1,0 +1,1 @@
+{"entries":[{"command":["ruff","check","src"],"command_green":null,"evidence_sha256":null,"exit_code":null,"note":"asserted by the producer; no observe bundle witnessed it","source":"asserted","state":null}],"v":1}

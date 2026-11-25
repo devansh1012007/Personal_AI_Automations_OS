@@ -42,8 +42,9 @@ server exist.
 
 - No frontier model has driven a task end to end. Every end-to-end run uses an
   injected model, so passing tests establish the wiring, not model performance.
-- There are no file, shell, or git tools. The coder agent can drive the runtime but
-  cannot change a project.
+  (The coder's jailed file, shell, and git tools exist and carried the S1
+  fixture run — one line, one fixture — but no real project has been worked
+  through them yet.)
 - The coder loop is not ledger-integrated, so it gets neither crash recovery nor
   hash-chained history.
 - Tasks do not record **who requested them or under which policy**.

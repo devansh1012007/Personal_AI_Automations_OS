@@ -1003,8 +1003,11 @@ class FactRepository:
     async def search_facts_by_text(
         self, query: str, limit: int = 50, *, max_scan: int = 10_000
     ) -> list[Fact]:
-        """Keyword fallback over fact predicates and object values.
+        """Keyword fallback over predicates, object values, and statements.
 
+        Three LIKE arms: the predicate, the object value, and the rendered
+        statement (the ``Fact.statement`` text — also the embedding text), so
+        a phrase that spans the subject and the verb still finds the fact.
         There is no fact-level FTS index — only entities have one
         (:mod:`paa.memory.facts` module docstring) — so this is a bounded LIKE
         scan, the relational analogue of ``context_agents._hot_facts``. It
@@ -1050,14 +1053,28 @@ class FactRepository:
         if "\x00" in term:
             raise ValueError("query must not contain a NUL byte")
         pattern = like_pattern(term)
+        # The third arm matches the *rendered statement* — the same text
+        # ``Fact.statement`` produces (entity, predicate, object, joined by
+        # spaces), which is also the embedding text. ``predicate`` and
+        # ``object_value`` alone cannot see a phrase that spans them: the
+        # canonical smoke query "deploys freeze" names the subject and the
+        # verb of "deploys freeze on Fridays", and a search that cannot find
+        # the fact the operator just asked to remember is not a search.
+        # COALESCE mirrors the statement property's ``entity_name or
+        # entity_id`` fallback, so the SQL arm and the Python rendering agree
+        # on what text a phrase is matched against.
+        statement_arm = (
+            "(COALESCE(e.canonical_name, f.entity_id) || ' ' || "
+            "f.predicate || ' ' || f.object_value)"
+        )
         rows = await self._db.fetch_all(
             f"SELECT {_FACT_COLUMNS}, e.canonical_name AS entity_name "  # noqa: S608
             "FROM hot_serving_active_facts f "
             "LEFT JOIN hot_serving_entity_index e ON e.id = f.entity_id "
             "WHERE f.superseded_by IS NULL AND "
-            f"({like_predicate('f.predicate', 'f.object_value')}) "
+            f"({like_predicate('f.predicate', 'f.object_value', statement_arm)}) "
             "ORDER BY f.id LIMIT ?",
-            (pattern, pattern, max_scan),
+            (pattern, pattern, pattern, max_scan),
         )
         if len(rows) == max_scan:
             log.warning("memory.search_scan_ceiling_hit", max_scan=max_scan, term=term[:120])

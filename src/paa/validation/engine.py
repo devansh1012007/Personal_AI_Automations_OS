@@ -29,6 +29,11 @@ Short-circuiting is on ``severity >= CRITICAL`` (a security-class failure) or a
 structurally invalid artifact. Ordinary failures accumulate so one report can
 list everything wrong, rather than forcing a fix-one-rerun loop where each
 iteration costs an LLM call.
+
+An artifact that enables *no* check at all does not PASS. A gate that checked
+nothing has not passed anything: the verdict is FAIL, ``checks_run`` is empty,
+and every check's skip reason says why nothing ran — the refusal is the
+absence of evidence, not a failed check.
 """
 
 from __future__ import annotations
@@ -74,8 +79,9 @@ class ValidationArtifact(BaseModel):
     Every field is optional: a task that only produced structured JSON has no
     patch, and a task that only edited a config file has no Python source. The
     engine runs the checks the artifact actually enables and records which ones
-    it skipped, so an empty artifact cannot quietly PASS by having nothing to
-    check — see :attr:`ValidationReport.checks_run`.
+    it skipped. An artifact that enables no check at all does not PASS — a
+    gate that checked nothing has not passed anything — and what ran (and what
+    did not) is visible in :attr:`ValidationReport.checks_run`.
     """
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
@@ -206,7 +212,13 @@ class DeterministicValidationEngine:
         self.test_runner = test_runner or (PytestRunner(sandbox) if sandbox else None)
 
     async def validate(self, artifact: ValidationArtifact) -> ValidationReport:
-        """Run every applicable check and return a binary verdict."""
+        """Run every applicable check and return a binary verdict.
+
+        An artifact that enables no check FAILS — an unexamined mutation is
+        not an approved one, and ``passed`` is exactly the verdict the
+        critic's adapter forwards, so an empty artifact must not buy a PASS
+        with emptiness.
+        """
         started = time.perf_counter()
         report = ValidationReport(
             verdict=ValidationVerdict.PASS, correlation_id=artifact.correlation_id
@@ -235,6 +247,19 @@ class DeterministicValidationEngine:
             report.checks.append(result)
             if not result.passed:
                 report.verdict = ValidationVerdict.FAIL
+
+        # A gate that checked nothing has not passed anything. This is the
+        # rule the artifact's own docstring promises: every field optional,
+        # but ``checks_run`` empty means no evidence was produced at all, and
+        # ``passed=True`` here is exactly the verdict the critic's adapter
+        # forwards for a worker whose output dict carried no source, patch or
+        # schema — an empty answer rubber-stamped as approval. The accounting
+        # stays honest about why: each check's skip reason already says what
+        # was missing, and ``failed_checks`` stays empty because no check ran
+        # and failed — the refusal is the absence itself, not a fabricated
+        # failing row.
+        if not report.checks_run:
+            report.verdict = ValidationVerdict.FAIL
 
         report.duration_ms = (time.perf_counter() - started) * 1000.0
         self._log(report)

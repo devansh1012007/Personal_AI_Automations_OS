@@ -66,7 +66,7 @@ to `None` (ingestion skipped).
 | `Daemon` → `Runtime` | `boot_recovery()`, `run()`, `queue`, `agents` | Drive the runtime | `src/paa/daemon.py:53` |
 | `Daemon` → `MemoryCreator` | `run_batch()` | Ingest signals | `src/paa/daemon.py:160` |
 | `Daemon` → `MemoryCurator` | `run_maintenance()` | Curate memory (decay, prune, consolidate, orphans, reconcile, analyze) | `src/paa/daemon.py:180` |
-| `cli.main serve` → `Daemon` | `Daemon(rt)`, `start()`/`stop()` | `paa serve` | `cli/main.py:311` |
+| `cli.main serve` → `Daemon` | `Daemon(rt)`, `start()`/`stop()` | `paa serve` | `cli/main.py:486` |
 | `Runtime.build` → boot recovery | `orchestrator.boot()` | Recovery at boot | `runtime.py:326` |
 
 ## Runtime behavior
@@ -83,7 +83,7 @@ to `None` (ingestion skipped).
   `max_delivery_attempts`) (`src/paa/daemon.py:159`).
 - Ingestion failure → logged, skipped (`src/paa/daemon.py:182`).
 - Maintenance failure → logged, skipped (`src/paa/daemon.py:209`).
-- Recovery enqueue failure → logged, non-fatal (`recovery.py:444`).
+- Recovery enqueue failure → logged, non-fatal (`recovery.py:1226`).
 
 ## Modification impact
 

@@ -90,13 +90,13 @@ Claims audit total: 19 checked / 3 unsupported or false (T004-6, T004-7, T003-9 
 - Recommended fix: Correct the §10/ops claim to "7200s + one phase" and bound consolidate (keyset/batch over groups, or a per-phase time guard that skips consolidation when little budget remains). Persisting resume needs a ledger/snapshot recovery rule (AGENTS.md replayability) — correctly deferred, not a silent hack.
 
 ### R-W2-006 [MINOR] Three of the four touch helpers log raw exception text (PII/secret leak surface); one also lacks the `None` guard
-- Location: `src/paa/agents/context_agents.py:413-414`, `src/paa/coder/runtime_tools.py:904-905`, `src/paa/cli/main.py:719-720` (raw) vs `src/paa/api/app.py:363-364` (redacted).
+- Location: `src/paa/agents/context_agents.py:413-414`, `src/paa/coder/runtime_tools.py:904-905`, `src/paa/cli/main.py:720-721` (raw) vs `src/paa/api/app.py:363-364` (redacted).
 - Evidence: API helper uses `redact(str(exc))` [VERIFIED src/paa/api/app.py:364]; the other three log `error=str(exc)` directly. Touch errors can carry SQL/DB context (fact values, paths, DSN) into logs. Additionally `context_agents` guards `db is None or not fact_ids` [VERIFIED src/paa/agents/context_agents.py:406] while API/CLI/coder guard only `if not fact_ids` [VERIFIED src/paa/api/app.py:356, src/paa/cli/main.py:709, src/paa/coder/runtime_tools.py:894] — a `None` db would raise `AttributeError` inside `touch_many`, which is swallowed and logged as a spurious warning instead of a clean no-op. In production `runtime.db` is never `None`, so this is latent.
 - Why it matters: Copy-paste drift across the four copies is already biting (redaction policy disagrees). Fix at the source with one shared helper (see §7) and a single log call site.
 - Recommended fix: Single `async def touch_recalled(db, ids)` in `paa.memory.decay` (or a small `paa.memory.touch` module) that guards `None`/`[]`, dedupes, and logs via `redact`. Delete the four local copies. Keep per-surface call sites; drop the per-call lazy `structlog` construction in coder/CLI.
 
 ### R-W2-007 [NIT] Four near-identical `_touch_recalled` helpers + per-call logger construction
-- Location: `src/paa/agents/context_agents.py:395-416`, `src/paa/api/app.py:346-366`, `src/paa/cli/main.py:699-722`, `src/paa/coder/runtime_tools.py:884-907`.
+- Location: `src/paa/agents/context_agents.py:395-416`, `src/paa/api/app.py:346-366`, `src/paa/cli/main.py:700-723`, `src/paa/coder/runtime_tools.py:884-907`.
 - Evidence: Same dedupe/log/try-except shape in four files; coder/CLI construct `structlog.get_logger(__name__)` on every call [VERIFIED src/paa/coder/runtime_tools.py:896-900, src/paa/cli/main.py:711-715]. Functionally harmless (import cost is a dict lookup; logger construction is trivial), deliberately chosen to avoid shifting ~40 doc citations (IMPL-03 §4). Carrying cost is R-W2-006's drift.
 - Why it matters: Only maintainability. Do not churn doc lines to fix this in a hotfix; fold into the R-W2-006 consolidation when line budget allows.
 

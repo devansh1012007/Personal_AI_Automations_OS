@@ -7,7 +7,7 @@ to `MUTATION_COMMITTED`. All paths verified against `src/paa/agents/orchestrator
 
 | Trigger | Entry | File |
 |---|---|---|
-| CLI | `paa submit "fix the login bug"` | `cli/main.py:77` → `Runtime.submit()` |
+| CLI | `paa submit "fix the login bug"` | `cli/main.py:124` → `Runtime.submit()` |
 | API | `POST /tasks?run=true` | `api/app.py:107` → `Runtime.submit()` + `Runtime.run()` |
 | Programmatic | `rt.submit_and_run("...")` | `runtime.py:334` |
 
@@ -17,7 +17,7 @@ to `MUTATION_COMMITTED`. All paths verified against `src/paa/agents/orchestrator
 
 `ChiefOrchestrator.submit()` (`src/paa/agents/orchestrator.py:279`):
 1. Mint `CorrelationId` (`new_correlation_id()`, `core/types.py:50`).
-2. Classify modality (`_classify()`, `src/paa/agents/orchestrator.py:356`) — heuristic: keywords
+2. Classify modality (`_classify()`, `src/paa/agents/orchestrator.py:365`) — heuristic: keywords
    (`refactor`, `implement`, `build`, `debug`, `fix`) → `COMPLEX`; `migrate`/`redesign`
    → `MAX`; target agent + short goal → `SIMPLE`; else `STANDARD`.
 3. Emit `TASK_REQUESTED` (`emit()`, `src/paa/agents/orchestrator.py:253`) → `LedgerStore.append()`
@@ -34,7 +34,7 @@ is durable before any work (`orchestrator.py` docstring).
 ### 2. Run — project existing state
 
 `ChiefOrchestrator.run(cid)` (`src/paa/agents/orchestrator.py:401`):
-1. `project(ledger, cid)` (`replay.py:422`) → `TaskProjection`.
+1. `project(ledger, cid)` (`ledger/replay.py:512`) → `TaskProjection`.
 2. If `state.is_terminal`, return immediately (`src/paa/agents/orchestrator.py:401`).
 3. Build `AgentContext` from `MODALITY_PROFILES[state.modality]` (`_context_for`,
    `src/paa/agents/orchestrator.py:464`) — token budget, permission mode, recursion depth.
@@ -108,7 +108,7 @@ on budget exhausted: raise PaaError → EXECUTION_FAILED (terminal)
 ```
 
 `EXECUTION_COMPLETED` fires **per step**, not per task; phase stays `EXECUTING`
-until all steps done (`replay.py:240`, ADR-0010). Re-project after each step
+until all steps done (`ledger/replay.py:240`, ADR-0010). Re-project after each step
 (`src/paa/pipelines/builtin.py:777`).
 
 ### 7. Commit — terminal

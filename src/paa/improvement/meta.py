@@ -33,6 +33,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 import structlog
@@ -41,23 +42,28 @@ __all__ = ["Classification", "Prototype", "PrototypicalClassifier"]
 
 log = structlog.get_logger(__name__)
 
+# Parametrised alias: newer numpy stubs flag the bare ``np.ndarray`` under
+# ``disallow_any_generics`` (strict). The dtype is float32 by construction
+# (``_normalise``); the parameter carries that, not a constraint.
+NDArrayF32 = np.ndarray[Any, np.dtype[np.float32]]
+
 
 @dataclass(slots=True)
 class Prototype:
     """A task class represented by the mean of its exemplar embeddings."""
 
     label: str
-    vector: np.ndarray
+    vector: NDArrayF32
     exemplar_count: int = 0
 
-    def updated_with(self, embedding: np.ndarray) -> Prototype:
+    def updated_with(self, embedding: NDArrayF32) -> Prototype:
         """Return a new prototype folding in one more exemplar (running mean).
 
         Incremental so a class adapts as new examples arrive without recomputing
         from the whole history — the "learn from few, keep learning" property.
         """
         n = self.exemplar_count
-        new_vec = (self.vector * n + embedding) / (n + 1)
+        new_vec = np.asarray((self.vector * n + embedding) / (n + 1), dtype=np.float32)
         return Prototype(self.label, _normalise(new_vec), n + 1)
 
 
@@ -94,13 +100,13 @@ class PrototypicalClassifier:
         self._min_confidence = min_confidence
         self._min_margin = min_margin
 
-    def fit(self, exemplars: Sequence[tuple[str, np.ndarray]]) -> None:
+    def fit(self, exemplars: Sequence[tuple[str, NDArrayF32]]) -> None:
         """Build prototypes from ``(label, embedding)`` pairs.
 
         Each class's prototype is the L2-normalised mean of its exemplar
         embeddings — the definition of a prototypical-network prototype.
         """
-        grouped: dict[str, list[np.ndarray]] = {}
+        grouped: dict[str, list[NDArrayF32]] = {}
         for label, emb in exemplars:
             grouped.setdefault(label, []).append(_normalise(np.asarray(emb, dtype=np.float32)))
         self._prototypes = {
@@ -109,7 +115,7 @@ class PrototypicalClassifier:
         }
         log.debug("meta.fitted", classes=len(self._prototypes))
 
-    def add_exemplar(self, label: str, embedding: np.ndarray) -> None:
+    def add_exemplar(self, label: str, embedding: NDArrayF32) -> None:
         """Fold one new exemplar into its class prototype (or create the class)."""
         emb = _normalise(np.asarray(embedding, dtype=np.float32))
         existing = self._prototypes.get(label)
@@ -118,7 +124,7 @@ class PrototypicalClassifier:
         else:
             self._prototypes[label] = existing.updated_with(emb)
 
-    def classify(self, embedding: np.ndarray) -> Classification:
+    def classify(self, embedding: NDArrayF32) -> Classification:
         """Nearest prototype by cosine similarity, with an abstain option.
 
         Returns ``unknown`` when the best similarity is below ``min_confidence``
@@ -147,7 +153,7 @@ class PrototypicalClassifier:
         return sorted(self._prototypes)
 
 
-def _normalise(vector: np.ndarray) -> np.ndarray:
+def _normalise(vector: NDArrayF32) -> NDArrayF32:
     """L2-normalise so the dot product is cosine similarity."""
     norm = float(np.linalg.norm(vector))
     if norm == 0.0:

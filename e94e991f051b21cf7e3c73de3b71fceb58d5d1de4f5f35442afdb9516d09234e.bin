@@ -1,0 +1,1 @@
+{"entries":[{"command":["/home/z/.venv/bin/python","-c","import pathlib, sys;\npathlib.Path('feature.txt').write_text('the change, now tested');\nprint('fake tests: 3 passed in 0.01s')"],"command_green":true,"evidence_sha256":"85660adb0974494a58cf540112dfbf9e22f9a796a50a188be682eee9c4983fe6","exit_code":0,"source":"observed","state":"clean_exit"}],"v":1}

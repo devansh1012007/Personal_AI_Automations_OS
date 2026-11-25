@@ -36,10 +36,11 @@ from paa.coder.permissions import PermissionMode, ToolPermissionPolicy
 from paa.coder.session import Session, TurnRole
 from paa.coder.shell_tools import BashTool
 from paa.coder.workspace import Workspace
+from paa.core.errors import SandboxError
 from paa.core.types import EventType, new_correlation_id
 from paa.ledger.recovery import find_interrupted_calls
 from paa.ledger.store import LedgerStore
-from paa.sandbox.base import IsolationLevel, Sandbox, SandboxResult, SandboxSpec
+from paa.sandbox.base import IsolationLevel, Sandbox, SandboxResult, SandboxSession, SandboxSpec
 
 #: A "long" command stands in for the brief's 10-minute sleep; nothing in
 #: this suite waits it out — a cancel must land far sooner than the
@@ -122,6 +123,11 @@ class HangingSandbox(Sandbox):
 
     async def healthcheck(self) -> bool:
         return True
+
+    async def open(self, spec: SandboxSpec) -> SandboxSession:
+        # The ABC gained a real open(); this fake only ever plays run(), and
+        # refusing is the honest answer — the units under test never ask.
+        raise SandboxError("the hanging fake does not implement sessions")
 
     async def run(self, spec: SandboxSpec) -> SandboxResult:
         try:

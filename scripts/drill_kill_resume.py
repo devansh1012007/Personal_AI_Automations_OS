@@ -112,6 +112,17 @@ FIXED_LINE: bytes = b"    return a / b"
 
 COMMIT_MESSAGE: str = "Fix divide() to use true division so fractional results are correct"
 
+#: Provenance trailers appended to the agent-made fix commit (house style,
+#: cf. the ops-run commits): git reads the last paragraph of a message as
+#: trailers, so `git log` names the run that made the commit and the
+#: subject the oracle compares stays byte-identical (`%s` returns only the
+#: subject line, so `COMMIT_MESSAGE in subjects` and the
+#: `head_subject == COMMIT_MESSAGE` checks are unaffected).
+COMMIT_TRAILERS: str = (
+    "\n\nTask: S1-demo\nAgent: scripted coder model\nWave: 3\n"
+    "Report: docs/operations/2026-11-09-next-spec/s1-report.md"
+)
+
 #: In-process tools attest no containment (ADR-0046: NEVER the
 #: requested level, always what the tool actually runs under).
 NO_CONTAINMENT: str = "NONE"
@@ -296,7 +307,11 @@ async def dry_run(keep: bool) -> int:
             ),
             ModelTurn(tool_calls=[ToolCall("bash", {"command": pytest_cmd})]),
             ModelTurn(tool_calls=[ToolCall("git_stage", {"paths": ["calc.py"]})]),
-            ModelTurn(tool_calls=[ToolCall("git_commit", {"message": COMMIT_MESSAGE})]),
+            ModelTurn(
+                tool_calls=[
+                    ToolCall("git_commit", {"message": COMMIT_MESSAGE + COMMIT_TRAILERS})
+                ]
+            ),
             ModelTurn(
                 text="divide() now returns a / b; suite green and committed."
             ),
@@ -621,7 +636,11 @@ def _scripted_turns() -> list[ModelTurn]:
         ),
         ModelTurn(tool_calls=[ToolCall("bash", {"command": pytest_cmd})]),
         ModelTurn(tool_calls=[ToolCall("git_stage", {"paths": ["calc.py"]})]),
-        ModelTurn(tool_calls=[ToolCall("git_commit", {"message": COMMIT_MESSAGE})]),
+        ModelTurn(
+            tool_calls=[
+                ToolCall("git_commit", {"message": COMMIT_MESSAGE + COMMIT_TRAILERS})
+            ]
+        ),
         ModelTurn(text="divide() now returns a / b; suite green and committed."),
     ]
 
@@ -694,7 +713,6 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     truncated one. ``fsync`` on the temp file covers the durable case.
     """
     import os
-    import tempfile
 
     tmp = path.with_suffix(path.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8") as fh:
@@ -956,7 +974,13 @@ def _resume_turns(inspection: dict[str, Any]) -> list[ModelTurn]:
     if not inspection["has_fix_commit"]:
         if "calc.py" not in inspection["staged"]:
             turns.append(ModelTurn(tool_calls=[ToolCall("git_stage", {"paths": ["calc.py"]})]))
-        turns.append(ModelTurn(tool_calls=[ToolCall("git_commit", {"message": COMMIT_MESSAGE})]))
+        turns.append(
+            ModelTurn(
+                tool_calls=[
+                    ToolCall("git_commit", {"message": COMMIT_MESSAGE + COMMIT_TRAILERS})
+                ]
+            )
+        )
     calc_state = str(inspection["calc_state"])
     fix_commit = inspection["has_fix_commit"]
     staged = inspection["staged"]

@@ -87,8 +87,8 @@ ADR-0025.
 
 ### `creator.py` — MemoryCreator
 Ingests unprocessed signals into hot-serving facts/entities. Called by daemon
-ingestion loop (`src/paa/memory/creator.py:1268`). Also owns the
-pending-embedding backlog drain (`src/paa/memory/creator.py:1533`),
+ingestion loop (`src/paa/memory/creator.py:1293`). Also owns the
+pending-embedding backlog drain (`src/paa/memory/creator.py:1558`),
 called after each ingestion batch (`src/paa/daemon.py:188`). The creator is
 deterministic and replay-stable — every field is a pure function of the
 signal payload — so re-running it over a persisted signal recreates the
@@ -140,7 +140,7 @@ callable`.
 | `DecaySweeper` → `Database`, `domains` | decay policy + SQL DELETE | Evict stale facts | `decay.py` |
 | `MemoryCreator` → `SignalRepository`, `FactRepository` | claim signals → facts | Ingest signals | `creator.py`, `daemon.py:173` |
 | `Context builders` → `Database` | hand-rolled `LIKE` over the fact tables | Read context | `context_agents.py:190` |
-| `PolicyRiskAgent` → anti-goals (vault) | read `anti_goals.md` | Semantic block | `runtime.py:652`, `policy.py:280` |
+| `PolicyRiskAgent` → anti-goals (vault) | read `anti_goals.md` | Semantic block | `runtime.py:671`, `policy.py:280` |
 
 ## Runtime behavior
 

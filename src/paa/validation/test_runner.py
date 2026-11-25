@@ -25,6 +25,7 @@ collected, exit code 0 — rather than the absence of evidence of failure.
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -115,13 +116,27 @@ class PytestResult:
 
 
 class PytestRunner:
-    """Executes pytest inside a sandbox and parses its output."""
+    """Executes pytest inside a sandbox and parses its output.
+
+    The default interpreter is :data:`sys.executable` — the interpreter the
+    runtime itself is running under. ``python -m pytest`` is only the right
+    command when *that* interpreter has pytest, and the runtime's own
+    interpreter is the one environment that provably does (the ``dev`` extra
+    installs it). A PATH-resolved name cannot make that promise: on a
+    subprocess backend ``python3`` resolves through the sandbox's minimal
+    child ``PATH`` and can land on a system interpreter with no pytest, which
+    would turn every validation into the honest-but-useless
+    ``pytest is not installed`` failure. A container backend does not see the
+    host interpreter, so callers behind one pass ``python_executable``
+    explicitly — the constructor parameter is the seam that keeps this
+    default honest on the laptop and overridable in a container.
+    """
 
     def __init__(
         self,
         sandbox: Sandbox,
         *,
-        python_executable: str = "python3",
+        python_executable: str = sys.executable,
         default_timeout_seconds: float = 300.0,
         memory_mb: int = 512,
     ) -> None:

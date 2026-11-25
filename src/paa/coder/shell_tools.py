@@ -34,6 +34,19 @@ shape: the child's cwd is the jailed workspace root, and at ``PROCESS``
 that is a jail on where relative paths land, not a chroot — a shell script
 can still name absolute paths. The tool does not pretend otherwise, and
 the result's ``isolation_level`` is what the Wave-2 ledger must attest.
+
+The protected-path model gets the same honesty, as an explicit
+``protected_paths_enforced`` flag on every payload. The fs and git tools
+jail-then-protect each path a call names; a shell script is shell syntax
+by design, so the tool jail-then-protects only the *cwd* and cannot know
+what paths the script itself names — and no backend (``PROCESS`` or
+``NAMESPACE``) denies access to a protected path inside the mounted
+workspace either. The flag is therefore ``False`` everywhere today; it
+exists so an operator reading a payload never has to infer that "the
+bash tool passed the jail" means only "the cwd passed the jail". If a
+backend one day enforces the protected-path model for shell children,
+this is the value that flips — and the payloads stay honest without a
+schema change.
 """
 
 from __future__ import annotations
@@ -65,6 +78,7 @@ __all__ = [
     "DEFAULT_TIMEOUT_SECONDS",
     "MAX_TIMEOUT_SECONDS",
     "OUTPUT_CAP_BYTES",
+    "PROTECTED_PATHS_ENFORCED",
     "BashTool",
     "build_bash_tool",
     "build_shell_tools",
@@ -92,6 +106,18 @@ MAX_TIMEOUT_SECONDS: float = 600.0
 #: combined bound so no backend combination can return more than this many
 #: characters in the transcript payload.
 OUTPUT_CAP_BYTES: int = 64 * 1024
+
+#: Whether a shell script is prevented from reaching the workspace's
+#: protected paths (``.git``, ``.env*``, ``PAA_HOME``). It is not, and this
+#: constant exists to say so in every payload instead of leaving an
+#: operator (or the ledger reader) to infer it. The tool jail-then-protects
+#: only the *cwd*; the script string is the owner-chosen surface, and no
+#: backend — ``PROCESS`` or ``NAMESPACE`` — denies a shell child access to
+#: a protected path inside the mounted workspace. ``False`` is the honest
+#: value at every isolation level the tree ships. A backend that one day
+#: enforces the protected-path model for shell children flips this flag,
+#: and every payload becomes truthful about it without a schema change.
+PROTECTED_PATHS_ENFORCED: bool = False
 
 #: Defence-in-depth bounds on model-supplied strings. A shell script larger
 #: than this has no legitimate use behind this tool, and an env block of
@@ -252,6 +278,8 @@ class BashTool:
         "timed_out, isolation_level, backend and network_severed "
         "(False on a subprocess backend, which cannot sever the host "
         "network), plus stdout/stderr capped at 64KB combined. "
+        "protected_paths_enforced is False: only the cwd is jailed — the "
+        "script itself can name any path this host can reach. "
         "Mutating: prompts in ASK mode and is refused in PLAN mode."
     )
 
@@ -337,6 +365,7 @@ class BashTool:
             "network_severed": severed,
             "allow_network": allow_network,
             "filesystem_confined": isolation >= IsolationLevel.NAMESPACE,
+            "protected_paths_enforced": PROTECTED_PATHS_ENFORCED,
             "syscall_filtered": isolation >= IsolationLevel.VM,
             "shell": shell_executable(),
             "argv_prefix": ["pwsh", "-NoProfile", "-Command"]
@@ -388,6 +417,7 @@ class BashTool:
                 "backend": backend,
                 "network_severed": severed,
                 "allow_network": allow_network,
+                "protected_paths_enforced": PROTECTED_PATHS_ENFORCED,
                 "stdout": "",
                 "stderr": "",
                 "truncated": False,
@@ -577,6 +607,7 @@ def _result_payload(
             and (result.isolation_level >= IsolationLevel.NAMESPACE)
         ),
         "allow_network": allow_network,
+        "protected_paths_enforced": PROTECTED_PATHS_ENFORCED,
         "stdout": stdout,
         "stderr": stderr,
         "truncated": truncated,

@@ -361,29 +361,8 @@ class AgentLoop:
 
     @staticmethod
     def _isolation_for(tool: Tool) -> IsolationLevel:
-        """The containment this tool's execution actually runs under.
-
-        Read-only and in-process tools run under ``NONE``. A tool that
-        executes elsewhere declares it — either as an
-        ``isolation_level`` attribute holding an :class:`IsolationLevel`,
-        or through a no-argument ``preflight()`` returning a mapping with
-        an ``"isolation_level"`` member name (the shell tool's shape).
-        The ledger must attest the actual level, never a guess, so a
-        tool that declares neither is ``NONE`` only because it never
-        leaves the process — anything that does leave must use one of
-        the two declared shapes.
-        """
-        level = getattr(tool, "isolation_level", None)
-        if isinstance(level, IsolationLevel):
-            return level
-        preflight = getattr(tool, "preflight", None)
-        if callable(preflight):
-            info = preflight()
-            if isinstance(info, Mapping):
-                name = info.get("isolation_level")
-                if isinstance(name, str) and name in IsolationLevel.__members__:
-                    return IsolationLevel[name]
-        return IsolationLevel.NONE
+        """Delegate to :func:`isolation_level_of` (shared with the pipeline facade)."""
+        return isolation_level_of(tool)
 
     def _to_window(self) -> list[dict[str, Any]]:
         """Render the session window into the model's message shape."""
@@ -405,6 +384,33 @@ class AgentLoop:
 async def _deny_confirm(tool: str, arguments: dict[str, Any], reason: str) -> bool:
     log.warning("agent_loop.ask_auto_denied", tool=tool, reason="no confirm callback provided")
     return False
+
+
+def isolation_level_of(tool: Tool) -> IsolationLevel:
+    """The containment a tool's execution actually runs under.
+
+    Read-only and in-process tools run under ``NONE``. A tool that
+    executes elsewhere declares it — either as an ``isolation_level``
+    attribute holding an :class:`IsolationLevel`, or through a
+    no-argument ``preflight()`` returning a mapping with an
+    ``"isolation_level"`` member name (the shell tool's shape). The
+    ledger must attest the actual level, never a guess, so a tool that
+    declares neither is ``NONE`` only because it never leaves the
+    process — anything that does leave must use one of the two declared
+    shapes. Shared by :class:`AgentLoop` and the pipeline facade
+    (coder/pipeline.py) so the two paths can never attest differently.
+    """
+    level = getattr(tool, "isolation_level", None)
+    if isinstance(level, IsolationLevel):
+        return level
+    preflight = getattr(tool, "preflight", None)
+    if callable(preflight):
+        info = preflight()
+        if isinstance(info, Mapping):
+            name = info.get("isolation_level")
+            if isinstance(name, str) and name in IsolationLevel.__members__:
+                return IsolationLevel[name]
+    return IsolationLevel.NONE
 
 
 # ---------------------------------------------------------------------------

@@ -135,7 +135,7 @@ deterministic, uses existing fixtures.
 
 ### R-W1-002 [MINOR] Drain is single-pass; backlog beyond 100 is invisible at API/CLI
 - Location: `src/paa/memory/creator.py:1220-1262`; callers `src/paa/daemon.py:159`,
-`src/paa/api/app.py:280`, `src/paa/cli/main.py:645`
+`src/paa/api/app.py:280`, `src/paa/cli/main.py:646`
 - Evidence: `drain_pending_embeddings(limit=100)` drains one batch and returns; callers
 discard the return value and never loop. Probe: 2 pending + `limit=1` → 1 indexed,
 1 remains, log says `pending=1` (batch size). A one-shot `paa memory drain` against a

@@ -405,6 +405,25 @@ class Runtime:
         embedder = None
         if enable_optional_backends:
             vector_store, embedder = _try_vector(settings)
+            if vector_store is not None:
+                # The vector package's own wiring contract
+                # (``paa/storage/vector/__init__.py``) requires
+                # ``ensure_rfc_collections()`` before the first upsert or
+                # search. Boot skipped it, so every fresh home logged
+                # ``memory.embedding_enqueue_failed`` ("collection does not
+                # exist") and the first facts written never reached the index
+                # — recall silently degraded from the very first turn.
+                # Degrade-never-raise, like every optional backend: a store
+                # that cannot create its collections warns and stays wired;
+                # facts keep ``embedding_status='pending'`` rows (the durable
+                # queue), so the drain retry path re-enqueues them later.
+                try:
+                    await vector_store.ensure_rfc_collections()
+                except Exception as exc:
+                    log.warning(
+                        "runtime.vector_collections_unavailable",
+                        error=redact(str(exc)),
+                    )
             graph_store = _try_graph(settings, db)
             queue = _try_queue(settings, db)
 

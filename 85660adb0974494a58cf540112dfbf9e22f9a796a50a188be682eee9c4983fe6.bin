@@ -1,0 +1,91 @@
+{
+  "child": {
+    "backend": "subprocess",
+    "duration_ms": 50.86,
+    "exit_code": 0,
+    "isolation_level": "PROCESS",
+    "killed_reason": null,
+    "peak_rss_mb": 0.52734375,
+    "timed_out": false,
+    "truncated_output": false
+  },
+  "classification": {
+    "commits": 0,
+    "duration_ms": 50.86,
+    "exit_code": 0,
+    "files_created": 0,
+    "files_deleted": 0,
+    "files_modified": 1,
+    "git_available": true,
+    "git_dirty": true,
+    "notes": "the observed CLI exited cleanly (0) after 51 ms; 1 modified; git reports a dirty worktree. The state is classified for a human decision \u2014 resume is 'none' by declaration, and nothing re-runs the command.",
+    "recoverable": false,
+    "resume": "none",
+    "signal": null,
+    "signal_name": null,
+    "state": "clean_exit",
+    "workspace_changed": true
+  },
+  "git": {
+    "available": true,
+    "commits": [],
+    "diff": "",
+    "dirty": true,
+    "head_after": "8d4c8fd841aaa22afb0a272d113e034a751d1a44",
+    "head_before": "8d4c8fd841aaa22afb0a272d113e034a751d1a44",
+    "reason": "",
+    "status": "?? feature.txt"
+  },
+  "manifest": {
+    "after_count": 2,
+    "before_count": 2,
+    "created": [],
+    "deleted": [],
+    "modified": [
+      {
+        "after": {
+          "path": "feature.txt",
+          "sha256": "7c5545fd676769a50dd35d2c723065916b2437fecba6bb2dba21dbebcb156ee3",
+          "size": 22
+        },
+        "before": {
+          "path": "feature.txt",
+          "sha256": "a486e993f7b1742ee4e44a50e7fc0554d0fe2a1696187d489026bc43327fe7c0",
+          "size": 24
+        }
+      }
+    ]
+  },
+  "phase": "final",
+  "run": {
+    "command": [
+      "/home/z/.venv/bin/python",
+      "-c",
+      "import pathlib, sys;\npathlib.Path('feature.txt').write_text('the change, now tested');\nprint('fake tests: 3 passed in 0.01s')"
+    ],
+    "ended_at": "2026-11-25T03:27:27.418+00:00",
+    "evidence_tier": "T1",
+    "observer_version": "4.1.0",
+    "resume": "none",
+    "run_id": "32a39851-3a91-499d-8417-8e1db772bc8e",
+    "started_at": "2026-11-25T03:27:27.073+00:00",
+    "workspace": "/tmp/paa-attest-demo-ws-z690jmg9"
+  },
+  "schema": "paa-observe-bundle/1",
+  "transcript": {
+    "stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stream": "stderr",
+      "text": "",
+      "truncated": false
+    },
+    "stdout": {
+      "bytes": 30,
+      "sha256": "fc9a541146dec401fa2138fc24e3438333877b0539b5ac5f1f78c005893919c5",
+      "stream": "stdout",
+      "text": "fake tests: 3 passed in 0.01s\n",
+      "truncated": false
+    }
+  }
+}

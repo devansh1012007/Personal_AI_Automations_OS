@@ -19,6 +19,20 @@ from paa.config import Settings, reset_settings_cache
 from paa.core.types import PermissionMode
 from paa.runtime import Runtime
 
+#: The sandbox command the default scripted step runs. It prints a minimal,
+#: well-formed new-file patch — ``/dev/null`` source, one hunk, one insertion —
+#: which the validation engine can actually check (the patcher's own
+#: CREATE/DELETE/MODIFY vocabulary), so a scripted "full run" exercises the
+#: same mutating-step path a real diff-producing step takes instead of riding
+#: an empty artifact through a vacuous PASS.
+_SUMMARY_PATCH_COMMAND = (
+    "import sys; sys.stdout.write('--- /dev/null\\n"
+    "+++ b/summary.txt\\n"
+    "@@ -0,0 +1 @@\\n"
+    "+notes: three items\\n"
+    "')"
+)
+
 
 class ScriptedModel:
     """A deterministic ``ModelLike`` that returns valid structured outputs.
@@ -39,7 +53,20 @@ class ScriptedModel:
     ) -> None:
         self.calls: list[dict[str, Any]] = []
         self._steps = steps or [
-            {"index": 0, "action": "do the thing", "agent": "worker", "mutates": True}
+            {
+                "index": 0,
+                "action": "write the summary file",
+                "agent": "worker",
+                "mutates": True,
+                # A real mutating step must leave something for validation to
+                # check — the honest engine refuses an artifact that enables
+                # no check (a gate that checked nothing has not passed
+                # anything). The command prints a minimal, well-formed
+                # new-file patch; the WorkerCell surfaces sandbox stdout as
+                # the step's patch, the critic's dry-run plans it, and the
+                # task commits the way a real diff-producing step would.
+                "command": ["python3", "-c", _SUMMARY_PATCH_COMMAND],
+            }
         ]
         self._verdict = verdict
 

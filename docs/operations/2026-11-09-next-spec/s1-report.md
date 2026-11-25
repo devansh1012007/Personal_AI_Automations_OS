@@ -116,22 +116,26 @@ Wave 2 memory writes go through the cold-lake signal path. The
 comment is stale; the behavior (and the planner matrix test) is right.
 Left for ORCH to fix — comment-only, no behavior involved.
 
-## Kill drill — Linux/WSL2 POSIX `kill -9` (NOT RUN — Windows subset executed)
+## Kill drill — Linux/WSL2 POSIX `kill -9` (RUN 2026-11-10, 20/20)
 
-Command:
+Command (WSL2 Ubuntu 22.04, Python 3.12 venv, dev extra):
 
     python scripts/drill_kill_resume.py --iterations 20
 
-Result: **NOT-RUN on Linux/WSL2** — the Linux/WSL2 POSIX `kill -9` kill drill
-has not been executed on a Linux host; the Linux-gated 20-iteration matrix
-is NOT-RUN. Verified on this host: the Windows TerminateProcess subset ran
-`--iterations 5` → 5/5 passed, `--seed 14 --iterations 6` → 6/6 passed.
-Each iteration launches a real subprocess, sends `kill -9` at a randomly
-chosen tool call (bash/edit_file/git_stage/git_commit/read_file), restarts
-with `--resume`, and verifies: zero duplicated committed effects, correct
-tree, hash chain, recovery classification (bash/git → unknown by design,
-D-6; edit → applied/not_applied), recovery note names the interrupted
-call.
+Result: **exit 0, 20/20 iterations passed** (POSIX `kill -9`; recorded in
+`docs/agent-ops/20261109-next-spec/gates/gate-w3-4.md` and closed by commit
+`9005a3e` "Linux rung closed"). Each iteration launches a real subprocess,
+sends `kill -9` at a randomly chosen tool call
+(bash/edit_file/git_stage/git_commit/read_file), restarts with `--resume`,
+and verifies: zero duplicated committed effects, correct tree, hash chain,
+recovery classification (bash/git → unknown by design, D-6; edit →
+applied/not_applied), recovery note names the interrupted call.
+
+The Windows TerminateProcess subset (`--iterations 5` → 5/5, `--seed 14
+--iterations 6` → 6/6) ran earlier on the Windows host and is superseded by
+this Linux rung. An earlier revision of this section wrongly reverted the
+rung to NOT-RUN during the 2026-11-12 close-out edit; the status table below
+and gate-w3-4.md are the evidence of record.
 
 ## Real-model rung — RUN 2026-11-10 (SUCCESS with the free frontier model; paid attempts BLOCKED by provider key limit)
 
@@ -173,6 +177,35 @@ Post-run state: fix present in `/tmp/buggy_calc/calc.py`
 stage or commit (no `git_stage`/`git_commit` calls were made in this live
 run); the fix sits as an uncommitted working-tree change in the throwaway
 workspace, alongside untracked `.cache/` and `.local/`.
+
+### Corrected S1 prompt (for the next live run)
+
+The prompt `"fix the failing test"` never asks for a commit, so the run's
+stopping point — fix applied, suite green, nothing staged — is the prompt
+working as written, not a tool gap: the S1 exit is *"fixes, tests, and
+commits"* (spec §Wave 3, `docs/2026-11-09-next-spec.md`), and the dry-run
+harness's scripted model does stage and commit. The next live run uses a
+prompt that asks for the commit:
+
+    export OPENROUTER_API_KEY=sk-or-...
+    export PAA_MODELS__LOCAL_PROVIDER=openrouter
+    export PAA_MODELS__LOCAL_MODEL=nvidia/nemotron-3-ultra-550b:a55b:free
+    export PAA_MODELS__ESCALATION_PROVIDER=none
+    export PAA_HOME=/home/devansh/.paa-s1
+
+    cp -r examples/fixtures/buggy_calc /tmp/buggy_calc
+    cd /tmp/buggy_calc
+    paa agent --workspace /tmp/buggy_calc --mode ask --yes \
+        "fix the failing test, then stage and commit the fix"
+    paa ledger <correlation-id>   # printed by the agent run
+
+Agent-made commits carry provenance trailers (Task / Agent / Wave /
+Report — the same convention the ops-run commits use, and the one the
+kill-drill harness's scripted fix commit now emits), so the git history
+and the ledger name the same run. Two host notes for that run: the
+workspace must be a git repository (the git tools refuse anything that is
+not a repository root), and the host needs a git author identity —
+`git_commit` refuses with the missing keys otherwise.
 
 ### Live attempts under paid models — BLOCKED by provider key limit
 
@@ -223,7 +256,7 @@ this report (pending operator capture).
 
 | S1 exit item | Dry-run rung | Kill drill rung | Real-model rung |
 |---|---|---|---|
-| `paa agent --workspace` fixes the fixture's failing test | DONE (47/47, real bash) | n/a | **DONE — SUCCESS with the free frontier model `nvidia/nemotron-3-ultra-550b:a55b:free` (tier FRONTIER); fix applied, suite green (5 passed), 12 tool calls, 0 denied, ledger chain ok** |
-| Every call logged in ledger with hash + isolation level | DONE (13 events, chain verifies) | DONE (Windows subset 5/5 + 6/6; Linux/WSL2 POSIX 20× NOT-RUN, hash chains verify) | DONE — successful live run logged 12 TOOL_CALL_PROPOSED + 12 TOOL_CALL_COMPLETED rows (chain ok, isolation PROCESS/NONE); mandate MANDATE_GRANTED (basis=explicit) |
-| `kill -9` + `--resume` loses / repeats nothing | N2.3 chaos suite green | DONE (Windows subset 5/5 + 6/6; Linux/WSL2 POSIX 20× NOT-RUN, zero duplicate effects) | n/a (kill drill is harness-driven, not live-model-driven) |
-| Unknown outcomes reported, not retried | N2.3 chaos suite green | DONE (Windows subset 5/5 + 6/6; Linux/WSL2 POSIX 20× NOT-RUN, unknown by design) | n/a (live run produced no unknown outcome) |
+| `paa agent --workspace` fixes the fixture's failing test | DONE (47/47, real bash) | n/a | **DONE — SUCCESS with the free frontier model `nvidia/nemotron-3-ultra-550b:a55b:free` (tier FRONTIER); fix applied, suite green (5 passed), 12 tool calls, 0 denied, ledger chain ok. Commit step: NOT DONE — the prompt never asked for one; the corrected prompt below is the next run's command** |
+| Every call logged in ledger with hash + isolation level | DONE (13 events, chain verifies) | DONE (Linux/WSL2 POSIX 20/20, hash chains verify; gate-w3-4) | DONE — successful live run logged 12 TOOL_CALL_PROPOSED + 12 TOOL_CALL_COMPLETED rows (chain ok, isolation PROCESS/NONE); mandate MANDATE_GRANTED (basis=explicit) |
+| `kill -9` + `--resume` loses / repeats nothing | N2.3 chaos suite green | DONE (Linux/WSL2 POSIX 20/20, zero duplicate effects; gate-w3-4) | n/a (kill drill is harness-driven, not live-model-driven) |
+| Unknown outcomes reported, not retried | N2.3 chaos suite green | DONE (Linux/WSL2 POSIX 20/20, unknown by design; gate-w3-4) | n/a (live run produced no unknown outcome) |

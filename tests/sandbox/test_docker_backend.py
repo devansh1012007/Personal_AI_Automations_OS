@@ -507,11 +507,35 @@ async def test_the_image_user_probe_runs_and_reaches_the_user_flag(
 # ---------------------------------------------------------------------------
 
 
+#: Whether this host can even ask the question the test below poses: the
+#: workspace created under ``tmp_path`` is owned by the test process, so
+#: "the container runs as the workspace owner" can only be asserted where
+#: the process has a non-root POSIX identity. On Windows there is no
+#: ``os.getuid`` to consult at all, and under a root run the workspace is
+#: root-owned — which :meth:`DockerSandbox._container_user` must *refuse*
+#: (the never-root rule), so the owner-mapping assertion cannot hold there
+#: by design. That refusal is pinned separately, without privilege, by
+#: ``test_user_is_never_root_even_for_a_root_owned_workspace``; the mapping
+#: itself is pinned on every host by the monkeypatched sibling below.
+_NON_ROOT_POSIX = hasattr(os, "getuid") and os.getuid() != 0
+
+
+@pytest.mark.skipif(
+    not _NON_ROOT_POSIX,
+    reason=(
+        "the workspace created here is owned by the test process: under a "
+        "root run it is root-owned and the never-root fallback answers "
+        "instead of the owner, and on Windows there is no os.getuid to name"
+    ),
+)
 def test_user_is_the_workspace_owner_not_root(tmp_path: Path) -> None:
     """The container runs as whoever owns the workspace it was given.
 
     A container-root process can write the workspace too — and can leave
     behind root-owned files the operator then has to remove with sudo.
+    Asserted against the *real* filesystem identity, which is only
+    meaningful on a non-root POSIX host: the skip reason above names that
+    assumption rather than letting it fail opaquely on Windows/root hosts.
     """
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -520,6 +544,33 @@ def test_user_is_the_workspace_owner_not_root(tmp_path: Path) -> None:
     args = sb._build_args(_spec(workspace), workspace, "paa-test")
     assert "--user" in args
     assert args[args.index("--user") + 1] == f"{os.getuid()}:{os.getgid()}"
+
+
+def test_user_is_the_workspace_owner_whatever_the_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The owner-to-``--user`` mapping itself holds on every host.
+
+    The test above asks the question only a non-root POSIX host can answer,
+    because its workspace is owned by whoever ran pytest. The mapping does
+    not depend on that: fake the workspace owner to a fixed non-zero pair —
+    the same sibling pattern
+    ``test_user_is_never_root_even_for_a_root_owned_workspace`` uses, because
+    a test cannot chown to another identity without privilege — and the
+    flag must name exactly that pair. Skipping the mapping on Windows or
+    under root would leave the flag's one contract untested precisely where
+    containers most often run.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    sb = DockerSandbox(SandboxSettings())
+    monkeypatch.setattr(
+        DockerSandbox, "_workspace_owner", staticmethod(lambda _ws: (1234, 2345))
+    )
+    args = sb._build_args(_spec(workspace), workspace, "paa-test")
+    assert "--user" in args
+    assert args[args.index("--user") + 1] == "1234:2345"
 
 
 def test_user_is_never_root_even_for_a_root_owned_workspace(

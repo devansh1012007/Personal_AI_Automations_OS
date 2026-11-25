@@ -114,15 +114,19 @@ responsibility and the files it contains. All paths are repository-relative.
 
 | Entry point | File | Function |
 |---|---|---|
-| `paa` CLI | `src/paa/cli/main.py:42` | `app = typer.Typer(...)`; `__main__` at line 467 |
-| `paa submit` | `src/paa/cli/main.py:77` | `submit` |
-| `paa serve` | `src/paa/cli/main.py:350` | `serve` |
-| `paa doctor` | `src/paa/cli/main.py:228` | `doctor` |
-| `paa recover` | `src/paa/cli/main.py:210` | `recover` |
-| `paa ledger` | `src/paa/cli/main.py:148` | `ledger` |
-| `paa gate` | `src/paa/cli/main.py:183` | `gate` |
-| `paa agent` | `src/paa/cli/coder.py:53` | `register_agent` → `agent` |
-| `paa tui` | `src/paa/cli/main.py:370` | `tui` |
+| `paa` CLI | `src/paa/cli/main.py:46` | `app = typer.Typer(...)`; `__main__` at line 906 |
+| `paa submit` | `src/paa/cli/main.py:124` | `submit` |
+| `paa serve` | `src/paa/cli/main.py:467` | `serve` |
+| `paa doctor` | `src/paa/cli/main.py:301` | `doctor` |
+| `paa recover` | `src/paa/cli/main.py:283` | `recover` |
+| `paa ledger` | `src/paa/cli/main.py:210` | `ledger` |
+| `paa gate` | `src/paa/cli/main.py:256` | `gate` |
+| `paa agent` | `src/paa/cli/coder.py:54` | `register_agent` → `agent` |
+| `paa tui` | `src/paa/cli/main.py:530` | `tui` |
+| `paa memory` | `src/paa/cli/main.py:693` | `memory_app`: facts/search/signals/drain/world-model |
+| `paa observe` | `src/paa/cli/observe.py:147` | `observe`: run a CLI under observation, leave a T1 bundle (SPEC 2 W7) |
+| `paa chat` | `src/paa/cli/chat.py:160` | the chat surface — TUI, or `--plain` (SPEC 2 W4) |
+| `paa mcp serve` | `src/paa/cli/mcp.py:120` | stdio MCP server (SPEC 2 W4) |
 | Programmatic runtime | `src/paa/runtime.py:353` | `Runtime.build()` |
 | API factory | `src/paa/api/app.py:54` | `create_app(runtime)` |
 | Daemon | `src/paa/daemon.py:45` | `Daemon(runtime)` |

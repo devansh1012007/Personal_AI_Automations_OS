@@ -1,0 +1,358 @@
+"""The pipeline registry v0 and explicit, mandate-scoped selection (C6.5).
+
+What these tests pin:
+
+* **the registry's two sources** — the four in-process builtins
+  (trust ``builtin``, runnable; Wave 7 adds ``builtin.observe``) and the
+  local directory's manifests (trust ``local``, listed and inspected
+  but never executed — running an out-of-process pipeline is P3's RPC
+  transport);
+* **the manifest contract at load** — an off-contract local manifest
+  (unknown section, undeclarable capability, bad ``run.resume``, bad
+  ``evidence.declares_tier``, off-contract ``[evidence]`` keys, missing
+  identity keys, name that does not match its directory) is *named* in
+  ``local_errors``, never silently dropped and never run;
+* **selection is explicit and mandate-scoped, never scored** — explicit
+  name validated against the registry then against the scope; a
+  single-pipeline scope with no name selects it; a multi-pipeline
+  scope with no name refuses; no name and no scope yields the default;
+  a mandate whose scope does not list the requested pipeline refuses,
+  naming the scope and the registered names;
+* **the mandate carries the scope** — ``Scope.pipelines`` round-trips
+  through the granted payload, and an empty list refuses at
+  construction (it grants nothing and is almost certainly a typo).
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from paa.config import PolicySettings
+from paa.ledger.mandate import Scope, explicit_mandate
+from paa.pipelines.registry import (
+    DEFAULT_PIPELINE,
+    LocalManifestError,
+    PipelineRegistry,
+    PipelineSelectionError,
+    declaration_from_manifest,
+    select,
+)
+
+_VALID_MANIFEST = """
+[pipeline]
+name = "tdd-loop"
+version = "0.1.0"
+protocol = "paa-pipeline/1"
+description = "Write a failing test, make it pass, refactor."
+requires_runtime = ">=4.1,<5"
+
+[run]
+command = ["python", "-m", "tdd_loop"]
+resume = "journal"
+
+[capabilities]
+think = { roles = ["worker"] }
+use_skill = ["read_file", "bash"]
+
+[limits]
+max_tokens = 200000
+max_wall_s = 1800
+max_calls = 400
+max_sub_runs = 2
+
+[params]
+max_cycles = { type = "int", default = 5, min = 1, max = 20 }
+
+[slots]
+critic = { interface = "agent/1", default = "agent:critic" }
+"""
+
+
+def _local_home(tmp_path: Path) -> Path:
+    home = tmp_path / "home"
+    (home / "pipelines" / "tdd-loop").mkdir(parents=True)
+    (home / "pipelines" / "tdd-loop" / "pipeline.toml").write_text(
+        _VALID_MANIFEST, encoding="utf-8"
+    )
+    return home
+
+
+class TestTheRegistry:
+    def test_default_lists_the_four_builtins(self) -> None:
+        registry = PipelineRegistry(local_dir=None)
+        rows = registry.list()
+        assert [r.name for r in rows] == [
+            "builtin.plan-execute-critique",
+            "builtin.chat",
+            "coder.tool-loop",
+            "builtin.observe",
+        ]
+        assert all(r.trust == "builtin" and r.runnable for r in rows)
+
+    def test_observe_declares_its_two_special_facts(self) -> None:
+        """Pipeline #4 differs from the other three in exactly two rows.
+
+        ``resume = "none"`` (the spec §6 rule for external-harness
+        adapters) and ``evidence_tier = "T1"`` (the honesty tier) are
+        the declaration's own statements, so a reader never has to infer
+        recoverability from a pipeline's name.
+        """
+        registry = PipelineRegistry(local_dir=None)
+        row = registry.get("builtin.observe")
+        assert row is not None
+        assert row.declaration.resume == "none"
+        assert row.declaration.evidence_tier == "T1"
+        assert row.declaration.capabilities == {}
+        others = [
+            r.declaration for r in registry.list() if r.name != "builtin.observe"
+        ]
+        assert all(d.resume == "journal" for d in others)
+        assert all(d.evidence_tier == "in-process" for d in others)
+
+    def test_local_manifests_are_listed_not_run(self, tmp_path: Path) -> None:
+        home = _local_home(tmp_path)
+        registry = PipelineRegistry(local_dir=home / "pipelines")
+        row = registry.get("tdd-loop")
+        assert row is not None
+        assert row.trust == "local"
+        assert row.runnable is False
+        assert row.declaration.params["max_cycles"].maximum == 20
+        assert row.declaration.slots["critic"].interface == "agent/1"
+        assert row.declaration.limits.max_tokens == 200000
+
+    def test_off_contract_manifests_are_named_not_hidden(
+        self, tmp_path: Path
+    ) -> None:
+        home = _local_home(tmp_path)
+        bad = home / "pipelines" / "broken"
+        bad.mkdir()
+        (bad / "pipeline.toml").write_text(
+            "[pipeline]\nname = 'broken'\nversion = '0.1'\n"
+            "protocol = 'paa-pipeline/1'\nrequires_runtime = '>=4.1,<5'\n\n"
+            "[limits]\nmax_tokens = 1\nmax_wall_s = 1\nmax_calls = 1\n"
+            "max_sub_runs = 1\n\n[banana]\nx = 1\n",
+            encoding="utf-8",
+        )
+        registry = PipelineRegistry(local_dir=home / "pipelines")
+        assert "tdd-loop" in [r.name for r in registry.list()]
+        assert "broken" in registry.local_errors
+        assert "banana" in registry.local_errors["broken"]
+
+    def test_name_directory_mismatch_is_named(self, tmp_path: Path) -> None:
+        home = _local_home(tmp_path)
+        other = home / "pipelines" / "other-name"
+        other.mkdir()
+        (other / "pipeline.toml").write_text(
+            _VALID_MANIFEST, encoding="utf-8"  # name inside is tdd-loop
+        )
+        registry = PipelineRegistry(local_dir=home / "pipelines")
+        assert "other-name" in registry.local_errors
+        assert "does not match" in registry.local_errors["other-name"]
+
+    def test_bad_resume_and_capability_refuse(self, tmp_path: Path) -> None:
+        base = _local_home(tmp_path)
+        manifest = base / "pipelines" / "tdd-loop" / "pipeline.toml"
+        original = manifest.read_text(encoding="utf-8")
+        # A bad resume value, in place.
+        manifest.write_text(
+            original.replace('resume = "journal"', "resume = 'sometimes'"),
+            encoding="utf-8",
+        )
+        with pytest.raises(LocalManifestError, match="resume"):
+            declaration_from_manifest(manifest)
+        # An undeclarable capability key, inside the existing table.
+        manifest.write_text(
+            original.replace(
+                'use_skill = ["read_file", "bash"]',
+                'use_skill = ["read_file", "bash"]\nteleport = true',
+            ),
+            encoding="utf-8",
+        )
+        with pytest.raises(LocalManifestError, match="declarable"):
+            declaration_from_manifest(manifest)
+        manifest.write_text(original, encoding="utf-8")
+
+    def test_evidence_tier_round_trips_and_off_contract_refuses(
+        self, tmp_path: Path
+    ) -> None:
+        """The spec §6 facts a local adapter may declare (C7.1).
+
+        A declared tier rides the declaration; a tier outside the ladder
+        and an ``[evidence]`` key outside ``declares_tier`` are both
+        refused at load, by name — the honesty ladder is closed
+        vocabulary, not free text.
+        """
+        base = _local_home(tmp_path)
+        manifest = base / "pipelines" / "tdd-loop" / "pipeline.toml"
+        original = manifest.read_text(encoding="utf-8")
+
+        manifest.write_text(
+            original + '\n[evidence]\ndeclares_tier = "T1"\n', encoding="utf-8"
+        )
+        declaration = declaration_from_manifest(manifest)
+        assert declaration.evidence_tier == "T1"
+        assert declaration.resume == "journal"  # unchanged by the tier
+
+        manifest.write_text(
+            original + '\n[evidence]\ndeclares_tier = "T9"\n', encoding="utf-8"
+        )
+        with pytest.raises(LocalManifestError, match="declares_tier"):
+            declaration_from_manifest(manifest)
+
+        # A TOML list is unhashable; membership in the ladder must still be
+        # a named refusal, not a TypeError escaping the parse contract.
+        manifest.write_text(
+            original + '\n[evidence]\ndeclares_tier = ["T1"]\n', encoding="utf-8"
+        )
+        with pytest.raises(LocalManifestError, match="declares_tier"):
+            declaration_from_manifest(manifest)
+
+        manifest.write_text(
+            original + '\n[evidence]\ndeclares_tier = "T1"\nmood = "honest"\n',
+            encoding="utf-8",
+        )
+        with pytest.raises(LocalManifestError, match="declarable set"):
+            declaration_from_manifest(manifest)
+
+        manifest.write_text(original, encoding="utf-8")
+
+    @pytest.mark.parametrize(
+        "old,new,reason",
+        [
+            ('protocol = "paa-pipeline/1"', 'protocol = "paa-pipeline/2"', "protocol"),
+            (
+                'requires_runtime = ">=4.1,<5"',
+                'requires_runtime = "4.1"',
+                "requires_runtime",
+            ),
+            ("max_calls = 400", "", "max_calls"),
+            ('interface = "agent/1"', 'interface = "agent"', "<name>/<major>"),
+            ('default = "agent:critic"', 'default = "memory:critic"', "default"),
+            # TOML lists are unhashable: a membership test on one used to
+            # raise TypeError and escape the named-error contract.
+            ('resume = "journal"', 'resume = ["journal"]', "run.resume"),
+            ('type = "int"', 'type = ["int"]', "expected one of"),
+        ],
+    )
+    def test_each_contract_rule_is_named(
+        self, tmp_path: Path, old: str, new: str, reason: str
+    ) -> None:
+        """Every ADR-0052 parse rule refuses, and names the manifest.
+
+        A manifest that is off contract must land in ``local_errors``
+        under its own name — silently dropping it would make ``list``
+        lie about what exists in the local directory.
+        """
+        home = _local_home(tmp_path)
+        manifest = home / "pipelines" / "tdd-loop" / "pipeline.toml"
+        text = manifest.read_text(encoding="utf-8")
+        assert old in text
+        manifest.write_text(text.replace(old, new), encoding="utf-8")
+
+        registry = PipelineRegistry(local_dir=home / "pipelines")
+        assert "tdd-loop" not in [r.name for r in registry.list()]
+        assert "tdd-loop" in registry.local_errors
+        assert reason in registry.local_errors["tdd-loop"]
+
+    def test_invalid_utf8_manifest_is_named(self, tmp_path: Path) -> None:
+        """Corrupt bytes are a named refusal, not a decode traceback."""
+        home = _local_home(tmp_path)
+        manifest = home / "pipelines" / "tdd-loop" / "pipeline.toml"
+        manifest.write_bytes(b"[pipeline]\nname = '\xff'\n")
+        registry = PipelineRegistry(local_dir=home / "pipelines")
+        assert "tdd-loop" not in [r.name for r in registry.list()]
+        assert "UTF-8" in registry.local_errors["tdd-loop"]
+
+
+class TestSelection:
+    def _registry(self, tmp_path: Path) -> PipelineRegistry:
+        return PipelineRegistry(local_dir=_local_home(tmp_path) / "pipelines")
+
+    def test_explicit_name_selects(self, tmp_path: Path) -> None:
+        row = select("builtin.chat", registry=self._registry(tmp_path))
+        assert row.name == "builtin.chat"
+
+    def test_unknown_name_names_the_registered(self, tmp_path: Path) -> None:
+        with pytest.raises(PipelineSelectionError, match=r"coder\.tool-loop"):
+            select("nope", registry=self._registry(tmp_path))
+
+    def test_mandate_scope_refuses_unlisted_pipeline(self, tmp_path: Path) -> None:
+        with pytest.raises(PipelineSelectionError, match="outside this mandate"):
+            select(
+                "coder.tool-loop",
+                registry=self._registry(tmp_path),
+                allowed=("builtin.chat",),
+            )
+
+    def test_mandate_scope_allows_its_own(self, tmp_path: Path) -> None:
+        row = select(
+            "builtin.chat",
+            registry=self._registry(tmp_path),
+            allowed=("builtin.chat", "coder.tool-loop"),
+        )
+        assert row.name == "builtin.chat"
+
+    def test_single_pipeline_scope_selects_itself(self, tmp_path: Path) -> None:
+        row = select(None, registry=self._registry(tmp_path), allowed=("builtin.chat",))
+        assert row.name == "builtin.chat"
+
+    def test_multi_pipeline_scope_without_a_name_refuses(self, tmp_path: Path) -> None:
+        with pytest.raises(PipelineSelectionError, match="name one"):
+            select(
+                None,
+                registry=self._registry(tmp_path),
+                allowed=("builtin.chat", "coder.tool-loop"),
+            )
+
+    def test_no_name_no_scope_is_the_default(self, tmp_path: Path) -> None:
+        row = select(None, registry=self._registry(tmp_path))
+        assert row.name == DEFAULT_PIPELINE
+
+    def test_empty_scope_grants_nothing(self, tmp_path: Path) -> None:
+        with pytest.raises(PipelineSelectionError, match="empty"):
+            select("builtin.chat", registry=self._registry(tmp_path), allowed=[])
+
+
+class TestTheMandateScope:
+    def _policy(self) -> PolicySettings:
+        return PolicySettings()
+
+    def test_pipelines_round_trip_through_the_payload(self) -> None:
+        mandate = explicit_mandate(
+            kind="cli",
+            requester_id="operator",
+            policy=self._policy(),
+            pipelines=["builtin.chat", "coder.tool-loop"],
+        )
+        payload = mandate.granted_payload(session_id="s1")
+        assert payload["scope"]["pipelines"] == [
+            "builtin.chat",
+            "coder.tool-loop",
+        ]
+        assert mandate.scope.pipelines == ("builtin.chat", "coder.tool-loop")
+
+    def test_no_pipelines_stays_unconstrained(self) -> None:
+        mandate = explicit_mandate(
+            kind="cli", requester_id="operator", policy=self._policy()
+        )
+        assert mandate.scope.pipelines is None
+        # The golden v1 scope shape is unchanged for an unconstrained
+        # mandate: the pipelines key is absent, not null — payloads
+        # granted before C6.5 read back byte-for-byte.
+        scope = mandate.granted_payload(session_id="s1")["scope"]
+        assert "pipelines" not in scope
+
+    def test_an_empty_scope_list_refuses_construction(self) -> None:
+        with pytest.raises(ValueError, match="at least one pipeline"):
+            Scope(pipelines=())
+
+    def test_scope_fields_default_untouched(self) -> None:
+        payload = explicit_mandate(
+            kind="cli", requester_id="operator", policy=self._policy()
+        ).granted_payload(session_id="s1")
+        scope: dict[str, Any] = payload["scope"]
+        # The golden v1 keys, and only them, for an unconstrained scope.
+        assert set(scope) == {"workspace", "permission_mode", "budget"}

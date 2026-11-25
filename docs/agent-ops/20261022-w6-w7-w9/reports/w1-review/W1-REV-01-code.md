@@ -143,7 +143,7 @@ With the archive's `blobs/` directory made unreadable:
 `put_stream` is the only one that translates, because it is the only one whose `OSError`
 happens to be inside a `try` that translates. A raw `PermissionError` is **not** a `PaaError`,
 so every `except PaaError` at the edge misses it (`api/app.py:142`, `agents/orchestrator.py:325`,
-`cli/main.py:196`, `agents/base.py:350`) and `ArtifactArchive.verify`'s `except StorageError`
+`cli/main.py:197`, `agents/base.py:350`) and `ArtifactArchive.verify`'s `except StorageError`
 (`artifacts.py:283`) misses it too — a health sweep over a damaged archive raises instead of
 reporting. The S3 substrate, for the same reason (the store refuses), raises `AccessDenied`
 [VERIFIED `minio_backend.py:390-393`]. **The two substrates do not fail the same way for the
@@ -445,7 +445,7 @@ missing-bucket behaviour change asserts a driver response a real HEAD cannot pro
   the two substrates fail the same way for the same reason?* — is answered **no**: a store
   that refuses raises `AccessDenied` on S3 and a raw `PermissionError` on the filesystem. A
   raw `OSError` is not a `PaaError`, so every `except PaaError` at the edge misses it
-  (`api/app.py:142`, `agents/orchestrator.py:325`, `cli/main.py:196`, `agents/base.py:350`)
+  (`api/app.py:142`, `agents/orchestrator.py:325`, `cli/main.py:197`, `agents/base.py:350`)
   and `ArtifactArchive.verify`'s `except StorageError` (`artifacts.py:283`) misses it too —
   a health sweep over a damaged archive raises instead of reporting. `put` is a production
   path (`SignalRepository.record` → `store.put`, `artifacts.py:123` → `put_stream`).

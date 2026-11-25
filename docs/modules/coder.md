@@ -22,7 +22,7 @@ The loop is think → act → observe under permissions & hooks:
 2. Permission check (deny authoritative).
 3. Human prompt on ASK (injected callback).
 4. Execute tool.
-5. Hook POST_TOOL_USE (`loop.py:14`).
+5. Hook POST_TOOL_USE (`coder/loop.py:14`).
 
 The model seam is constrained JSON, not native tool calls: `RouterToolCallingModel`
 asks the router for a `{text, tool_calls[]}` object conforming to a schema with
@@ -42,7 +42,7 @@ read-only (`:78`, ADR-0011 context).
 `mode` default `ASK`; no `confirm` callback → auto-*deny* (unattended run stops
 at first gated call) (`:134`).
 
-### `loop.py` — AgentLoop
+### `coder/loop.py` — AgentLoop
 `run(user_message)` drives up to `max_steps` (default 25): model proposes,
 text recorded, tool calls handled through `_handle_call` (the safety gate),
 then returns on `model_finished` / `token_budget_exhausted` / `max_steps_reached`
@@ -66,7 +66,7 @@ explicit ask → mode default (`:173`). `PLAN` mode refuses all mutating tools
 POST_TOOL_USE, SUBAGENT_STOP, STOP (`:39`). First block wins and short-circuits;
 hooks that raise are logged and treated as non-blocks (`:95`).
 
-### `session.py` — Session
+### `coder/session.py` — Session
 Append-only JSONL transcript; resume = replay; compaction replaces in-memory
 window with SUMMARY turn, on-disk intact (`:84`). `TurnRole`: USER/ASSISTANT/
 TOOL_CALL/TOOL_RESULT/SYSTEM/SUMMARY (`:32`).
@@ -96,17 +96,17 @@ Custom commands from `.md` files with `$ARGUMENTS`/`$1`..`$9` substitution.
 | `CoderAgent` → `Runtime.build()` | construct | Real runtime to drive | `coder/agent.py:188` |
 | `CoderAgent` → `RouterToolCallingModel` | `propose()` | Model seam | `agent.py:210` |
 | `RouterToolCallingModel` → `EscalatingModelRouter` | `complete_structured()` | Inference + escalation | `model_adapter.py:176` |
-| `AgentLoop` → `ToolPermissionPolicy` | `evaluate()` | Gate every call | `loop.py:224` |
-| `AgentLoop` → `HookRegistry` | `fire()` | Hooks pre/post tool | `loop.py:235`, `:313` |
-| `AgentLoop` → `Session` | record turns | Transcript persistence | `loop.py:144` |
+| `AgentLoop` → `ToolPermissionPolicy` | `evaluate()` | Gate every call | `coder/loop.py:224` |
+| `AgentLoop` → `HookRegistry` | `fire()` | Hooks pre/post tool | `coder/loop.py:235`, `:313` |
+| `AgentLoop` → `Session` | record turns | Transcript persistence | `coder/loop.py:144` |
 | runtime tools → `Runtime.submit/run` | drive tasks | Ledger writes | `coder/runtime_tools.py:290`, `:329` |
-| `cli/coder.py` → `CoderAgent.build` | compose | `paa agent` CLI | `cli/coder.py:103` |
+| `cli/coder.py` → `CoderAgent.build` | compose | `paa agent` CLI | `cli/coder.py:104` |
 
 ## Runtime behavior
 
-- `confirm` callback absent → auto-deny (`loop.py:138`).
+- `confirm` callback absent → auto-deny (`coder/loop.py:138`).
 - `max_tokens` never trips (tokens always 0); `max_steps` is the bound
-  (`AGENTS.md:160`, `loop.py:199`).
+  (`AGENTS.md:160`, `coder/loop.py:199`).
 - `--mode plan` read-only: `MUTATING_RUNTIME_TOOLS` included in mutating set
   (`agent.py:235`).
 
@@ -116,8 +116,8 @@ Custom commands from `.md` files with `$ARGUMENTS`/`$1`..`$9` substitution.
   (`agent.py:193`).
 - Hook raising → logged, treated as non-block (`hooks.py:95`).
 - Tool execution exception → recorded as error result, loop continues
-  (`loop.py:239`).
-- `PaaError` from agent turn → reported cleanly at CLI (`cli/coder.py:132`).
+  (`coder/loop.py:239`).
+- `PaaError` from agent turn → reported cleanly at CLI (`cli/coder.py:253`).
 
 ## Modification impact
 
@@ -131,7 +131,7 @@ Custom commands from `.md` files with `$ARGUMENTS`/`$1`..`$9` substitution.
 ## Known gaps
 
 - Coder agent not wired into the orchestrator's main task path; no built-in
-  file-edit/bash/web/git skills (`README.md:160`).
+  file-edit/bash/web/git skills (`README.md:247`).
 - `RouterToolCallingModel` is the only native-tool-calling-adjacent class;
   nothing in `models/` supports a `tools` wire field (`AGENTS.md:156`).
 

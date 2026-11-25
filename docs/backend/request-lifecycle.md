@@ -8,12 +8,12 @@ outcome through the backend. It reflects the actual execution order in
 
 | Trigger | File | Function |
 |---|---|---|
-| `paa submit "goal"` | `cli/main.py:77` | `submit` → `Runtime.submit()` |
-| `paa run <id>` | `cli/main.py:106` | `run` → `Runtime.run()` |
+| `paa submit "goal"` | `cli/main.py:124` | `submit` → `Runtime.submit()` |
+| `paa run <id>` | `cli/main.py:168` | `run` → `Runtime.run()` |
 | API `POST /tasks` (`?run=true`) | `api/app.py:107` | `submit_task` → `Runtime.submit()` then `Runtime.run()` |
 | API `POST /tasks` (`?run=false`) | `api/app.py:107` | Submit + queue only; daemon drains later |
 | Daemon dispatch loop | `daemon.py:137` | `_claim_and_run()` → `Runtime.run(cid)` |
-| Recovery requeue | `recovery.py:437` | `_requeue()` → queue → daemon dispatch |
+| Recovery requeue | `recovery.py:1196` | `_requeue()` → queue → daemon dispatch |
 
 All converge on `ChiefOrchestrator.run()` (`src/paa/agents/orchestrator.py:401`).
 
@@ -64,7 +64,7 @@ Every emit re-projects (`project()`) so the next phase reads current state.
   - Returns; phase becomes `BLOCKED` (terminal).
 - On `requires_human_gate`: emits `AWAITING_HUMAN_ATTESTATION`; phase parks
   (`src/paa/agents/orchestrator.py:583`). Never auto-clears across restart
-  (`replay.py:62`).
+  (`ledger/replay.py:62`).
 - Otherwise emits `POLICY_CLEARED` with `risk_score` (`src/paa/pipelines/builtin.py:443`);
   phase becomes `EXECUTING`.
 

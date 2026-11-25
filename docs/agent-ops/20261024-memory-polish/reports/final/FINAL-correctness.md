@@ -13,7 +13,7 @@ Verdict: APPROVE-WITH-CHANGES. The branch is clean, additive, gate-green, and we
 
 ## F1 — MAJOR: Wave-2 extraction-model wiring never reaches the Wave-1 drain surface
 
-**Files:** `src/paa/runtime.py:181,333,375,430-454`; `src/paa/cli/main.py:626-630`; `src/paa/api/app.py:200,277-280`
+**Files:** `src/paa/runtime.py:181,333,375,430-454`; `src/paa/cli/main.py:627-631`; `src/paa/api/app.py:200,277-280`
 
 **Evidence:**
 - `Runtime.build()` builds `memory_creator = _build_memory_creator(settings, db, model_adapter)` (runtime.py:333), stores it as `Runtime.memory_creator` (runtime.py:181), and passes it to the Runtime constructor (runtime.py:375). `_build_memory_creator` reads `settings.memory.extraction_model` and, when non-empty, resolves `LLMFactExtractor(model=model_adapter)`; otherwise `RuleBasedExtractor`.
@@ -45,7 +45,7 @@ Since `Runtime.build()` always populates `memory_creator`, the `or` fallback is 
 
 ## F3 — MINOR: `/memory/signals` API route and CLI `signals` command select inconsistent column sets vs `SignalView`
 
-**Files:** `src/paa/api/app.py:250-266`; `src/paa/api/schemas.py:113-122`; `src/paa/cli/main.py:493-518`
+**Files:** `src/paa/api/app.py:250-266`; `src/paa/api/schemas.py:113-122`; `src/paa/cli/main.py:494-519`
 
 **Evidence:** `SignalView` declares `id, channel, external_id, sync_status, received_at, processed_at, error_detail`. The API route SQL selects only `id, channel, external_id, sync_status, received_at` — `processed_at` and `error_detail` are never selected and are emitted as `null` (they have `= None` defaults). The CLI route selects `processed_at` but not `error_detail`. CLI and API disagree, and the API's `SignalView` documents fields that are always null.
 

@@ -24,9 +24,11 @@ from paa.core.types import ComplexityModality, PermissionMode
 
 __all__ = [
     "AllocatorSettings",
+    "ChatSettings",
     "CodingSettings",
     "ContextSettings",
     "CostGateSettings",
+    "MCPSettings",
     "MemorySettings",
     "ModelSettings",
     "PolicySettings",
@@ -793,6 +795,86 @@ class ReflectionSettings(BaseModel):
     enabled: bool = False
 
 
+class MCPSettings(BaseModel):
+    """The MCP server surface (``paa mcp serve``, SPEC 2 §3.1 C4.5).
+
+    The server is stdio-only: it is spawned by the MCP client (Claude Code,
+    Codex, Cursor, OpenCode) and speaks JSON-RPC 2.0 over stdin/stdout, so
+    there is no socket, no bind address, and nothing for the loopback rule
+    (:attr:`Settings.allow_non_loopback`) to widen. If a TCP serve mode is
+    ever added, it must mirror that validator — bind 127.0.0.1 only and
+    refuse anything else unless the operator overrides deliberately.
+    """
+
+    #: The NAME of the environment variable holding the MCP token — never the
+    #: token itself. Config stores names of secrets, never values (the same
+    #: indirection :attr:`StorageSettings.s3_secret_key_env` and
+    #: :attr:`ModelSettings.escalation_api_key_env` use): the server reads the
+    #: variable named here at startup, and when it holds a non-empty value
+    #: every client must present that token in its ``initialize`` params
+    #: before any tool executes. Unset, the server runs unauthenticated over
+    #: the spawn pipe — the client it was spawned by is the only writer.
+    #:
+    #: S105: this is the *name* of an environment variable, not a secret value.
+    token_env: str = "PAA_MCP_TOKEN"
+
+    #: The chat session id that session-less tool calls fall back to
+    #: (``memory_remember`` is session-scoped by contract; the memory reads
+    #: journal their consults onto a session lineage when one resolves).
+    #: ``None`` (the default) means session-less calls behave session-less:
+    #: consults land on their own lineage and ``memory_remember`` refuses
+    #: until the caller names a session.
+    default_session: str | None = None
+
+
+class ChatSettings(BaseModel):
+    """The chat surface (SPEC 2 §3.1 C4.1-C4.3). Offline-first by default.
+
+    ``model`` names a *registry row* (:func:`paa.models.registry.resolve_spec`),
+    not a vendor: the default ``"echo"`` resolves to the deterministic offline
+    provider, so a chat deployment demos with no network, no key and no local
+    model server. Every other registry name (ollama, openai-compatible,
+    anthropic, ...) works through the same seam and needs whatever credential
+    its row names.
+    """
+
+    #: Registry provider name backing chat turns. ``"echo"`` is offline and
+    #: deterministic; it is the default so tests and the offline demo need no
+    #: network (SPEC 2 §3.2 "Offline-first").
+    model: str = "echo"
+
+    #: Hard token ceiling for the chat context bundle (C4.3). ``None`` (the
+    #: default) resolves from the context engine's existing planner ceiling
+    #: (:attr:`ContextSettings.token_ceiling`) at use time, so the chat
+    #: surface inherits the runtime's one budget line instead of growing a
+    #: second one that can drift. An explicit value wins for a deployment
+    #: that wants chat tighter (or looser) than the task planner.
+    token_budget: int | None = Field(default=None, ge=1)
+
+    #: Cross-session episodic reads. ``False`` (the default) makes a
+    #: session's raw turns visible only inside that session; semantic facts
+    #: are global either way, with the originating session stamped in their
+    #: provenance. ``True`` lifts the episodic fence deliberately (the
+    #: operator's word, not a default) — a refusal is recorded on the
+    #: ``MEMORY_RECALL_CONSULTED`` payload either way, so the ledger shows
+    #: the fence worked.
+    cross_session_episodic: bool = False
+
+    #: Stream reply deltas to the caller's callback. The ledger records the
+    #: final reply either way; this only shapes the transport surface.
+    streaming: bool = True
+
+    #: How many of THIS session's most recent turns the bundle carries.
+    last_k_turns: int = Field(default=6, ge=0)
+
+    #: How many semantic facts a turn's recall may consult.
+    recall_k: int = Field(default=5, ge=0)
+
+    #: The persona slot's text. The first thing packed into every bundle and
+    #: the first thing a small ceiling evicts.
+    persona: str = "You are PAA, a local-first assistant with persistent memory."
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -824,6 +906,8 @@ class Settings(BaseSettings):
     vault_sync: VaultSyncSettings = Field(default_factory=VaultSyncSettings)
     specialists: SpecialistsSettings = Field(default_factory=SpecialistsSettings)
     reflection: ReflectionSettings = Field(default_factory=ReflectionSettings)
+    chat: ChatSettings = Field(default_factory=ChatSettings)
+    mcp: MCPSettings = Field(default_factory=MCPSettings)
 
     #: Bind address for the ingestion API. Loopback only — the RFC's "no public
     #: edge ingestion" constraint is enforced here rather than documented.

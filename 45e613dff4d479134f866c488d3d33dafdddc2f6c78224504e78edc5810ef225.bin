@@ -1,0 +1,1 @@
+{"basis":"explicit","goal":"ship the demo feature, honestly attested","identity_assurance":"asserted","policy_label":"AUTO","policy_version":"73c0c376c5b492c097f66c86956886697e83676368f280e2e2f6170d2e42f621","requester_asserted":{"id":"operator","kind":"cli"},"scope":{"budget":null,"permission_mode":"AUTO","workspace":"/tmp/paa-attest-demo-ws-z690jmg9"},"session_id":null,"v":1}
