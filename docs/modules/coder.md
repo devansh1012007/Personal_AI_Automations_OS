@@ -131,7 +131,7 @@ Custom commands from `.md` files with `$ARGUMENTS`/`$1`..`$9` substitution.
 ## Known gaps
 
 - Coder agent not wired into the orchestrator's main task path; no built-in
-  file-edit/bash/web/git skills (`README.md:247`).
+  file-edit/bash/web/git skills (`README.md:251`).
 - `RouterToolCallingModel` is the only native-tool-calling-adjacent class;
   nothing in `models/` supports a `tools` wire field (`AGENTS.md:156`).
 

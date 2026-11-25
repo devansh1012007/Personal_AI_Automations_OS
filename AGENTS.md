@@ -560,14 +560,14 @@ the archive at the bottom. Keep prose out — this is a register, not a report.
 
 ### Environment (this development sandbox)
 
-- Repo: `/home/z/my-project/paa`, branch `main` @ ccb009b, clean tree at
-  the W6 close; C7.1 lands on top of it.
-- Full gate at the W7 C7.1 close: `python -m pytest tests/` → 4,429 passed /
-  244 env-gated skipped / 1 xfailed, 0 failures, exit 0 (4,674 collected;
-  W6 close was 4,368 → +61, exactly the new tests); `mypy src/paa` clean
-  (186 files — after reinstalling the `tui` extra; a recycled sandbox
-  without textual shows 19 phantom Any-errors in tui/chat/*);
-  `ruff check src tests` clean.
+- Repo: `/home/z/my-project/paa`, branch `main` @ b3eb061, clean tree at
+  the C7.1 close; C7.2 lands on top of it.
+- Full gate at the W7 C7.2 close: `python -m pytest tests/` → 4,475 passed /
+  244 env-gated skipped / 1 xfailed, 0 failures, exit 0 (4,720 collected;
+  C7.1 close was 4,429 → +46, exactly the new attest tests); `mypy src/paa`
+  clean (191 files); `ruff check src tests` clean. Note: pytest 9's double
+  `-q` (addopts + a manual `-q`) suppresses the summary line — count with a
+  single `-q` or read the dots.
 - venv: `/home/z/.venv` — **outside** the persistent project dir; after a sandbox
   recycle reinstall with `pip install -e ".[dev,tui]"` from the repo root and
   `export PATH=/home/z/.venv/bin:$PATH`. 2 CPU cores; run at most ~3 parallel jobs.
@@ -604,7 +604,7 @@ the fourth pipeline the rule-of-three was waiting on).
 | Task ID | Agent | Assignment | Status | Evidence / notes |
 |---|---|---|---|---|
 | W7-C7.1 | orchestrator | `paa observe` — H3.2 observer mode, T1 evidence tier, pipeline #4 per P1.4: run any CLI in a workspace, record manifest diff + git changes + transcript, classify state after a crash | **done** | this commit; W7-IMPL-01 report; observer core + `paa-observe-bundle/1` (two-phase write, resume="none", tier="T1") + `builtin.observe` on the facade with an empty capability ask + `paa observe` CLI and `paa pipeline run builtin.observe` through one shared driver; done-when met as tests (fake harness → complete T1 bundle; kill -9/timeout/error/clean classification matrix + chaos); conformance 4 pipelines GREEN; registry/manifests carry the honesty ladder (`[evidence] declares_tier`); 57 observe tests, full gate 4,429/244/1x/0; docs/interfaces/observe-bundle.md + 125 citations re-anchored |
-| W7-C7.2 | orchestrator | attested change bundle + `paa verify` (H3.1) | not started | next row; consumes C7.1's bundle inputs |
+| W7-C7.2 | orchestrator | attested change bundle + `paa verify` (H3.1) | **done** | this commit; W7-IMPL-02 report; `paa-attest-bundle/1`: six hash-chained sections (mandate/diff/commands/tests/approvals/evidence) as cold-lake CAS blobs + Ed25519-signed header (`src/paa/attest/{format,bundle,verify}.py`, format leaf shared by both sides); `paa attest build|pr` + top-level `paa verify` (five named doors: manifest/blobs/chain/signature/key — integrity vs origin never collapsed, `--trust` pins the signer, no pin says self-asserted); observed vs asserted rows never collapsed; two-phase started→final manifest; HMAC fallback refused without `--insecure-fallback-signing`; done-when met as tests: flip-one-byte (section blob, evidence blob, manifest) → fail naming the door; clean-checkout verify with PAA_HOME nonexistent → stays nonexistent; forged-resignation is intact-but-untrusted; workspace drift named (+/~/-); 46 attest tests, full gate 4,475/244/1x/0; docs/interfaces/attested-bundle-spec.md (incl. the GitHub Action template); 71 citations re-anchored (cli/main.py + README.md line shifts) |
 | W7-C7.3 | orchestrator | `paa record` — the harness-neutral flight recorder | not started | depends on C7.2 |
 | W7-C7.4 | orchestrator | cross-harness eval harness | not started | depends on C7.3 |
 
@@ -668,7 +668,9 @@ P0 → P1.1 → P1.2 → SPEC-2 W4 C4.1–C4.7 → W5 C5.2–C5.5 close).
 - ~~P1.4 (observe as pipeline #4)~~ → **done in Wave 7** (C7.1: `builtin.observe`
   on the facade, `resume="none"`, `evidence_tier="T1"`; four pipelines
   registered, conformance GREEN ×4).
-- Wave 7 rest: C7.2 attest + `paa verify`, C7.3 `paa record`, C7.4 evals,
+- Wave 7 rest: ~~C7.2 attest + `paa verify`~~ → **done in Wave 7** (C7.2:
+  `paa-attest-bundle/1`, `paa attest build|pr`, `paa verify` offline). C7.3
+  `paa record`, C7.4 evals,
   C7.5 `paa thread`, C7.6 ACP v1 → not started.
 - P3 (RPC host/protocol), P5 (distribution), the P6 adapters beyond observe
   (acp-client, mcp-host), P7 (authoring kit) → later waves; `paa-pipeline/1`
@@ -679,14 +681,17 @@ P0 → P1.1 → P1.2 → SPEC-2 W4 C4.1–C4.7 → W5 C5.2–C5.5 close).
 ### Deliverables of this campaign
 
 - `/home/z/my-project/download/paa-spec2-w4-w7.patch` + `.bundle` — combined diff
-  and git bundle of all unpushed commits through the C7.1 close (supersedes the
-  w4-w6 pair).
+  and git bundle of all unpushed commits through the C7.2 close (regenerated
+  at the C7.2 close; supersedes the w4-w6 pair and the C7.1-era regeneration).
 - `/home/z/my-project/download/paa-format-patch-series-w7/` — per-commit patches
   from `origin/main` (git am ready; the w6 series is superseded).
 - `/home/z/my-project/download/paa-observe-demo-bundle.json` — a complete T1
   bundle from the scripted fake-harness run (the C7.1 done-when, as an artifact).
+- `/home/z/my-project/download/paa-attest-demo-bundle/` — a complete, verifying
+  attested bundle from the scripted fake-harness flow (the C7.2 done-when, as
+  an artifact: observe → attest → verify, plus its PR body).
 - `/home/z/my-project/download/paa-pipeline-platform-spec-satisfaction-report.pdf`
-  — the audit report (3rd edition: Wave 6 rows DONE + the C7.1 row).
+  — the audit report (4th edition: Wave 6 rows DONE + the C7.1 + C7.2 rows).
 - Earlier ranges (`paa-pipeline-platform-work.patch`, `paa-spec2-w4-w5.*`,
   `paa-spec2-w4-w6.*`, `pipeline-platform-p0-p1.*`, the w6 series dirs) are
   superseded; `paa-report-cover.html` remains the report cover source.

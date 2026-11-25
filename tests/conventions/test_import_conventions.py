@@ -164,6 +164,7 @@ FAMILY = (
 TYPE_CHECKING_CLASSES: dict[str, str] = {
     "paa.agents.base": "C",
     "paa.agents.orchestrator": "C",
+    "paa.cli.attest": "E",
     "paa.cli.chat": "E",
     "paa.cli.observe": "E",
     "paa.mcp.server": "C",
@@ -221,6 +222,11 @@ TYPE_CHECKING_CLASS_KEYS: frozenset[str] = frozenset({"A", "B", "C", "D", "E"})
 #: disagrees with a class can re-run the measurement rather than argue with
 #: the table.
 TYPE_CHECKING_NOTES: dict[str, str] = {
+    "paa.cli.attest": (
+        "names paa.attest.bundle.Approval for the approval parser's return "
+        "annotation; the producer module itself is imported inside the "
+        "command bodies so `paa --version` pays only for the Typer surface"
+    ),
     "paa.cli.chat": "names paa.config.Settings, loaded by every CLI path already: ~0 ms",
     "paa.cli.observe": (
         "names paa.pipelines.base.PipelineResult for the shared driver's return "

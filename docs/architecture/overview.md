@@ -56,7 +56,7 @@ ingestion ─────────► cold_lake (immutable CAS blobs)
  (truth)       (recall)      (provenance)    (volatile)      (host disk)
 ```
 
-This diagram is reproduced from `README.md:103` and reflects the actual
+This diagram is reproduced from `README.md:107` and reflects the actual
 substrate topology. `hot_serving` is the relational mutable read path; the
 other three are derived/caches that degrade when their optional extras are
 absent.
@@ -143,7 +143,7 @@ TASK_REQUESTED → TASK_QUEUED → CONTEXT_HYDRATED → PLAN_COMPILED
                 └── STATE_ROLLBACK_TRIGGERED             (drift → restore)
 ```
 
-`README.md:195`. `EXECUTION_COMPLETED` fires **per step**, not per task, and is
+`README.md:199`. `EXECUTION_COMPLETED` fires **per step**, not per task, and is
 not terminal (`docs/adr/0010`).
 
 Orchestrator phases (`src/paa/agents/orchestrator.py:401`):
@@ -203,7 +203,7 @@ These are deliberate, documented, and cited in source:
 | 18 memory domains over 6 mechanisms | ADR-0014, `memory/domains.py:79` | Most RFC rows differ only by label |
 
 Full ADR list that exists on disk: `0008`, `0010`, `0015`, `0019`–`0026`,
-`0028`–`0035` and `0036`–`0046` (`docs/adr/README.md:66`). The remaining
+`0028`–`0035` and `0036`–`0046` (`docs/adr/README.md:70`). The remaining
 index rows are index-only: a decision was taken, without a body on disk.
 
 ## Module boundary summary (dependency direction)
@@ -236,13 +236,13 @@ access layer, not business logic).
 ## What is NOT in the architecture (honest gaps)
 
 - Beyond CLI there is a TUI (`src/paa/tui/`) with five panels
-  (`src/paa/tui/snapshot.py:57`, mirrored at `src/paa/api/app.py:99`); no web dashboard (`README.md:257`).
+  (`src/paa/tui/snapshot.py:57`, mirrored at `src/paa/api/app.py:99`); no web dashboard (`README.md:261`).
 - No built-in concrete tools for real work (no file edit, bash, web search,
-  git) wired into the orchestrator yet (`README.md:247`).
+  git) wired into the orchestrator yet (`README.md:251`).
 - Observability code exists but is untested (`AGENTS.md:97`).
 - `src/paa/agents/specialists/` holds the `coding` pilot specialist
   (`src/paa/agents/specialists/coding.py:1`, ADR-0041); others are not built.
-- No auth or multi-user; single-user, single-machine (`README.md:257`).
+- No auth or multi-user; single-user, single-machine (`README.md:261`).
 
 ## Related documents
 

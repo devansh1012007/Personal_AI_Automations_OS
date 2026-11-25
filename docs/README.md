@@ -37,19 +37,20 @@ Major subsystems:
 | Marketplace | `src/paa/marketplace/` | Signed packages, five-gate installer, registry clients |
 | Observability | `src/paa/observability/` | Logging, metrics, tracing, execution runs |
 | Daemon | `src/paa/daemon.py` | Dispatch, ingestion, maintenance loops |
-| CLI | `src/paa/cli/main.py` | `paa submit/run/status/ledger/recover/doctor/serve/agent/mode/tui/memory/chat/mcp/pipeline/observe` |
+| CLI | `src/paa/cli/main.py` | `paa submit/run/status/ledger/recover/doctor/serve/agent/mode/tui/memory/chat/mcp/pipeline/observe/attest/verify` |
 | API | `src/paa/api/` | FastAPI ingestion edge (loopback only, port 8787) |
 | TUI | `src/paa/tui/` | Interactive dashboard |
 
 Primary entry points:
 
-* `paa submit "goal"` — submit and run one task to completion (`src/paa/cli/main.py:124`)
-* `paa serve` — FastAPI API + background daemon (`src/paa/cli/main.py:467`)
-* `paa doctor` — report live backends/sandbox plus the chat model, MCP token env and TUI extra (`src/paa/cli/main.py:301`)
-* `paa recover` — post-crash boot sweep (`src/paa/cli/main.py:283`)
-* `paa ledger <id>` — walk a task's event chain (`src/paa/cli/main.py:210`)
-* `paa memory <subcommand>` — facts/search/signals/drain/world-model (`src/paa/cli/main.py:693`)
+* `paa submit "goal"` — submit and run one task to completion (`src/paa/cli/main.py:126`)
+* `paa serve` — FastAPI API + background daemon (`src/paa/cli/main.py:469`)
+* `paa doctor` — report live backends/sandbox plus the chat model, MCP token env and TUI extra (`src/paa/cli/main.py:303`)
+* `paa recover` — post-crash boot sweep (`src/paa/cli/main.py:285`)
+* `paa ledger <id>` — walk a task's event chain (`src/paa/cli/main.py:212`)
+* `paa memory <subcommand>` — facts/search/signals/drain/world-model (`src/paa/cli/main.py:695`)
 * `paa observe -- <cmd>` — run any CLI under observation, leave the T1 evidence bundle (`src/paa/cli/observe.py:118`)
+* `paa attest build` / `paa verify` — the attested change bundle and its offline verifier (H3.1): mandate, diff, commands, tests, approvals, hash chain, Ed25519 signature (`src/paa/cli/attest.py:88`)
 * `paa chat` — the chat surface: TUI, or `--plain` (`src/paa/cli/chat.py:160`)
 * `paa mcp serve` — the stdio MCP server (`src/paa/cli/mcp.py:120`)
 * `paa agent "prompt"` — tool-using coder loop (`src/paa/cli/coder.py:56`)
@@ -102,6 +103,8 @@ APIs and integrations
 - [interfaces/api-reference.md](interfaces/api-reference.md)
 - [interfaces/integrations-and-communication.md](interfaces/integrations-and-communication.md)
 - [interfaces/mcp-server.md](interfaces/mcp-server.md) — `paa mcp serve`: spawn config, token auth, the six tools, scripted smoke.
+- [interfaces/observe-bundle.md](interfaces/observe-bundle.md) — the T1 observation bundle format (`paa-observe-bundle/1`).
+- [interfaces/attested-bundle-spec.md](interfaces/attested-bundle-spec.md) — the attested change bundle format (`paa-attest-bundle/1`): sections, chain, signature, the five verification doors, the GitHub Action template.
 
 Execution flows
 - [flows/workflow-01-submit-and-run.md](flows/workflow-01-submit-and-run.md)

@@ -114,16 +114,16 @@ responsibility and the files it contains. All paths are repository-relative.
 
 | Entry point | File | Function |
 |---|---|---|
-| `paa` CLI | `src/paa/cli/main.py:46` | `app = typer.Typer(...)`; `__main__` at line 855 |
-| `paa submit` | `src/paa/cli/main.py:124` | `submit` |
-| `paa serve` | `src/paa/cli/main.py:467` | `serve` |
-| `paa doctor` | `src/paa/cli/main.py:301` | `doctor` |
-| `paa recover` | `src/paa/cli/main.py:283` | `recover` |
-| `paa ledger` | `src/paa/cli/main.py:210` | `ledger` |
-| `paa gate` | `src/paa/cli/main.py:256` | `gate` |
+| `paa` CLI | `src/paa/cli/main.py:48` | `app = typer.Typer(...)`; `__main__` at line 855 |
+| `paa submit` | `src/paa/cli/main.py:126` | `submit` |
+| `paa serve` | `src/paa/cli/main.py:469` | `serve` |
+| `paa doctor` | `src/paa/cli/main.py:303` | `doctor` |
+| `paa recover` | `src/paa/cli/main.py:285` | `recover` |
+| `paa ledger` | `src/paa/cli/main.py:212` | `ledger` |
+| `paa gate` | `src/paa/cli/main.py:258` | `gate` |
 | `paa agent` | `src/paa/cli/coder.py:53` | `register_agent` → `agent` |
-| `paa tui` | `src/paa/cli/main.py:530` | `tui` |
-| `paa memory` | `src/paa/cli/main.py:693` | `memory_app`: facts/search/signals/drain/world-model |
+| `paa tui` | `src/paa/cli/main.py:532` | `tui` |
+| `paa memory` | `src/paa/cli/main.py:695` | `memory_app`: facts/search/signals/drain/world-model |
 | `paa chat` | `src/paa/cli/chat.py:160` | the chat surface — TUI, or `--plain` (SPEC 2 W4) |
 | `paa mcp serve` | `src/paa/cli/mcp.py:120` | stdio MCP server (SPEC 2 W4) |
 | Programmatic runtime | `src/paa/runtime.py:353` | `Runtime.build()` |
