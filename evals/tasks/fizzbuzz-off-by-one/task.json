@@ -1,0 +1,9 @@
+{
+  "schema": "paa-eval-task/1",
+  "id": "fizzbuzz-off-by-one",
+  "intent": "Fix the off-by-one in fizzbuzz.py: fizzbuzz(n) must return the classic FizzBuzz lines for 1..n inclusive (fizzbuzz(5) is [\"1\", \"2\", \"Fizz\", \"4\", \"Buzz\"]), never mentioning 0 and never dropping n; tests attached.",
+  "kind": "semantics",
+  "touched": ["fizzbuzz.py"],
+  "forbidden_created": [],
+  "forbidden_changed": []
+}

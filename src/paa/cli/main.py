@@ -32,6 +32,7 @@ from paa.cli.attest import attest_app
 from paa.cli.attest import verify as verify_command
 from paa.cli.chat import app as chat_app
 from paa.cli.coder import register_agent
+from paa.cli.eval import eval_app
 from paa.cli.mcp import app as mcp_app
 from paa.cli.observe import observe as observe_command
 from paa.cli.pipeline import app as pipeline_app
@@ -915,6 +916,10 @@ app.command(name="verify")(verify_command)
 # over one record format (C7.3): ``run`` wraps the harness, ``proxy`` is
 # the MCP server its tool calls ride, and ``verify`` checks the chain.
 app.add_typer(record_app, name="record")
+
+# ``paa eval`` is a group because the eval harness has two doors over one
+# task set (C7.4): ``tasks`` lists what can be scored, ``run`` scores it.
+app.add_typer(eval_app, name="eval")
 
 if __name__ == "__main__":
     app()

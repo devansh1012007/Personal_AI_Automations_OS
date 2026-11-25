@@ -1,0 +1,9 @@
+{
+  "schema": "paa-eval-task/1",
+  "id": "palindrome-guard",
+  "intent": "Implement is_palindrome(text) in palindrome.py so it ignores case and every non-alphanumeric character (\"A man, a plan, a canal: Panama\" and \"No 'x' in Nixon\" count as palindromes; empty and punctuation-only text counts too); tests attached.",
+  "kind": "semantics",
+  "touched": ["palindrome.py"],
+  "forbidden_created": [],
+  "forbidden_changed": []
+}
