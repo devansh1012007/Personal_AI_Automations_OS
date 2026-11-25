@@ -38,14 +38,14 @@ the command is inherently long-running):
 
 | Command | Home | Behavior |
 |---|---|---|
-| `paa memory <sub>` | `memory_app` (`cli/main.py:697`) | `facts`/`search`/`signals`/`drain`/`world-model` reads over the memory subsystem |
+| `paa memory <sub>` | `memory_app` (`cli/main.py:700`) | `facts`/`search`/`signals`/`drain`/`world-model` reads over the memory subsystem |
 | `paa observe -- <cmd>` | `cli/observe.py:147` | The T1 observer: run one CLI in a workspace, leave a `paa-observe-bundle/1` with the manifest diff, git changes and transcript (SPEC 2 W7) |
 | `paa record run -- <cmd>` | `cli/record.py:83` | The flight recorder (SPEC 2 W7 C7.3): the harness under a real SandboxSession, tool calls through the MCP policy proxy, the attested bundle at close |
 | `paa record verify <run-dir>` | `cli/record.py:264` | The flight record's own verifier: schema, sequence, every chain link, summary, torn tail, finalised |
 | `paa chat` | `cli/chat.py:160` | The chat surface (SPEC 2 §3.1 C4.4): Textual TUI, or `--plain` for terminals without the `[tui]` extra; `--session`/`--resume` name a lineage; `--model` overrides `PAA_CHAT__MODEL` |
 | `paa mcp serve` | `cli/mcp.py:120` | The stdio MCP server (SPEC 2 §3.1 C4.5): JSON-RPC 2.0 over stdin/stdout, spawned by the MCP client; see [`interfaces/mcp-server.md`](../interfaces/mcp-server.md) |
 
-All one-shot commands use `_build_runtime(run_recovery=False)` (`cli/main.py:107`) —
+All one-shot commands use `_build_runtime(run_recovery=False)` (`cli/main.py:110`) —
 recovery is opt-in per command (an operator decision, `coder/agent.py:134`);
 `serve` also does not run recovery at build (daemon does it at start, `daemon.py:91`).
 
