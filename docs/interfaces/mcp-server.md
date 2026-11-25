@@ -81,7 +81,7 @@ portable contract and each client's MCP documentation says where to put it.
 - When the variable is unset, the spawn pipe is the trust boundary: the client
   that spawned the server is its only writer. `paa doctor` reports this row
   (`mcp token env`) — set/unset by name only, with the unset case naming the
-  boundary (`src/paa/cli/main.py:304`).
+  boundary (`src/paa/cli/main.py:305`).
 
 The token value never enters the ledger, and no tool payload carries a
 `token` key.
