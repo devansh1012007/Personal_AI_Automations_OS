@@ -15,7 +15,7 @@
 RFC §13: the runtime cannot act on "mostly valid" — a mutation is committed or
 it is not. A confidence score at this boundary would relocate the security
 decision to an LLM, which §13 says must not make security decisions
-(`engine.py:9`).
+(`validation/engine.py:9`).
 
 Cheap-to-expensive ordering with short-circuit on hard failure:
 1. Schema (microseconds)
@@ -29,9 +29,9 @@ Cheap-to-expensive ordering with short-circuit on hard failure:
 ### `engine.py` — DeterministicValidationEngine
 `validate(artifact)` runs checks in order; short-circuits on `severity >=
 CRITICAL` or `structural_failure`; ordinary failures accumulate so one report
-lists everything wrong (`engine.py:214`). `ValidationReport` is binary
+lists everything wrong (`validation/engine.py:214`). `ValidationReport` is binary
 `PASS`/`FAIL`; `raise_for_verdict()` raises `ValidationError` on fail
-(`:179`).
+(`validation/engine.py:179`).
 
 ### `ast_scanner.py` — AstSecurityScanner
 Deny-by-default static scan. Denied modules/attributes/builtins (`:125`–`:247`);
@@ -73,7 +73,7 @@ Manifest capture + drift detection (`hash_file`).
 |---|---|---|---|
 | `CriticReviewer` → `Engine` | `validate(output)` | Review step output | `reasoning.py:275` |
 | `CriticValidatorAdapter` (runtime) → `Engine` | adapt call shape | Bridge critic ↔ engine | `runtime.py:92` |
-| `Engine` → `Scanner/Validator/PytestRunner/Snapshot` | delegate checks | Compose verdict | `engine.py:227` |
+| `Engine` → `Scanner/Validator/PytestRunner/Snapshot` | delegate checks | Compose verdict | `validation/engine.py:227` |
 | `USA` → `SchemaValidator` | `validate_tool_output()` | Validate skill output | `usa.py` |
 | `PytestRunner` → `Sandbox` | `run(spec)` | Execute tests contained | `test_runner.py` |
 
@@ -81,14 +81,14 @@ Manifest capture + drift detection (`hash_file`).
 
 - Lazy import in `runtime.py` (`try/except`) — validation unavailable degrades
   gracefully (`runtime.py:692`).
-- Tests run last and only inside a sandbox (`engine.py:245`).
+- Tests run last and only inside a sandbox (`validation/engine.py:245`).
 - `ok` requires positive evidence; absence of failure ≠ pass (`test_runner.py:83`).
 
 ## Failure behavior
 
 - No sandbox/workspace + tests requested → FAIL (unrun suite is not passing)
-  (`engine.py:402`).
-- Patch without workspace → structural failure (`engine.py:353`).
+  (`validation/engine.py:402`).
+- Patch without workspace → structural failure (`validation/engine.py:353`).
 - AST unparseable source → CRITICAL finding, never skipped
   (`ast_scanner.py:360`).
 - Malformed operator rules logged and skipped (policy layer, not validation).

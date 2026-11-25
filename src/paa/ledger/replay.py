@@ -339,6 +339,26 @@ def apply_event(state: TaskProjection, event: LedgerEvent) -> TaskProjection:
             # same rule).
             pass
 
+        case (
+            EventType.THREAD_CREATED
+            | EventType.THREAD_SEGMENT_STARTED
+            | EventType.THREAD_SEGMENT_ENDED
+            | EventType.THREAD_HARNESS_SWAPPED
+        ):
+            # W7 (C7.5, ADR-0046 pattern): thread control-plane events are
+            # the audit record of the local-first control plane, not
+            # task-lineage state — no projection field moves. A thread is
+            # not a task: it holds no phase to move, and the durable
+            # per-thread state (segments, packet hashes, evidence pointers)
+            # lives in the thread record under PAA_HOME, a fast handle
+            # beside the chain the way the recorder's summary is — never a
+            # projection field here. A thread-only history must land exactly
+            # where it started, which is what keeps the boot sweep from
+            # reading a thread as resumable task work
+            # (ledger/recovery.py's thread-only-lineage exemption is the
+            # sweep's half of this same rule).
+            pass
+
         case _:
             pass
 
@@ -451,6 +471,11 @@ def apply_tier_event(state: dict[str, str], event: LedgerEvent) -> dict[str, str
 #: events move no phase and are never terminal, and a chat-only history
 #: projects to the initial phase. The session's own state is folded by
 #: paa.chat.session.fold_session, not here.
+#: W7 (C7.5, ADR-0046 pattern) — the four thread control-plane events live
+#: here for the same reason: a thread is not a task lineage, its events move
+#: no phase and are never terminal, and a thread-only history projects to the
+#: initial phase. The thread's own state (segments, packet hashes) lives in
+#: the thread record beside the chain, not in TaskProjection.
 _NO_PHASE_CHANGE = frozenset(
     {
         EventType.HUMAN_GATE_CLEARED,
@@ -485,6 +510,10 @@ _NO_PHASE_CHANGE = frozenset(
         EventType.PIPELINE_CALL_PROPOSED,
         EventType.PIPELINE_CALL_COMPLETED,
         EventType.PIPELINE_CALL_FAILED,
+        EventType.THREAD_CREATED,
+        EventType.THREAD_SEGMENT_STARTED,
+        EventType.THREAD_SEGMENT_ENDED,
+        EventType.THREAD_HARNESS_SWAPPED,
     }
 )
 

@@ -60,7 +60,7 @@ These were traced against actual source (file:line cited in the documents):
 2. **Orchestrator phases** hydrate→plan→policy→execute→commit (`src/paa/pipelines/builtin.py:602`–`808`), each emitting its ledger event before the side effect.
 3. **Model call with escalation** (`reasoning.py:95` → `runtime.py:148` → `router.py:737` → `MODEL_ESCALATED` before frontier call at `router.py:401`).
 4. **Signal ingestion → memory creation** (`api/app.py:175` → `signals.py:127` → `daemon.py:152` → `creator.py` → `facts.py:451`).
-5. **Crash recovery** (`daemon.py:64` → `src/paa/agents/orchestrator.py:801` → `recovery.py:888` → `ledger/replay.py:512` → workspace reconcile `recovery.py:1051`).
+5. **Crash recovery** (`daemon.py:64` → `src/paa/agents/orchestrator.py:801` → `recovery.py:940` → `ledger/replay.py:541` → workspace reconcile `recovery.py:1121`).
 6. **Coder agent tool loop** (`cli/coder.py:54` → `coder/agent.py:115` → `coder/loop.py:142` → `model_adapter.py:161` → `runtime_tools.py` tools).
 7. **Validation pipeline** schema→AST→patch→drift→tests (`validation/engine.py:214`, `validation/patch.py:270`).
 8. **Delegation safety** depth/cycle/node bounds (`delegation.py:87`, `src/paa/agents/orchestrator.py:503`).

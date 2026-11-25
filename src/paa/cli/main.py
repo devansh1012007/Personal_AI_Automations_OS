@@ -37,6 +37,7 @@ from paa.cli.mcp import app as mcp_app
 from paa.cli.observe import observe as observe_command
 from paa.cli.pipeline import app as pipeline_app
 from paa.cli.record import record_app
+from paa.cli.thread import thread_app
 from paa.core.types import ComplexityModality, EventType, PermissionMode
 from paa.memory.touch import touch_recalled
 from paa.models.base import redact
@@ -920,6 +921,10 @@ app.add_typer(record_app, name="record")
 # ``paa eval`` is a group because the eval harness has two doors over one
 # task set (C7.4): ``tasks`` lists what can be scored, ``run`` scores it.
 app.add_typer(eval_app, name="eval")
+
+# ``paa thread`` is a group because the control plane has five verbs over
+# one thread record (C7.5): new, run, swap, show, list.
+app.add_typer(thread_app, name="thread")
 
 if __name__ == "__main__":
     app()

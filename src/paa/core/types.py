@@ -332,6 +332,43 @@ class EventType(str, enum.Enum):
     PIPELINE_CALL_COMPLETED = "PIPELINE_CALL_COMPLETED"
     PIPELINE_CALL_FAILED = "PIPELINE_CALL_FAILED"
 
+    # -- thread control plane (W7 C7.5, ADR-0046 pattern) -------------------
+    # Thread events are the audit record of the local-first control plane:
+    # one coding thread across harnesses, journalled under the thread id
+    # AS the correlation id (one thread, one lineage — the chat session's
+    # own rule). They are *informational*, never lifecycle: all four map
+    # to `_NO_PHASE_CHANGE` in ledger/replay.py and none enters
+    # TERMINAL_EVENTS. A thread is not a task lineage — it moves no phase,
+    # closes nothing, and must not let the boot sweep requeue it as task
+    # work (ledger/recovery.py's thread-only-lineage exemption is the
+    # sweep's half of this same rule).
+    #
+    # ADR-0008 idempotency: the journal (thread/journal.py) constructs
+    # each event with attempt=0 and a per-fact discriminator — `created`,
+    # `segment:<segment_id>:STARTED`, `segment:<segment_id>:ENDED`,
+    # `swap:<after_segment>:<to_harness>` — so a redelivered append of the
+    # same logical event dedupes under the standard key while one
+    # segment's STARTED and ENDED stay distinct rows.
+    #
+    # Every payload carries `v` (schema version, currently 1). Operator
+    # free text never enters a payload — the thread title is attested
+    # (sha256 + char count + shape-only preview) and the workspace path is
+    # redacted, the coder/chat preview discipline verbatim; harness names
+    # and segment ids are closed-vocabulary identifiers, not prose.
+    # THREAD_SEGMENT_STARTED carries `packet_sha256`, the content address
+    # of the handoff packet the stint started from — the fact that makes
+    # "context intact across a swap" checkable rather than asserted.
+    # THREAD_SEGMENT_ENDED carries the harness's own fate (exit_code,
+    # timed_out, duration_ms), the reason vocabulary {completed,
+    # interrupted}, and `record_run_dir` — the recorder's run directory
+    # when the stint ran under `paa thread run --record`, None for a
+    # plainly contained stint; the two containment stories are named,
+    # never collapsed.
+    THREAD_CREATED = "THREAD_CREATED"
+    THREAD_SEGMENT_STARTED = "THREAD_SEGMENT_STARTED"
+    THREAD_SEGMENT_ENDED = "THREAD_SEGMENT_ENDED"
+    THREAD_HARNESS_SWAPPED = "THREAD_HARNESS_SWAPPED"
+
 
 #: Events after which a correlation is closed and needs no recovery sweep.
 #: Used by the recovery engine to decide which lineages are still in flight.
