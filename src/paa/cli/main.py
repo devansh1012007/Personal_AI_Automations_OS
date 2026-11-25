@@ -28,6 +28,8 @@ from rich.console import Console
 from rich.table import Table
 
 from paa import __version__
+from paa.cli.attest import attest_app
+from paa.cli.attest import verify as verify_command
 from paa.cli.chat import app as chat_app
 from paa.cli.coder import register_agent
 from paa.cli.mcp import app as mcp_app
@@ -901,6 +903,12 @@ app.add_typer(pipeline_app, name="pipeline")
 # ``paa observe -- pytest -q``, so the command is registered directly
 # rather than nested behind a one-command sub-app.
 app.command(name="observe")(observe_command)
+
+# ``paa verify`` likewise: the spec's own front door (H3.1) is a verb a
+# reviewer types on a clean machine, not a subcommand of the producer's
+# ``attest`` group. ``paa attest build | pr`` is the producer side.
+app.add_typer(attest_app, name="attest")
+app.command(name="verify")(verify_command)
 
 
 if __name__ == "__main__":

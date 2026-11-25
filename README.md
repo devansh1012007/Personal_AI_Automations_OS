@@ -54,6 +54,10 @@ paa recover                      # run the post-crash recovery sweep
 paa serve                        # FastAPI ingestion + background daemon (loopback only)
 paa chat                         # chat TUI with persistent memory (--plain for terminals only)
 paa observe -- pytest -q         # T1 observer: run any CLI, leave the evidence bundle
+paa attest build --goal "…"     # the attested change bundle: mandate, diff, commands,
+                                 #   tests, approvals — hash-chained and Ed25519-signed
+paa verify <bundle-dir>          # offline verification on a clean machine: hashes, chain,
+                                 #   signature, key — exit 0 only when every door held
 paa mcp serve                    # MCP server over stdio — spawn me from your harness
 paa memory facts                 # read the memory store (facts/search/signals/drain/world-model)
 paa agent "fix the failing test" # the router-backed coder loop
@@ -304,7 +308,7 @@ This sequencing does **not** delete earlier ideas. It prevents a marketplace, al
 | Observability (metrics, tracing, runs, logging) | Tested — golden + behavioural (tests/observability) | 185; OTLP egress bridge not exercised |
 
 <!-- STATUS:BEGIN -->
-**Generated status** (`scripts/status.py`): 173 `src/**/*.py` files, 73,754 physical lines; 4,481 tests collected.
+**Generated status** (`scripts/status.py`): 191 `src/**/*.py` files, 82,612 physical lines; 4,841 tests collected.
 Method: physical lines count blank and comment lines (`Path.read_text` + `splitlines` over `src/**/*.py`); collected = `pytest --collect-only -q -o addopts=""`. Outcome counts are not measured here (host-dependent); run `python -m pytest tests/ -q`.
 <!-- STATUS:END -->
 

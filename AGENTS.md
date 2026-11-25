@@ -560,19 +560,21 @@ the archive at the bottom. Keep prose out — this is a register, not a report.
 
 ### Environment (this development sandbox)
 
-- Repo: `/home/devansh/Code/Personal_AI_Automations_OS`, branch `main` @ 3757499.
-  **Dirty tree** (98 modified tracked files, 53 untracked entries, 1 deleted):
-  the W6 `0001`–`0007` series is applied but uncommitted, on top of pre-existing
-  uncommitted work. Nothing was committed or pushed.
+- Repo: `/home/devansh/Code/Personal_AI_Automations_OS`, branch `main` @ ccf0793.
+  **Dirty tree** (30 modified tracked files, 39 untracked entries, 0 deleted):
+  W6 `0001`–`0007`, C7.1 `0020` and C7.2 `0021` are applied but uncommitted on
+  top of pre-existing uncommitted work. `ccf0793` is the pushed base; nothing
+  from this round was committed or pushed, and the 34 `.patch` files stay untracked.
 - Final full-suite gate (`PYTHONPATH=src .venv/bin/python -m pytest tests/ -q
-  -o addopts=`): 4,439 passed / 240 env-gated skipped / 1 xfailed /
-  **3 failed** in 278 s, exit 1. All three failures are pre-existing and
-  outside W6: the untracked `tests/test_git_host_exec_gate.py`
+  -o addopts=`): 4,599 passed / 239 env-gated skipped / 1 xfailed /
+  **3 failed** in 221.80 s, exit 1. All three failures are pre-existing and
+  outside W6/W7: the untracked `tests/test_git_host_exec_gate.py`
   (`test_fsmonitor_not_executed`, `test_clean_filter_not_executed`,
-  `test_refusal_is_explicit`), byte-identical to the pre-W6 snapshot at
-  `/tmp/paa-w6-preapply-20261124-223355/`. `mypy src` clean (181 files);
+  `test_refusal_is_explicit`). `mypy src` clean (191 files);
   `ruff check src tests` reports only those same three pre-existing rows
   (one RUF100 and two SIM105 findings) in that untracked file.
+  `scripts/status.py --check` matches: 191 source files, 82,612 physical lines,
+  4,841 tests collected.
 - venv: `.venv/` inside the repo (Python 3.12.3). Gate commands use
   `PYTHONPATH=src .venv/bin/python -m …`. 2 CPU cores; run at most ~3 parallel jobs.
 - Tooling present: pytest 9.2.0, ruff 0.17.4 (newer than the `>=0.8` floor — see the
@@ -609,8 +611,8 @@ spec's P1.4: the fourth pipeline the rule of three was waiting on).
 | Task ID | Agent | Assignment | Status | Evidence / notes |
 |---|---|---|---|---|
 | W7-C7.1 | orchestrator | `paa observe` — H3.2 observer mode, T1 evidence tier, pipeline #4 per P1.4: run any CLI in a workspace, record manifest diff + git changes + transcript, classify state after a crash; `paa-observe-bundle/1` (two-phase atomic write, `resume="none"`, `evidence_tier="T1"`), `builtin.observe` on the facade with an empty capability ask, one shared driver for `paa observe` and `paa pipeline run builtin.observe`, `[evidence] declares_tier` on manifests | **done** | applied here from patch `0020` (uncommitted) with local hardening: reserved `--env` keys refused, argv secrets kept out of failed-journal reasons, missing git recorded not fatal, canonical-hash/atomic-write claims stated honestly; 63 observe tests; `PYTHONPATH=src .venv/bin/python -m pytest tests/ -q -o addopts=` → 4,506 passed / 240 skipped / 1 xfailed / **3 pre-existing failures** in the untracked `tests/test_git_host_exec_gate.py`; `mypy src` 0 issues / 186 files; `ruff check src tests` only those same 3 pre-existing findings; docs lock 5 passed; patch-author SHAs, counts and `/home/z/...` paths are not adopted |
-| W7-C7.2 | orchestrator | attested change bundle + `paa verify` (H3.1) | not started | next row; consumes C7.1's bundle inputs |
-| W7-C7.3 | orchestrator | `paa record` — the harness-neutral flight recorder | not started | depends on C7.2 |
+| W7-C7.2 | orchestrator | attested change bundle + `paa verify` (H3.1) | **done** | applied here from patch `0021` (uncommitted) with local hardening: algorithm-aware signature dispatch + signed blob index, hostile-manifest verdicts, bounded decompression; git option injection closed via `rev-parse --end-of-options`, false-clean git refused, key mode checked on load, T1/`resume="none"` enforced, portable secrets refused, PR body verified before rendering with inert code-span escaping and terminal-safe refusals; `paa[attest]`/`requires_attest` added. 92 attest tests; focused `tests/attest` + conventions 126 passed; final full suite 4,599 passed / 239 skipped / 1 xfailed / **3 pre-existing failures** in untracked `tests/test_git_host_exec_gate.py`; `mypy src` 0 issues / 191 files; `ruff check src tests` only those same 3 findings; status lock matches; author-host claims, `.patch` files and untrusted `.bin` evidence not adopted/committed |
+| W7-C7.3 | orchestrator | `paa record` — the harness-neutral flight recorder | not started | unblocked by C7.2; next row |
 | W7-C7.4 | orchestrator | cross-harness eval harness | not started | depends on C7.3 |
 | W7-C7.5 | orchestrator | `paa thread` | not started | listed in Known left; no row detail in patch `0020` |
 | W7-C7.6 | orchestrator | ACP v1 | not started | listed in Known left; no row detail in patch `0020` |
@@ -675,6 +677,8 @@ P0 → P1.1 → P1.2 → SPEC-2 W4 C4.1–C4.7 → W5 C5.2–C5.5 close).
 - ~~P1.4 (observe as pipeline #4)~~ → applied here from patch `0020` (W7 C7.1;
   `builtin.observe`, `resume="none"`, `evidence_tier="T1"`, conformance ×4);
   final gate evidence is in the W7 row above.
+- ~~H3.1 (attested change bundle + `paa verify`)~~ → applied here from patch
+  `0021` (W7 C7.2); final gate evidence is in the W7 row above.
 - P3 (RPC host/protocol), P5 (distribution), the P6 adapters beyond observe
   (acp-client, mcp-host), P7 (authoring kit) → not started; `paa-pipeline/1`
   stays draft — freezing waits for P3's RPC run (the spec's own rule).
