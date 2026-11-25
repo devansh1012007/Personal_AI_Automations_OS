@@ -98,7 +98,7 @@ Python before execution:
 `DeterministicValidationEngine` (`validation/engine.py`): schema → AST → patch
 dry-run → workspace drift → tests (runs last, inside sandbox). Binary PASS/FAIL;
 short-circuits on CRITICAL or structural failure; never acts on "mostly valid"
-(`engine.py:10`).
+(`validation/engine.py:10`).
 
 ### 10. Policy checks (defence in depth)
 
@@ -149,7 +149,7 @@ backend.py` `_read_capped`).
 ### 14. Human gates cannot be auto-cleared
 
 `AWAITING_HUMAN_ATTESTATION` parks a task; recovery explicitly never clears it
-(`ledger/replay.py:62`, `recovery.py:1035`). Only an external caller
+(`ledger/replay.py:62`, `recovery.py:1105`). Only an external caller
 (`clear_human_gate`, `src/paa/agents/orchestrator.py:657`) can approve/reject.
 
 ## Trust boundaries

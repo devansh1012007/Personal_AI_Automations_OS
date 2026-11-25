@@ -37,7 +37,7 @@ updated in the same transaction. `state_version` is per-correlation and dense;
 
 ### Retrieval
 `LedgerStore.read_correlation()` returns all events for a lineage ordered by
-`state_version` (`ledger/store.py:149`). `project()` (`ledger/replay.py:512`) folds them into
+`state_version` (`ledger/store.py:149`). `project()` (`ledger/replay.py:541`) folds them into
 a `TaskProjection`. `LedgerStore.head()` reads the head projection for status
 (`ledger/store.py:341`).
 
@@ -53,7 +53,7 @@ append-only. The only "mutation" of the head row is the upsert in
   resets `completed_steps` to steps before `restored_step_index`
   (`ledger/replay.py:267`).
 - `TASK_ABANDONED` closes a lineage that exceeded `max_delivery_attempts`
-  (`recovery.py:1041`).
+  (`recovery.py:1111`).
 - There is no explicit "delete a task" operation; ledger rows are append-only.
 
 ### Failure halfway through
@@ -64,7 +64,7 @@ append-only. The only "mutation" of the head row is the upsert in
 - `RecoveryEngine.boot_sweep()` replays open lineages, reconciles the workspace
   against `hot_serving_recovery_marks`, restores drift (`STATE_ROLLBACK_
   TRIGGERED`), re-queues resumable phases, parks `AWAITING_HUMAN`
-  (`recovery.py:929`).
+  (`recovery.py:981`).
 
 ### Can a retry cause duplication?
 Idempotency keys (`SHA-256(correlation_id|event_type|attempt|discriminator)`)
@@ -183,7 +183,7 @@ the `patch` in the step output (`reasoning.py:469`).
 schema → AST security scan → patch dry-run (`UnifiedDiffValidator.dry_run`,
 `validation/patch.py:467`) → workspace drift → tests (runs last, only inside
 sandbox). Binary PASS/FAIL; deterministic failure short-circuits before the
-model is consulted (`engine.py:238`).
+model is consulted (`validation/engine.py:238`).
 
 Patch dry-run computes full post-patch content before any write; `safe_
 relative_path` blocks traversal/absolute/symlink/NUL escapes
@@ -218,7 +218,7 @@ tracks `unprocessed`/`processing`/`processed`/`malformed`/`quarantined`
 ### Creation
 Orchestrator `submit()` enqueues `{correlation_id, goal}` to
 `StreamName.ORCHESTRATOR_CORE` (`src/paa/agents/orchestrator.py:313`). Recovery `_requeue()`
-re-enqueues recovered lineages (`recovery.py:1196`).
+re-enqueues recovered lineages (`recovery.py:1266`).
 
 ### Consumption
 Daemon `_claim_and_run()` claims messages (`queue.claim`), runs each via

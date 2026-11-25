@@ -84,7 +84,7 @@ restores drift, re-queues resumable tasks, parks human-gated tasks.
 `WorkspaceSnapshotter`/`Requeuer` protocols.
 
 **Failure behavior:** One bad lineage does not abort the sweep
-(`ledger/recovery.py:912`). Recovery is idempotent — running twice yields the same end
+(`ledger/recovery.py:964`). Recovery is idempotent — running twice yields the same end
 state (`recovery.py:17`).
 
 ## 3. Agents — `agents/`
@@ -434,8 +434,8 @@ Short-circuits on CRITICAL finding or structural failure.
 `ValidationReport`.
 
 **Failure behavior:** No sandbox/workspace + tests requested → FAIL (unrun
-suite is not passing) (`engine.py:402`). Patch without workspace → structural
-failure (`engine.py:353`).
+suite is not passing) (`validation/engine.py:402`). Patch without workspace → structural
+failure (`validation/engine.py:353`).
 
 ### `validation/ast_scanner.py` — AstSecurityScanner
 **Responsibility:** Deny-by-default static scan. Denied modules/attributes/
@@ -479,7 +479,7 @@ passed>0).
 | Validation failure | `validation/engine.py:235` | Binary FAIL; critic can only downgrade |
 | Sandbox memory breach | `watchdog.py` | Kill; `killed_reason="memory"` |
 | Queue depth (backpressure) | `backpressure.py:115` | Degrade modality / shed discretionary ingestion (HTTP 429) |
-| Crash mid-task | `recovery.py:888` | Boot sweep replays lineage, reconciles workspace, re-queues |
+| Crash mid-task | `recovery.py:940` | Boot sweep replays lineage, reconciles workspace, re-queues |
 
 ## Related documents
 

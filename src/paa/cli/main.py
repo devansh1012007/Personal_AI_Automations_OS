@@ -36,6 +36,7 @@ from paa.cli.mcp import app as mcp_app
 from paa.cli.observe import observe as observe_command
 from paa.cli.pipeline import app as pipeline_app
 from paa.cli.record import record_app
+from paa.cli.thread import thread_app
 from paa.core.types import ComplexityModality, EventType, PermissionMode
 from paa.memory.touch import touch_recalled
 from paa.models.base import redact
@@ -915,6 +916,10 @@ app.command(name="verify")(verify_command)
 # over one record format (C7.3): ``run`` wraps the harness, ``proxy`` is
 # the MCP server its tool calls ride, and ``verify`` checks the chain.
 app.add_typer(record_app, name="record")
+
+# ``paa thread`` is a group because the control plane has five verbs over
+# one thread record (C7.5): new, run, swap, show, list.
+app.add_typer(thread_app, name="thread")
 
 if __name__ == "__main__":
     app()

@@ -170,6 +170,24 @@ class RecoveryOutcome(str, enum.Enum):
     never auto-repeat (ADR-0050's D-6 rule).
     """
 
+    SKIPPED_THREAD_LINEAGE = "SKIPPED_THREAD_LINEAGE"
+    """A thread-control-plane-only lineage: the control plane, not a task.
+
+    W7 (C7.5, the N2.3 exemption's third mirror) — a lineage carrying
+    only the thread control plane's audit events (``THREAD_*``, plus the
+    ``MANDATE_GRANTED`` a thread's creation writes on its own lineage)
+    projects to the initial phase and is never terminal, because every
+    member is ``_NO_PHASE_CHANGE``. Without an exemption the boot sweep
+    would read every open thread as resumable task work and re-queue it
+    on every boot, forever — a thread is resumed by the operator (or
+    the engine's next segment), never by re-queuing it as a task. The
+    sweep writes nothing here in v1: a segment a crash left open is
+    closed by the engine the next time the thread is touched
+    (``THREAD_SEGMENT_ENDED(reason=interrupted)``), and a thread never
+    touched again keeps that open segment visible in ``paa thread
+    show`` — stated, not silently swept.
+    """
+
 
 class InterruptionState(str, enum.Enum):
     """What an interrupted tool call did before the crash.
@@ -373,6 +391,28 @@ _PIPELINE_EVENT_TYPES = frozenset(
 #: Symmetric with the coder/chat neutral rule: a stale recovery audit
 #: row must not flip a pipeline lineage back to "task work".
 _PIPELINE_NEUTRAL_TYPES = frozenset({EventType.RECOVERY_REPLAY_COMPLETED})
+
+#: W7 (C7.5) — the thread control plane's audit vocabulary. A lineage of
+#: only these is the control plane's own record, never task work (see
+#: :attr:`RecoveryOutcome.SKIPPED_THREAD_LINEAGE`). ``MANDATE_GRANTED`` /
+#: ``MANDATE_REFUSED`` are included because a thread's creation writes its
+#: grant on its own lineage (the ``paa agent`` rule, applied to the control
+#: plane) — a lineage holding the grant and thread rows and no ``TASK_*``
+#: event has no task to resume, exactly like a bare coder grant.
+_THREAD_EVENT_TYPES = frozenset(
+    {
+        EventType.THREAD_CREATED,
+        EventType.THREAD_SEGMENT_STARTED,
+        EventType.THREAD_SEGMENT_ENDED,
+        EventType.THREAD_HARNESS_SWAPPED,
+        EventType.MANDATE_GRANTED,
+        EventType.MANDATE_REFUSED,
+    }
+)
+
+#: Symmetric with the coder/chat/pipeline neutral rule: a stale recovery
+#: audit row must not flip a thread lineage back to "task work".
+_THREAD_NEUTRAL_TYPES = frozenset({EventType.RECOVERY_REPLAY_COMPLETED})
 
 #: The call-row kinds the interrupted-call scan reads (proposal + its
 #: two outcomes), for :func:`find_interrupted_pipeline_calls`.
@@ -659,6 +699,18 @@ def _is_pipeline_only_lineage(events: list[LedgerEvent]) -> bool:
     """
     kinds = {e.event_type for e in events} - _PIPELINE_NEUTRAL_TYPES
     return bool(kinds) and kinds <= _PIPELINE_EVENT_TYPES
+
+
+def _is_thread_only_lineage(events: list[LedgerEvent]) -> bool:
+    """Whether a lineage is thread control-plane audit, never task work.
+
+    Same shape as the coder/chat/pipeline determinations, deliberately. A
+    thread's lineage carries its lifecycle and its mandate grant; a lineage
+    mixing these rows with ``TASK_*`` rows is a task lineage the ordinary
+    path recovers, and the phase-inert THREAD rows disturb nothing there.
+    """
+    kinds = {e.event_type for e in events} - _THREAD_NEUTRAL_TYPES
+    return bool(kinds) and kinds <= _THREAD_EVENT_TYPES
 
 
 def find_interrupted_pipeline_calls(events: list[LedgerEvent]) -> list[LedgerEvent]:
@@ -1020,6 +1072,24 @@ class RecoveryEngine:
             return CorrelationRecovery(
                 cid,
                 RecoveryOutcome.SKIPPED_PIPELINE_LINEAGE,
+                projection.phase,
+                interrupted=interrupted,
+            )
+
+        if _is_thread_only_lineage(events):
+            # Thread control-plane audit only (W7, C7.5): never task work.
+            # A thread is resumed by opening the next segment under it,
+            # never by re-queuing it as a task; no workspace reconcile (a
+            # crashed segment's half-written tree is the operator's to
+            # inspect with the chain, not something this sweep quietly
+            # reverts), no requeue, no sweep audit event. The sweep also
+            # writes nothing to close an open segment in v1: the engine
+            # closes it as interrupted the next time the thread is touched,
+            # and until then `paa thread show` states it as open.
+            log.info("recovery.skipped_thread_lineage", correlation_id=str(cid))
+            return CorrelationRecovery(
+                cid,
+                RecoveryOutcome.SKIPPED_THREAD_LINEAGE,
                 projection.phase,
                 interrupted=interrupted,
             )

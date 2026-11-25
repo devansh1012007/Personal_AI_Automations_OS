@@ -70,7 +70,7 @@ DEGRADED/SHEDDING; 11 `StreamName`s; `ORCHESTRATOR_CORE` is control plane.
 | Component | Relationship | Why | Source |
 |---|---|---|---|
 | `LedgerStore` → `Database` | SQL INSERT/SELECT | Ledger persistence | `ledger/store.py:30` |
-| `RecoveryEngine` → `Database` | recovery marks SQL | Workspace checkpoints | `recovery.py:824` |
+| `RecoveryEngine` → `Database` | recovery marks SQL | Workspace checkpoints | `recovery.py:876` |
 | `PolicyRiskAgent` → `Database` | policy rules SQL | Operator rules | `policy.py:255` |
 | `Context builders` → `Database` | facts SQL | Context candidates | `context_agents.py:144` |
 | `Memory/*` → `Database` | entities/facts SQL | Memory persistence | `memory/facts.py:363` |

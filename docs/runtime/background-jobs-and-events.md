@@ -41,28 +41,28 @@ interval and drains nothing (`daemon.py:154`).
 
 ## 2. Recovery boot sweep
 
-`RecoveryEngine.boot_sweep()` (`recovery.py:888`), invoked by
+`RecoveryEngine.boot_sweep()` (`recovery.py:940`), invoked by
 `ChiefOrchestrator.boot()` (`src/paa/agents/orchestrator.py:825`) and by `Runtime.build()`
 (`runtime.py:331`) and `Daemon.start()` (`daemon.py:91`):
 
 1. `verify_all_chains()` — hash-chain integrity across all lineages; problems
-   are **reported, never auto-repaired** (`recovery.py:897`).
+   are **reported, never auto-repaired** (`recovery.py:949`).
 2. `open_correlations()` — reads open lineages from the **head projection**
    (`is_terminal = 0`), never from the queue (`ledger/store.py:357`).
 3. For each head: `project()` → `TaskProjection`:
-   - terminal → `ALREADY_TERMINAL` (repair head projection) (`recovery.py:949`).
+   - terminal → `ALREADY_TERMINAL` (repair head projection) (`recovery.py:1001`).
    - `AWAITING_HUMAN` → `PARKED_HUMAN`; a crash is never interpreted as consent
-     (`recovery.py:1035`).
-   - `attempts >= max_attempts` → `TASK_ABANDONED` (`recovery.py:1041`).
+     (`recovery.py:1105`).
+   - `attempts >= max_attempts` → `TASK_ABANDONED` (`recovery.py:1111`).
    - `_reconcile_workspace()` — compare disk vs checkpoint manifest; on drift,
      `STATE_ROLLBACK_TRIGGERED` + restore + `ROLLED_BACK`; else `RESUMED`
-     (`recovery.py:1051`).
+     (`recovery.py:1121`).
    - `_requeue()` — enqueue to `StreamName.ORCHESTRATOR_CORE` with `resume_phase`
      and `resume_step_index`; enqueue failure is logged, non-fatal
-     (`recovery.py:1196`).
+     (`recovery.py:1266`).
    - `_record_sweep()` — appends `RECOVERY_REPLAY_COMPLETED` audit event,
      suppressed if the latest event is already one (idempotent sweeps;
-     `recovery.py:1088`).
+     `recovery.py:1158`).
 
 `RecoveryOutcome`: `RESUMED`, `ROLLED_BACK`, `PARKED_HUMAN`, `ABANDONED`,
 `UNRECOVERABLE`, `ALREADY_TERMINAL` (`recovery.py:90`).
@@ -101,7 +101,7 @@ lineages. The event vocabulary (`src/paa/core/types.py:122`):
 - Queue `max_delivery_attempts` (default 3) governs message redelivery
   (`config.py:659`).
 - Recovery `max_attempts` (default 3, from `QueueSettings.max_delivery_attempts`)
-  governs re-queue retries; beyond it → `TASK_ABANDONED` (`recovery.py:1041`).
+  governs re-queue retries; beyond it → `TASK_ABANDONED` (`recovery.py:1111`).
 
 ## 5. Concurrency controls
 
@@ -121,9 +121,9 @@ lineages. The event vocabulary (`src/paa/core/types.py:122`):
 | Task run exception | Logged, message nacked (redelivery) (`daemon.py:170`) |
 | Orchestrator `PaaError` | `EXECUTION_FAILED` event, re-project, return error (`src/paa/agents/orchestrator.py:441`) |
 | Sandbox step failure | `VALIDATION_FAILED`; retry up to budget (`src/paa/pipelines/builtin.py:758`) |
-| Recovery single lineage failure | Logged as `UNRECOVERABLE`; sweep continues (`recovery.py:912`) |
-| Hash-chain problem | Reported in `RecoveryReport.chain_problems`, never repaired (`recovery.py:897`) |
-| Queue enqueue failure in recovery | Logged, non-fatal; ledger already records the task as open (`recovery.py:1226`) |
+| Recovery single lineage failure | Logged as `UNRECOVERABLE`; sweep continues (`recovery.py:964`) |
+| Hash-chain problem | Reported in `RecoveryReport.chain_problems`, never repaired (`recovery.py:949`) |
+| Queue enqueue failure in recovery | Logged, non-fatal; ledger already records the task as open (`recovery.py:1296`) |
 
 ## 7. What is NOT present (honest gaps)
 

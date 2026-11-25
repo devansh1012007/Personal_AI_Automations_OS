@@ -167,6 +167,7 @@ TYPE_CHECKING_CLASSES: dict[str, str] = {
     "paa.cli.attest": "E",
     "paa.cli.chat": "E",
     "paa.cli.observe": "E",
+    "paa.cli.thread": "C",
     "paa.mcp.server": "C",
     "paa.tui.chat.app": "D",
     "paa.tui.chat.plain": "C",
@@ -254,6 +255,10 @@ TYPE_CHECKING_NOTES: dict[str, str] = {
     "paa.cli.main": (
         "names paa.runtime: +12.1 ms, and AGENTS.md forbids paa.runtime in a CLI that "
         "prints its version"
+    ),
+    "paa.cli.thread": (
+        "names paa.runtime (the engine's Runtime boot) beside the thread types, "
+        "same rule as paa.cli.main: the CLI's --help path pays nothing"
     ),
     "paa.coder.agent": "names paa.runtime among others: +11.4 ms",
     "paa.coder.model_adapter": "names paa.core.types and paa.models.router, both loaded: -1.8 ms",

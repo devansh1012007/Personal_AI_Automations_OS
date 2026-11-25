@@ -32,7 +32,7 @@ truth, and recovery replays it. Four resumption models were on the table
 The two loops that exist today share no interface, and that is the evidence
 this ADR rests on: R2 is proven at task granularity (the orchestrator's stage
 guards), R3 is proven at tool-call granularity (the coder journal and
-`ledger/recovery.py:499`'s interrupted-call sweep). Neither alone covers the
+`ledger/recovery.py:539`'s interrupted-call sweep). Neither alone covers the
 other's case: an arbitrary loop is opaque to the host, so the host cannot
 re-derive "where it was" from events alone (R2's requirement), and stage
 guards cannot be written by a third party in another language (R2's cost).
@@ -94,11 +94,11 @@ itself:
    twice and diffing the call sequence.
 3. **Unknown outcomes are never auto-repeated.** A `PROPOSED` row with no
    outcome is classified `applied` / `not_applied` / `unknown` by the same
-   decision table `ledger/recovery.py:419` already implements for tool calls,
+   decision table `ledger/recovery.py:459` already implements for tool calls,
    and a mutating call classified `unknown` is reported to the pipeline as
    `-32008 OutcomeUnknown` — the pipeline decides, the host never re-executes
    on its behalf. This is D-6, lifted from the coder journal
-   (`ledger/recovery.py:184`) to the platform, unchanged: repeating a shell or
+   (`ledger/recovery.py:202`) to the platform, unchanged: repeating a shell or
    git effect whose outcome is unknown can duplicate a commit; asking is
    cheaper than duplicating.
 
@@ -123,7 +123,7 @@ outside the door to be replayable.
 `PIPELINE_RUN_DIVERGED`, and `PIPELINE_CALL_PROPOSED` / `PIPELINE_CALL_COMPLETED`
 / `PIPELINE_CALL_FAILED` per call. All are informational — no phase change, no
 terminal set membership — following the coder-event precedent
-(`ledger/replay.py:407` `_NO_PHASE_CHANGE`), and all carry `v` payload
+(`ledger/replay.py:427` `_NO_PHASE_CHANGE`), and all carry `v` payload
 versions per ADR-0046. `PIPELINE_CALL_*` records the capability call; a
 `use_skill` call **instead** writes the existing `TOOL_CALL_*` rows — that
 mapping is ADR-0051's decision, not a second vocabulary — and the spec §3.3
