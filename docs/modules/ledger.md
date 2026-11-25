@@ -129,7 +129,7 @@ from that version.
 | `RecoveryEngine` | uses `LedgerStore`, `Database` | Replay and reconcile | `recovery.py:802` |
 | `replay.project` | reads `LedgerStore.read_correlation` | Build TaskProjection | `ledger/replay.py:537` |
 | `API /ledger/{id}` | calls `read_correlation` | Explainability endpoint | `api/app.py:156` |
-| `CLI paa ledger` | calls `read_correlation` + `verify_chain` | Terminal explainability | `cli/main.py:213` |
+| `CLI paa ledger` | calls `read_correlation` + `verify_chain` | Terminal explainability | `cli/main.py:214` |
 | `Database` | used by `LedgerStore` | SQLite persistence | `storage/relational/database.py:110` |
 
 ## Runtime behavior

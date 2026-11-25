@@ -1,0 +1,9 @@
+{
+  "schema": "paa-eval-task/1",
+  "id": "inventory-report",
+  "intent": "Implement total_value() in inventory.py as the sum of qty times unit_price over items.csv, rounded to two decimals (63.5 for the shipped fixture) — without touching the data file and without leaving any debug dump behind; tests attached.",
+  "kind": "semantics",
+  "touched": ["inventory.py"],
+  "forbidden_created": ["debug-dump.txt"],
+  "forbidden_changed": ["items.csv"]
+}

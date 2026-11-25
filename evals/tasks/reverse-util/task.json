@@ -1,0 +1,9 @@
+{
+  "schema": "paa-eval-task/1",
+  "id": "reverse-util",
+  "intent": "Create utils/reverse.py exposing reverse(items) that returns the sequence reversed while preserving its type (str stays str, list stays list, tuple stays tuple) and never mutates the input; tests attached.",
+  "kind": "exact",
+  "touched": [],
+  "forbidden_created": [],
+  "forbidden_changed": []
+}

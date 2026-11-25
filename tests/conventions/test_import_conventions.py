@@ -175,6 +175,7 @@ TYPE_CHECKING_CLASSES: dict[str, str] = {
     "paa.tui.chat.widgets": "E",
     "paa.tui.chat.wiring": "C",
     "paa.api.app": "B",
+    "paa.cli.eval": "C",
     "paa.cli.main": "C",
     "paa.coder.agent": "C",
     "paa.coder.model_adapter": "E",
@@ -251,6 +252,11 @@ TYPE_CHECKING_NOTES: dict[str, str] = {
         "names paa.ledger.store, which the module already pulls in by another route: +1.1 ms"
     ),
     "paa.api.app": "names fastapi (the paa[api] extra) and paa.runtime: +176.9 ms",
+    "paa.cli.eval": (
+        "names paa.evals.runner (the eval matrix chain — recorder, attest, "
+        "observe, sandbox, ledger, validation), which no other CLI path loads: "
+        "+71.2 ms"
+    ),
     "paa.cli.main": (
         "names paa.runtime: +12.1 ms, and AGENTS.md forbids paa.runtime in a CLI that "
         "prints its version"

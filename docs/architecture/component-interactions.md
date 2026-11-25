@@ -96,7 +96,7 @@ flowchart TD
 | `EscalatingModelRouter` (`models/router.py:165`) | Local-first routing with explicit, logged escalation to frontier | `complete()` / `complete_structured()` | Local provider, optional frontier provider, `LedgerStore` | `RouterModelAdapter` (via agents) | Writes `MODEL_ESCALATED` ledger event before frontier call |
 | `RouterModelAdapter` (`runtime.py:125`) | Bridges agents' `ModelLike` protocol to the escalation router | `complete_structured()` (`runtime.py:148`) | `EscalatingModelRouter` | All reasoning agents | No persistence (router logs escalations) |
 | `RecoveryEngine` (`ledger/recovery.py:802`) | Post-crash boot sweep: replay, reconcile workspace, re-queue | `RecoveryEngine.boot_sweep()` (`recovery.py:888`) | `LedgerStore`, `Database`, optional `WorkspaceSnapshotter`, optional queue requeuer | `ChiefOrchestrator.boot()` (`src/paa/agents/orchestrator.py:825`) | Writes `RECOVERY_REPLAY_COMPLETED`/`STATE_ROLLBACK_TRIGGERED`/`TASK_ABANDONED` events; restores workspace |
-| `Daemon` (`daemon.py:53`) | Background loops: dispatch, ingestion, maintenance | `Daemon.start()` (`daemon.py:91`) | `Runtime`, `MemoryCreator`, `DecaySweeper` | `paa serve` (`cli/main.py:470`) | Claims queue messages; runs decay sweep; ingests signals |
+| `Daemon` (`daemon.py:53`) | Background loops: dispatch, ingestion, maintenance | `Daemon.start()` (`daemon.py:91`) | `Runtime`, `MemoryCreator`, `DecaySweeper` | `paa serve` (`cli/main.py:471`) | Claims queue messages; runs decay sweep; ingests signals |
 | `MemoryCreator` (`memory/creator.py`) | Ingests unprocessed signals into hot-serving facts | `MemoryCreator.run_batch()` | `Database`, `FactRepository` | Daemon ingestion loop | Writes entities/facts |
 | `DecaySweeper` (`memory/decay.py`) | Evicts stale facts via `C(t)=C₀·e⁻ˡᵃᵐᵇᵈᵃ·t` | `DecaySweeper.sweep()` | `Database`, `DomainPolicy` | Daemon maintenance loop | Deletes/archives stale fact rows |
 | `DeterministicValidationEngine` (`validation/engine.py:191`) | Binary PASS/FAIL: schema → AST → patch → drift → tests | `validate()` (`engine.py:214`) | `AstSecurityScanner`, `SchemaValidator`, `UnifiedDiffValidator`, `WorkspaceSnapshot`, optional `PytestRunner`/`Sandbox` | `CriticValidatorAdapter` (`runtime.py:77`) | Runs tests in sandbox (only check that executes code) |
@@ -110,7 +110,7 @@ flowchart TD
 ### Chain A: Task submission and execution (the main path)
 
 ```
-CLI `paa submit` (cli/main.py:127)
+CLI `paa submit` (cli/main.py:128)
   → Runtime.submit() (runtime.py:189)
     → ChiefOrchestrator.submit() (src/paa/agents/orchestrator.py:146)
       → LedgerStore.append(TASK_REQUESTED) (store.py:113)

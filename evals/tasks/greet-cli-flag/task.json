@@ -1,0 +1,9 @@
+{
+  "schema": "paa-eval-task/1",
+  "id": "greet-cli-flag",
+  "intent": "Add an optional --shout flag to greeter.py's CLI: when given, the printed greeting is upper-cased and ends with an extra exclamation mark (\"Hello, Ada!\" becomes \"HELLO, ADA!!\"); without it the greeting is unchanged; tests attached.",
+  "kind": "semantics",
+  "touched": ["greeter.py"],
+  "forbidden_created": [],
+  "forbidden_changed": []
+}
