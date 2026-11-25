@@ -55,7 +55,7 @@ Sibling reports `W0-INV-01..04.md` exist in `reports/w0-investigation/` (created
   - `[VERIFIED src/paa/improvement/reflection.py:101]` `class ReflectionEngine`; `[VERIFIED :169]` `async def run_weekly(self, *, now=None)` analyses last 7 days, writes anti-patterns to playbook.
   - `[RAN grep run_weekly in src/paa/**/*.py -> only definition at reflection.py:169; zero callers]` — no daemon, CLI, or orchestrator invocation. `[RAN grep in tests -> only tests/improvement/test_improvement.py:128,154]`.
   - `[VERIFIED docs/runtime/background-jobs-and-events.md:5]` "There is no separate worker process, cron scheduler, or external message broker"; `[VERIFIED :131]` "No cron/scheduled jobs beyond the 6h decay sweep." Daemon loops are exactly 3: `[VERIFIED src/paa/daemon.py:52-54]` dispatch 0.5s, ingestion 1.0s, maintenance 6h (`DecaySweeper`); `[VERIFIED daemon.py:170-182]` maintenance = curation tick only. No weekly/reflection loop.
-  - `[VERIFIED src/paa/cli/main.py:225-277]` `/doctor` builds Rich table rows: version, home, permission mode, relational, vector, graph, queue, model router, sandbox facts, open tasks. No reflection row, no `last_run_age_days`. Tests: `[VERIFIED tests/cli/test_cli.py:60-139]` doctor backends/sandbox.
+  - `[VERIFIED cli/main.py:226-277]` `/doctor` builds Rich table rows: version, home, permission mode, relational, vector, graph, queue, model router, sandbox facts, open tasks. No reflection row, no `last_run_age_days`. Tests: `[VERIFIED tests/cli/test_cli.py:60-139]` doctor backends/sandbox.
   - `[RAN grep last.*reflection|reflection.*last|REFLECTION_RUN -> none]` — no last-run timestamp stored anywhere (no ledger event, no file, no Settings field). `[RAN grep REFLECT in core/types.py -> none]` — no `EventType` for reflection runs.
   - `[RAN pytest tests/improvement/test_improvement.py -q -> 22 passed (dots only)]`; `[RAN pytest tests/deployment/test_compose_config.py -q -> 11 passed]`. Improvement tests pin `run_weekly()` behaviour (high-friction flagged, playbook preserves human text) but not scheduling or staleness.
 - **Root cause chain:** symptom (doc claims "once a week" at `reflection.py:1-3` RFC §3.1) → mechanism (engine implemented + tested, never scheduled) → origin (manual-only by omission; no cron infra exists in repo to wire into). Plan P13 "Cron/scheduler step" assumes OS cron or daemon loop — repo has neither; choice is new.
@@ -125,7 +125,7 @@ Sibling reports `W0-INV-01..04.md` exist in `reports/w0-investigation/` (created
 ## Re-verification (per METHOD §11)
 
 - Re-read `Dockerfile:27-30` + `storage/vector/embeddings.py:386-433` — derived-image direction and degraded-fallback claims still hold.
-- Re-ran `grep run_weekly` — still zero production callers; doctor still lacks reflection row (`cli/main.py:247-273`).
+- Re-ran `grep run_weekly` — still zero production callers; doctor still lacks reflection row (`cli/main.py:248-273`).
 - Re-globbed `docs/adr/` — still max 0035; P14 sequence-free claim holds.
 
 ## Scratch files

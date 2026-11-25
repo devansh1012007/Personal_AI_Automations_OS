@@ -7,7 +7,7 @@
 - **Main responsibility:** The `paa` Typer command line — the primary human entry point; every command except `serve` is one-shot (build Runtime, do one thing, print, close).
 - **Architectural layer:** Edge
 - **Entrypoints:** `cli/main.py:app` (Typer), `cli/coder.py:register_agent` (`paa agent`), `cli/chat.py:app` (`paa chat`), `cli/mcp.py:app` (`paa mcp`)
-- **Public interfaces:** `app` (`cli/main.py:48`), `register_agent` (`cli/coder.py:53`)
+- **Public interfaces:** `app` (`cli/main.py:50`), `register_agent` (`cli/coder.py:53`)
 - **Other modules that depend on it:** `runtime.py` (all commands build `Runtime`), `coder/agent.py` (`paa agent`)
 
 ## Purpose and responsibilities
@@ -38,11 +38,11 @@ the command is inherently long-running):
 
 | Command | Home | Behavior |
 |---|---|---|
-| `paa memory <sub>` | `memory_app` (`cli/main.py:695`) | `facts`/`search`/`signals`/`drain`/`world-model` reads over the memory subsystem |
+| `paa memory <sub>` | `memory_app` (`cli/main.py:697`) | `facts`/`search`/`signals`/`drain`/`world-model` reads over the memory subsystem |
 | `paa chat` | `cli/chat.py:160` | The chat surface (SPEC 2 §3.1 C4.4): Textual TUI, or `--plain` for terminals without the `[tui]` extra; `--session`/`--resume` name a lineage; `--model` overrides `PAA_CHAT__MODEL` |
 | `paa mcp serve` | `cli/mcp.py:120` | The stdio MCP server (SPEC 2 §3.1 C4.5): JSON-RPC 2.0 over stdin/stdout, spawned by the MCP client; see [`interfaces/mcp-server.md`](../interfaces/mcp-server.md) |
 
-All one-shot commands use `_build_runtime(run_recovery=False)` (`cli/main.py:105`) —
+All one-shot commands use `_build_runtime(run_recovery=False)` (`cli/main.py:107`) —
 recovery is opt-in per command (an operator decision, `coder/agent.py:134`);
 `serve` also does not run recovery at build (daemon does it at start, `daemon.py:91`).
 
@@ -57,14 +57,14 @@ under `--yes`, else `prompt_yes` (blocks on `input`; EOF → deny)
 - `submit` default `run=True` (`:82`).
 - `serve` binds loopback only; `api_host` validator enforced at `Settings`
   construction (`config.py:901`).
-- Every command closes the `Runtime` in `finally` (`cli/main.py:163`, `:161`, etc.).
+- Every command closes the `Runtime` in `finally` (`cli/main.py:165`, `:161`, etc.).
 
 ## Failure behavior
 
-- Invalid correlation id → `typer.Exit(1)` (`cli/main.py:552`).
+- Invalid correlation id → `typer.Exit(1)` (`cli/main.py:554`).
 - Task not awaiting gate → `PaaError` → printed red, exit 1 (`:228`).
 - `paa agent` `PaaError` → `[red]error:[/red]`, exit 1 (`cli/coder.py:194`).
-- Unknown mode → printed red, exit 1 (`cli/main.py:523`, `cli/coder.py:100`).
+- Unknown mode → printed red, exit 1 (`cli/main.py:525`, `cli/coder.py:100`).
 
 ## Modification impact
 

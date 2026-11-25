@@ -12,7 +12,7 @@ Your role: implementer.
 5. docs/agent-ops/20261024-memory-polish/01-work-ledger.md (task table, wave 1)
 6. docs/agent-ops/20261024-memory-polish/templates/report-implementation.md (your report template)
 7. docs/agent-ops/20261024-memory-polish/COMMS.md (read from the last WAVE-START line)
-8. Source entry points: src/paa/cli/main.py:66-98 (existing `submit`/`status`/`ledger` command shape), src/paa/cli/main.py:289-327 (`serve` command shape), src/paa/memory/creator.py:697-787 (MemoryCreator API), src/paa/memory/facts.py:914-967 (FactRepository.query_facts), src/paa/memory/facts.py:969-1033 (search_facts_by_text)
+8. Source entry points: cli/main.py:67-98 (existing `submit`/`status`/`ledger` command shape), cli/main.py:290-327 (`serve` command shape), src/paa/memory/creator.py:697-787 (MemoryCreator API), src/paa/memory/facts.py:914-967 (FactRepository.query_facts), src/paa/memory/facts.py:969-1033 (search_facts_by_text)
 
 ## 3. Task and acceptance criteria
 Task T-001 (P-001 + P-008): Add a `paa memory` Typer command group with subcommands `facts <entity>`, `search <text>`, `signals [--status ...]`, `drain`, `world-model <doc>`. Add tests/cli/test_memory.py proving each subcommand.
@@ -43,7 +43,7 @@ Known interactions: None — disjoint files, disjoint test dirs, no shared symbo
 Already fixed (don't redo): None — this is new surface.
 False leads: Do not add API routes (that is W1-IMPL-02's task).
 Flaky/pre-existing failures: None in tests/cli (new dir).
-Gotchas: Typer subcommands must be registered via `memory_app = typer.Typer()` then `app.add_typer(memory_app, name="memory")`. Follow the existing `register_agent` pattern in cli/coder.py:56. Each command uses `_build_runtime()` + `try/finally rt.close()` (see cli/main.py:81-98).
+Gotchas: Typer subcommands must be registered via `memory_app = typer.Typer()` then `app.add_typer(memory_app, name="memory")`. Follow the existing `register_agent` pattern in cli/coder.py:56. Each command uses `_build_runtime()` + `try/finally rt.close()` (see cli/main.py:82-98).
 
 ## 7. Environment and tests
 Scoped commands: `pytest tests/cli/test_memory.py -q`; `ruff check src/paa/cli tests/cli`; `mypy src/paa/cli`

@@ -11,7 +11,7 @@ Role: improver (docs only), parallel with W2-IMPR-01 (code) — disjoint write-s
 4. COMMS.md (read at start)
 
 ## 3. Task
-Run: `.venv\Scripts\python.exe -m pytest tests/conventions/test_docs_references.py -q` to get current list (expected: 1 past-end `docs/data/data-lifecycle.md:126 'README.md:351'` (README has 345 lines) + 20 blank: 12 × `daemon.py` (T-004 shift), 8 × `README.md` (operator rewrite)). For EACH: read doc context, read target around cited line, find correct current line, verify non-blank and holds what the sentence claims, update. If cited content no longer exists, record explicitly instead of guessing.
+Run: `.venv\Scripts\python.exe -m pytest tests/conventions/test_docs_references.py -q` to get current list (expected: 1 past-end `docs/data/data-lifecycle.md:126 'README.md:354'` (README has 345 lines) + 20 blank: 12 × `daemon.py` (T-004 shift), 8 × `README.md` (operator rewrite)). For EACH: read doc context, read target around cited line, find correct current line, verify non-blank and holds what the sentence claims, update. If cited content no longer exists, record explicitly instead of guessing.
 Note: W2-IMPL-03 noted api-reference.md:134/:159 as already-stale (non-blank stale — same category as IMPR-02's 2 leftovers). Include those two in your report as FIXED or DEFERRED-with-reason.
 Do NOT edit README.md or VISION.md (operator's files).
 

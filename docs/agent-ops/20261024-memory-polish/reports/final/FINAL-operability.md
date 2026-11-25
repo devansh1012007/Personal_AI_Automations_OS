@@ -45,11 +45,11 @@ Separately, `runtime.py:_build_memory_creator` logs `log.warning("runtime.llm_ex
 
 ## MAJOR — LLM extraction is wired into `Runtime.memory_creator` but exposed nowhere an operator can use
 
-**Files:** `src/paa/runtime.py:739-779` (wiring); `src/paa/cli/main.py:319-358` (drain command); `src/paa/api/app.py:86-93` (`/memory/drain`); `src/paa/daemon.py:170-179` (`_memory_creator`)
+**Files:** `src/paa/runtime.py:739-779` (wiring); `cli/main.py:320-358` (drain command); `src/paa/api/app.py:86-93` (`/memory/drain`); `src/paa/daemon.py:170-179` (`_memory_creator`)
 
 **Evidence:** `Runtime.build()` builds `memory_creator = _build_memory_creator(settings, db, model_adapter)` and stores it on the runtime (runtime.py:739, 747). `_build_memory_creator` returns a `MemoryCreator` whose extractor is `LLMFactExtractor` when `settings.memory.extraction_model` is non-empty (runtime.py:772-779). However:
 
-- CLI `paa memory drain` builds `MemoryCreator(rt.db)` — rule-based, no extractor (cli/main.py:329-332).
+- CLI `paa memory drain` builds `MemoryCreator(rt.db)` — rule-based, no extractor (cli/main.py:330-332).
 - API `POST /memory/drain` builds `MemoryCreator(runtime.db)` — rule-based (app.py:91-92).
 - `daemon.py:_memory_creator()` returns `MemoryCreator(self._rt.db)` with no extractor (daemon.py:179).
 
@@ -141,8 +141,8 @@ Separately, `runtime.py:_build_memory_creator` logs `log.warning("runtime.llm_ex
 | W3 summarizer/ranker "opt-in … default-off … observable via constructor param" | W3-IMPL-01 §8 / W3-IMPL-02 §8 | **True for programmatic use, false for operator use** — there is no constructor call site passing a non-None value (MAJOR unreachable-seam finding). |
 | Backpressure: all 4 routes apply `_admit` → 429 | W1-IMPL-02 §4 | **True** (diff: app.py:17,37,58,89). |
 | Signals SQL uses bound params + LIMIT 50 + ORDER BY | W1-IMPL-02 §10 | **True** (app.py:60-72). |
-| CLI signals `IN (...)` bound params | W1-IMPL-01 §9 | **True** (cli/main.py:280-281). |
-| world-model uses `BeliefDocument` enum (no path traversal) | W1-IMPL-01 §10 | **True** (cli/main.py:372-375). |
+| CLI signals `IN (...)` bound params | W1-IMPL-01 §9 | **True** (cli/main.py:281-281). |
+| world-model uses `BeliefDocument` enum (no path traversal) | W1-IMPL-01 §10 | **True** (cli/main.py:373-375). |
 | `LLMFactExtractor` containment before model call; NUL/ANSI/marker refused | W2-IMPL-03 §9 | **True** (creator.py:650 `_reject_suspicious` before `complete_structured`). |
 
 ---

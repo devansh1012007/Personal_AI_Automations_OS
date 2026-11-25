@@ -6,7 +6,7 @@ external substrates (Qdrant, Kuzu, Redis, the S3 object store), and (4) the
 stdio MCP server (`paa mcp serve`), which a harness spawns to reach PAA
 memory and chat as tools ([mcp-server.md](mcp-server.md)). There is no service mesh, no
 message broker beyond the durable SQLite/Redis queue, no webhooks, and no
-ingestion bridges (Telegram/email/Slack) yet (`README.md:251`).
+ingestion bridges (Telegram/email/Slack) yet (`README.md:254`).
 
 ## 1. Model providers (the primary external integration)
 
@@ -117,7 +117,7 @@ The orchestrator sends `CONTEXT_REQUEST`, `PLAN_PROPOSAL`, `POLICY_CHECK`,
 
 There are no long-polling, streaming, or webhook endpoints. `paa serve` runs
 uvicorn over the FastAPI app plus the daemon loops over one shared runtime
-(`cli/main.py:469`).
+(`cli/main.py:471`).
 
 ## 5. Timeouts, retries, idempotency
 
@@ -131,7 +131,7 @@ uvicorn over the FastAPI app plus the daemon loops over one shared runtime
 
 ## 6. What is NOT integrated (honest gaps)
 
-- No ingestion bridges (Telegram/email/Slack) — CLI/HTTP only (`README.md:258`).
+- No ingestion bridges (Telegram/email/Slack) — CLI/HTTP only (`README.md:261`).
 - No webhooks.
 - No network service-to-service RPC beyond in-process agent messages; the one
   RPC surface is the stdio MCP server (`paa mcp serve`), spawned by its client
@@ -143,7 +143,7 @@ uvicorn over the FastAPI app plus the daemon loops over one shared runtime
   open-correlations count only).
 - Marketplace/skills/coder layers import cleanly but are not wired into the
   orchestrator's main task path; no built-in file-edit/bash/web/git skills
-  (`README.md:251`).
+  (`README.md:254`).
 
 ## Related documents
 

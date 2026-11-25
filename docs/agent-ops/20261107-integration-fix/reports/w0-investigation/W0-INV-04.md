@@ -24,7 +24,7 @@ Question answered: do plan items P-001 (redaction of two `str(exc)` sites), P-00
 
 ## 1. Per plan item
 
-### P-001 Redact `str(exc)` at `runtime.py:481` and `cli/main.py:650`
+### P-001 Redact `str(exc)` at `runtime.py:481` and `cli/main.py:651`
 
 - **Existence verdict:** EXISTS (both sites, both line numbers exact at 88e648b).
 - **Evidence:**
@@ -43,7 +43,7 @@ Question answered: do plan items P-001 (redaction of two `str(exc)` sites), P-00
 
   The **same function already redacts one line above** [VERIFIED src/paa/runtime.py:474]: `log.warning("runtime.llm_extractor_unavailable", error=redact(str(exc)))`, with `redact` imported at `runtime.py:43` (`from paa.models.base import redact`). So :481 is an inconsistency inside one function, not a missing dependency.
 
-  Exact context of `cli/main.py:650` [VERIFIED src/paa/cli/main.py:642-649]:
+  Exact context of `cli/main.py:651` [VERIFIED cli/main.py:643-649]:
 
   ```python
   # C02: drain the pending-embedding backlog after the signal batch. ... (comment :642-645)
@@ -56,7 +56,7 @@ Question answered: do plan items P-001 (redaction of two `str(exc)` sites), P-00
   **What is actually in scope at each site (the reviewer's "no secrets in scope" nuance, resolved with evidence):**
 
   - `runtime.py:481`: the try wraps only `VectorEmbeddingSink(vector_store, embedder)`, and that `__init__` performs three plain attribute assignments with no validation [VERIFIED src/paa/memory/creator.py:1042-1045]. It cannot raise from its own logic; reachable exceptions are `AttributeError` (class missing) or `TypeError` (arity) — construction of the class, not of the embedder or any provider call. **INFERENCE (high confidence): this except branch is effectively unreachable today, and no provider error, URL or key can reach it.** The provider-adjacent construction in the same function (`LLMFactExtractor(model=model_adapter, ...)` :468-472) *can* carry provider-shaped text and it is the one already redacted at :474.
-  - `cli/main.py:650`: `drain_pending_embeddings` catches its own sink errors internally and logs them **already redacted** [VERIFIED src/paa/memory/creator.py:1534-1549, `error=redact(str(exc))` at :1543]. What can escape to the CLI `except` is only the un-guarded DB work: `self._facts.pending_embeddings(limit)` (:1519), `self._pending_embedding_count()` (:1525/:1540/:1554), `self._facts.mark_embedded(...)` (:1552) — i.e. relational-backend/driver error strings. **INFERENCE (medium):** plausible secret-shaped content is (a) a DSN/connection string echoed by a driver connect error, (b) a constraint error echoing a *stored fact value* (user data can itself contain a credential — `sk-…` facts are exactly what `remember_fact` stores). No model-provider error reaches this site.
+  - `cli/main.py:651`: `drain_pending_embeddings` catches its own sink errors internally and logs them **already redacted** [VERIFIED src/paa/memory/creator.py:1534-1549, `error=redact(str(exc))` at :1543]. What can escape to the CLI `except` is only the un-guarded DB work: `self._facts.pending_embeddings(limit)` (:1519), `self._pending_embedding_count()` (:1525/:1540/:1554), `self._facts.mark_embedded(...)` (:1552) — i.e. relational-backend/driver error strings. **INFERENCE (medium):** plausible secret-shaped content is (a) a DSN/connection string echoed by a driver connect error, (b) a constraint error echoing a *stored fact value* (user data can itself contain a credential — `sk-…` facts are exactly what `remember_fact` stores). No model-provider error reaches this site.
   - Verdict on T01's "no secrets in scope": **correct as to provider secrets (none in scope), wrong as a reason to skip** — the site prints arbitrary exception text to the operator console, and (b) above is a real channel. The plan's T01 shape (sk- fixture + 200-char best-effort case) is satisfiable at both sites.
 
   What `redact` / `redact_detail` already handle [VERIFIED src/paa/models/base.py:243-275,278-295]:
@@ -82,12 +82,12 @@ Question answered: do plan items P-001 (redaction of two `str(exc)` sites), P-00
   | `tests/memory/test_llm_extractor.py:402,462` | extraction/quarantine path redacted |
   | `tests/runtime/test_memory_creator.py:151-195` | **`runtime.llm_extractor_unavailable` (:474) only** — asserts the warning kwargs are redacted |
   | `tests/api/test_memory.py:232,258` | `redact(str(exc))` in HTTPException detail (memory routes) |
-  | — | **NO test covers `runtime.py:481` or `cli/main.py:650`** [RAN `grep "embedding drain failed\|memory.embedding_sink" tests/` -> no matches for those two strings] |
+  | — | **NO test covers `runtime.py:481` or `cli/main.py:651`** [RAN `grep "embedding drain failed\|memory.embedding_sink" tests/` -> no matches for those two strings] |
 
-  Provenance (why it is still open): it is the deferred **F-02 remainder of the previous run** — "3 unredacted error lines flagged … 1 fixed in-set (drain error, `creator.py:1543`), 2 remain" [VERIFIED docs/agent-ops/20261106-memory-remembering-agent/SUMMARY.md:69,84,110 — "`runtime.py:481`, `cli/main.py:650` outside FINAL-IMPR-02 write-set → NEED posted; owner of those files to redact"]. Both lines were introduced by commit `c5766c8` (2026-11-06 23:16, "Wire VectorEmbeddingSink into Runtime and drain pending embeddings (C01+C01b+C02)") [RAN `git log -L 476,483:src/paa/runtime.py` and `-L 646,649:src/paa/cli/main.py` -> both first appear in c5766c8].
+  Provenance (why it is still open): it is the deferred **F-02 remainder of the previous run** — "3 unredacted error lines flagged … 1 fixed in-set (drain error, `creator.py:1543`), 2 remain" [VERIFIED docs/agent-ops/20261106-memory-remembering-agent/SUMMARY.md:69,84,110 — "`runtime.py:481`, `cli/main.py:651` outside FINAL-IMPR-02 write-set → NEED posted; owner of those files to redact"]. Both lines were introduced by commit `c5766c8` (2026-11-06 23:16, "Wire VectorEmbeddingSink into Runtime and drain pending embeddings (C01+C01b+C02)") [RAN `git log -L 476,483:src/paa/runtime.py` and `-L 646,649:src/paa/cli/main.py` -> both first appear in c5766c8].
 
 - **Root cause chain:** C01/C02 wired a new degradation path and a new console error path in one commit → both formatted `str(exc)` by hand → the run's final review caught them as F-02 but they sat outside that run's write-set → carried forward as a NEED → plan P01. Not caught by tests because neither site has a test that inspects its output (table above), and the model-layer redaction tests only assert the model layer's own raise sites.
-- **Blast radius:** 2 call sites; 0 callers of a helper to change (the fix is local). Consumers of the log line: structlog output (`memory.embedding_sink` event — grep `memory.embedding_sink` -> `runtime.py:481,489,492` + tests none); console output of `paa memory drain` (`cli/main.py:650` — no test greps it). Docs: plan P01, ADR-0036 §P01 (to be written), SUMMARY F-02 line.
+- **Blast radius:** 2 call sites; 0 callers of a helper to change (the fix is local). Consumers of the log line: structlog output (`memory.embedding_sink` event — grep `memory.embedding_sink` -> `runtime.py:481,489,492` + tests none); console output of `paa memory drain` (`cli/main.py:651` — no test greps it). Docs: plan P01, ADR-0036 §P01 (to be written), SUMMARY F-02 line.
 - **Fix options:**
   - **A (plan-aligned):** at each site, `error=redact(str(exc))` (runtime) and `redact(str(exc))` bounded to 200 chars with an explicit marker (cli), truncation constant named in code, rule written in ADR-0036 §P01. Pros: 2-line-per-site, mirrors the already-correct :474, no new helper, no change to shared `redact`. Cons: two sites must each remember the bound — the same drift that created F-02; mitigated by T01 asserting both.
   - **B:** add `redact_bounded(text, *, limit=200)` beside `redact` in `models/base.py`, used by both sites. Pros: one home for the bound, unit-testable once, mirrors `registry_client._MAX_EXCERPT_CHARS`. Cons: widens the model layer's public surface (`__all__` is asserted by `test_model_errors.py:1165-1169`) and brushes the plan's "do NOT invent new redactor" line — needs the ADR to say it is a *bound*, not a second redactor.
@@ -119,7 +119,7 @@ Question answered: do plan items P-001 (redaction of two `str(exc)` sites), P-00
   | 1 | `src/paa/api/app.py:346-366` | 21 lines |
   | 2 | `src/paa/coder/runtime_tools.py:886-910` | 25 lines |
   | 3 | `src/paa/agents/context_agents.py:403-425` | 23 lines |
-  | 4 | `src/paa/cli/main.py:700-724` | 25 lines |
+  | 4 | `cli/main.py:701-724` | 25 lines |
 
   **Line-by-line diff (machine-generated, AST-normalised with docstrings stripped)** [RAN `.venv\Scripts\python.exe C:\Users\devan\AppData\Local\Temp\opencode\w0-inv-04\diff_touch.py` -> pairwise unified diffs; output reproduced below]:
 
@@ -172,7 +172,7 @@ Question answered: do plan items P-001 (redaction of two `str(exc)` sites), P-00
   **T04 dependency test:** `tests/memory/test_e2e_remember_recall.py:210-241 test_recall_facts_synonym_only_miss` currently asserts `count == 0` for `"rapid"`→`"swift"` (DECISION T-007 keyword-only) *and* pins the note text. With a vector fallback it must be updated to expect a hit when the store+embedder are present **and** to still expect 0 when they are absent (both halves matter — the "absent backends" half is the degrade-never-raise contract). The fixture to reuse is right above it: `_SynonymEmbedder` + `NumpyVectorStore` + `VectorEmbeddingSink` [VERIFIED tests/memory/test_e2e_remember_recall.py:150-207], the same fake-vector fixture the A5a criterion uses.
 
 - **Root cause chain:** four call sites each needed "advance retention clocks after a recall" and each grew its own copy (git: copies predate this run — all four present at 88e648b) → annotation/import drift accumulated (`RelationalBackend | None` only in one) → plan proposes one home. The missing vector tier is the C01-era partial wiring: the sink writes facts into `active_facts`, the planner reads them, the coder tool was left keyword-only (DECISION T-007), and the tool's own docstring still claims nothing is wired.
-- **Blast radius:** 4 call sites (`api/app.py:210,233`; `coder/runtime_tools.py:794`; `context_agents.py:329,395`; `cli/main.py:540,566`) + 4 defs to delete + `memory/__init__.py` (export decision) + `recall_facts` payload (`note` semantics change once fallback exists) + `tests/memory/test_e2e_remember_recall.py:210` + T05 grep lock. Grep `grep _touch_recalled src/` -> 12 hits [RAN]; `grep touch_many src/` -> definition `decay.py:305` + 4 callers.
+- **Blast radius:** 4 call sites (`api/app.py:210,233`; `coder/runtime_tools.py:794`; `context_agents.py:329,395`; `cli/main.py:541,566`) + 4 defs to delete + `memory/__init__.py` (export decision) + `recall_facts` payload (`note` semantics change once fallback exists) + `tests/memory/test_e2e_remember_recall.py:210` + T05 grep lock. Grep `grep _touch_recalled src/` -> 12 hits [RAN]; `grep touch_many src/` -> definition `decay.py:305` + 4 callers.
 - **Fix options:**
   - **A (recommended):** `memory/touch.py::touch_recalled(db, fact_ids)` — module-level `log`/`redact`, `db: RelationalBackend | None`, same docstring policy sentence (keep the "documented derived-state exception" wording once); 4 sites import it and delete their defs; *plus* vector fallback in `_RecallFacts.run` gated on `self._rt.vector_store is not None` and an embedder obtained via a new `Runtime.embedder` field (option A above). Pros: T05 grep lock passes, one docstring, one annotation, fallback mirrors `_semantic` exactly, degrades to today's behaviour when backends are absent. Cons: touches `runtime.py` (shared with INV-01's P-002 domain — coordinate); the `note` text must change again, which means updating the FINAL-01 assertions deliberately rather than silently.
   - **B:** unify touch only; leave the fallback for a later item. Pros: zero runtime.py surface, T04 blocked. Cons: plan binds them as one item (P04) and T04/T05 are paired; splitting needs the orchestrator's word.

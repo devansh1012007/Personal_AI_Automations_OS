@@ -84,7 +84,7 @@ Evidence:
 - `pytest tests/conventions/test_docs_references.py -q` → 5 passed (part of the full green
   suite; also run standalone as part of `tests/conventions`).
 - The lock has teeth: I broke one reference in a scratch copy (`docs/README.md:46`,
-  `src/paa/cli/main.py:74` → `:99999`) and the suite went red with
+  `cli/main.py:75` → `:99999`) and the suite went red with
   `AssertionError: citations past the end of their file: ... src/paa/cli/main.py has 468 lines`.
   The real tree was never modified; the scratch copy was discarded.
 - Scope: every markdown under `docs/`, plus `README.md` and `AGENTS.md`. Excluded, with
@@ -92,13 +92,13 @@ Evidence:
   (dated proposals, discuss references as findings). Both are whole directories with stated
   reasons; no exclusion without a reason. This matches AGENTS.md's own rule text.
 - Citation sample (sentence vs cited line), all agree:
-  - `src/paa/cli/main.py:74` → `app = typer.Typer(` (docs/modules/cli.md:10)
-  - `src/paa/cli/main.py:119` → `def status(...)` (docs/backend/overview.md:15)
-  - `src/paa/cli/main.py:145` → `return existing` inside the idempotency-key branch
+  - `cli/main.py:75` → `app = typer.Typer(` (docs/modules/cli.md:10)
+  - `cli/main.py:120` → `def status(...)` (docs/backend/overview.md:15)
+  - `cli/main.py:146` → `return existing` inside the idempotency-key branch
     (docs/modules/ledger.md:56)
-  - `src/paa/cli/main.py:225` → `def doctor() -> None:` (report §3)
-  - `src/paa/cli/main.py:290` → `serve` (docs/architecture/repository-map.md:119)
-  - `src/paa/cli/main.py:353` → `tui` (docs/architecture/repository-map.md:125)
+  - `cli/main.py:226` → `def doctor() -> None:` (report §3)
+  - `cli/main.py:291` → `serve` (docs/architecture/repository-map.md:119)
+  - `cli/main.py:354` → `tui` (docs/architecture/repository-map.md:125)
   - `src/paa/models/base.py:906` → `async def complete_structured(` (report §3)
   - `src/paa/runtime.py:251` → `async def build(` = `Runtime.build()` (docs/backend/overview.md:23)
   - `src/paa/ledger/store.py:144` → `return existing` (idempotency) (docs/modules/ledger.md:56)

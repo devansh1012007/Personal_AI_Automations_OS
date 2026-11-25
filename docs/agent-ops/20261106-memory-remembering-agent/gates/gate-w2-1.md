@@ -12,6 +12,6 @@
 | Full suite | not run (final gate) | — | — |
 
 New failures:
-- R-W2-DOCS: 21 citations — 1 past-end (`data-lifecycle.md:126 'README.md:351'`, README now 345 lines — operator README rewrite) + 20 blank (12 × `daemon.py` from T-004 shift, 8 × `README.md` from operator rewrite).
+- R-W2-DOCS: 21 citations — 1 past-end (`data-lifecycle.md:126 'README.md:354'`, README now 345 lines — operator README rewrite) + 20 blank (12 × `daemon.py` from T-004 shift, 8 × `README.md` from operator rewrite).
 - Both implementers posted DEFERRED-DEPENDENCY/COMMS NEED for docs (outside their write-sets) — correct protocol; docs fix routed to Wave 2 improver.
 Triage: code/tests pass; docs fix required before wave close. Proceed to review, then improver (docs + review findings together).

@@ -46,7 +46,7 @@ Skip list honoured: no tools, no ADR text edit, frozen API divergence would have
   from `src/paa/coder/` listing. N1.1-N1.4 have no jail to import yet — genuine gap.
 - [VERIFIED docs/adr/0045-coder-work-tools.md:143-186] frozen sketch gives exact `__all__`,
   signatures, arg order (ws-first), exception base and constructor. Implemented verbatim.
-- [VERIFIED docs/adr/README.md:64] index lacked row 0045; its "files on disk" sentence listed
+- [VERIFIED docs/adr/README.md:67] index lacked row 0045; its "files on disk" sentence listed
   0036–0044. The row is in my write-set (brief §4), so I added it (see §5).
 
 ## 3. Root cause
@@ -113,7 +113,7 @@ Single new module `src/paa/coder/workspace.py`, stdlib-only plus `paa.config`/`p
   exactly as W1-IMPL-01 suggested, and moved `0036–0044` → `0036–0045` in the "files on disk"
   sentence. The new row occupies the previously blank line 65, making the edit line-neutral
   (the sentence stays on line 66), so `docs/architecture/overview.md:206`'s citation
-  `docs/adr/README.md:66` remains true — no out-of-write-set file needed changing. Verified the
+  `docs/adr/README.md:69` remains true — no out-of-write-set file needed changing. Verified the
   alternative (row insertion +1 line) failed the docs-reference lock and was corrected.
 
 ## 6. Blast radius and contracts

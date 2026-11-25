@@ -20,7 +20,7 @@ T-N0-4 (N0.4): create `scripts/status.py` markdown-block generator; README statu
 
 ## 2. Verification that the problem exists (evidence gathered myself)
 - `scripts/` did not exist; no `status.py` anywhere [RAN `ls scripts` -> ObjectNotFound]; grep `STATUS:BEGIN|status.py` across md/yml/toml -> no hits.
-- README stale snapshot: `**Recorded test snapshot:** 1,185 collected — 1,104 passing, 75 skipped, 6 failing.` [VERIFIED README.md:295 pre-edit]
+- README stale snapshot: `**Recorded test snapshot:** 1,185 collected — 1,104 passing, 75 skipped, 6 failing.` [VERIFIED README.md:298 pre-edit]
 - ROADMAP hand-typed figures: `about 52,000 lines of source, 3,145 tests collected, 2,899 passed, 241 skipped, 4 xfailed, 1 failed (environmental)` [VERIFIED docs/ROADMAP.md:30-33]; H1.7 requires the script + CI disagree-fails [VERIFIED docs/ROADMAP.md:82].
 - Measured now (this checkout, .venv): 142 `src/**/*.py` files, **57,326 physical lines, 48,877 non-blank lines** [RAN .venv/Scripts/python.exe count -> 57326 physical / 48877 nonblank]; `pytest --collect-only -q -o addopts=""` -> **3,762 collected** [RAN .venv collect-only -> 3762]. Baseline was 3,754 [VERIFIED docs/plans/2026-11-09-next-spec-revised.md:8]; +8 is exactly W0-IMPL-01's new `tests/conventions/test_markdown_links.py` [RAN collect subset -> test_markdown_links.py: 8].
 - Method drift proven with the tree itself: spec 57,300 [VERIFIED docs/2026-11-09-next-spec.md:34] ≈ physical (57,326); INV 48,879 [VERIFIED docs/plans/2026-11-09-next-spec-revised.md:201] ≈ non-blank (48,877). The two differ only by blank-line definition; spec method was unstated [VERIFIED revised plan:201 "spec method unstated — N0.4 pins method"].

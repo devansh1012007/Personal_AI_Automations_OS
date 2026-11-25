@@ -605,7 +605,7 @@ the fourth pipeline the rule-of-three was waiting on).
 |---|---|---|---|---|
 | W7-C7.1 | orchestrator | `paa observe` — H3.2 observer mode, T1 evidence tier, pipeline #4 per P1.4: run any CLI in a workspace, record manifest diff + git changes + transcript, classify state after a crash | **done** | this commit; W7-IMPL-01 report; observer core + `paa-observe-bundle/1` (two-phase write, resume="none", tier="T1") + `builtin.observe` on the facade with an empty capability ask + `paa observe` CLI and `paa pipeline run builtin.observe` through one shared driver; done-when met as tests (fake harness → complete T1 bundle; kill -9/timeout/error/clean classification matrix + chaos); conformance 4 pipelines GREEN; registry/manifests carry the honesty ladder (`[evidence] declares_tier`); 57 observe tests, full gate 4,429/244/1x/0; docs/interfaces/observe-bundle.md + 125 citations re-anchored |
 | W7-C7.2 | orchestrator | attested change bundle + `paa verify` (H3.1) | **done** | this commit; W7-IMPL-02 report; `paa-attest-bundle/1`: six hash-chained sections (mandate/diff/commands/tests/approvals/evidence) as cold-lake CAS blobs + Ed25519-signed header (`src/paa/attest/{format,bundle,verify}.py`, format leaf shared by both sides); `paa attest build|pr` + top-level `paa verify` (five named doors: manifest/blobs/chain/signature/key — integrity vs origin never collapsed, `--trust` pins the signer, no pin says self-asserted); observed vs asserted rows never collapsed; two-phase started→final manifest; HMAC fallback refused without `--insecure-fallback-signing`; done-when met as tests: flip-one-byte (section blob, evidence blob, manifest) → fail naming the door; clean-checkout verify with PAA_HOME nonexistent → stays nonexistent; forged-resignation is intact-but-untrusted; workspace drift named (+/~/-); 46 attest tests, full gate 4,475/244/1x/0; docs/interfaces/attested-bundle-spec.md (incl. the GitHub Action template); 71 citations re-anchored (cli/main.py + README.md line shifts) |
-| W7-C7.3 | orchestrator | `paa record` — the harness-neutral flight recorder | not started | depends on C7.2 |
+| W7-C7.3 | orchestrator | `paa record` — the harness-neutral flight recorder | **done** | this commit; W7-IMPL-03 report; `paa-record/1`: append-only, crash-safe hash-chained NDJSON (digest covers schema/seq/at/kind/data/prev, genesis seed; two-phase summary, torn-tail reported not dropped) + the sequential-writer handoff (core ↔ proxy append under flock, tail digest verified, one chain no splice); `src/paa/recorder/{record,tools,proxy,core}.py` + `paa record run\|proxy\|verify`; the MCP policy proxy over the shared framing kit (tool_call → shape → run's recorded policy → execute sandbox/jailed → tool_result/policy_denied; unattended ask = denied_unattended with the raw decision kept; deny wins; no token, reasoning stated); the harness under a real SandboxSession with live stdout relay; mediated vs observed never collapsed (the honesty block states it where the code enforces it); attest builder +2 additive validated params (extra_evidence, observed_command_rows backed by bundle blobs) — closes the C7.2 command-row-extractor finding; done-when met as a real chain: fake harness (real child) → real proxy subprocess over real stdio → real chain → `verify_bundle` green; chaos: self-SIGKILL → signalled, overrun → timed_out, both finalised+verifying; non-cooperating harness → T1 floor, zero proxy events; 50 recorder tests, full gate 4,769 collected = 4,525/243/1x/0 exit 0 (+50 exactly; one textual-gated TUI skip un-skipped), mypy 197 files, ruff clean; docs/interfaces/record-format.md + attest-spec additive section + 95 citation files re-anchored |
 | W7-C7.4 | orchestrator | cross-harness eval harness | not started | depends on C7.3 |
 
 ### Archived campaign: T-VERIFY (2026-11-24, complete)
@@ -669,9 +669,11 @@ P0 → P1.1 → P1.2 → SPEC-2 W4 C4.1–C4.7 → W5 C5.2–C5.5 close).
   on the facade, `resume="none"`, `evidence_tier="T1"`; four pipelines
   registered, conformance GREEN ×4).
 - Wave 7 rest: ~~C7.2 attest + `paa verify`~~ → **done in Wave 7** (C7.2:
-  `paa-attest-bundle/1`, `paa attest build|pr`, `paa verify` offline). C7.3
-  `paa record`, C7.4 evals,
-  C7.5 `paa thread`, C7.6 ACP v1 → not started.
+  `paa-attest-bundle/1`, `paa attest build|pr`, `paa verify` offline).
+  ~~C7.3 `paa record`~~ → **done in Wave 7** (C7.3: `paa-record/1` chain,
+  the MCP policy proxy, the SandboxSession shim, the attested bundle at
+  close — `paa record run|proxy|verify`). C7.4 evals,
+  C7.5 `paa thread`, C7.6 ACP v1 → not started (C7.4's dependency is met).
 - P3 (RPC host/protocol), P5 (distribution), the P6 adapters beyond observe
   (acp-client, mcp-host), P7 (authoring kit) → later waves; `paa-pipeline/1`
   stays draft — freezing waits for P3's RPC run (the spec's own rule).
@@ -681,8 +683,8 @@ P0 → P1.1 → P1.2 → SPEC-2 W4 C4.1–C4.7 → W5 C5.2–C5.5 close).
 ### Deliverables of this campaign
 
 - `/home/z/my-project/download/paa-spec2-w4-w7.patch` + `.bundle` — combined diff
-  and git bundle of all unpushed commits through the C7.2 close (regenerated
-  at the C7.2 close; supersedes the w4-w6 pair and the C7.1-era regeneration).
+  and git bundle of all unpushed commits through the C7.3 close (regenerated
+  at the C7.3 close; supersedes the w4-w6 pair and every earlier range).
 - `/home/z/my-project/download/paa-format-patch-series-w7/` — per-commit patches
   from `origin/main` (git am ready; the w6 series is superseded).
 - `/home/z/my-project/download/paa-observe-demo-bundle.json` — a complete T1
@@ -690,8 +692,12 @@ P0 → P1.1 → P1.2 → SPEC-2 W4 C4.1–C4.7 → W5 C5.2–C5.5 close).
 - `/home/z/my-project/download/paa-attest-demo-bundle/` — a complete, verifying
   attested bundle from the scripted fake-harness flow (the C7.2 done-when, as
   an artifact: observe → attest → verify, plus its PR body).
+- `/home/z/my-project/download/paa-record-demo/` — the C7.3 done-when, as an
+  artifact: a scripted cooperating harness recorded by the real CLI (flight
+  record verifying green via `paa record verify`, its observe bundle, its
+  attested bundle and the flipped-byte refusal beside it).
 - `/home/z/my-project/download/paa-pipeline-platform-spec-satisfaction-report.pdf`
-  — the audit report (4th edition: Wave 6 rows DONE + the C7.1 + C7.2 rows).
+  — the audit report (5th edition: Wave 6 rows DONE + the Wave 7 rows 1–3).
 - Earlier ranges (`paa-pipeline-platform-work.patch`, `paa-spec2-w4-w5.*`,
   `paa-spec2-w4-w6.*`, `pipeline-platform-p0-p1.*`, the w6 series dirs) are
   superseded; `paa-report-cover.html` remains the report cover source.

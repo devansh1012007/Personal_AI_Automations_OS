@@ -66,7 +66,7 @@ None — all tasks were SURFACE-class (single domain, no contract/schema change)
 
 **FINAL-REV-02 (operability, whole branch)**: `APPROVE-WITH-CHANGES` — 0 BLOCKER, 1 MAJOR (F-01 operator docs / R3 snapshot missing), 3 MINOR, 1 NIT. No schema change verified; 3 unredacted error lines flagged.
 
-**FINAL-IMPR-02 (improvement)**: FIXED 4 (F-01 runbook, FINAL-01 coder note, FINAL-02 floor forwarding, FINAL-03 handle-touch e2e, F-02 in-set redaction), PARTIAL 1 (F-02 remainder: `runtime.py:481`, `cli/main.py:650` outside write-set → NEED posted), REJECTED 1 (F-05 plan edit — plan is outside repo, correction carried in operator docs), DEFERRED 4 (F-03 single-flight, F-04 throttle, FINAL-04 helper dedup, FINAL-05 plumbing). Scoped gate 32/32, ruff 0, mypy 3 baseline.
+**FINAL-IMPR-02 (improvement)**: FIXED 4 (F-01 runbook, FINAL-01 coder note, FINAL-02 floor forwarding, FINAL-03 handle-touch e2e, F-02 in-set redaction), PARTIAL 1 (F-02 remainder: `runtime.py:481`, `cli/main.py:651` outside write-set → NEED posted), REJECTED 1 (F-05 plan edit — plan is outside repo, correction carried in operator docs), DEFERRED 4 (F-03 single-flight, F-04 throttle, FINAL-04 helper dedup, FINAL-05 plumbing). Scoped gate 32/32, ruff 0, mypy 3 baseline.
 
 **FINAL-DELTA-REV**: `APPROVE` — 0 blocker/major, 1 NIT (`29d60e4` added 2 RFC docs at `docs/` root, non-code noise). All 6 claims checks verified.
 
@@ -81,7 +81,7 @@ Per-wave reviews: every wave closed with delta APPROVE (W4 delta APPROVE after 1
 | R2 touch-immortality | Risk | frequently-recalled facts may starve eviction long-term | Operator: tune floors if eviction starves |
 | R3 snapshot before first deleting tick | Risk | curator delete phases never ran in prod before C04 | Operator: snapshot `PAA_HOME` (runbook), enable phases one at a time |
 | No replay job | Known gap | restore = manual (snapshot, reset signal, drain) | Documented non-goal; follow-up research |
-| F-02 redaction remainder (`runtime.py:481`, `cli/main.py:650`) | MINOR | outside FINAL-IMPR-02 write-set | NEED posted; owner of those files to redact |
+| F-02 redaction remainder (`runtime.py:481`, `cli/main.py:651`) | MINOR | outside FINAL-IMPR-02 write-set | NEED posted; owner of those files to redact |
 | F-03 single-flight drain + curator pagination | MINOR | concurrent drains duplicate embed work (idempotent); `fetch_all` safe at current scale | DEFERRED (DO-LATER) |
 | F-04 drain throttle | MINOR | no rate dial; drain-at-embedder-speed | DEFERRED + operator backlog-watch note |
 | FINAL-04 duplicate `_touch_recalled` (4 copies) | NIT | identical behavior today | DEFERRED refactor (DO-LATER) |

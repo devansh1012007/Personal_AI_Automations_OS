@@ -54,6 +54,9 @@ paa recover                      # run the post-crash recovery sweep
 paa serve                        # FastAPI ingestion + background daemon (loopback only)
 paa chat                         # chat TUI with persistent memory (--plain for terminals only)
 paa observe -- pytest -q         # T1 observer: run any CLI, leave the evidence bundle
+paa record run -- claude         # the flight recorder: harness under the evidence boundary,
+                                 #   tool calls through the MCP policy proxy, attested at close
+paa record verify <run-dir>      # the flight record's own chain: schema, sequence, every link
 paa attest build --goal "…"     # the attested change bundle: mandate, diff, commands,
                                  #   tests, approvals — hash-chained and Ed25519-signed
 paa verify <bundle-dir>          # offline verification on a clean machine: hashes, chain,

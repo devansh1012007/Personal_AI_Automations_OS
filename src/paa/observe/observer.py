@@ -47,9 +47,13 @@ from paa.sandbox.base import Sandbox, SandboxResult, SandboxSpec
 __all__ = [
     "CrashClass",
     "CrashClassification",
+    "GitBefore",
     "ObserveOutcome",
     "ObserverCore",
     "classify_outcome",
+    "git_after",
+    "git_before",
+    "git_query",
 ]
 
 #: POSIX signal numbers to names, for the classification's notes. The
@@ -237,10 +241,93 @@ def _cap_text(text: str, *, cap_bytes: int) -> str:
 
 
 @dataclass(frozen=True, slots=True)
-class _GitBefore:
+class GitBefore:
     available: bool
     reason: str = ""
     head: str | None = None
+
+
+async def git_query(sandbox: Sandbox, workspace: Path, args: tuple[str, ...]) -> SandboxResult:
+    """One git query against ``workspace``, run through the sandbox.
+
+    Module-level since C7.3: the recorder asks git the same questions
+    the observer does, through the same containment, and the two must
+    not drift into two vocabularies of "what git said".
+    """
+    return await sandbox.run(
+        SandboxSpec(
+            command=("git", *args),
+            workspace_path=workspace,
+            timeout_seconds=60,
+            memory_mb=256,
+        )
+    )
+
+
+async def git_before(sandbox: Sandbox, workspace: Path) -> GitBefore:
+    """Is this a repo, and where is its HEAD? Asked before the child runs."""
+    inside = await git_query(sandbox, workspace, ("rev-parse", "--is-inside-work-tree"))
+    if inside.exit_code != 0:
+        return GitBefore(
+            available=False,
+            reason="not a git worktree (or git unavailable)",
+        )
+    head: str | None = None
+    resolved = await git_query(sandbox, workspace, ("rev-parse", "HEAD"))
+    if resolved.exit_code == 0:
+        head = resolved.stdout.strip() or None
+    return GitBefore(available=True, head=head)
+
+
+async def git_after(
+    sandbox: Sandbox, workspace: Path, before: GitBefore
+) -> GitChanges:
+    """The full git view after the child ran: status, diff, new commits."""
+    if not before.available:
+        return GitChanges(available=False, reason=before.reason)
+
+    status = await git_query(sandbox, workspace, ("status", "--porcelain=v1"))
+    status_text = "\n".join(status.stdout.splitlines()[:_STATUS_CAP_LINES])
+
+    diff_text = ""
+    if before.head is not None:
+        diff = await git_query(sandbox, workspace, ("diff", "HEAD"))
+        diff_text = diff.stdout
+    else:
+        # A repo with no commits before the run: `git diff HEAD` has no
+        # HEAD to diff against; everything the child staged or left in
+        # the worktree is already in status + the manifest diff.
+        diff_text = ""
+
+    head_after = before.head
+    resolved = await git_query(sandbox, workspace, ("rev-parse", "HEAD"))
+    if resolved.exit_code == 0:
+        head_after = resolved.stdout.strip() or None
+
+    commits: tuple[dict[str, str], ...] = ()
+    if head_after is not None and head_after != before.head:
+        if before.head is not None:
+            log = await git_query(
+                sandbox, workspace, ("log", "--oneline", f"{before.head}..{head_after}")
+            )
+        else:
+            # Fresh history: the run made the first commit(s); count is
+            # all of it, stated as such.
+            log = await git_query(sandbox, workspace, ("log", "--oneline", head_after))
+        commits = tuple(
+            {"line": line}
+            for line in log.stdout.splitlines()
+            if line.strip()
+        )
+
+    return GitChanges(
+        available=True,
+        status=status_text,
+        diff=_cap_text(diff_text, cap_bytes=_DIFF_CAP_BYTES),
+        head_before=before.head,
+        head_after=head_after,
+        commits=commits,
+    )
 
 
 class ObserverCore:
@@ -260,79 +347,11 @@ class ObserverCore:
     def bundle_path(self, run_id: str) -> Path:
         return self._bundle_home / "observe" / run_id / "bundle.json"
 
-    async def _git(
-        self, workspace: Path, args: tuple[str, ...]
-    ) -> SandboxResult:
-        return await self._sandbox.run(
-            SandboxSpec(
-                command=("git", *args),
-                workspace_path=workspace,
-                timeout_seconds=60,
-                memory_mb=256,
-            )
-        )
+    async def _git_before(self, workspace: Path) -> GitBefore:
+        return await git_before(self._sandbox, workspace)
 
-    async def _git_before(self, workspace: Path) -> _GitBefore:
-        """Is this a repo, and where is its HEAD? Asked before the child runs."""
-        inside = await self._git(workspace, ("rev-parse", "--is-inside-work-tree"))
-        if inside.exit_code != 0:
-            return _GitBefore(
-                available=False,
-                reason="not a git worktree (or git unavailable)",
-            )
-        head: str | None = None
-        resolved = await self._git(workspace, ("rev-parse", "HEAD"))
-        if resolved.exit_code == 0:
-            head = resolved.stdout.strip() or None
-        return _GitBefore(available=True, head=head)
-
-    async def _git_after(self, workspace: Path, before: _GitBefore) -> GitChanges:
-        """The full git view after the child ran: status, diff, new commits."""
-        if not before.available:
-            return GitChanges(available=False, reason=before.reason)
-
-        status = await self._git(workspace, ("status", "--porcelain=v1"))
-        status_text = "\n".join(status.stdout.splitlines()[:_STATUS_CAP_LINES])
-
-        diff_text = ""
-        if before.head is not None:
-            diff = await self._git(workspace, ("diff", "HEAD"))
-            diff_text = diff.stdout
-        else:
-            # A repo with no commits before the run: `git diff HEAD` has no
-            # HEAD to diff against; everything the child staged or left in
-            # the worktree is already in status + the manifest diff.
-            diff_text = ""
-
-        head_after = before.head
-        resolved = await self._git(workspace, ("rev-parse", "HEAD"))
-        if resolved.exit_code == 0:
-            head_after = resolved.stdout.strip() or None
-
-        commits: tuple[dict[str, str], ...] = ()
-        if head_after is not None and head_after != before.head:
-            if before.head is not None:
-                log = await self._git(
-                    workspace, ("log", "--oneline", f"{before.head}..{head_after}")
-                )
-            else:
-                # Fresh history: the run made the first commit(s); count is
-                # all of it, stated as such.
-                log = await self._git(workspace, ("log", "--oneline", head_after))
-            commits = tuple(
-                {"line": line}
-                for line in log.stdout.splitlines()
-                if line.strip()
-            )
-
-        return GitChanges(
-            available=True,
-            status=status_text,
-            diff=_cap_text(diff_text, cap_bytes=_DIFF_CAP_BYTES),
-            head_before=before.head,
-            head_after=head_after,
-            commits=commits,
-        )
+    async def _git_after(self, workspace: Path, before: GitBefore) -> GitChanges:
+        return await git_after(self._sandbox, workspace, before)
 
     # -- the one public action ------------------------------------------------
 

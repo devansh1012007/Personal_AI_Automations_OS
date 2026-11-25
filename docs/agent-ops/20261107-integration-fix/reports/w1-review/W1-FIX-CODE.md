@@ -42,7 +42,7 @@ test file. COMMS read at start; last line: `2026-11-07T08:31:18Z ORCH -> ALL | C
   `now` kwarg; vector-failure `[]` path; unknown-domain passthrough; `PLAN:integration-fix:P002`
   tag kept; `_semantic` signature unchanged.
 - `_touch_recalled` callers (grep, unchanged by me): context_agents.py:390,456 (same file),
-  cli/main.py:541,567, api/app.py:210,233, coder/runtime_tools.py:794 — only the function-local
+  cli/main.py:542,567, api/app.py:210,233, coder/runtime_tools.py:794 — only the function-local
   import inside context_agents.py:478 is touched; the call sites are not.
 
 ## Phase log

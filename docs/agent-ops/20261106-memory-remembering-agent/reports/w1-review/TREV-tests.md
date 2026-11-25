@@ -40,7 +40,7 @@ confidence: high (temp-worktree pre-fix run + 3x scoped repeats + coverage; live
   over the 4 files -> creator 80%, runtime 76%, api 58%, cli 43%; `paa.daemon`
   **never imported** by these files. New-code misses: `creator.py:1236`
   (`limit<=0`), `creator.py:829` (sink empty-batch), `api/app.py:281-282`
-  (drain-failure except), `cli/main.py:647-648` (drain-failure except),
+  (drain-failure except), `cli/main.py:648-648` (drain-failure except),
   all of `daemon.py` drain lines.] [ASSUMED] full-suite gate not run
   (scoped-checks rule §16 of STANDING-ORDERS).
 - COMMS last line read at start: `[2026-11-06T18:30:00Z] W1-IMPL-01 -> ORCH | DONE | T-001`.
@@ -108,7 +108,7 @@ Not covered (coverage evidence in §0):
   store.upsert raising, or `paa.storage.vector` import failing (`creator.py:829-834`,
   line 829 also uncovered) — only a stub `BrokenSink` is used.
 - **Call-site failure isolation**: API `api/app.py:281-282` and CLI
-  `cli/main.py:647-648` except blocks uncovered — no test makes
+  `cli/main.py:648-648` except blocks uncovered — no test makes
   `drain_pending_embeddings` raise from `mark_embedded` (DB error) and asserts
   the drain *report* still returns.
 - **Boundaries**: multi-fact signal through wired sink; concurrent drains;

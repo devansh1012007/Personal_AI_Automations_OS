@@ -12,7 +12,7 @@ Mission (2 sentences): Fix the MAJOR dead-wiring defect: `Runtime.memory_creator
 6. docs/agent-ops/20261024-memory-polish/templates/report-improvement.md (your report template)
 7. docs/agent-ops/20261024-memory-polish/COMMS.md (read from last WAVE-IMPR-START)
 8. Source entry points:
-   - src/paa/cli/main.py:318-357 (drain command — builds MemoryCreator(rt.db) at ~630)
+   - cli/main.py:319-357 (drain command — builds MemoryCreator(rt.db) at ~630)
    - src/paa/api/app.py:86-93 (POST /memory/drain — builds MemoryCreator(runtime.db) at ~280)
    - src/paa/daemon.py:170-179 (_memory_creator — returns MemoryCreator(self._rt.db) at ~179)
    - src/paa/runtime.py:181,333,375 (memory_creator field, build, constructor pass)

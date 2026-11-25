@@ -52,7 +52,7 @@ Kept (semantic hold, no change): `submit:74` (decorator, def at 75), `doctor:225
 
 New (1): `sandbox/subprocess_backend.py:548` (`os.killpg(os.getpgid…)`; 3 win32 mypy errors per `00-mission.md:18`) — relative path resolves via `src/paa/` fallback. No other new `:line` introduced; new index entries use plain links.
 
-Self-review of diff: re-read edits from scratch — 5 line-number changes + VISION `../VISION.md` + ADR counts on 2 lines (match `adr/README.md:57-58`) + §A `(untested)` drop + §E rewrite (19-test validator per `AGENTS.md:194-195`; baseline mypy-3/pytest-12 per `00-mission.md:18-23` + SUMMARY §5; Linux-zero gate per `AGENTS.md:39-40`) + missing entries. No sub-doc content touched; no SUMMARY tables copied; no normative claim for RFC pair. Mutation check: reverting any fix re-points to blank/unrelated lines (e.g. serve→248 doctor table row); conventions isolation run below fails if any README ref goes blank/orphaned.
+Self-review of diff: re-read edits from scratch — 5 line-number changes + VISION `../VISION.md` + ADR counts on 2 lines (match `adr/README.md:60-58`) + §A `(untested)` drop + §E rewrite (19-test validator per `AGENTS.md:194-195`; baseline mypy-3/pytest-12 per `00-mission.md:18-23` + SUMMARY §5; Linux-zero gate per `AGENTS.md:39-40`) + missing entries. No sub-doc content touched; no SUMMARY tables copied; no normative claim for RFC pair. Mutation check: reverting any fix re-points to blank/unrelated lines (e.g. serve→248 doctor table row); conventions isolation run below fails if any README ref goes blank/orphaned.
 
 ## 3. Conventions result (real output, scoped pytest only)
 

@@ -14,7 +14,7 @@ Your role: implementer (coder). Read-only investigator reports are evidence, not
 7. tests/conventions/test_docs_references.py (lock pattern, scope 97-121, self-test 546-579)
 
 ## 3. Task and acceptance criteria
-Task T-N0-1 (N0.1): Move VISION.md → docs/VISION.md via `git mv`, fix all refs per investigator table (README 168/236/337, ROADMAP 3/6/65/92/124, VISION 11/12/76/223), fix ROADMAP:33 anchor to #testing (owner-decided R10), add tests/conventions/test_markdown_links.py that mirrors lock scope/exclusions, checks existence + anchor slugs, allowlists 15 index-only ADR rows (docs/adr/README.md:22-39 intentional per adr/README.md:66-73), mirrors self-test. Acceptance: link test fails on deliberately broken link (added in test as synthetic tree or tmp), passes after fix; pytest tests/conventions -q green; ruff 0; mypy src exactly 3 (baseline).
+Task T-N0-1 (N0.1): Move VISION.md → docs/VISION.md via `git mv`, fix all refs per investigator table (README 168/236/337, ROADMAP 3/6/65/92/124, VISION 11/12/76/223), fix ROADMAP:33 anchor to #testing (owner-decided R10), add tests/conventions/test_markdown_links.py that mirrors lock scope/exclusions, checks existence + anchor slugs, allowlists 15 index-only ADR rows (docs/adr/README.md:22-39 intentional per adr/README.md:69-73), mirrors self-test. Acceptance: link test fails on deliberately broken link (added in test as synthetic tree or tmp), passes after fix; pytest tests/conventions -q green; ruff 0; mypy src exactly 3 (baseline).
 Commands that must pass (scoped): pytest tests/conventions/test_markdown_links.py -q, pytest tests/conventions/test_docs_references.py -q, ruff check src tests, mypy src
 
 ## 4. Ownership

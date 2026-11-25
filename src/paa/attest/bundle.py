@@ -52,7 +52,7 @@ import json
 import os
 import shutil
 import subprocess
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -381,6 +381,8 @@ def build_bundle(
     test_bundles: Iterable[Path] = (),
     asserted_tests: Iterable[Sequence[str]] = (),
     evidence_bundles: Iterable[Path] = (),
+    extra_evidence: Iterable[tuple[str, Path, dict[str, Any]]] = (),
+    observed_command_rows: Iterable[Mapping[str, Any]] = (),
     approvals: Iterable[Approval] = (),
     key: KeyFile,
 ) -> BuildResult:
@@ -390,6 +392,15 @@ def build_bundle(
     first, then evidence is gathered and blobs are written, then the
     signed final manifest replaces the skeleton atomically. A build that
     dies mid-way leaves a manifest that says so.
+
+    Beyond the observe-bundle doors, two additive inputs serve the
+    recorder (C7.3): ``extra_evidence`` stores arbitrary artifact files
+    as evidence blobs — the recorder's hash-chained flight record rides
+    the chain as ``paa-record/1`` evidence — and ``observed_command_rows``
+    carries commands a flight record *witnessed executing*, each citing
+    the record blob's digest. Both are held to the same rule the
+    observed/asserted split states: a row may only claim ``observed``
+    when a blob in *this* bundle backs its ``evidence_sha256``.
     """
     from paa.config import get_settings
     from paa.ledger.mandate import explicit_mandate
@@ -476,6 +487,69 @@ def build_bundle(
             }
         )
         command_rows.append(_observed_row(summary, ref.sha256))
+
+    # The recorder's door (C7.3): arbitrary evidence artifacts — the
+    # hash-chained flight record above all — stored as blobs with the
+    # caller's row fields, which must name their own ``kind`` so a
+    # reader never meets an evidence row it cannot interpret. The
+    # digest is stamped here, from the stored bytes, because the blob's
+    # name is the checksum: a caller cannot cite a digest this bundle
+    # does not actually carry.
+    for role, path, row_fields in extra_evidence:
+        raw = path.read_bytes()
+        ref = store.put(raw, compress=False)
+        kind = str(row_fields.get("kind") or "")
+        if not kind:
+            raise PaaError(
+                f"extra evidence {path} carries no 'kind' in its row — an "
+                "evidence row a reader cannot interpret is not evidence"
+            )
+        run_ref = str(row_fields.get("run_id") or path.stem)
+        blob_entries.append(
+            {"sha256": ref.sha256, "bytes": ref.size_bytes,
+             "role": f"evidence:{role}:{run_ref}"}
+        )
+        row = dict(row_fields)
+        row["sha256"] = ref.sha256
+        evidence_rows.append(row)
+
+    # The recorder's command rows (C7.3): commands a flight record
+    # witnessed executing through the policy proxy. Validated against
+    # the blobs this bundle actually carries — an "observed" row whose
+    # evidence digest names no blob in *this* bundle is exactly the
+    # quietly-false citation the observed/asserted split exists to
+    # prevent, so it is refused, loudly.
+    backed_digests = {b["sha256"] for b in blob_entries}
+    for raw_row in observed_command_rows:
+        row = dict(raw_row)
+        command = row.get("command")
+        if (
+            not isinstance(command, list)
+            or not command
+            or not all(isinstance(part, str) for part in command)
+        ):
+            raise PaaError(
+                f"an observed command row needs a non-empty 'command' list "
+                f"of strings; got {command!r}"
+            )
+        cited = row.get("evidence_sha256")
+        if not isinstance(cited, str) or cited not in backed_digests:
+            raise PaaError(
+                "an observed command row cites evidence "
+                f"{cited!r}, which is not a blob in this bundle — an "
+                "observed row must be backed by bytes the bundle carries"
+            )
+        exit_code = row.get("exit_code")
+        command_rows.append(
+            {
+                "command": command,
+                "source": "observed",
+                "evidence_sha256": cited,
+                "exit_code": exit_code,
+                "state": row.get("state"),
+                "command_green": exit_code == 0 if isinstance(exit_code, int) else None,
+            }
+        )
 
     # -- phase 2b: the six section payloads ---------------------------------
     mandate = explicit_mandate(

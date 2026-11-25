@@ -40,7 +40,7 @@ four are exactly what the diff does.
   src/paa/ledger/recovery.py:454-456] the resume scan passes `descending=True` and reverses to chronological
   order. `test_bound_evicts_oldest_not_newest` (limit=2 over 4 tool events, target is the newest) fails on an
   ascending scan by construction and passes now; `test_results_keep_chronological_order` pins the reverse
-  [VERIFIED tests/coder/test_recovery_chaos.py:334-359]. Other `events_since` callers (cli/main.py:308,
+  [VERIFIED tests/coder/test_recovery_chaos.py:334-359]. Other `events_since` callers (cli/main.py:309,
   improvement/reflection.py:282) use the default and are unaffected [VERIFIED via grep].
 - **(3) Absent creation file → `not_applied`, not `unknown`** — SUPPORTED. [VERIFIED
   src/paa/coder/agent.py:360-367] `elif resolved is not None:` sets `live_checked=True, live_sha256=None` for a

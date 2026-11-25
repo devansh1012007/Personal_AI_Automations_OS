@@ -57,7 +57,7 @@ it on the runtime. `_build_memory_creator` (src/paa/runtime.py:430-452) returns 
 the three operator drain surfaces each constructed their own `MemoryCreator(db)`,
 ignoring `rt.memory_creator`:
 
-- src/paa/cli/main.py:630 — `creator = MemoryCreator(rt.db)` (drain command)
+- cli/main.py:631 — `creator = MemoryCreator(rt.db)` (drain command)
 - src/paa/api/app.py:280 — `creator = MemoryCreator(runtime.db)` (drain route)
 - src/paa/daemon.py:179 — `return MemoryCreator(self._rt.db)` (`_memory_creator`)
 
@@ -72,7 +72,7 @@ creator with a defensive `or MemoryCreator(db)` fallback (the fallback is never
 reached in practice because `Runtime.build()` always populates
 `memory_creator`):
 
-- src/paa/cli/main.py:630 — `creator = rt.memory_creator or MemoryCreator(rt.db)`
+- cli/main.py:631 — `creator = rt.memory_creator or MemoryCreator(rt.db)`
 - src/paa/api/app.py:280 — `creator = runtime.memory_creator or MemoryCreator(runtime.db)`
 - src/paa/daemon.py:179 — `return self._rt.memory_creator or MemoryCreator(self._rt.db)`
 

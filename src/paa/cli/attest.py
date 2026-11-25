@@ -339,8 +339,8 @@ def _pr_body(bundle_dir: Path) -> str:
         f"(key `{str(signature.get('key_id'))[:16]}…`)",
         f"- **Tests**: {observed} observed ({green} green) / {asserted} asserted",
         f"- **Approvals**: {len(approvals.get('entries') or [])} recorded",
-        f"- **Evidence bundles**: {len(evidence.get('bundles') or [])} "
-        "(T1 observe bundles, content-addressed)",
+        f"- **Evidence artifacts**: {len(evidence.get('bundles') or [])} "
+        "(content-addressed: observe bundles, and since C7.3 flight records)",
         "",
         "### How to verify",
         "",

@@ -22,14 +22,14 @@ Evidence = current target line content [VERIFIED by grep/read at final line numb
 - docs/README.md:46-50, repository-map.md:118-123/125, backend/overview.md:13/15/18/19, request-lifecycle.md:11, workflow-01-submit-and-run.md:10, workflow-03-crash-recovery.md:11, documentation-audit.md:59 — `:76→:77` [def submit], `:292→:293` [def serve], `:227→:228` [def doctor], `:209→:210` [def recover], `:147→:148` [def ledger], `:121→:122` [def status], `:182→:183` [def gate], `:355→:356` [def tui]. All VERIFIED as `def <name>(` at new line; old line is now `@app.command()` (decorator).
 - backend/overview.md:14, request-lifecycle.md:12 — `:89→:106` [def run; was body line inside submit — pre-existing wrong-without-broken, same class as W1 FINDING, fixed by claim].
 - backend/overview.md:16 — `:134→:148` [def ledger]; backend/overview.md:17, workflow-02-human-gate.md:50 — `:164→:183` [def gate]; backend/overview.md:20 — `:248→:293` [def serve]; backend/overview.md:22 — `:307→:356` [def tui]. (All were body lines inside previous commands at base — pre-existing wrong-without-broken, fixed by claim; the W1 FINDING rows are now resolved for these files.)
-- repository-map.md:117, cli.md:10 — `cli/main.py:38→:42` [sentence names `app`; `app = typer.Typer(` at 42; base 38 was an import].
+- repository-map.md:117, cli.md:10 — `cli/main.py:39→:42` [sentence names `app`; `app = typer.Typer(` at 42; base 38 was an import].
 - backend/overview.md:54, cli.md:36, deployment-and-runtime.md:46 — `:54→:55` [async def _build_runtime].
 - cli.md:51 — `:95→:99`, `:111→:115` [the `finally:` lines of submit/run; sentence names `finally`].
 - cli.md:55 — `:372→:377` [raise typer.Exit(1) in correlation_id_uuid; sentence names typer.Exit]; cli.md:58 — `:343→:348` [Exit after "unknown mode" in mode()].
 - backend/overview.md:56, deployment-and-runtime.md:47 — `:254→:293` [def serve; sentence: "paa serve builds one Runtime, starts the Daemon and a FastAPI app"].
 - integrations-and-communication.md:118 — `:266→:316` [config = uvicorn.Config(; sentence names uvicorn].
 - daemon.md:69 — `:310→:311` [rt = await _build_runtime(run_recovery=False) inside serve].
-- Plan1.md:79 — `cli/main.py:69-99→:70-100` [range: version decorator 70 through submit's `await rt.close()` 100].
+- Plan1.md:79 — `cli/main.py:70-99→:70-100` [range: version decorator 70 through submit's `await rt.close()` 100].
 - ADR-0036:115 — `:635→:636` [_MAX_DRAIN_ERROR_CHARS = 200].
 - w6-w7-w9.md:237 — `:208→:209` [same-content decorator; the sentence quotes the cite as an example].
 

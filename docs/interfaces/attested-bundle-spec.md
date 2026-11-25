@@ -88,6 +88,30 @@ uses, reuses by design.
 | `tests` | The same row shape, for test commands. | `command_green` is `exit_code == 0` — "the test command exited zero", no stronger claim. A bundle whose tests are all asserted carries a warning in the verdict. |
 | `approvals` | Sign-offs: approver (asserted), decision (`approved`/`rejected`/`changes_requested`), note, time. | Rejections are *recorded*, not refused — an attested rejection is more evidence, not less. |
 | `evidence` | The embedded `paa-observe-bundle/1` bundles: run id, digest, tier, command, outcome. | Only `phase="final"` observe bundles are accepted — a `started` bundle is the observer's crash marker, not evidence of a completed run. |
+| `evidence` (recorder rows) | Since C7.3, the evidence section also carries `paa-record/1` flight records: run id, digest, event count, chain root. | Embedded by the recorder at close; the blob is the record as of the attestation point, and the live record's `record_finalised` event cites the blob's digest, so the extension is visible. |
+
+## The recorder's rows (C7.3, additive)
+
+`paa record run` builds its bundle through two additive inputs to the
+builder, both held to the observed/asserted rule:
+
+- **`extra_evidence`** — arbitrary artifact files stored as
+  content-addressed blobs with caller-supplied row fields (which must name
+  their own `kind`). The recorder embeds its hash-chained flight record
+  this way, as a `paa-record/1` evidence row carrying the event count and
+  chain root.
+- **`observed_command_rows`** — commands a flight record *witnessed
+  executing* through the policy proxy. Each row cites the record blob's
+  digest, and the builder **refuses any row whose `evidence_sha256` names
+  no blob in the bundle** — an "observed" row must be backed by bytes the
+  bundle actually carries, or the citation is exactly the quietly-false
+  receipt this format exists to catch.
+
+A bundle from the recorder therefore distinguishes three kinds of command
+row: the harness command line itself (observed, T1, from the embedded
+observe bundle), the mediated tool calls (observed, backed by the flight
+record blob), and anything the operator asserted — same section, different
+words, counted separately.
 
 ## The two-phase write
 

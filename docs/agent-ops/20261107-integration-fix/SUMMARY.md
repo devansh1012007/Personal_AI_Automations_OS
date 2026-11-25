@@ -9,7 +9,7 @@ All 14 plan items (P01..P14) implemented; 9 ADRs filed (0036–0044, including t
 ## What changed per item
 | Item | What shipped (one line each — full evidence in the wave reports) |
 |---|---|
-| P-001 | Redacted 2 unredacted `str(exc)` sites (runtime.py:481, cli/main.py:649) + 200-char best-effort bound; T01. |
+| P-001 | Redacted 2 unredacted `str(exc)` sites (runtime.py:481, cli/main.py:650) + 200-char best-effort bound; T01. |
 | P-002 | `_semantic` hydrates + derives confidence live; payload confidence is provenance-only; T02. |
 | P-003 | Stored normalisation columns (canonical/aliases) + Python backfill v6; T03 (SQLite halves green; PG gated). |
 | P-004 | `memory/touch.py` single helper (4 sites); coder vector fallback with `Runtime.embedder`; T04/T05. |

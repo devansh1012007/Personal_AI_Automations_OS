@@ -7,8 +7,8 @@ Caution: `[FACT]` W2-IMPR-01 edited `src/paa/daemon.py` live (+4 lines at 63-66)
 
 ## §0 Context (investigation)
 - Root causes (two, distinct): (1) T-004 rewrote the daemon maintenance path in `src/paa/daemon.py` (commits 70dd91f on top of c5766c8: +1 line at curator import, +1 at `_curate_next_phase`; then W2-IMPR-01 added +4 lines at 63–66 for the REV R-W2-002 preview flag). Citations at `daemon.py:44` (now blank), `daemon.py:116` (now blank), `daemon.py:165` (now blank), `daemon.py:113` (blank after +4) broke mechanically. (2) Operator README rewrite (88124f2; current README 345 lines vs old ~296/428): old "Known limitations"-style lines 48/160/161/169/175/351 no longer exist; content moved to the Known-limitations table (240/247/250), quick-start (66), and ADR/lessons paragraph (213). Each fix was located by semantic search, not by adding the shift delta (e.g. maintenance-failure now cites the `daemon.maintenance_failed` log line 181, not the old function-comment line +2).
-- Old README lines confirmed via `git show c574733:README.md` (48 "No Docker…", 160 "No concrete tools…", 161 "No UI beyond CLI… no web dashboard, no streaming output…", 169 "No ingestion bridges… Telegram, email, or Slack…", 175 "No auth or multi-user…") and `git show f8c12a6:README.md:351` (OFFSET-pagination defect).
-- [RAN pytest docs-refs at start -> 2 failed: 1 past-end `docs/data/data-lifecycle.md:126 'README.md:351'` (README 345 lines); 20 blank (12 daemon, 8 README)] [VERIFIED gates/gate-w2-1.md R-W2-DOCS].
+- Old README lines confirmed via `git show c574733:README.md` (48 "No Docker…", 160 "No concrete tools…", 161 "No UI beyond CLI… no web dashboard, no streaming output…", 169 "No ingestion bridges… Telegram, email, or Slack…", 175 "No auth or multi-user…") and `git show f8c12a6:README.md:354` (OFFSET-pagination defect).
+- [RAN pytest docs-refs at start -> 2 failed: 1 past-end `docs/data/data-lifecycle.md:126 'README.md:354'` (README 345 lines); 20 blank (12 daemon, 8 README)] [VERIFIED gates/gate-w2-1.md R-W2-DOCS].
 - COMMS read at start; last line read: `[2026-11-06T18:51:53Z] W2-REV-01 -> ORCH | DONE …`.
 
 ## §1 Old → new table (the 21 + api-ref 2; E-rows = same-cause adjacent fixes)
@@ -26,19 +26,19 @@ Caution: `[FACT]` W2-IMPR-01 edited `src/paa/daemon.py` live (+4 lines at 63-66)
 | 10 | background-jobs-and-events.md:18 | `daemon.py:116` | `daemon.py:127` | same |
 | 11 | background-jobs-and-events.md:33 | `daemon.py:116` | `daemon.py:127` | same |
 | 12 | modules/daemon.md:77 | `daemon.py:165` | `daemon.py:181` | `log.error("daemon.maintenance_failed", …)` |
-| 13 | data-lifecycle.md:126 | `README.md:351` | `README.md:213` | `Additional defects found through tests included OFFSET pagination skipping rows during deletion, …` |
-| 14 | architecture/overview.md:239 | `README.md:161` | `README.md:250` | `Product surface \| CLI and loopback HTTP exist; a web dashboard, mobile access, and multi-user/team mode are later and conditional.` |
-| 15 | backend/overview.md:70 | `README.md:161` | `README.md:250` | same |
-| 16 | modules/cli.md:69 | `README.md:161` | `README.md:250` | same (PARTIAL — see §2) |
-| 17 | architecture/overview.md:244 | `README.md:175` | `README.md:250` | same (multi-user half) |
-| 18 | security-model-and-trust-boundaries.md:179 | `README.md:175` | `README.md:250` | same |
-| 19 | developer-workflow.md:18 | `README.md:48` | `README.md:66` | `No Docker, server, or GPU is required for the lightweight local setup. …` |
-| 20 | integrations-and-communication.md:7 | `README.md:169` | `README.md:247` | `Ingestion \| Minimal event-source integration is planned; broad Telegram/email/Slack and ambient bridges are not a current commitment.` |
-| 21 | integrations-and-communication.md:132 | `README.md:169` | `README.md:247` | same |
+| 13 | data-lifecycle.md:126 | `README.md:354` | `README.md:216` | `Additional defects found through tests included OFFSET pagination skipping rows during deletion, …` |
+| 14 | architecture/overview.md:239 | `README.md:164` | `README.md:253` | `Product surface \| CLI and loopback HTTP exist; a web dashboard, mobile access, and multi-user/team mode are later and conditional.` |
+| 15 | backend/overview.md:70 | `README.md:164` | `README.md:253` | same |
+| 16 | modules/cli.md:69 | `README.md:164` | `README.md:253` | same (PARTIAL — see §2) |
+| 17 | architecture/overview.md:244 | `README.md:178` | `README.md:253` | same (multi-user half) |
+| 18 | security-model-and-trust-boundaries.md:179 | `README.md:178` | `README.md:253` | same |
+| 19 | developer-workflow.md:18 | `README.md:48` | `README.md:69` | `No Docker, server, or GPU is required for the lightweight local setup. …` |
+| 20 | integrations-and-communication.md:7 | `README.md:172` | `README.md:250` | `Ingestion \| Minimal event-source integration is planned; broad Telegram/email/Slack and ambient bridges are not a current commitment.` |
+| 21 | integrations-and-communication.md:132 | `README.md:172` | `README.md:250` | same |
 | A1 | api-reference.md:134 | `api/app.py:219` | `api/app.py:315` | `def _signal_repo(runtime: Runtime) -> Any:` — FIXED |
 | A2 | api-reference.md:159 | `api/app.py:232` | `api/app.py:337` | `def _parse_uuid(value: str) -> uuid.UUID:` — FIXED |
-| E1 | architecture/overview.md:241 | `README.md:160` | `README.md:240` | `Real-world capabilities \| The coder loop exists, but the permissioned file, shell, and Git tool path must be completed …` (adjacent same-revision fix; was non-blank stale pointing at "Keep three graphs distinct") |
-| E2 | backend/overview.md:69 | `README.md:160` | `README.md:240` | same |
+| E1 | architecture/overview.md:241 | `README.md:163` | `README.md:243` | `Real-world capabilities \| The coder loop exists, but the permissioned file, shell, and Git tool path must be completed …` (adjacent same-revision fix; was non-blank stale pointing at "Keep three graphs distinct") |
+| E2 | backend/overview.md:69 | `README.md:163` | `README.md:243` | same |
 | E3 | component-interactions.md:99 (same row as #1) | `daemon.py:62` | `daemon.py:70` | `async def start(self) -> None:` |
 | E4 | modules/daemon.md:22 | `daemon.py:113`–`:166` | `daemon.py:119`–`:182` | `# -- loops ---` … end of `_maintenance_loop` (became test-visible only after IMPR-01's +4 shift) |
 
@@ -64,7 +64,7 @@ Notes on rows 7-11: the old `:116` pointed into `_dispatch_loop`'s body (pre-T-0
 - Reversal (mutation check): if `_claim_and_run` were moved out of reach, rows 7-11 would point at its old line and claim text would mismatch — the test cannot see it; §2's manual check is the only guard, which is why each mapping above quotes the new line.
 
 ## §5 Self-review audit
-- Phase 1 (investigation+edits): reviewed the full `git diff` of the 16 docs files. Findings: (a) initial daemon run executed against the moving IMPR-01 tree and flagged `daemon.py:113` — resolved by re-deriving all daemon numbers against the current tree (E4 + 70/127/181 corrections), test green. (b) First api-reference edit attempt failed on indentation (3 vs 4 spaces) — `repr()` check fixed it; exactly 1 replacement each. (c) `replaceAll` used only where two identical citations needed the same new value (background `daemon.py:116`×2→127, integrations `README.md:169`×2→247); post-edit `Select-String` confirms no leftover `daemon.py:44/:116/:165`, `README.md:48/160/161/169/175/351`, `api/app.py:219/:232` in write-set docs. (d) No `src/`, config, or README.md/VISION.md edits; `git status` shows only the 16 docs files + COMMS line + report under my ownership.
+- Phase 1 (investigation+edits): reviewed the full `git diff` of the 16 docs files. Findings: (a) initial daemon run executed against the moving IMPR-01 tree and flagged `daemon.py:113` — resolved by re-deriving all daemon numbers against the current tree (E4 + 70/127/181 corrections), test green. (b) First api-reference edit attempt failed on indentation (3 vs 4 spaces) — `repr()` check fixed it; exactly 1 replacement each. (c) `replaceAll` used only where two identical citations needed the same new value (background `daemon.py:116`×2→127, integrations `README.md:172`×2→247); post-edit `Select-String` confirms no leftover `daemon.py:44/:116/:165`, `README.md:48/160/161/169/175/351`, `api/app.py:219/:232` in write-set docs. (d) No `src/`, config, or README.md/VISION.md edits; `git status` shows only the 16 docs files + COMMS line + report under my ownership.
 - Final review (after test green): re-read every edited diff hunk against §2 verified lines. MINOR, accepted: README 161/175 fixes cite the product-surface row (250) for "streaming"/"auth" halves that the rewrite dropped verbatim — documented as PARTIAL rather than inventing a target (brief §3 rule). No CRITICAL/MAJOR findings.
 
 ## §6 Verification, assumptions, remaining risks

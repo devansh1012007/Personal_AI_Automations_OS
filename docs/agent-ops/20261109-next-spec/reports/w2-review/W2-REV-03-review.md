@@ -52,7 +52,7 @@ here is the code as I first read it, claim by claim, with only blind evidence.
   `runtime.settings.policy`. [RAN live forge probe below]
 - **Counting honesty** [VERIFIED src/paa/ledger/mandate.py:318-335] — three separate counters;
   unrecognised basis counted *nowhere*; `MANDATE_REFUSED` counted separately, never as coverage.
-- **Doctor / ledger / agent** [VERIFIED src/paa/cli/main.py:301-317, :193-197; src/paa/cli/coder.py:205-239] —
+- **Doctor / ledger / agent** [VERIFIED cli/main.py:302-317, :193-197; src/paa/cli/coder.py:205-239] —
   4 doctor rows; `head_mandate_summary` over the full chain; `--list-tools` returns at :205-207,
   mandate append is at :231-239 (after it). Read-only ordering holds by inspection.
 
@@ -104,7 +104,7 @@ report feared.
   construction (`redact` in granted/refused payloads, test pinned). Basis *is* client-asserted by
   design — D-5's whole point is that the ledger records the claim and the name prevents over-read.
 - **Operability**: `paa ledger` prints the head line; doctor prints the four counts; refusal prints
-  `PaaError` + lineage id (cli/main.py:102-104; coder.py prints `mandate: explicit ...`).
+  `PaaError` + lineage id (cli/main.py:103-104; coder.py prints `mandate: explicit ...`).
 - **Reversal**: [RAN] each probe independently re-executed. Removing the stale check → stale test
   fails by construction ([VERIFIED test_mandate.py:437-466] demands both reason and the refusal
   event). Removing the strict branch → LOCKDOWN tests fail (they demand 409/refusal). Folding
@@ -118,7 +118,7 @@ report feared.
 
 The mandate acceptance required "doctor output check". What exists: `count_bases` unit-tested
 ([VERIFIED tests/ledger/test_mandate.py:297-349]), `head_mandate_summary` unit-tested
-(:352-375), and the four rows *exist* in code ([VERIFIED src/paa/cli/main.py:314-317]). What does
+(:352-375), and the four rows *exist* in code ([VERIFIED cli/main.py:315-317]). What does
 not exist: any test — CliRunner or otherwise — asserting that `paa doctor` prints the four
 mandate rows or that `paa ledger <cid>` prints the `mandate:` line. The wiring (`events_since`
 filters, `count_bases` call, `console.print`) can break or silently drop a row and no test notices.

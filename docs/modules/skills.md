@@ -117,7 +117,7 @@ invalidates handle on exit (`skills/secrets.py:522`). Audit log of accesses/deni
 
 - Skills is self-contained; no external consumers in `src/` beyond the package
   itself — not wired into the orchestrator's main task path.
-- No marketplace publishing UI or user/payment model yet (`README.md:262`).
+- No marketplace publishing UI or user/payment model yet (`README.md:265`).
 
 ## Related documents
 

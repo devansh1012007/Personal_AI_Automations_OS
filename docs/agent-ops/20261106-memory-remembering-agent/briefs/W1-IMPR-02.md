@@ -14,9 +14,9 @@ Role: improver (second pass). Root cause: src/paa/runtime.py grew ~33 lines and 
 ## 3. Task
 Get the full broken list by running: `.venv\Scripts\python.exe -m pytest tests/conventions/test_docs_references.py::test_every_referenced_line_is_not_blank -q`
 Expected broken set (17, from gate run 2026-11-06):
-component-interactions.md:226 'runtime.py:431'; overview.md:59 'README.md:94', :96 ':383'/':393', :146 'README.md:114'; data-lifecycle.md:126 'README.md:87'; persistence-and-storage.md:154 'runtime.py:392'/':398'; Plan1.md:119 'daemon.py:179'; daemon.md:60 'daemon.py:163'; sandbox.md:114/:151 'runtime.py:431'; storage.md:85 'runtime.py:398', :86 'runtime.py:431'; validation.md:83 'runtime.py:495'; deployment-and-runtime.md:37 'runtime.py:392'/':398'.
+component-interactions.md:226 'runtime.py:431'; overview.md:59 'README.md:97', :96 ':383'/':393', :146 'README.md:117'; data-lifecycle.md:126 'README.md:90'; persistence-and-storage.md:154 'runtime.py:392'/':398'; Plan1.md:119 'daemon.py:179'; daemon.md:60 'daemon.py:163'; sandbox.md:114/:151 'runtime.py:431'; storage.md:85 'runtime.py:398', :86 'runtime.py:431'; validation.md:83 'runtime.py:495'; deployment-and-runtime.md:37 'runtime.py:392'/':398'.
 For EACH: read the doc context around the citation, read the claimed target file around the cited line, identify what the sentence claims the line holds (symbol/function), find the current correct line number, and update the citation. If the cited content no longer exists, note it explicitly in the report instead of guessing a nearby line.
-Note: README.md:87/:94/:114 were shifted by the operator's own commit f8c12a6 — those still count toward the gate; fix them the same way.
+Note: README.md:90/:94/:114 were shifted by the operator's own commit f8c12a6 — those still count toward the gate; fix them the same way.
 
 ## 4. Ownership
 WRITE-SET (may edit only these docs; NO source files):

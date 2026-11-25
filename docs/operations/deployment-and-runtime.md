@@ -4,7 +4,7 @@ PAA has two deployment topologies documented and implemented:
 
 1. **Laptop/default** — SQLite WAL + embedded fallbacks (Qdrant embedded,
    Kuzu/SQLite CTE, SQLite queue, local CAS). Idles at ~0MB RAM. No Docker
-   required (`README.md:78`).
+   required (`README.md:81`).
 2. **Docker/server** — Postgres + Qdrant + Redis + S3 via compose; only the
    ingestion API on `127.0.0.1:8787` publishes a port (`docs/deployment/docker.md`,
    `AGENTS.md:132`).
@@ -43,8 +43,8 @@ Programmatic: `Runtime.build()` (`src/paa/runtime.py:353`):
    (`runtime.py:264`).
 
 CLI one-shot commands build a `Runtime`, do one thing, print, and close
-(`cli/main.py:105`). `paa serve` builds one `Runtime`, starts the `Daemon` and
-FastAPI app over it (`cli/main.py:489`).
+(`cli/main.py:107`). `paa serve` builds one `Runtime`, starts the `Daemon` and
+FastAPI app over it (`cli/main.py:491`).
 
 ## Daemon loops
 
@@ -140,7 +140,7 @@ All state under `PAA_HOME` (default `~/.paa`, outside the repo):
 ## Health / observability
 
 - `paa doctor` reports live backends and sandbox isolation level
-  (`cli/main.py:303`).
+  (`cli/main.py:305`).
 - `GET /health` returns backend type names and open task count
   (`api/app.py:71`).
 - `src/paa/observability/` (logging, metrics, tracing, runs) is built but

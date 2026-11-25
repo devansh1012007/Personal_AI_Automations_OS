@@ -35,6 +35,7 @@ from paa.cli.coder import register_agent
 from paa.cli.mcp import app as mcp_app
 from paa.cli.observe import observe as observe_command
 from paa.cli.pipeline import app as pipeline_app
+from paa.cli.record import record_app
 from paa.core.types import ComplexityModality, EventType, PermissionMode
 from paa.memory.touch import touch_recalled
 from paa.models.base import redact
@@ -909,6 +910,11 @@ app.command(name="observe")(observe_command)
 # ``attest`` group. ``paa attest build | pr`` is the producer side.
 app.add_typer(attest_app, name="attest")
 app.command(name="verify")(verify_command)
+
+# ``paa record`` is a group because the flight recorder has three doors
+# over one record format (C7.3): ``run`` wraps the harness, ``proxy`` is
+# the MCP server its tool calls ride, and ``verify`` checks the chain.
+app.add_typer(record_app, name="record")
 
 
 if __name__ == "__main__":

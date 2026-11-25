@@ -15,7 +15,7 @@ Branch/worktree: current working directory on branch `ops/20261106-memory-rememb
 7. COMMS.md (read at start)
 
 ## 3. Task
-Review ONLY: `git diff 2f7b083..91da8c8 -- src/ tests/ docs/` (code 1889808 + docs 91da8c8). Check: (a) coder-note rewrite (FINAL-01) — is the keyword-vs-planner truthful vs C01? (b) fallback floor forwarding (FINAL-02) — `explicit_prune_floor()` same source as curator, defaults byte-identical? (c) `redact()` on drain error (F-02 in-set) — correct helper/import, and confirm the 2 out-of-set lines (runtime.py:481, cli/main.py:649) are truly untouched? (d) new handle-touch e2e (FINAL-03) — asserts real retention effect via handle()? (e) F-01 runbook — commands/paths exist, snapshot/rollback truthful (cold-lake replay vs code revert)? (f) docs path:line cites hold claimed content (conventions green).
+Review ONLY: `git diff 2f7b083..91da8c8 -- src/ tests/ docs/` (code 1889808 + docs 91da8c8). Check: (a) coder-note rewrite (FINAL-01) — is the keyword-vs-planner truthful vs C01? (b) fallback floor forwarding (FINAL-02) — `explicit_prune_floor()` same source as curator, defaults byte-identical? (c) `redact()` on drain error (F-02 in-set) — correct helper/import, and confirm the 2 out-of-set lines (runtime.py:481, cli/main.py:650) are truly untouched? (d) new handle-touch e2e (FINAL-03) — asserts real retention effect via handle()? (e) F-01 runbook — commands/paths exist, snapshot/rollback truthful (cold-lake replay vs code revert)? (f) docs path:line cites hold claimed content (conventions green).
 Output: verdict APPROVE / APPROVE-WITH-CHANGES / REJECT with BLOCKER/MAJOR/MINOR/NIT findings (file:line evidence). Run scoped tests only (e2e + maintenance + conventions).
 
 ## 4. Ownership

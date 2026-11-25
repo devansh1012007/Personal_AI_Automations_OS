@@ -43,12 +43,12 @@ Major subsystems:
 
 Primary entry points:
 
-* `paa submit "goal"` — submit and run one task to completion (`src/paa/cli/main.py:126`)
-* `paa serve` — FastAPI API + background daemon (`src/paa/cli/main.py:469`)
-* `paa doctor` — report live backends/sandbox plus the chat model, MCP token env and TUI extra (`src/paa/cli/main.py:303`)
-* `paa recover` — post-crash boot sweep (`src/paa/cli/main.py:285`)
-* `paa ledger <id>` — walk a task's event chain (`src/paa/cli/main.py:212`)
-* `paa memory <subcommand>` — facts/search/signals/drain/world-model (`src/paa/cli/main.py:695`)
+* `paa submit "goal"` — submit and run one task to completion (`cli/main.py:128`)
+* `paa serve` — FastAPI API + background daemon (`cli/main.py:471`)
+* `paa doctor` — report live backends/sandbox plus the chat model, MCP token env and TUI extra (`cli/main.py:305`)
+* `paa recover` — post-crash boot sweep (`cli/main.py:287`)
+* `paa ledger <id>` — walk a task's event chain (`cli/main.py:214`)
+* `paa memory <subcommand>` — facts/search/signals/drain/world-model (`cli/main.py:697`)
 * `paa observe -- <cmd>` — run any CLI under observation, leave the T1 evidence bundle (`src/paa/cli/observe.py:118`)
 * `paa attest build` / `paa verify` — the attested change bundle and its offline verifier (H3.1): mandate, diff, commands, tests, approvals, hash chain, Ed25519 signature (`src/paa/cli/attest.py:88`)
 * `paa chat` — the chat surface: TUI, or `--plain` (`src/paa/cli/chat.py:160`)
@@ -104,6 +104,7 @@ APIs and integrations
 - [interfaces/integrations-and-communication.md](interfaces/integrations-and-communication.md)
 - [interfaces/mcp-server.md](interfaces/mcp-server.md) — `paa mcp serve`: spawn config, token auth, the six tools, scripted smoke.
 - [interfaces/observe-bundle.md](interfaces/observe-bundle.md) — the T1 observation bundle format (`paa-observe-bundle/1`).
+- [interfaces/record-format.md](interfaces/record-format.md) — the flight record format (`paa-record/1`): the hash-chained event journal, the MCP policy proxy, the three CLI doors.
 - [interfaces/attested-bundle-spec.md](interfaces/attested-bundle-spec.md) — the attested change bundle format (`paa-attest-bundle/1`): sections, chain, signature, the five verification doors, the GitHub Action template.
 
 Execution flows
