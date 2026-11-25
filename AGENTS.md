@@ -586,6 +586,16 @@ the archive at the bottom. Keep prose out — this is a register, not a report.
   `mypy src/paa` 197 files clean (numpy ≥2.3 stubs; the old `type-arg`
   ignores were removed with the pre-defaults stubs); `ruff check src
   tests` clean; conventions incl. docs lock 34 passed.
+- Full gate at the Wave 7 close (wave-7f): 5,242 collected = **5,237 passed /
+  4 skipped / 1 xfailed, 0 failures, exit 0** with every environment gate open
+  (`scripts/test-env.sh up` + the extras; 2026-11-26). The 4 skips are the
+  same either-or gates as the skip-sweep run. `mypy src/paa` 0 issues in 221
+  source files (evals/thread/acp add 24 over the C7.3 close); `ruff check src
+  tests` clean; conventions incl. the docs lock 34 passed — after re-anchoring
+  42 `cli/main.py` citations the Wave 7 union had drifted onto blank lines
+  (d366655; the union of three registrations shifted the file; re-anchored
+  against the integration base 1602467 with the feature tips as fallback
+  parents).
 - venv: sandbox `/home/z/.venv` — **outside** the persistent project dir; after
   a sandbox recycle reinstall with `pip install -e ".[dev,tui]"` from the repo
   root. Host repo: `.venv/` inside the repo (Python 3.12.3), gate commands
@@ -631,14 +641,25 @@ Owner ask: continue down the satisfaction report's "not started / partial" list 
 wave order; Wave 7 rows as capacity allows, C7.1 first (it is also the pipeline
 spec's P1.4: the fourth pipeline the rule of three was waiting on).
 
+**WAVE 7 CLOSED (2026-11-25):** all six rows done — observe (C7.1), attest
+(C7.2), record (C7.3) landed through the hardened main line; evals (C7.4),
+thread (C7.5) and ACP v1 (C7.6) landed on feature branches and integrated on
+`wave-7f` (three merges, registration unions in `cli/main.py`, 42 drifted
+citations re-anchored). Full gate at the close: 5,242 collected = 5,237
+passed / 4 by-design skips / 1 xfail / 0 failures, every environment gate
+open; mypy 221 files clean; ruff clean. The successor movable item is P3
+(the RPC host/protocol run) — everything else left is operator-gated or
+author-gated by the spec's own rules.
+
 | Task ID | Agent | Assignment | Status | Evidence / notes |
 |---|---|---|---|---|
 | W7-C7.1 | orchestrator | `paa observe` — H3.2 observer mode, T1 evidence tier, pipeline #4 per P1.4: run any CLI in a workspace, record manifest diff + git changes + transcript, classify state after a crash; `paa-observe-bundle/1` (two-phase atomic write, `resume="none"`, `evidence_tier="T1"`), `builtin.observe` on the facade with an empty capability ask, one shared driver for `paa observe` and `paa pipeline run builtin.observe`, `[evidence] declares_tier` on manifests | **done** | landed ccf0793 (patch `0020`) with local hardening: reserved `--env` keys refused, argv secrets kept out of failed-journal reasons, missing git recorded not fatal, canonical-hash/atomic-write claims stated honestly; 63 observe tests; `PYTHONPATH=src .venv/bin/python -m pytest tests/ -q -o addopts=` → 4,506 passed / 240 skipped / 1 xfailed / **3 pre-existing failures** in the untracked `tests/test_git_host_exec_gate.py`; `mypy src` 0 issues / 186 files; `ruff check src tests` only those same 3 pre-existing findings; docs lock 5 passed; patch-author SHAs, counts and `/home/z/...` paths are not adopted |
 | W7-C7.2 | orchestrator | attested change bundle + `paa verify` (H3.1) | **done** | landed f5555b6 (patch `0021`) with local hardening: algorithm-aware signature dispatch + signed blob index, hostile-manifest verdicts, bounded decompression; git option injection closed via `rev-parse --end-of-options`, false-clean git refused, key mode checked on load, T1/`resume="none"` enforced, portable secrets refused, PR body verified before rendering with inert code-span escaping and terminal-safe refusals; `paa[attest]`/`requires_attest` added. 92 attest tests; focused `tests/attest` + conventions 126 passed; final full suite 4,599 passed / 239 skipped / 1 xfailed / **3 pre-existing failures** in untracked `tests/test_git_host_exec_gate.py`; `mypy src` 0 issues / 191 files; `ruff check src tests` only those same 3 findings; status lock matches; author-host claims and untrusted `.bin` evidence not adopted/committed |
 | W7-C7.3 | orchestrator | `paa record` — the harness-neutral flight recorder | **done** | landed by this merge (63c5a0e, built on the pre-hardening attest); W7-IMPL-03 report; `paa-record/1`: append-only, crash-safe hash-chained NDJSON (digest covers schema/seq/at/kind/data/prev, genesis seed; two-phase summary, torn-tail reported not dropped) + the sequential-writer handoff (core ↔ proxy append under flock, tail digest verified, one chain no splice); `src/paa/recorder/{record,tools,proxy,core}.py` + `paa record run\|proxy\|verify`; the MCP policy proxy over the shared framing kit (tool_call → shape → run's recorded policy → execute sandbox/jailed → tool_result/policy_denied; unattended ask = denied_unattended with the raw decision kept; deny wins; no token, reasoning stated); the harness under a real SandboxSession with live stdout relay; mediated vs observed never collapsed (the honesty block states it where the code enforces it); attest builder +2 additive validated params (extra_evidence, observed_command_rows backed by bundle blobs) — closes the C7.2 command-row-extractor finding; done-when met as a real chain: fake harness (real child) → real proxy subprocess over real stdio → real chain → `verify_bundle` green; chaos: self-SIGKILL → signalled, overrun → timed_out, both finalised+verifying; non-cooperating harness → T1 floor, zero proxy events; 50 recorder tests, full gate 4,769 collected = 4,525/243/1x/0 exit 0 (+50 exactly; one textual-gated TUI skip un-skipped), mypy 197 files, ruff clean; docs/interfaces/record-format.md + attest-spec additive section + 95 citation files re-anchored |
-| W7-C7.4 | orchestrator | cross-harness eval harness | not started | depends on C7.3 (met by this merge) |
-| W7-C7.5 | orchestrator | `paa thread` | not started | listed in Known left; no row detail in patch `0020` |
-| W7-C7.6 | orchestrator | ACP v1 | not started | listed in Known left; no row detail in patch `0020` |
+| W7-C7.4 | orchestrator | cross-harness eval harness | **done** | landed a230b30 (merged a0d666f onto wave-7f); W7-IMPL-05 report; `src/paa/evals/`: `tasks.py` (EvalTask + TASK_SCHEMA; five repository tasks under `evals/tasks/`, incl. two designed discriminators — palindrome-guard trips a naive direct-write harness on its forbidden path, fizzbuzz-off-by-one separates harnesses that run the tests they were given from ones that ship a plausible wrong fix), `harnesses.py` (adapter registry; two scripted fakes — recorded-fake mediated through the `paa record proxy` MCP loop, scripted-direct unmediated), `runner.py` (matrix inside the evidence boundary, journalled, canonical REPORT_SCHEMA), `scoring.py` (four deterministic checks: tests-pass, bundle-verifies — honestly N/A for plain adapters, never silently passed, diff-matches-intent, no-forbidden-effects); `paa eval run\|tasks` CLI; no new EventType — the matrix journals PIPELINE_RUN_COMPLETED on its own lineage (the ADR-0046 pricing rule); 62 tests incl. the 2×5 matrix end-to-end with a real per-harness distinction in the report; **demo artifact delivered** (`paa-eval-demo/`: the live 2×5 matrix report — recorded-fake 5/5 mediated with verifying bundles, scripted-direct 2/5 tripping all three designed discriminators) |
+| W7-C7.5 | orchestrator | `paa thread` | **done** | landed eea1b4f (merged 2e8fa7e onto wave-7f); W7-IMPL-06 report; `src/paa/thread/`: `record.py` (ThreadRecord/Segment, durable JSON under PAA_HOME/threads, append-only invariants enforced by the methods), `journal.py` (four new event types — THREAD_CREATED, THREAD_SEGMENT_STARTED carrying packet_sha256, THREAD_SEGMENT_ENDED, THREAD_HARNESS_SWAPPED; replay folds without requeue, the boot sweep taught), `handoff.py` (content-addressed HandoffPacket: mandate + gathered memory + ledger tail + git summary — "context intact" is a checkable fact), `harness.py` (registry + fake-alpha/fake-beta), `engine.py`; `paa thread new\|run\|swap\|show\|list`; the swap acceptance: start on fake-alpha, swap to fake-beta mid-task — same thread id and mandate, the second packet carries the first segment's effects, the packet-hash chain intact, the ledger ordered and unbroken; 99 tests + ledger 161 green with the new vocabulary; **demo artifact delivered** (`paa-thread-demo/`: the live swap — new/run/swap/show/ledger through the real CLI, both handoff packets, the ledger chain ordered with `chain integrity: ok`) |
+| W7-C7.6 | orchestrator | ACP v1 | **done** | landed e4290c4 (merged fa626aa onto wave-7f); W7-IMPL-07 report + ADR-0053; `src/paa/acp/` on the shared framing kit (one framing codebase, three fronts — MCP server, MCP client, ACP): `protocol.py` (initialize with pinned version, session/new, session/prompt, streaming session/update, session/cancel, fs/read_text_file, JSON-RPC error envelopes), `server.py` (T1 stdio front: the editor spawns PAA; prompts drive the chat service; cancel wired to the loop's real cancellation — a stop, not an ACK), `client.py` (T2 front: external ACP agent behind a SandboxSession, its permission asks mediated through the deterministic tool policy — the recorder-proxy pattern applied to ACP; unattended ask = recorded refusal), `fs.py` (scoped by the coder protected-path rules); `paa acp serve` / `paa acp client --`; 90 tests incl. the streaming acceptance over real subprocess pipes and the cancel acceptance (ACKed, chunks actually stop, session stays usable, children reaped); **demo artifact delivered** (`paa-acp-demo/`: the wire transcript of a live initialize → session/new → streaming turn → mid-flight cancel → usable-after-cancel → EOF session, 13 frames) |
+| W7-CLOSE | orchestrator | integrate C7.4/C7.5/C7.6, full gate, deliverables | **done** | wave-7f integration: evals/thread/acp each on its own branch over the H-1 fix (0662027), merged in sequence (a0d666f, 2e8fa7e, fa626aa — the cli/main.py registration union resolved by hand, the recovery table row kept on thread's shifted lines, repo-map re-anchored); 42 drifted `cli/main.py` citations re-anchored onto the union (d366655, docs lock green); full gate 5,242 collected = **5,237 passed / 4 skipped / 1 xfailed / 0 failures** with every environment gate open; mypy 221 files / 0 issues; ruff clean; conventions 34; demo artifacts regenerated for all six rows (`paa-observe-demo-bundle.json`, `paa-attest-demo-bundle/`, `paa-record-demo/`, `paa-eval-demo/`, `paa-thread-demo/`, `paa-acp-demo/`); deliverables regenerated as `paa-wave7-complete.*` + the 6th-edition report |
 
 ### Archived campaign: T-VERIFY (2026-11-24, complete)
 
@@ -706,22 +727,31 @@ P0 → P1.1 → P1.2 → SPEC-2 W4 C4.1–C4.7 → W5 C5.2–C5.5 close).
   verdicts, git option injection closed; gate evidence is in the W7 row above).
 - Wave 7 rest: ~~C7.3 `paa record`~~ → **done in Wave 7** (C7.3, landed by this
   merge: `paa-record/1` chain, the MCP policy proxy, the SandboxSession wrap,
-  the attested bundle at close — `paa record run|proxy|verify`). C7.4 evals,
-  C7.5 `paa thread`, C7.6 ACP v1 → not started (C7.4's dependency is met).
-- P3 (RPC host/protocol), P5 (distribution), the P6 adapters beyond observe
-  (acp-client, mcp-host), P7 (authoring kit) → not started; `paa-pipeline/1`
+  the attested bundle at close — `paa record run|proxy|verify`). ~~C7.4 evals~~,
+  ~~C7.5 `paa thread`~~, ~~C7.6 ACP v1~~ → **done in Wave 7** on the wave-7f
+  integration branch: C7.4 the cross-harness eval harness (`paa eval`, five
+  tasks × two adapters, deterministic four-check scoring), C7.5 the local-first
+  control plane (`paa thread`, content-addressed handoff packets, four ledger
+  event types, mid-thread harness swap with the chain unbroken), C7.6 ACP v1
+  (`paa acp serve` + the mediated client on the shared framing kit, ADR-0053).
+  **Wave 7 is closed — all six rows landed.**
+- P3 (RPC host/protocol), P5 (distribution), the P6 adapters beyond observe,
+  record and acp-client (mcp-host in its full form), P7 (authoring kit) → not
+  started; `paa-pipeline/1`
   stays draft — freezing waits for P3's RPC run (the spec's own rule).
 - C5.1/G1 real-model S1: PENDING, operator-blocking (no model key in this sandbox);
   run book in `docs/operations/2026-11-09-next-spec/g1-decision.md`.
 
 ### Deliverables of this campaign
 
-- `/home/z/my-project/download/paa-spec2-w4-w7.patch` + `.bundle` — combined diff
-  and git bundle of all unpushed commits through the C7.3 close (regenerated
-  at the C7.3 close; supersedes the w4-w6 pair, the host's working-tree series
+- `/home/z/my-project/download/paa-wave7-complete.patch` + `.bundle` — combined
+  diff and git bundle of all unpushed commits through the Wave 7 close (every
+  environment gate open at verification; regenerated at the wave-7f close;
+  supersedes `paa-w7-final.*`, the w4-w7 pair, the host's working-tree series
   and every earlier range).
-- `/home/z/my-project/download/paa-format-patch-series-w7/` — per-commit patches
-  from `origin/main` (git am ready; the w6 series is superseded).
+- `/home/z/my-project/download/paa-format-patch-series-w7c/` — per-commit
+  patches from `origin/main` (git am ready; the w7 and w6 series are
+  superseded).
 - `/home/z/my-project/download/paa-observe-demo-bundle.json` — a complete T1
   bundle from the scripted fake-harness run (the C7.1 done-when, as an artifact).
 - `/home/z/my-project/download/paa-attest-demo-bundle/` — a complete, verifying
@@ -731,11 +761,22 @@ P0 → P1.1 → P1.2 → SPEC-2 W4 C4.1–C4.7 → W5 C5.2–C5.5 close).
   artifact: a scripted cooperating harness recorded by the real CLI (flight
   record verifying green via `paa record verify`, its observe bundle, its
   attested bundle and the flipped-byte refusal beside it).
+- `/home/z/my-project/download/paa-eval-demo/` — the C7.4 done-when, as an
+  artifact: the live 2×5 matrix through `paa eval run` (recorded-fake 5/5
+  mediated with verifying bundles; scripted-direct 2/5 — all three designed
+  discriminators tripped, with reasons in the report JSON).
+- `/home/z/my-project/download/paa-thread-demo/` — the C7.5 done-when, as an
+  artifact: the live harness swap through the real CLI (new → run fake-alpha
+  → swap fake-beta → show → ledger, both handoff packets, chain integrity ok).
+- `/home/z/my-project/download/paa-acp-demo/` — the C7.6 acceptance, as an
+  artifact: the raw wire of a live session over real subprocess pipes —
+  streaming chunks, a mid-flight cancel that stops the stream in 2 ms and
+  keeps the session usable, clean EOF.
 - `/home/z/my-project/download/paa-pipeline-platform-spec-satisfaction-report.pdf`
-  — the audit report (5th edition: Wave 6 rows DONE + the Wave 7 rows 1–3).
-- Earlier ranges (`paa-pipeline-platform-work.patch`, `paa-spec2-w4-w5.*`,
-  `paa-spec2-w4-w6.*`, `pipeline-platform-p0-p1.*`, the w6 series dirs) are
-  superseded; `paa-report-cover.html` remains the report cover source.
+  — the audit report (6th edition: Wave 6 DONE + all six Wave 7 rows landed).
+- Earlier ranges (`paa-w7-final.*`, `paa-spec2-w4-w7.*`, `paa-pipeline-platform-work.patch`,
+  `paa-spec2-w4-w5.*`, `paa-spec2-w4-w6.*`, `pipeline-platform-p0-p1.*`, the w6/w7
+  series dirs) are superseded; `paa-report-cover.html` remains the report cover source.
 - This board (committed with each wave close — tracking state, not product;
   the host's uncommitted-by-design copy is superseded by this landed history).
 
