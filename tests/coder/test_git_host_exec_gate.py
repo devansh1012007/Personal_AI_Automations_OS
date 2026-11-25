@@ -12,18 +12,27 @@ full privileges, so the mechanism is demonstrated but not itself an escalation.
 
 These tests plant the config directly, so they hold regardless of what wrote it.
 
-EXPECTED STATE ON ``main`` @ 5e0a0d8:
-    test_fsmonitor_not_executed      FAIL   (marker created on the host)
-    test_clean_filter_not_executed   FAIL   (marker created on the host)
-    test_commit_hook_not_executed    PASS   (core.hooksPath= already neutralises hooks)
+STATE since the repo-config gate (ROADMAP task A1, ``_repo_config_gate`` in
+``src/paa/coder/git_tools.py``): every host-side git tool call probes the
+repository's *local* config for keys that name external programs
+(``core.fsmonitor``, ``filter.<name>.clean/smudge/process``,
+``diff.external``) and refuses with ``PaaError`` before any status/stage/
+commit runs. All four tests pass:
 
-Drop into ``tests/coder/``. After the fix (ROADMAP task A1), all three must pass and
-``test_refusal_is_explicit`` must pass too.
+    test_fsmonitor_not_executed      PASS   (refused before status ran)
+    test_clean_filter_not_executed   PASS   (refused before stage ran)
+    test_commit_hook_not_executed    PASS   (core.hooksPath= already neutralised hooks)
+    test_refusal_is_explicit         PASS   (the refusal names the config)
+
+The probe reads config only (``git config --local --get-regexp`` touches no
+index, runs no driver) and ignores global config: the operator's own
+git-lfs filters are theirs, outside what the workspace can write.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import shutil
 import subprocess
 from pathlib import Path
@@ -38,7 +47,7 @@ pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git not ins
 
 
 def _git(root: Path, *args: str) -> None:
-    subprocess.run(  # noqa: S603 - fixed argv in a test
+    subprocess.run(
         ["git", "-C", str(root), *args],
         check=True,
         capture_output=True,
@@ -68,10 +77,8 @@ def test_fsmonitor_not_executed(repo: tuple[Path, Path]) -> None:
     root, marker = repo
     _git(root, "config", "core.fsmonitor", f"touch {marker}; echo")
     tools = build_git_tools(Workspace(root=root))
-    try:
+    with contextlib.suppress(Exception):  # a refusal is acceptable; execution is not
         _run(tools, "git_status", {})
-    except Exception:  # a refusal is acceptable; execution is not
-        pass
     assert not marker.exists(), "git_status executed core.fsmonitor on the host"
 
 
@@ -81,10 +88,8 @@ def test_clean_filter_not_executed(repo: tuple[Path, Path]) -> None:
     _git(root, "config", "filter.probe.clean", f"touch {marker}; cat")
     (root / "a.txt").write_text("changed\n", encoding="utf-8")
     tools = build_git_tools(Workspace(root=root))
-    try:
+    with contextlib.suppress(Exception):
         _run(tools, "git_stage", {"paths": ["a.txt"]})
-    except Exception:
-        pass
     assert not marker.exists(), "git_stage executed a clean filter on the host"
 
 
