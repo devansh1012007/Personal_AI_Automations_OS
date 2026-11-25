@@ -114,7 +114,7 @@ responsibility and the files it contains. All paths are repository-relative.
 
 | Entry point | File | Function |
 |---|---|---|
-| `paa` CLI | `src/paa/cli/main.py:50` | `app = typer.Typer(...)`; `__main__` at line 914 |
+| `paa` CLI | `src/paa/cli/main.py:50` | `app = typer.Typer(...)`; `__main__` at line 935 |
 | `paa submit` | `src/paa/cli/main.py:128` | `submit` |
 | `paa serve` | `src/paa/cli/main.py:471` | `serve` |
 | `paa doctor` | `src/paa/cli/main.py:305` | `doctor` |

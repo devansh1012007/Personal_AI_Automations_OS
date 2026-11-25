@@ -28,6 +28,7 @@ from rich.console import Console
 from rich.table import Table
 
 from paa import __version__
+from paa.cli.acp import app as acp_app
 from paa.cli.attest import attest_app
 from paa.cli.attest import verify as verify_command
 from paa.cli.chat import app as chat_app
@@ -925,6 +926,11 @@ app.add_typer(eval_app, name="eval")
 # ``paa thread`` is a group because the control plane has five verbs over
 # one thread record (C7.5): new, run, swap, show, list.
 app.add_typer(thread_app, name="thread")
+
+# ``paa acp`` is a group because ACP v1 has two fronts over one wire
+# vocabulary (C7.6): ``serve`` is PAA as the agent behind an editor, and
+# ``client`` is the mediated spawn of an external agent.
+app.add_typer(acp_app, name="acp")
 
 if __name__ == "__main__":
     app()
