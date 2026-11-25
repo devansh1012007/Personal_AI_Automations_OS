@@ -575,6 +575,17 @@ the archive at the bottom. Keep prose out — this is a register, not a report.
   — that file is tracked and green in the merged tree. Note: pytest 9's double
   `-q` (addopts + a manual `-q`) suppresses the summary line — count with a
   single `-q` or read the dots.
+- Full gate after the skip sweep (W7-IMPL-04, commit 8710623): 4,934
+  collected = **4,929 passed / 4 skipped / 1 xfailed, 0 failures** with
+  every environment gate open (`scripts/test-env.sh up` + the extras).
+  The 4 remaining skips are either-or gates that *must* skip on this host
+  precisely because the thing they test-for is installed: the no-driver
+  S3 test (boto3 present), the shell start-failure test (a shell is
+  present), and the two hash-embedder fallback tests
+  (sentence-transformers is installed — its selection test runs instead).
+  `mypy src/paa` 197 files clean (numpy ≥2.3 stubs; the old `type-arg`
+  ignores were removed with the pre-defaults stubs); `ruff check src
+  tests` clean; conventions incl. docs lock 34 passed.
 - venv: sandbox `/home/z/.venv` — **outside** the persistent project dir; after
   a sandbox recycle reinstall with `pip install -e ".[dev,tui]"` from the repo
   root. Host repo: `.venv/` inside the repo (Python 3.12.3), gate commands
