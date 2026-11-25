@@ -67,24 +67,27 @@ Fixed argv hardening, all code-side so the model cannot reach it:
   always travels as the value of ``-m`` (never ``--amend``/editor), as a
   fixed pair, so ``{"message": "--amend"}`` is a subject, not a flag.
 
-Known residual, closed by the repo-config gate (ROADMAP task A1):
-``.gitattributes`` filter drivers (``filter.<name>.clean``) and
-``core.fsmonitor`` are repo-configured executables that run during
-``git add``/``git status`` whichever tool drives git — on the host, outside
-the sandbox. The agent's ``bash`` can write ``.git/config`` (the
-protected-path rule binds the fs tools, not bash), so that config is
-attacker-writable input, and it is **refused, not executed**: every
-git tool call first probes the repository's *local* config for keys that
-name programs (``core.fsmonitor``, ``filter.<name>.clean/smudge/process``,
-``diff.external``) and raises :class:`~paa.core.errors.PaaError` naming
-what it found. Local only — the host operator's own global filters
-(git-lfs and friends) are theirs, outside what the workspace can write.
-``diff.<driver>.command``/``textconv`` are already dead under
-git_diff's ``--no-ext-diff --no-textconv``; pagers are dead under
-``--no-pager``; the editor never opens (messages travel as ``-m``
-values). A workspace that already contains hostile git configuration is
-still a hostile input to any git client — the gate refuses rather than
-pretending to sanitise it.
+Known residual, closed by the host-git integrity gate (Wave 7-F task H-1,
+``src/paa/coder/git_integrity.py``, ADR-0047): repository config can name
+programs git would execute during ordinary status/stage/commit —
+``core.fsmonitor``, ``filter.<name>.clean/smudge/process``,
+``diff.<driver>.command``, ``merge.<driver>.driver``, ``credential.helper``,
+pagers, editors, signing programs — and ``.gitattributes`` can select
+filter drivers. The agent's ``bash`` can write ``.git/config`` and
+``.gitattributes`` (the protected-path rule binds the fs tools, not bash),
+so that config is attacker-writable input, and it is **refused, not
+executed**: every git tool call first probes the repository's *local*
+config (``git config --local --list -z --no-includes`` — reads, executes
+nothing) against a deny table — exact keys, class prefixes, and a
+last-segment default-refuse so a program-naming key git adds later is
+denied too — and scans the root attributes files for ``filter=``. The
+refusal names the key, never its value. Local only — the host operator's
+own global filters (git-lfs and friends) are theirs, outside what the
+workspace can write. Defence in depth behind the gate: every invocation
+carries ``-c core.fsmonitor=false`` and the child env forces
+``GIT_CONFIG_NOSYSTEM=1``. Residual, stated honestly: a hostile repository
+*cloned by a human* is a hostile input to any git client — the gate
+protects the runtime from the workspace, not the human from the internet.
 
 Errors are returned as JSON values, not raised (the ``runtime_tools.py``
 convention): the loop feeds the return string back to the model, and a
@@ -102,6 +105,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from paa.coder.git_integrity import repo_config_gate
 from paa.coder.workspace import (
     Workspace,
     WorkspaceViolation,
@@ -175,8 +179,14 @@ _ENV_PASSTHROUGH: frozenset[str] = frozenset(
 )
 
 #: Forced child variables: no credential prompt (there are no network
-#: operations to authenticate, and a prompt would hang on a closed stdin).
-_ENV_FORCED: dict[str, str] = {"GIT_TERMINAL_PROMPT": "0"}
+#: operations to authenticate, and a prompt would hang on a closed stdin),
+#: and no system config (defence in depth behind the integrity gate — the
+#: gate denies repo-local indirection; this keeps the host's /etc/gitconfig
+#: out of every host-side call as well).
+_ENV_FORCED: dict[str, str] = {
+    "GIT_TERMINAL_PROMPT": "0",
+    "GIT_CONFIG_NOSYSTEM": "1",
+}
 
 #: The author-identity keys a commit needs (the git-config gate). Probed
 #: with ``git config <key>`` in the workspace, which resolves repo-local →
@@ -195,17 +205,6 @@ class _GitResult:
     stderr: str
     truncated: bool
     timed_out: bool
-
-
-#: Repo-local git config keys that name external programs git would
-#: execute during ordinary status/stage/commit — on the host, outside the
-#: sandbox. Probed with ``--local``: the operator's global filters
-#: (git-lfs and friends) are theirs, outside what the workspace can
-#: write. Anything matching is refused before any status/stage/commit
-#: runs. ROADMAP task A1.
-_EXEC_CONFIG_RE = (
-    r"^(core\.fsmonitor|diff\.external|filter\..+\.(clean|smudge|process))$"
-)
 
 
 def _child_env() -> dict[str, str]:
@@ -268,9 +267,22 @@ async def _collect(
 
 async def _run_git(argv: tuple[str, ...], *, cwd: Path) -> _GitResult:
     """Run one fixed git argv under the caps. Raises only via OSError from
-    spawning (the caller maps it to an error payload)."""
+    spawning (the caller maps it to an error payload).
+
+    Every invocation carries ``-c core.fsmonitor=false`` (defence in depth
+    behind the integrity gate: the gate refuses a config that names
+    fsmonitor; this keeps the flag dead even in the window between the
+    probe and the call) and the child env forces ``GIT_CONFIG_NOSYSTEM=1``
+    (the host's ``/etc/gitconfig`` is outside the workspace's reach, and
+    outside every host-side call as well). The argv discipline is fixed:
+    callers pass ``("git", "--no-pager", ...)`` literals only, so the
+    forced flag is inserted once, here, where the model cannot reach it.
+    """
+    if argv[:2] != ("git", "--no-pager"):
+        raise PaaError("internal: fixed git argv discipline violated")
+    forced_argv = ("git", "--no-pager", "-c", "core.fsmonitor=false", *argv[2:])
     proc = await asyncio.create_subprocess_exec(
-        *argv,
+        *forced_argv,
         cwd=str(cwd),
         env=_child_env(),
         stdout=asyncio.subprocess.PIPE,
@@ -339,56 +351,16 @@ async def _preflight(ws: Workspace, verb: str) -> dict[str, Any] | None:
             "toplevel": str(resolved_top),
             "workspace": str(resolved_root),
         }
-    await _repo_config_gate(ws)
-    return None
-
-
-async def _repo_config_gate(ws: Workspace) -> None:
-    """Refuse host-side git when the repository's own config names programs.
-
-    Raises :class:`~paa.core.errors.PaaError` — a loud refusal, not a
-    JSON payload: the repository's local config is attacker-writable input
-    (``bash`` can write ``.git/config``; the protected-path rule binds the
-    fs tools, not bash), and a program it names — ``core.fsmonitor`` on the
-    next status, a ``filter.<name>.clean`` driver on the next stage —
-    would execute with the host's privileges, outside the sandbox. Under a
-    containment backend that is a container escape; under the default
-    subprocess backend the mechanism is the same even where the privileges
-    are not new. The agent loop catches the raise and shows the model the
-    refusal, so the tool contract ("errors as values") survives at the
-    loop while the tamper answer stays a raised, named, explicit no.
-
-    The probe reads config only (``git config --get-regexp`` touches no
-    index, runs no driver) and looks at ``--local`` config alone: the host
-    operator's global filters (git-lfs and friends) are theirs, outside
-    what the workspace can write, and refusing them would break every
-    lfs checkout for no security gain.
-    """
+    # The integrity gate (Wave 7-F H-1, ADR-0047): refuse before any
+    # status/diff/stage/commit when the repository's own config or root
+    # attributes files name programs git would execute on the host. The
+    # refusal is a raised PaaError at this seam — the loop's caller maps
+    # it to the error-value convention every other refusal here uses.
     try:
-        result = await _run_git(
-            ("git", "--no-pager", "config", "--local", "--get-regexp", _EXEC_CONFIG_RE),
-            cwd=ws.root,
-        )
-    except OSError as exc:
-        raise PaaError(f"git executable could not be started: {exc}") from exc
-    if result.timed_out:
-        raise PaaError("repo config probe timed out")
-    if result.exit_code not in (0, 1):
-        # 0 = matches, 1 = clean; anything else is a config git cannot
-        # even read, which is itself a workspace that cannot be probed.
-        raise PaaError(
-            "refusing host-side git: the repository config could not be "
-            f"probed (exit {result.exit_code}) — a workspace whose config "
-            "cannot be read cannot be shown safe"
-        )
-    if result.exit_code == 0 and result.stdout.strip():
-        keys = [line.split(" ", 1)[0] for line in result.stdout.strip().splitlines() if line]
-        raise PaaError(
-            "refusing host-side git: the repository's own config names "
-            f"external programs ({', '.join(keys[:5])}) that git would "
-            "execute on the host — remove them from .git/config; they "
-            "could have been written from inside the workspace"
-        )
+        await repo_config_gate(ws.root, _run_git)
+    except PaaError as exc:
+        return {"error": str(exc)}
+    return None
 
 
 async def _identity_gate(ws: Workspace) -> dict[str, Any] | None:

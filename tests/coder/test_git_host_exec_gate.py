@@ -12,21 +12,24 @@ full privileges, so the mechanism is demonstrated but not itself an escalation.
 
 These tests plant the config directly, so they hold regardless of what wrote it.
 
-STATE since the repo-config gate (ROADMAP task A1, ``_repo_config_gate`` in
-``src/paa/coder/git_tools.py``): every host-side git tool call probes the
-repository's *local* config for keys that name external programs
-(``core.fsmonitor``, ``filter.<name>.clean/smudge/process``,
-``diff.external``) and refuses with ``PaaError`` before any status/stage/
-commit runs. All four tests pass:
+STATE since the host-git integrity gate (Wave 7-F H-1, ADR-0047,
+``repo_config_gate`` in ``src/paa/coder/git_integrity.py``, wired from
+``git_tools._preflight``): every host-side git tool call probes the
+repository's *local* config against a classified deny table — exact keys,
+class prefixes, and a last-segment default-refuse — and scans the root
+attributes files for ``filter=`` selections, refusing with ``PaaError``
+before any status/stage/commit runs. The four tests pass:
 
     test_fsmonitor_not_executed      PASS   (refused before status ran)
     test_clean_filter_not_executed   PASS   (refused before stage ran)
     test_commit_hook_not_executed    PASS   (core.hooksPath= already neutralised hooks)
     test_refusal_is_explicit         PASS   (the refusal names the config)
 
-The probe reads config only (``git config --local --get-regexp`` touches no
+The probe reads config only (``git config --local --list -z`` touches no
 index, runs no driver) and ignores global config: the operator's own
-git-lfs filters are theirs, outside what the workspace can write.
+git-lfs filters are theirs, outside what the workspace can write. The
+unit-level table, attributes-scan and parsing behaviour live in
+``tests/coder/test_git_integrity.py``.
 """
 
 from __future__ import annotations
@@ -107,11 +110,15 @@ def test_commit_hook_not_executed(repo: tuple[Path, Path]) -> None:
 
 
 def test_refusal_is_explicit(repo: tuple[Path, Path]) -> None:
-    """After the fix: tampered config yields a clear refusal, not silent success."""
+    """After the fix: tampered config yields a clear refusal, not silent
+    success. The refusal travels as an error value (the runtime_tools
+    convention — the loop feeds it back to the model), so the assertion
+    reads the returned JSON, not a raised exception."""
     root, marker = repo
     _git(root, "config", "core.fsmonitor", f"touch {marker}; echo")
     tools = build_git_tools(Workspace(root=root))
-    with pytest.raises(Exception) as err:
-        _run(tools, "git_status", {})
-    assert "config" in str(err.value).lower() or "refus" in str(err.value).lower()
+    out = _run(tools, "git_status", {})
+    lowered = out.lower()
+    assert '"error"' in out, f"expected an error value, got: {out[:200]}"
+    assert "refus" in lowered or "config" in lowered
     assert not marker.exists()
