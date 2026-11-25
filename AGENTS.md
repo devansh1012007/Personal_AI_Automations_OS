@@ -560,11 +560,13 @@ the archive at the bottom. Keep prose out — this is a register, not a report.
 
 ### Environment (this development sandbox)
 
-- Repo: `/home/devansh/Code/Personal_AI_Automations_OS`, branch `main` @ ccf0793.
-  **Dirty tree** (30 modified tracked files, 39 untracked entries, 0 deleted):
-  W6 `0001`–`0007`, C7.1 `0020` and C7.2 `0021` are applied but uncommitted on
-  top of pre-existing uncommitted work. `ccf0793` is the pushed base; nothing
-  from this round was committed or pushed, and the 34 `.patch` files stay untracked.
+- Repo: `/home/devansh/Code/Personal_AI_Automations_OS`, branch `main` @ f5555b6,
+  pushed to `origin/main` (in sync). C7.2 `0021` and its local hardening are
+  committed in f5555b6; the 34 `.patch` files stay untracked. After the push a
+  host-side change deleted two tracked evidence bundles (`paa-spec2-w4-w7.bundle`,
+  `paa-spec2-w4-w7 (1).bundle`) and added untracked `paa-w7-final.bundle`,
+  `paa-repo-full.zip` and `$HOME/`; these were left untouched and are not part
+  of this commit.
 - Final full-suite gate (`PYTHONPATH=src .venv/bin/python -m pytest tests/ -q
   -o addopts=`): 4,599 passed / 239 env-gated skipped / 1 xfailed /
   **3 failed** in 221.80 s, exit 1. All three failures are pre-existing and
@@ -611,7 +613,7 @@ spec's P1.4: the fourth pipeline the rule of three was waiting on).
 | Task ID | Agent | Assignment | Status | Evidence / notes |
 |---|---|---|---|---|
 | W7-C7.1 | orchestrator | `paa observe` — H3.2 observer mode, T1 evidence tier, pipeline #4 per P1.4: run any CLI in a workspace, record manifest diff + git changes + transcript, classify state after a crash; `paa-observe-bundle/1` (two-phase atomic write, `resume="none"`, `evidence_tier="T1"`), `builtin.observe` on the facade with an empty capability ask, one shared driver for `paa observe` and `paa pipeline run builtin.observe`, `[evidence] declares_tier` on manifests | **done** | applied here from patch `0020` (uncommitted) with local hardening: reserved `--env` keys refused, argv secrets kept out of failed-journal reasons, missing git recorded not fatal, canonical-hash/atomic-write claims stated honestly; 63 observe tests; `PYTHONPATH=src .venv/bin/python -m pytest tests/ -q -o addopts=` → 4,506 passed / 240 skipped / 1 xfailed / **3 pre-existing failures** in the untracked `tests/test_git_host_exec_gate.py`; `mypy src` 0 issues / 186 files; `ruff check src tests` only those same 3 pre-existing findings; docs lock 5 passed; patch-author SHAs, counts and `/home/z/...` paths are not adopted |
-| W7-C7.2 | orchestrator | attested change bundle + `paa verify` (H3.1) | **done** | applied here from patch `0021` (uncommitted) with local hardening: algorithm-aware signature dispatch + signed blob index, hostile-manifest verdicts, bounded decompression; git option injection closed via `rev-parse --end-of-options`, false-clean git refused, key mode checked on load, T1/`resume="none"` enforced, portable secrets refused, PR body verified before rendering with inert code-span escaping and terminal-safe refusals; `paa[attest]`/`requires_attest` added. 92 attest tests; focused `tests/attest` + conventions 126 passed; final full suite 4,599 passed / 239 skipped / 1 xfailed / **3 pre-existing failures** in untracked `tests/test_git_host_exec_gate.py`; `mypy src` 0 issues / 191 files; `ruff check src tests` only those same 3 findings; status lock matches; author-host claims, `.patch` files and untrusted `.bin` evidence not adopted/committed |
+| W7-C7.2 | orchestrator | attested change bundle + `paa verify` (H3.1) | **done** | applied here from patch `0021` and pushed in f5555b6 with local hardening: algorithm-aware signature dispatch + signed blob index, hostile-manifest verdicts, bounded decompression; git option injection closed via `rev-parse --end-of-options`, false-clean git refused, key mode checked on load, T1/`resume="none"` enforced, portable secrets refused, PR body verified before rendering with inert code-span escaping and terminal-safe refusals; `paa[attest]`/`requires_attest` added. 92 attest tests; focused `tests/attest` + conventions 126 passed; final full suite 4,599 passed / 239 skipped / 1 xfailed / **3 pre-existing failures** in untracked `tests/test_git_host_exec_gate.py`; `mypy src` 0 issues / 191 files; `ruff check src tests` only those same 3 findings; status lock matches; author-host claims, `.patch` files and untrusted `.bin` evidence not adopted/committed |
 | W7-C7.3 | orchestrator | `paa record` — the harness-neutral flight recorder | not started | unblocked by C7.2; next row |
 | W7-C7.4 | orchestrator | cross-harness eval harness | not started | depends on C7.3 |
 | W7-C7.5 | orchestrator | `paa thread` | not started | listed in Known left; no row detail in patch `0020` |
