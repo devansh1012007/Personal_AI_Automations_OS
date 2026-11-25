@@ -9,11 +9,14 @@ functions.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import uuid
 from pathlib import Path
+from typing import Any
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from paa.cli.main import app
@@ -46,12 +49,19 @@ _LOCAL_MANIFEST = """
 [pipeline]
 name = "tdd-loop"
 version = "0.1.0"
+protocol = "paa-pipeline/1"
 description = "Write a failing test, make it pass."
 requires_runtime = ">=4.1,<5"
 
 [run]
 command = ["python", "-m", "tdd_loop"]
 resume = "journal"
+
+[limits]
+max_tokens = 200000
+max_wall_s = 1800
+max_calls = 400
+max_sub_runs = 2
 """
 
 
@@ -200,3 +210,151 @@ class TestRun:
         assert result.exit_code == 0
         assert "correlation:" in result.stdout
         assert "COMMITTED" in result.stdout
+
+    def test_failed_chat_turn_writes_run_failed_not_completed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed turn is recorded as a failure, never a completion."""
+
+        class Exploding:
+            async def reply(self, prompt: str, *, on_delta: Any = None) -> Any:
+                raise RuntimeError("provider socket died")
+
+        monkeypatch.setattr(
+            "paa.chat.service.build_chat_model", lambda settings: Exploding()
+        )
+        run = runner.invoke(app, ["pipeline", "run", "builtin.chat", "--goal", "hello"])
+        assert run.exit_code == 1
+        assert "provider socket died" in run.stdout
+        session = next(
+            line.split("session:")[1].strip()
+            for line in run.stdout.splitlines()
+            if line.startswith("session:")
+        )
+
+        async def kinds() -> list[str]:
+            from paa.config import get_settings
+            from paa.ledger.store import LedgerStore
+            from paa.storage.relational.database import Database
+
+            db = Database(get_settings().storage.sqlite_path)
+            await db.connect()
+            try:
+                events = await LedgerStore(db).read_correlation(uuid.UUID(session))
+            finally:
+                await db.close()
+            return [event.event_type.value for event in events]
+
+        got = asyncio.run(kinds())
+        assert "PIPELINE_RUN_STARTED" in got
+        assert "PIPELINE_RUN_FAILED" in got
+        assert "PIPELINE_RUN_COMPLETED" not in got
+        assert "CHAT_TURN_FAILED" in got
+
+    def test_overlay_and_set_reach_the_chat_service(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Validated knobs reach the service; they are not announced then dropped."""
+        from paa.chat.service import ChatService
+
+        seen: dict[str, Any] = {}
+        real_send = ChatService.send
+
+        async def spy(self: ChatService, sid: Any, text: str, **kw: Any) -> Any:
+            seen["recall_k"] = self.settings.recall_k
+            seen["token_budget"] = self.settings.token_budget
+            return await real_send(self, sid, text, **kw)
+
+        monkeypatch.setattr(ChatService, "send", spy)
+        overlay = tmp_path / "overlay.toml"
+        overlay.write_text("[limits]\nmax_tokens = 64\n", encoding="utf-8")
+        run = runner.invoke(
+            app,
+            [
+                "pipeline", "run", "builtin.chat", "--goal", "hi",
+                "--set", "recall_k=2", "--set", "tokens_budget=500",
+                "--overlay", str(overlay),
+            ],
+        )
+        assert run.exit_code == 0
+        # min(500, 64): an overlay may only tighten what --set asked for.
+        assert seen == {"recall_k": 2, "token_budget": 64}
+
+    def test_context_provider_slot_is_used(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A resolved slot ref is the provider that compiles the packet."""
+        from paa.pipelines import slots
+        from paa.pipelines.slots import builtin_context_provider
+
+        ceilings: list[int] = []
+
+        def tracking(**kwargs: Any) -> Any:
+            ceilings.append(int(kwargs["token_ceiling"]))
+            return builtin_context_provider(**kwargs)
+
+        ref = f"test:track-{uuid.uuid4().hex[:8]}"
+        monkeypatch.setitem(slots._PROVIDERS, ref, tracking)
+        monkeypatch.setitem(
+            slots._REF_INTERFACES, ref, slots.CONTEXT_PROVIDER_INTERFACE
+        )
+        overlay = tmp_path / "slot.toml"
+        overlay.write_text(
+            f'[slots]\ncontext_provider = "{ref}"\n[limits]\nmax_tokens = 77\n',
+            encoding="utf-8",
+        )
+        run = runner.invoke(
+            app,
+            [
+                "pipeline", "run", "builtin.chat", "--goal", "hi",
+                "--overlay", str(overlay),
+            ],
+        )
+        assert run.exit_code == 0
+        assert ceilings == [77]
+
+    def test_unhonourable_chat_overlay_refuses_loudly(self, tmp_path: Path) -> None:
+        """An overlay the runner cannot apply refuses before any runtime work."""
+        overlay = tmp_path / "bad.toml"
+        overlay.write_text("[capabilities]\nrecall = false\n", encoding="utf-8")
+        run = runner.invoke(
+            app,
+            [
+                "pipeline", "run", "builtin.chat", "--goal", "hi",
+                "--overlay", str(overlay),
+            ],
+        )
+        assert run.exit_code == 1
+        assert "cannot honour" in run.stdout
+        assert "capabilities" in run.stdout
+        assert "session:" not in run.stdout
+
+    def test_trace_of_a_malformed_id_refuses(self) -> None:
+        result = runner.invoke(app, ["pipeline", "trace", "not-a-uuid"])
+        assert result.exit_code == 1
+        assert "not a UUID" in result.stdout
+
+
+class TestSetCoercion:
+    def test_declared_bool_and_str_params_are_coerced(self) -> None:
+        import dataclasses
+
+        from paa.cli.pipeline import _parse_sets, _validate_sets
+        from paa.pipelines.slots import BUILTIN_DECLARATIONS, ParamSpec
+
+        declared = dataclasses.replace(
+            BUILTIN_DECLARATIONS["builtin.chat"],
+            params={
+                "flag": ParamSpec("bool", False),
+                "label": ParamSpec("str", ""),
+            },
+        )
+        assert _validate_sets(_parse_sets(["flag=true", "label=x"]), declared) == {
+            "flag": True,
+            "label": "x",
+        }
+        with pytest.raises(typer.Exit):
+            _validate_sets({"flag": "yes"}, declared)
+        wrong_type: dict[str, Any] = {"label": 1}
+        with pytest.raises(typer.Exit):
+            _validate_sets(wrong_type, declared)

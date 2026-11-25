@@ -43,7 +43,7 @@ on this instance.
   goals, anti_goals, projects, skills, playbooks, reflections, risk_rules,
   agent_hierarchy, prompt_contracts); zero removals.
   [RAN python -c enum dump -> len 15, all 15 values incl. original four].
-  CLI `BeliefDocument(doc)` coercion (`cli/main.py:710` [VERIFIED]) now accepts the
+  CLI `BeliefDocument(doc)` coercion (`cli/main.py:709` [VERIFIED]) now accepts the
   11 new names — additive widening, no CLI edit needed.
 - `GOVERNANCE_FILES = frozenset({"identity.md", "strategy.md"})` + `WorldModel.governance_path()`:
   resolves under `vault/governance/`, closed-set membership test rejects unknown names

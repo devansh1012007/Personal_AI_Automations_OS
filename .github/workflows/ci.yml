@@ -10,13 +10,13 @@
 # Four things in here are load-bearing, and three of them are not
 # obvious:
 #
-#   * `.[dev]`, not `.`. The `dev` extra resolves `paa[api]` and
-#     `paa[s3]` itself, and without them `tests/api/conftest.py`
-#     skips the whole directory at import ("needs the api extra") and
-#     `tests/storage/test_s3_live.py` skips itself. A suite that
-#     skips is a suite that says nothing about the thing it was
-#     written for, and it says it quietly — which is the quietest
-#     way to not test something.
+#   * `.[dev]`, not `.`. The `dev` extra resolves `paa[api]`,
+#     `paa[s3]` and `paa[attest]` itself, and without them
+#     `tests/api/conftest.py`, `tests/attest/conftest.py` and
+#     `tests/storage/test_s3_live.py` skip their whole directories at
+#     import ("needs the extra"). A suite that skips is a suite that
+#     says nothing about the thing it was written for, and it says
+#     it quietly — which is the quietest way to not test something.
 #
 #   * `python-is-python3`. The sandbox builds its child environment
 #     from scratch with `PATH=/usr/local/bin:/usr/bin:/bin`
@@ -102,8 +102,9 @@ jobs:
           - install: minimal
             extras: ""
             mypy_exclude: "src/paa/api"
-          # The documented developer install: the tooling, plus `paa[api]`
-          # and `paa[s3]`. This is the shape the live S3 suite runs in.
+          # The documented developer install: the tooling, plus `paa[api]`,
+          # `paa[s3]` and `paa[attest]`. This is the shape the live S3 and
+          # real-Ed25519 attestation suites run in.
           - install: dev
             extras: "[dev]"
             mypy_exclude: ""

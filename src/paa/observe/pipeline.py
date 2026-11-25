@@ -170,9 +170,14 @@ class ObserveFacade:
             # The FAILED row is shielded: an observer killed mid-run must
             # still leave the audit that the call never resolved — the
             # sweep later closes it as interrupted, never re-drives it.
+            # The exception's text is deliberately NOT journalled: a
+            # sandbox start failure carries the child's argv, which may
+            # contain a secret meant only for the observed process.
             await asyncio.shield(
                 self._journal.call_failed(
-                    1, "observe.run", f"observer did not resolve: {exc}"
+                    1,
+                    "observe.run",
+                    f"observer did not resolve ({type(exc).__name__})",
                 )
             )
             raise
@@ -301,8 +306,9 @@ class ObservePipeline:
     """``builtin.observe``: run any CLI, record the T1 evidence, classify.
 
     The control flow is one call and a verdict: the command comes from
-    the task's goal (``shlex`` — a goal is a command line here, and a
-    shell metacharacter is refused rather than interpreted), the knobs
+    the task's goal (``shlex`` — a goal is a command line here; shell
+    metacharacters are inert because no shell is involved, and an
+    unbalanced quote is refused at parse time), the knobs
     from the task's params against the declaration's defaults, and the
     result maps the child's fate onto the pipeline's — a clean exit is
     ``completed``, everything else is ``failed`` *with the
@@ -329,7 +335,7 @@ class ObservePipeline:
         return self._result(outcome)
 
     def _command_from(self, task: PipelineTask) -> list[str]:
-        """The goal as argv. Metacharacters are refused, not interpreted."""
+        """The goal as argv: no shell, so metacharacters stay literal data."""
         try:
             parts = shlex.split(task.goal)
         except ValueError as exc:

@@ -11,6 +11,7 @@ applies: isolated ``PAA_HOME``, the subprocess sandbox, driven offline.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -19,6 +20,8 @@ import pytest
 from typer.testing import CliRunner
 
 from paa.cli.main import app
+
+pytestmark = pytest.mark.requires_attest
 
 runner = CliRunner()
 
@@ -73,14 +76,21 @@ def _observe_a_fake_test_run(ws: Path, home: Path) -> Path:
     return bundles[0]
 
 
-def _attest(ws: Path, home: Path, test_bundle: Path) -> Path:
+def _attest(
+    ws: Path,
+    home: Path,
+    test_bundle: Path,
+    *,
+    goal: str = "ship the feature",
+    requester: str = "operator",
+) -> Path:
     result = runner.invoke(
         app,
         [
             "attest", "build",
             "--workspace", str(ws),
-            "--goal", "ship the feature",
-            "--requester", "operator",
+            "--goal", goal,
+            "--requester", requester,
             "--test-bundle", str(test_bundle),
             "--command", "ruff check src",
             "--approval", "cli:operator:approved:looks right",
@@ -217,6 +227,40 @@ class TestRefusalsAndLabels:
         assert result.exit_code == 2
         assert "goal" in result.output
 
+    def test_an_option_looking_diff_since_is_refused_literally(
+        self, git_ws: Path, home: Path
+    ) -> None:
+        result = runner.invoke(
+            app,
+            [
+                "attest", "build",
+                "--workspace", str(git_ws),
+                "--goal", "ship the feature",
+                "--diff-since", "--output=[bold]evil[/bold]",
+            ],
+        )
+        assert result.exit_code == 2
+        assert "attest refused" in result.output
+        assert "git option, not a revision" in result.output
+        assert "[bold]evil[/bold]" in result.output
+
+    def test_a_secret_in_an_asserted_command_is_refused_without_echo(
+        self, git_ws: Path, home: Path
+    ) -> None:
+        secret = "AKIA1234567890ABCDEF"
+        result = runner.invoke(
+            app,
+            [
+                "attest", "build",
+                "--workspace", str(git_ws),
+                "--goal", "ship the feature",
+                "--command", f"echo {secret}",
+            ],
+        )
+        assert result.exit_code == 2
+        assert "AWS access key" in result.output
+        assert secret not in result.output
+
     def test_a_started_bundle_is_refused_by_verify(
         self, git_ws: Path, home: Path
     ) -> None:
@@ -229,6 +273,110 @@ class TestRefusalsAndLabels:
         result = runner.invoke(app, ["verify", str(bundle_dir)])
         assert result.exit_code == 1
         assert "crash marker" in result.output
+
+    def test_a_hostile_bundle_prints_a_verdict_not_a_traceback(
+        self, git_ws: Path, home: Path
+    ) -> None:
+        test_bundle = _observe_a_fake_test_run(git_ws, home)
+        bundle_dir = _attest(git_ws, home, test_bundle)
+        path = bundle_dir / "manifest.json"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest["bundle_id"] = "\ud800"
+        path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+
+        result = runner.invoke(app, ["verify", str(bundle_dir)])
+        assert result.exit_code == 1
+        assert not isinstance(result.exception, UnicodeEncodeError)
+        assert "cannot be encoded as UTF-8" in result.output
+
+    def test_a_deep_manifest_gets_a_cli_verdict(
+        self, git_ws: Path, home: Path
+    ) -> None:
+        test_bundle = _observe_a_fake_test_run(git_ws, home)
+        bundle_dir = _attest(git_ws, home, test_bundle)
+        path = bundle_dir / "manifest.json"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        deep: object = "leaf"
+        for _ in range(100):
+            deep = [deep]
+        manifest["notes"] = deep
+        path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+
+        result = runner.invoke(app, ["verify", str(bundle_dir)])
+        assert result.exit_code == 1
+        assert not isinstance(result.exception, RecursionError)
+        assert "too deeply nested" in result.output
+
+    def test_a_huge_integer_manifest_gets_a_cli_verdict(
+        self, git_ws: Path, home: Path
+    ) -> None:
+        test_bundle = _observe_a_fake_test_run(git_ws, home)
+        bundle_dir = _attest(git_ws, home, test_bundle)
+        (bundle_dir / "manifest.json").write_text(
+            '{"n": ' + "9" * 5000 + "}", encoding="utf-8"
+        )
+
+        result = runner.invoke(app, ["verify", str(bundle_dir)])
+        assert result.exit_code == 1
+        assert "manifest.json unreadable" in result.output
+
+    def test_the_cli_defence_names_an_unexpected_verifier_exception(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pin the last line of defence itself, not just the inputs it
+        happens to catch today."""
+        import paa.attest.verify as verify_module
+
+        def _boom(*args: object, **kwargs: object) -> None:
+            raise RecursionError("unexpected")
+
+        monkeypatch.setattr(verify_module, "verify_bundle", _boom)
+        result = runner.invoke(app, ["verify", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "refused hostile input (RecursionError)" in result.output
+
+    def test_untrusted_details_are_printed_literally(
+        self, git_ws: Path, home: Path
+    ) -> None:
+        """A hostile blob role must not become Rich markup on the console."""
+        test_bundle = _observe_a_fake_test_run(git_ws, home)
+        bundle_dir = _attest(git_ws, home, test_bundle)
+        path = bundle_dir / "manifest.json"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        for entry in manifest["blobs"]:
+            if str(entry["role"]).startswith("evidence:"):
+                entry["role"] = "[bold]evil[/bold]"
+        path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+
+        result = runner.invoke(app, ["verify", str(bundle_dir)])
+        assert result.exit_code == 1
+        assert "[bold]evil[/bold]" in result.output
+
+    def test_verdict_details_cannot_spoof_the_terminal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Refusals quote the bytes; emoji shortcodes, ANSI escapes and
+        Unicode separators in a hostile check detail stay inert."""
+        import paa.attest.verify as verify_module
+        from paa.attest.verify import CheckResult, VerificationResult
+
+        def _spoofed(
+            directory: Path, **kwargs: object
+        ) -> VerificationResult:
+            return VerificationResult(
+                ok=False,
+                checks=(
+                    CheckResult("manifest", False, ":fire: \x1b[2J FAKE\u2028NEXT"),
+                ),
+            )
+
+        monkeypatch.setattr(verify_module, "verify_bundle", _spoofed)
+        result = runner.invoke(app, ["verify", str(tmp_path)])
+        assert result.exit_code == 1
+        assert ":fire:" in result.output
+        assert "🔥" not in result.output
+        assert "\x1b" not in result.output
+        assert "\u2028" not in result.output
 
 
 class TestThePrBody:
@@ -258,6 +406,161 @@ class TestThePrBody:
         body = out.read_text(encoding="utf-8")
         assert "## Attested change bundle" in body
         assert "How to verify" in body
+
+    def test_untrusted_fields_cannot_become_markdown(
+        self, git_ws: Path, home: Path, tmp_path: Path
+    ) -> None:
+        """The body is pasted into a PR, so goal and identity text must be
+        inert: one scalar may never turn into a heading, link or HTML block."""
+        goal = (
+            "ship [x](javascript:alert(1)) ![img](https://evil.invalid) "
+            "<b>hi</b>\n# owned\nuse `fence` ~~strike~~"
+        )
+        requester = "ops [r](https://evil.invalid)\n## injected"
+        test_bundle = _observe_a_fake_test_run(git_ws, home)
+        bundle_dir = _attest(
+            git_ws, home, test_bundle, goal=goal, requester=requester
+        )
+        out = tmp_path / "pr-body.md"
+        result = runner.invoke(
+            app, ["attest", "pr", str(bundle_dir), "--out", str(out)]
+        )
+        assert result.exit_code == 0, result.output
+        body = out.read_text(encoding="utf-8")
+        lines = body.splitlines()
+        goal_line = next(line for line in lines if line.startswith("- **Goal**:"))
+        requester_line = next(
+            line for line in lines if line.startswith("- **Requested by**")
+        )
+
+        # The goal contains one backtick, so its fence grows to two; the
+        # raw payload is still present, but only inside that code span.
+        assert "`` " in goal_line
+        assert " ~~strike~~ ``" in goal_line
+        assert "[x](javascript:alert(1))" in goal_line
+        assert "<b>hi</b>" in goal_line
+        assert "ops [r](https://evil.invalid)" in requester_line
+        assert requester_line.count("`") >= 2
+        assert not any(line.startswith("# owned") for line in lines)
+        assert not any(line.startswith("## injected") for line in lines)
+        assert not any(line.startswith("![img]") for line in lines)
+        assert "\r" not in body
+
+    def test_a_backtick_path_cannot_close_the_command_fence(
+        self, git_ws: Path, home: Path, tmp_path: Path
+    ) -> None:
+        """The path is operator input; a three-backtick path must make the
+        command fence grow rather than terminate the block early."""
+        test_bundle = _observe_a_fake_test_run(git_ws, home)
+        bundle_dir = _attest(git_ws, home, test_bundle)
+        fenced_path = tmp_path / "we```ird"
+        shutil.copytree(bundle_dir, fenced_path)
+        out = tmp_path / "pr-body.md"
+        result = runner.invoke(
+            app, ["attest", "pr", str(fenced_path), "--out", str(out)]
+        )
+        assert result.exit_code == 0, result.output
+        body = out.read_text(encoding="utf-8")
+        assert "````bash" in body
+        assert body.count("````") == 2
+        assert f"paa verify {fenced_path} --trust <signer-public-key>" in body
+
+    def test_pr_refuses_a_tampered_bundle_before_emitting_a_body(
+        self, git_ws: Path, home: Path, tmp_path: Path
+    ) -> None:
+        """A paste-ready summary of a broken bundle would be a lie with a
+        perfect layout, so verification happens before rendering."""
+        from paa.attest.bundle import read_manifest
+
+        test_bundle = _observe_a_fake_test_run(git_ws, home)
+        bundle_dir = _attest(git_ws, home, test_bundle)
+        manifest = read_manifest(bundle_dir / "manifest.json")
+        digest = str(manifest["sections"][0]["sha256"])
+        blob = bundle_dir / "blobs" / digest[:2] / digest[2:4] / f"{digest}.bin"
+        data = bytearray(blob.read_bytes())
+        data[len(data) // 2] ^= 0x01
+        blob.write_bytes(bytes(data))
+
+        out = tmp_path / "should-not-exist.md"
+        result = runner.invoke(
+            app, ["attest", "pr", str(bundle_dir), "--out", str(out)]
+        )
+        assert result.exit_code == 2
+        assert "pr refused" in result.output
+        assert "blobs" in result.output
+        assert not out.exists()
+
+    def test_pr_refuses_a_hostile_manifest_without_a_traceback(
+        self, tmp_path: Path
+    ) -> None:
+        hostile = tmp_path / "hostile"
+        hostile.mkdir()
+        (hostile / "manifest.json").write_text("[]", encoding="utf-8")
+        result = runner.invoke(app, ["attest", "pr", str(hostile)])
+        assert result.exit_code == 2
+        assert "pr refused" in result.output
+        assert "manifest.json is not an object" in result.output
+        assert "Traceback" not in result.output
+
+    def test_pr_rechecks_after_rendering(
+        self, git_ws: Path, home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The renderer reads the manifest twice, so the second read is
+        checked too before a body can be written."""
+        import paa.attest.verify as verify_module
+        from paa.attest.verify import CheckResult, VerificationResult
+
+        test_bundle = _observe_a_fake_test_run(git_ws, home)
+        bundle_dir = _attest(git_ws, home, test_bundle)
+        real = verify_module.verify_bundle
+        calls = 0
+
+        def _changes_after_the_first_read(
+            directory: Path, **kwargs: object
+        ) -> VerificationResult:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return real(directory, **kwargs)
+            return VerificationResult(
+                ok=False,
+                checks=(CheckResult("manifest", False, "swapped after verify"),),
+            )
+
+        monkeypatch.setattr(verify_module, "verify_bundle", _changes_after_the_first_read)
+        out = tmp_path / "should-not-exist.md"
+        result = runner.invoke(
+            app, ["attest", "pr", str(bundle_dir), "--out", str(out)]
+        )
+        assert result.exit_code == 2
+        assert "changed while rendering" in result.output
+        assert "swapped after verify" in result.output
+        assert calls == 2
+        assert not out.exists()
+
+    def test_pr_refusal_is_terminal_safe(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import paa.attest.verify as verify_module
+        from paa.attest.verify import CheckResult, VerificationResult
+
+        def _spoofed(
+            directory: Path, **kwargs: object
+        ) -> VerificationResult:
+            return VerificationResult(
+                ok=False,
+                checks=(
+                    CheckResult("manifest", False, ":fire: \x1b[2J FAKE\u2028NEXT"),
+                ),
+            )
+
+        monkeypatch.setattr(verify_module, "verify_bundle", _spoofed)
+        result = runner.invoke(app, ["attest", "pr", str(tmp_path)])
+        assert result.exit_code == 2
+        assert ":fire:" in result.output
+        assert "🔥" not in result.output
+        assert "\x1b" not in result.output
+        assert "\u2028" not in result.output
 
     def test_pr_refuses_a_foreign_directory(self, tmp_path: Path) -> None:
         result = runner.invoke(app, ["attest", "pr", str(tmp_path)])

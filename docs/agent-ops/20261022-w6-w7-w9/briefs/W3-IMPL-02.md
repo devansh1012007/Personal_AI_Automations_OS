@@ -10,7 +10,7 @@ returning.**
 > checker** in the suite that extracts every `path:line` from `docs/**/*.md`
 > and asserts the file exists, the line exists, and **the line is not blank**
 > (a blank cited line is almost always a wrong reference — that is how
-> `cli/main.py:210` and `daemon.py:61` were found).
+> `cli/main.py:209` and `daemon.py:61` were found).
 
 The sweep covers: the five documents W7 names, the two worst offenders in
 `docs/operations/`, the three out-of-range references, README's three

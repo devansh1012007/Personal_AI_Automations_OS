@@ -21,6 +21,9 @@ the separate facts they are, never collapsed into one green light.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import subprocess
 from pathlib import Path
@@ -35,6 +38,8 @@ from paa.attest.bundle import (
 )
 from paa.attest.verify import verify_bundle
 from paa.observe.bundle import ObserveBundle
+
+pytestmark = pytest.mark.requires_attest
 
 
 def _git(ws: Path, *args: str) -> None:
@@ -125,6 +130,19 @@ def _flip_one_byte(path: Path) -> None:
 
 def _check(result, name: str) -> object:
     return next(c for c in result.checks if c.name == name)
+
+
+def _write_manifest(bundle: Path, manifest: dict[str, object]) -> None:
+    (bundle / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+    )
+
+
+def _deep_value(depth: int) -> object:
+    value: object = "leaf"
+    for _ in range(depth):
+        value = [value]
+    return value
 
 
 class TestRoundTrip:
@@ -236,7 +254,324 @@ class TestTheTamperMatrix:
         assert result.ok is False
 
 
+class TestSignedBlobIndex:
+    def test_removing_an_evidence_entry_fails_and_does_not_change_the_count(
+        self, built: Path
+    ) -> None:
+        path = built / "manifest.json"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest["blobs"] = [
+            b for b in manifest["blobs"] if not b["role"].startswith("evidence:")
+        ]
+        _write_manifest(built, manifest)
+
+        result = verify_bundle(built)
+        assert result.ok is False
+        assert _check(result, "blobs").ok is False
+        assert "missing from index" in str(_check(result, "blobs").detail)
+        # The count comes from the signed evidence section, not the index.
+        assert result.evidence_count == 1
+
+    def test_an_extra_index_entry_fails(self, built: Path) -> None:
+        manifest = json.loads((built / "manifest.json").read_text(encoding="utf-8"))
+        manifest["blobs"].append(
+            {
+                "sha256": _section_digest(built, "approvals"),
+                "bytes": 0,
+                "role": "evidence:observe:fabricated",
+            }
+        )
+        _write_manifest(built, manifest)
+
+        result = verify_bundle(built)
+        assert result.ok is False
+        assert _check(result, "blobs").ok is False
+        assert "unreferenced" in str(_check(result, "blobs").detail)
+
+    def test_relabelling_an_index_entry_fails(self, built: Path) -> None:
+        manifest = json.loads((built / "manifest.json").read_text(encoding="utf-8"))
+        entry = next(b for b in manifest["blobs"] if b["role"].startswith("evidence:"))
+        entry["role"] = "evidence:observe:someone-else"
+        _write_manifest(built, manifest)
+
+        result = verify_bundle(built)
+        assert result.ok is False
+        assert _check(result, "blobs").ok is False
+
+    def test_a_changed_declared_size_fails(self, built: Path) -> None:
+        manifest = json.loads((built / "manifest.json").read_text(encoding="utf-8"))
+        manifest["blobs"][0]["bytes"] += 1
+        _write_manifest(built, manifest)
+
+        result = verify_bundle(built)
+        assert result.ok is False
+        assert "declared size" in str(_check(result, "blobs").detail)
+
+
+class TestAlgorithmDispatch:
+    @staticmethod
+    def _signed_header(manifest: dict[str, object]) -> dict[str, object]:
+        return {
+            "schema": manifest["schema"],
+            "bundle_id": manifest["bundle_id"],
+            "created_at": manifest["created_at"],
+            "tool_version": manifest["tool_version"],
+            "sections": manifest["sections"],
+            "chain_root": manifest["chain_root"],
+            "blobs": manifest["blobs"],
+            "notes": manifest["notes"],
+            "signature_claims": manifest["signature"]["claims"],
+        }
+
+    def test_an_hmac_tag_labelled_ed25519_fails_without_cryptography(
+        self, built: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The exact downgrade: a verifier on a host without the extra
+        must not fall back to HMAC for a bundle claiming Ed25519."""
+        import paa.marketplace.signing as marketplace_signing
+        from paa.ledger.events import canonical_json
+
+        manifest = json.loads((built / "manifest.json").read_text(encoding="utf-8"))
+        claims = manifest["signature"]["claims"]
+        signed_bytes = canonical_json(self._signed_header(manifest)).encode("utf-8")
+        public = str(claims["public_key_b64"])
+        tag = hmac.new(base64.b64decode(public), signed_bytes, hashlib.sha256).digest()
+        manifest["signature"] = {
+            **claims,
+            "claims": claims,
+            "value_b64": base64.b64encode(tag).decode("ascii"),
+            "signed_over": hashlib.sha256(signed_bytes).hexdigest(),
+        }
+        _write_manifest(built, manifest)
+
+        with_verifier_crypto = verify_bundle(built)
+        assert with_verifier_crypto.ok is False
+        monkeypatch.setattr(
+            marketplace_signing, "_cryptography_available", lambda: False
+        )
+        without_verifier_crypto = verify_bundle(built)
+        assert without_verifier_crypto.ok is False
+        assert _check(without_verifier_crypto, "signature").ok is False
+        assert without_verifier_crypto.algorithm == "ed25519"
+
+    def test_a_symmetric_fallback_bundle_is_never_trusted(
+        self, git_ws: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import paa.marketplace.signing as marketplace_signing
+
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                marketplace_signing, "_cryptography_available", lambda: False
+            )
+            key = load_or_generate_key(tmp_path / "fallback-key.json", allow_insecure=True)
+            out = tmp_path / "fallback-bundle"
+            build_bundle(out_dir=out, workspace=git_ws, goal="rehearsal", key=key)
+
+        result = verify_bundle(out)
+        assert result.ok is False
+        assert result.algorithm == "hmac-dev-fallback"
+        assert _check(result, "signature").ok is False
+        assert any("symmetric" in w for w in result.warnings)
+
+    def test_flipping_key_id_or_signed_over_alone_fails(
+        self, built: Path
+    ) -> None:
+        manifest = json.loads((built / "manifest.json").read_text(encoding="utf-8"))
+        manifest["signature"]["key_id"] = "0" * 64
+        _write_manifest(built, manifest)
+        assert verify_bundle(built).ok is False
+
+        manifest2 = json.loads((built / "manifest.json").read_text(encoding="utf-8"))
+        original = json.loads(
+            (built / "manifest.json").read_text(encoding="utf-8")
+        )
+        manifest2["signature"] = json.loads(json.dumps(original["signature"]))
+        manifest2["signature"]["signed_over"] = "0" * 64
+        _write_manifest(built, manifest2)
+        assert verify_bundle(built).ok is False
+
+
+class TestHostileManifestShapes:
+    def test_a_manifest_that_is_not_an_object_is_a_failed_check(
+        self, built: Path
+    ) -> None:
+        (built / "manifest.json").write_text("[]", encoding="utf-8")
+        result = verify_bundle(built)
+        assert result.ok is False
+        assert _check(result, "manifest").ok is False
+
+    def test_invalid_utf8_manifest_and_pin_do_not_raise(
+        self, built: Path, tmp_path: Path
+    ) -> None:
+        manifest_path = built / "manifest.json"
+        original = manifest_path.read_bytes()
+        manifest_path.write_bytes(b"\xff\xfe")
+        assert verify_bundle(built).ok is False
+        manifest_path.write_bytes(original)
+
+        pin = tmp_path / "bad-pin.json"
+        pin.write_bytes(b"\xff\xfe")
+        result = verify_bundle(built, trust_key=str(pin))
+        assert result.ok is False
+        assert _check(result, "key").ok is False
+
+    def test_an_escaped_lone_surrogate_is_a_structured_failure(
+        self, built: Path
+    ) -> None:
+        """JSON can encode an unpaired surrogate that Python cannot encode
+        to UTF-8; canonicalising it used to crash the verifier."""
+        manifest = json.loads((built / "manifest.json").read_text(encoding="utf-8"))
+        manifest["bundle_id"] = "\ud800"
+        _write_manifest(built, manifest)
+
+        result = verify_bundle(built)
+        assert result.ok is False
+        assert _check(result, "manifest").ok is False
+        assert "cannot be encoded as UTF-8" in str(_check(result, "manifest").detail)
+
+    def test_a_non_ascii_claim_key_is_a_failed_signature_not_a_crash(
+        self, built: Path
+    ) -> None:
+        manifest = json.loads((built / "manifest.json").read_text(encoding="utf-8"))
+        manifest["signature"]["claims"]["public_key_b64"] = "é" * 40
+        _write_manifest(built, manifest)
+
+        result = verify_bundle(built)
+        assert result.ok is False
+        assert _check(result, "signature").ok is False
+
+    def test_too_deep_nesting_is_a_structured_failure(
+        self, built: Path
+    ) -> None:
+        """A hostile manifest must not turn a recursive walk into a crash."""
+        manifest = json.loads((built / "manifest.json").read_text(encoding="utf-8"))
+        manifest["notes"] = _deep_value(100)
+        _write_manifest(built, manifest)
+
+        result = verify_bundle(built)
+        assert result.ok is False
+        assert _check(result, "manifest").ok is False
+        assert "too deeply nested" in str(_check(result, "manifest").detail)
+
+    def test_a_huge_integer_literal_is_a_structured_failure(
+        self, built: Path
+    ) -> None:
+        """Python refuses huge integer literals at parse time; that is a
+        failed manifest check, not an exception from the verifier API."""
+        (built / "manifest.json").write_text(
+            '{"n": ' + "9" * 5000 + "}", encoding="utf-8"
+        )
+        result = verify_bundle(built)
+        assert result.ok is False
+        assert _check(result, "manifest").ok is False
+        assert "unreadable" in str(_check(result, "manifest").detail)
+
+    @pytest.mark.parametrize(
+        ("field", "value", "door"),
+        [
+            ("sections", "not-a-list", "chain"),
+            ("blobs", "not-a-list", "blobs"),
+            ("signature", [], "signature"),
+        ],
+    )
+    def test_wrong_field_shapes_are_structured_failures(
+        self, built: Path, field: str, value: object, door: str
+    ) -> None:
+        manifest = json.loads((built / "manifest.json").read_text(encoding="utf-8"))
+        manifest[field] = value
+        _write_manifest(built, manifest)
+        result = verify_bundle(built)
+        assert result.ok is False
+        assert _check(result, door).ok is False
+
+    def test_hostile_rows_and_a_markup_blob_detail_do_not_raise(
+        self, built: Path
+    ) -> None:
+        manifest = json.loads((built / "manifest.json").read_text(encoding="utf-8"))
+        for entry in manifest["blobs"]:
+            if entry["role"].startswith("evidence:"):
+                entry["role"] = "[bold]evil[/bold]"
+        _write_manifest(built, manifest)
+        result = verify_bundle(built)
+        assert result.ok is False
+        text = str(_check(result, "blobs").detail)
+        assert "[bold]evil[/bold]" in text
+
+    def test_a_deeply_nested_section_blob_is_a_failed_check(
+        self, built: Path
+    ) -> None:
+        """The library API is total too: a section payload can be a blob
+        far deeper than Python's JSON decoder can walk."""
+        manifest = json.loads((built / "manifest.json").read_text(encoding="utf-8"))
+        digest = str(manifest["sections"][0]["sha256"])
+        _blob_path(built, digest).write_bytes(
+            b"[" * 10_000 + b"0" + b"]" * 10_000
+        )
+        result = verify_bundle(built)
+        assert result.ok is False
+        assert _check(result, "blobs").ok is False
+
+    def test_a_corrupt_compressed_blob_fails_the_blobs_door(
+        self, built: Path
+    ) -> None:
+        manifest = json.loads((built / "manifest.json").read_text(encoding="utf-8"))
+        entry = next(b for b in manifest["blobs"] if b["role"].startswith("evidence:"))
+        digest = str(entry["sha256"])
+        _blob_path(built, digest).unlink()
+        compressed = (
+            built / "blobs" / digest[:2] / digest[2:4] / f"{digest}.zst"
+        )
+        compressed.write_bytes(b"not a zstd frame")
+        result = verify_bundle(built)
+        assert result.ok is False
+        assert _check(result, "blobs").ok is False
+
+    def test_a_decompression_bomb_is_bounded(
+        self, built: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import zstandard
+
+        import paa.attest.verify as verify_module
+
+        monkeypatch.setattr(verify_module, "MAX_BLOB_BYTES", 1024)
+        payload = b"x" * 4096
+        digest = hashlib.sha256(payload).hexdigest()
+        manifest = json.loads((built / "manifest.json").read_text(encoding="utf-8"))
+        entry = next(b for b in manifest["blobs"] if b["role"].startswith("evidence:"))
+        old = str(entry["sha256"])
+        _blob_path(built, old).unlink()
+        entry["sha256"] = digest
+        entry["bytes"] = len(payload)
+        _write_manifest(built, manifest)
+        target = built / "blobs" / digest[:2] / digest[2:4]
+        target.mkdir(parents=True, exist_ok=True)
+        (target / f"{digest}.zst").write_bytes(
+            zstandard.ZstdCompressor().compress(payload)
+        )
+        result = verify_bundle(built)
+        assert result.ok is False
+        assert "size bound" in str(_check(result, "blobs").detail)
+
+
 class TestTheCleanCheckout:
+    def test_git_honesty_caveats_survive_to_the_verdict(
+        self, tmp_path: Path
+    ) -> None:
+        """A green integrity verdict still tells the reviewer that git
+        could not describe the producer's workspace."""
+        ws = tmp_path / "plain-workspace"
+        ws.mkdir()
+        (ws / "README.md").write_text("no git here\n", encoding="utf-8")
+        build_bundle(
+            out_dir=tmp_path / "bundle",
+            workspace=ws,
+            goal="ship the feature",
+            key=load_or_generate_key(tmp_path / "home" / "key.json"),
+        )
+        result = verify_bundle(tmp_path / "bundle")
+        assert result.ok, [c.detail for c in result.checks]
+        assert any("git could not describe" in w for w in result.warnings)
+
     def test_verify_works_with_no_paa_database_and_creates_none(
         self, built: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -320,6 +655,11 @@ class TestIntegrityVersusOrigin:
         attacker = load_or_generate_key(tmp_path / "attacker-key.json")
         path = built / "manifest.json"
         manifest = json.loads(path.read_text(encoding="utf-8"))
+        claims = {
+            "algorithm": "ed25519",
+            "key_id": attacker.key_id,
+            "public_key_b64": attacker.public_b64,
+        }
         signed_header = {
             "schema": manifest["schema"],
             "bundle_id": manifest["bundle_id"],
@@ -327,12 +667,14 @@ class TestIntegrityVersusOrigin:
             "tool_version": manifest["tool_version"],
             "sections": manifest["sections"],
             "chain_root": manifest["chain_root"],
+            "blobs": manifest["blobs"],
+            "notes": manifest["notes"],
+            "signature_claims": claims,
         }
         signed_bytes = canonical_json(signed_header).encode("utf-8")
         manifest["signature"] = {
-            "algorithm": "ed25519",
-            "key_id": attacker.key_id,
-            "public_key_b64": attacker.public_b64,
+            **claims,
+            "claims": claims,
             "value_b64": sign(signed_bytes, attacker.private_b64),
             "signed_over": __import__("hashlib").sha256(signed_bytes).hexdigest(),
         }

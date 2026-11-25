@@ -78,7 +78,7 @@ use_skill = ["read_file", "bash"]
 """,
             CODER,
         )
-        assert overlay.capabilities == {"use_skill": ["read_file", "bash"]}
+        assert overlay.capabilities == {"use_skill": ("read_file", "bash")}
 
     def test_think_roles_shrink(self) -> None:
         overlay = load_overlay(
@@ -88,7 +88,7 @@ think = { roles = ["worker"] }
 """,
             CODER,
         )
-        assert overlay.capabilities == {"think": {"roles": ["worker"]}}
+        assert overlay.capabilities == {"think": {"roles": ("worker",)}}
 
     def test_a_true_capability_may_be_turned_off(self) -> None:
         overlay = load_overlay(
@@ -113,6 +113,18 @@ max_calls = 10
         tightened = tightened_limits(CHAT.limits, overlay)
         assert tightened.max_tokens == 100
         assert tightened.max_calls == 10
+
+    def test_validated_overlay_cannot_drift_after_loading(self) -> None:
+        overlay = load_overlay("[limits]\nmax_tokens = 100\n", CHAT)
+        with pytest.raises(TypeError):
+            overlay.limits["max_tokens"] = 10**9  # type: ignore[index]
+
+    def test_nested_overlay_values_are_frozen(self) -> None:
+        overlay = load_overlay('[capabilities]\nuse_skill = ["read_file"]\n', CODER)
+        tools = overlay.capabilities["use_skill"]
+        assert isinstance(tools, tuple)
+        with pytest.raises(AttributeError):
+            tools.append("web_fetch")  # type: ignore[attr-defined]
 
     def test_tightened_limits_default_to_the_base(self) -> None:
         base = RunLimits(max_tokens=1000, max_calls=40)
@@ -153,13 +165,32 @@ class TestWideningIsRejectedByName:
         with pytest.raises(OverlayError, match="ref"):
             load_overlay('[slots]\ncontext_provider = "packet"\n', CHAT)
 
+    def test_slot_ref_interface_must_match(self) -> None:
+        with pytest.raises(
+            WideningOverlayError,
+            match=r"implements 'agent/1', which does not match the declared "
+            r"interface 'context-provider/1'",
+        ):
+            load_overlay('[slots]\ncontext_provider = "agent:planner"\n', CHAT)
+
+    def test_none_disables_a_slot(self) -> None:
+        overlay = load_overlay('[slots]\ncontext_provider = "none"\n', CHAT)
+        assert overlay.slots == {"context_provider": "none"}
+
+    def test_unregistered_ref_has_no_interface(self) -> None:
+        with pytest.raises(OverlayError, match="no declared interface"):
+            load_overlay('[slots]\ncontext_provider = "nope:thing"\n', CHAT)
+
     def test_capability_outside_the_ask(self) -> None:
         with pytest.raises(WideningOverlayError, match="call_agent"):
             load_overlay("[capabilities]\ncall_agent = [\"critic\"]\n", CHAT)
 
     def test_false_to_true_flip(self) -> None:
-        with pytest.raises(WideningOverlayError, match="commit"):
-            load_overlay("[capabilities]\ncommit = true\n", CODER)
+        # No shipped declaration asks for a capability it refuses, so the
+        # branch needs a synthetic declaration to be exercised honestly.
+        declared = dataclasses.replace(CODER, capabilities={"commit": False})
+        with pytest.raises(WideningOverlayError, match="turns on a capability"):
+            load_overlay("[capabilities]\ncommit = true\n", declared)
 
     def test_grown_tool_list(self) -> None:
         with pytest.raises(WideningOverlayError, match="use_skill"):
@@ -197,6 +228,14 @@ class TestWideningIsRejectedByName:
 
         with pytest.raises(OverlayError, match="unreadable"):
             load_overlay(pathlib.Path(tmp_path) / "nope.toml", CHAT)
+
+    def test_invalid_utf8_file(self, tmp_path: Any) -> None:
+        import pathlib
+
+        bad = pathlib.Path(tmp_path) / "bad.toml"
+        bad.write_bytes(b"[params]\nrecall_k = \xff\n")
+        with pytest.raises(OverlayError, match="UTF-8"):
+            load_overlay(bad, CHAT)
 
 
 class TestDeclarations:
@@ -256,3 +295,4 @@ class TestContextProviderSlot:
             from paa.pipelines import slots as slots_module
 
             slots_module._PROVIDERS.pop("test:terse", None)
+            slots_module._REF_INTERFACES.pop("test:terse", None)

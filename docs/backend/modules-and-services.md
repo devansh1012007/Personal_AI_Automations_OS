@@ -479,7 +479,7 @@ passed>0).
 | Validation failure | `validation/engine.py:235` | Binary FAIL; critic can only downgrade |
 | Sandbox memory breach | `watchdog.py` | Kill; `killed_reason="memory"` |
 | Queue depth (backpressure) | `backpressure.py:115` | Degrade modality / shed discretionary ingestion (HTTP 429) |
-| Crash mid-task | `recovery.py:243` | Boot sweep replays lineage, reconciles workspace, re-queues |
+| Crash mid-task | `recovery.py:888` | Boot sweep replays lineage, reconciles workspace, re-queues |
 
 ## Related documents
 

@@ -7,7 +7,7 @@ to `MUTATION_COMMITTED`. All paths verified against `src/paa/agents/orchestrator
 
 | Trigger | Entry | File |
 |---|---|---|
-| CLI | `paa submit "fix the login bug"` | `cli/main.py:128` → `Runtime.submit()` |
+| CLI | `paa submit "fix the login bug"` | `cli/main.py:126` → `Runtime.submit()` |
 | API | `POST /tasks?run=true` | `api/app.py:107` → `Runtime.submit()` + `Runtime.run()` |
 | Programmatic | `rt.submit_and_run("...")` | `runtime.py:334` |
 
@@ -34,7 +34,7 @@ is durable before any work (`orchestrator.py` docstring).
 ### 2. Run — project existing state
 
 `ChiefOrchestrator.run(cid)` (`src/paa/agents/orchestrator.py:401`):
-1. `project(ledger, cid)` (`ledger/replay.py:422`) → `TaskProjection`.
+1. `project(ledger, cid)` (`ledger/replay.py:512`) → `TaskProjection`.
 2. If `state.is_terminal`, return immediately (`src/paa/agents/orchestrator.py:401`).
 3. Build `AgentContext` from `MODALITY_PROFILES[state.modality]` (`_context_for`,
    `src/paa/agents/orchestrator.py:464`) — token budget, permission mode, recursion depth.

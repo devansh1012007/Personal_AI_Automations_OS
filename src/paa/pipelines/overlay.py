@@ -48,10 +48,11 @@ import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from paa.pipelines.base import PipelineError, RunLimits
-from paa.pipelines.slots import PipelineDeclaration
+from paa.pipelines.slots import PipelineDeclaration, interface_for_ref
 
 __all__ = [
     "Overlay",
@@ -66,6 +67,15 @@ __all__ = [
 _OVERLAY_SECTIONS = frozenset({"params", "slots", "capabilities", "limits"})
 
 _LIMIT_KEYS = ("max_tokens", "max_wall_s", "max_calls", "max_sub_runs")
+
+
+def _frozen(value: Any) -> Any:
+    """Freeze a validated TOML value, including nested mappings and lists."""
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _frozen(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_frozen(item) for item in value)
+    return value
 
 
 class OverlayError(PipelineError):
@@ -103,6 +113,10 @@ class Overlay:
     slots: Mapping[str, str] = field(default_factory=dict)
     capabilities: Mapping[str, Any] = field(default_factory=dict)
     limits: Mapping[str, int] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        for name in ("params", "slots", "capabilities", "limits"):
+            object.__setattr__(self, name, _frozen(getattr(self, name)))
 
 
 # ---------------------------------------------------------------------------
@@ -166,10 +180,25 @@ def _validate_slots(
                 f"overlay fills slot {key!r}, which the pipeline does not declare",
                 key=key,
             )
-        if not isinstance(value, str) or ":" not in value:
+        if not isinstance(value, str) or (value != "none" and ":" not in value):
             raise OverlayError(
-                f"overlay slot {key!r} must be a ref ('prefix:name' or 'none'), "
+                f"overlay slot {key!r} must be 'none' or a ref ('prefix:name'), "
                 f"got {value!r}",
+                key=key,
+            )
+        if value == "none":
+            out[key] = value
+            continue
+        interface = interface_for_ref(value)
+        if interface is None:
+            raise OverlayError(
+                f"overlay slot {key!r} ref {value!r} has no declared interface",
+                key=key,
+            )
+        if interface != slot.interface:
+            raise WideningOverlayError(
+                f"overlay slot {key!r} ref {value!r} implements {interface!r}, "
+                f"which does not match the declared interface {slot.interface!r}",
                 key=key,
             )
         out[key] = value
@@ -290,6 +319,8 @@ def load_overlay(
             text = source.read_text(encoding="utf-8")
         except OSError as exc:
             raise OverlayError(f"overlay file unreadable: {exc}") from exc
+        except UnicodeDecodeError as exc:
+            raise OverlayError(f"overlay file is not valid UTF-8: {exc}") from exc
     else:
         text = source
     try:

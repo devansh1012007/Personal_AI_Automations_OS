@@ -634,9 +634,15 @@ class CoderToolLoopPipeline:
         facade = self._narrow(ctx)
         max_steps = _int_param(task, "max_steps", 25)
         max_tokens_raw = task.params.get("max_tokens")
+        # The pipeline's param discipline is stricter than the classic
+        # loop's truthiness: only a positive int is a budget. Zero, a bool
+        # and a negative all mean "no budget" here, matching _int_param's
+        # "True is not 1" rule rather than inheriting a tiny negative cap.
         max_tokens = (
             max_tokens_raw
-            if isinstance(max_tokens_raw, int) and not isinstance(max_tokens_raw, bool)
+            if isinstance(max_tokens_raw, int)
+            and not isinstance(max_tokens_raw, bool)
+            and max_tokens_raw > 0
             else None
         )
 

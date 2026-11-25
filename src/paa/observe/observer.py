@@ -266,7 +266,12 @@ async def git_query(sandbox: Sandbox, workspace: Path, args: tuple[str, ...]) ->
 
 async def git_before(sandbox: Sandbox, workspace: Path) -> GitBefore:
     """Is this a repo, and where is its HEAD? Asked before the child runs."""
-    inside = await git_query(sandbox, workspace, ("rev-parse", "--is-inside-work-tree"))
+    try:
+        inside = await git_query(sandbox, workspace, ("rev-parse", "--is-inside-work-tree"))
+    except SandboxError:
+        # A host without a git executable must still produce a final
+        # bundle. Git is an optional witness, not the observed subject.
+        return GitBefore(available=False, reason="git unavailable in sandbox")
     if inside.exit_code != 0:
         return GitBefore(
             available=False,

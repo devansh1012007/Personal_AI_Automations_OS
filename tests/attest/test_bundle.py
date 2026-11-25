@@ -11,6 +11,7 @@ sibling suites; this one pins the parts.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -25,8 +26,11 @@ from paa.attest.bundle import (
     read_manifest,
 )
 from paa.attest.format import chain_steps
+from paa.attest.verify import read_section, verify_bundle
 from paa.core.errors import PaaError
 from paa.observe.bundle import ObserveBundle
+
+pytestmark = pytest.mark.requires_attest
 
 
 def _git(ws: Path, *args: str) -> None:
@@ -162,6 +166,28 @@ class TestTheFormat:
         assert first.chain_root == second.chain_root
         assert first.bundle_id != second.bundle_id  # ids differ; roots do not
 
+    def test_a_valid_diff_since_is_resolved_to_real_commits(
+        self, git_ws: Path, tmp_path: Path, key: Path
+    ) -> None:
+        _git(git_ws, "add", "-A")
+        _git(git_ws, "commit", "-qm", "second commit")
+        build_bundle(
+            out_dir=tmp_path / "bundle",
+            workspace=git_ws,
+            goal="ship the feature",
+            diff_since="HEAD~1",
+            key=load_or_generate_key(key),
+        )
+        manifest = read_manifest(tmp_path / "bundle" / "manifest.json")
+        digest = next(
+            str(s["sha256"]) for s in manifest["sections"] if s["name"] == "diff"
+        )
+        diff_section = read_section(tmp_path / "bundle", digest)
+        assert diff_section is not None
+        commits = diff_section["git"]["commits_since"]
+        assert len(commits) == 1
+        assert "second commit" in commits[0]["line"]
+
     def test_chain_steps_fold_name_digest_and_predecessor(self) -> None:
         steps = chain_steps([("a", "d1"), ("b", "d2")])
         assert len(steps) == 2
@@ -174,6 +200,30 @@ class TestTheFormat:
         path.write_text(json.dumps({"schema": "something-else/1"}), encoding="utf-8")
         with pytest.raises(ValueError, match="paa-attest-bundle/1"):
             read_manifest(path)
+
+    def test_the_same_witness_can_be_test_and_general_evidence(
+        self, git_ws: Path, tmp_path: Path, key: Path
+    ) -> None:
+        """The repeatable CLI flags may name one observe bundle twice; the
+        index records the content-addressed witness once, so the verifier's
+        exact-set check still holds."""
+        witness = _fake_observe_bundle(git_ws)
+        out = tmp_path / "bundle"
+        build_bundle(
+            out_dir=out,
+            workspace=git_ws,
+            goal="ship the feature",
+            test_bundles=[witness],
+            evidence_bundles=[witness],
+            key=load_or_generate_key(key),
+        )
+
+        manifest = read_manifest(out / "manifest.json")
+        indexed = [b for b in manifest["blobs"] if b["role"].startswith("evidence:")]
+        assert len(indexed) == 1
+        result = verify_bundle(out)
+        assert result.ok, [c.detail for c in result.checks]
+        assert result.evidence_count == 2
 
 
 class TestTwoPhaseWrite:
@@ -217,6 +267,128 @@ class TestRefusals:
         with pytest.raises(PaaError, match="does not resolve"):
             _build(git_ws, tmp_path / "bundle", key, diff_since="no-such-rev")
 
+    def test_an_option_looking_diff_since_is_refused_without_writing(
+        self, git_ws: Path, tmp_path: Path, key: Path
+    ) -> None:
+        """The old ``git log`` argv let ``--output=…`` become a git option
+        and write a producer-host file while the bundle said 'no commits'."""
+        target = tmp_path / "injected"
+        with pytest.raises(PaaError, match="git option, not a revision"):
+            _build(
+                git_ws,
+                tmp_path / "bundle",
+                key,
+                diff_since=f"--output={target}",
+            )
+        assert not target.exists()
+        assert not (tmp_path / "injected..HEAD").exists()
+
+    def test_a_failed_git_status_is_not_recorded_as_a_clean_diff(
+        self, git_ws: Path, tmp_path: Path, key: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from paa.attest import bundle as attest_bundle
+
+        def _git_without_status(
+            workspace: Path, *args: str, **kwargs: object
+        ) -> str | None:
+            if args and args[0] == "rev-parse":
+                return "abc123\n"
+            return None
+
+        monkeypatch.setattr(attest_bundle, "_git", _git_without_status)
+        with pytest.raises(PaaError, match="git status failed"):
+            _build(git_ws, tmp_path / "bundle", key)
+
+    def test_an_empty_diff_is_reported_not_presented_as_silent(
+        self, git_ws: Path, tmp_path: Path, key: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from paa.attest import bundle as attest_bundle
+
+        def _clean_git(
+            workspace: Path, *args: str, **kwargs: object
+        ) -> str | None:
+            if args and args[0] == "rev-parse":
+                return "abc123\n"
+            if args and args[0] in {"status", "diff"}:
+                return ""
+            return None
+
+        monkeypatch.setattr(attest_bundle, "_git", _clean_git)
+        result = _build(git_ws, tmp_path / "bundle", key)
+        assert any("empty working-tree diff" in w for w in result.warnings)
+
+    @pytest.mark.parametrize(
+        ("field", "value", "message"),
+        [
+            ("evidence_tier", "T2", "not T1"),
+            ("resume", "hot", "not 'none'"),
+        ],
+    )
+    def test_a_non_t1_or_resumed_observe_bundle_is_not_evidence(
+        self,
+        git_ws: Path,
+        tmp_path: Path,
+        key: Path,
+        field: str,
+        value: str,
+        message: str,
+    ) -> None:
+        evidence = ObserveBundle(
+            run_id="claim",
+            command=("pytest", "-q"),
+            workspace=str(git_ws),
+            **{field: value},
+        )
+        evidence.finalise()
+        path = tmp_path / "claim" / "bundle.json"
+        evidence.write(path)
+        with pytest.raises(PaaError, match=message):
+            _build(git_ws, tmp_path / "bundle", key, test_bundles=[path])
+
+    def test_secret_looking_asserted_commands_are_refused(
+        self, git_ws: Path, tmp_path: Path, key: Path
+    ) -> None:
+        with pytest.raises(PaaError, match="AWS access key"):
+            _build(
+                git_ws,
+                tmp_path / "bundle",
+                key,
+                asserted_commands=[["echo", "AKIA1234567890ABCDEF"]],
+            )
+
+    def test_a_secret_in_an_approval_identity_is_refused(
+        self, git_ws: Path, tmp_path: Path, key: Path
+    ) -> None:
+        """Approver kind/id are operator argv too; they are signed into a
+        portable section, so them being secrets is a leak, not metadata."""
+        with pytest.raises(PaaError, match="AWS access key"):
+            _build(
+                git_ws,
+                tmp_path / "bundle",
+                key,
+                approvals=[
+                    Approval(
+                        approver_kind="AKIA1234567890ABCDEF",
+                        approver_id="operator",
+                        decision="approved",
+                    )
+                ],
+            )
+
+    def test_a_secret_in_an_embedded_transcript_is_refused(
+        self, git_ws: Path, tmp_path: Path, key: Path
+    ) -> None:
+        evidence = ObserveBundle(
+            run_id="leaky",
+            command=("echo", "AKIA1234567890ABCDEF"),
+            workspace=str(git_ws),
+        )
+        evidence.finalise()
+        path = tmp_path / "leaky" / "bundle.json"
+        evidence.write(path)
+        with pytest.raises(PaaError, match="AWS access key"):
+            _build(git_ws, tmp_path / "bundle", key, test_bundles=[path])
+
     def test_a_started_observe_bundle_is_not_evidence(
         self, git_ws: Path, tmp_path: Path, key: Path
     ) -> None:
@@ -251,6 +423,14 @@ class TestTheKeyFile:
         # The private half is mode 600 from the first write.
         mode = key.stat().st_mode & 0o777
         assert mode == 0o600
+
+    def test_a_group_or_world_readable_key_is_refused(
+        self, tmp_path: Path, key: Path
+    ) -> None:
+        load_or_generate_key(key)
+        os.chmod(key, 0o644)
+        with pytest.raises(PaaError, match="group/world accessible"):
+            load_or_generate_key(key)
 
     def test_insecure_signing_is_refused_without_the_flag(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

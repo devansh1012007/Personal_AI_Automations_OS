@@ -129,3 +129,49 @@ pinned by a test that performs the attack.
   lineage extractor wants the recorder's framing (C7.3) so journal rows
   and bundle rows agree on what a "command" is; pulling it forward would
   guess that contract early.
+
+## 14. Local addendum — hardening applied in this tree (2026-11-25)
+
+The digest and §7 above are the patch author's historical claims, kept as a
+run trail and **not** restated as locally measured. Patch `0021` was applied
+uncommitted and hardened in four independently reviewed phases:
+
+1. Docs/dependency cleanup: `attest = ["cryptography>=42"]`, `paa[attest]` in
+   `dev`, `attest` in `all`; no author-host SHA, path or gate count adopted.
+2. Verifier hardening: the blob index is signed, signature dispatch follows
+   the declared algorithm, `key_id`/`signed_over`/`algorithm` are signed and
+   checked, blob sets are exact, hostile manifests become named failed checks,
+   decompression is bounded, and CLI details print literally.
+3. Builder/git/secret hardening: `--diff-since` is resolved through
+   `rev-parse --verify --end-of-options` to an object id before `git log`; a
+   failed `status`/`diff` refuses the build instead of signing an empty clean
+   diff; key mode `0600` is checked on load; evidence bundles must be `final`,
+   `T1` and `resume="none"`; high-confidence secrets in request text, git state
+   or embedded transcripts refuse the build without echoing their value; and
+   git honesty caveats survive into the verifier's verdict.
+4. CLI/test/CI hardening: `paa attest pr` verifies before rendering, renders
+   every untrusted scalar as an inert single-line code span with a fence
+   longer than any backtick run, rechecks after rendering, prints refusals
+   literally with emoji substitution disabled, and never writes `--out` for a
+   failed bundle. `requires_attest` + an `importorskip` guard let minimal
+   installs skip this suite honestly; CI's dev/all shapes already carry the
+   extra.
+
+Locally measured gates: `tests/attest` 92 passed (126 with the conventions
+locks); full suite `4,599 passed / 239 skipped / 1 xfailed / 3 failed` in
+221.80 s — the three failures are the pre-existing, untracked
+`tests/test_git_host_exec_gate.py` rows; `mypy src` 0 issues in 191 files;
+`ruff check src tests` only those same three rows; `scripts/status.py --check`
+matches at 191 files / 82,612 physical lines / 4,841 collected tests.
+
+Evidence limits: the supplied `manifest.json`, signature record and signer
+public key are absent locally, so the supplied attestation cannot be fully
+verified here. The seven `.bin` files are untrusted partial evidence; they
+were inspected as bytes only (each filename is the SHA-256 of its raw bytes;
+the chain root and bundle id reproduce from them) and never executed.
+
+Residual: a local writer can still swap bundle bytes between `attest pr`'s
+two verification checks or before the `--out` write. Every field remains
+inert-escaped, but the interface doc now names that window and the reviewer's
+final act remains `paa verify` immediately before publishing. Nothing from
+this round was committed or pushed; the `.patch` files remain untracked.

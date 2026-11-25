@@ -79,13 +79,34 @@ class PermissionDecision:
         return self.outcome is PermissionOutcome.ASK
 
 
+#: What ``*`` compiles to inside an allow/ask argument pattern: any run of
+#: characters *except* the ones that start a new shell command (``;``, ``&``,
+#: ``|``, a backtick, ``$``, a newline). Combined with the ``^`` ... ``$``
+#: anchoring in ``PermissionRule.parse``, an allow written ``bash(git
+#: status*)`` matches ``git status`` and ``git status --short -b`` but not
+#: ``git status; rm -rf ~`` — the tail cannot carry a chained verb. ``?``
+#: compiles to one character from the same class.
+_ALLOW_GLOB_TAIL = r"[^;&|`$\n]*"
+
+#: See :data:`_ALLOW_GLOB_TAIL`.
+_ALLOW_GLOB_ONE = r"[^;&|`$\n]"
+
+
 @dataclass(frozen=True, slots=True)
 class PermissionRule:
     """One allow/deny/ask rule.
 
     ``tool`` is a glob against the tool name. ``argument_pattern`` is an optional
     regex against a rendered form of the arguments, so a rule can be as coarse
-    as ``deny bash(*)`` or as precise as ``allow bash(git status*)``.
+    as ``deny bash(*)`` or as precise as ``allow bash(git status*)``. The
+    pattern's anchoring follows the outcome, and the asymmetry is deliberate:
+
+    - An **allow/ask** pattern is a full match (``^`` ... ``$``) whose ``*``
+      tail cannot cross a shell command separator — authority matches exactly
+      the command shape the operator named, and nothing chained behind it.
+    - A **deny** pattern is a containment match (unanchored search) — a
+      refusal is defensive, and must keep catching the pattern wherever an
+      adversary chains it.
     """
 
     outcome: PermissionOutcome
@@ -104,16 +125,42 @@ class PermissionRule:
 
     @classmethod
     def parse(cls, spec: str, outcome: PermissionOutcome) -> PermissionRule:
-        """Parse a rule spec like ``bash(git status*)`` or ``read_file``.
+        r"""Parse a rule spec like ``bash(git status*)`` or ``read_file``.
 
-        The parenthesised part becomes a regex anchored as a prefix match, so
-        ``git status*`` matches any command starting with ``git status``.
+        The parenthesised part becomes a regex whose shape follows the
+        outcome, and the asymmetry is deliberate:
+
+        - **Allow/ask are full matches with a separator-excluding tail.**
+          An allow is authority, and authority must match exactly the
+          command shape the operator named. Two smuggling spellings are
+          closed at once: unanchored, ``allow bash(git status*)`` matched a
+          command that merely *contains* ``git status`` (``echo hi; git
+          status``); and even ``^``-anchored with an open ``.*`` tail it
+          matched a command that *starts* with the prefix and chains
+          another verb behind it (``git status; rm -rf ~``). The compiled
+          form is ``^git\ status[^;&|`$\n]*$`` — the tail may carry
+          arguments but may not cross a command boundary, and the ``$``
+          forces the tail to reach the end of the string. Narrowing an
+          allow is always the safe direction; a legitimate chained call is
+          re-approved, not silently run.
+        - **Deny stays a containment match.** A refusal is defensive, and a
+          defensive rule must keep catching the pattern wherever an
+          adversary puts it. Anchoring a deny would narrow it — ``deny
+          bash(git push*)`` would stop catching ``git status; git push`` —
+          which is the unsafe direction for exactly the rules whose job is
+          to be the backstop when an allow is mis-scoped.
         """
         spec = spec.strip()
         if "(" in spec and spec.endswith(")"):
             tool, _, rest = spec.partition("(")
             arg_glob = rest[:-1]
-            pattern = re.escape(arg_glob).replace(r"\*", ".*").replace(r"\?", ".")
+            body = re.escape(arg_glob).replace(r"\*", _ALLOW_GLOB_TAIL).replace(
+                r"\?", _ALLOW_GLOB_ONE
+            )
+            # Allow/ask are full matches (authority matches only the named
+            # shape); deny is containment (a refusal must catch the pattern
+            # wherever an adversary chains it). See parse's docstring.
+            pattern = body if outcome is PermissionOutcome.DENY else f"^{body}$"
             return cls(outcome=outcome, tool=tool.strip(), argument_pattern=pattern)
         return cls(outcome=outcome, tool=spec, argument_pattern=None)
 

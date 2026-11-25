@@ -62,6 +62,31 @@ _MANIFEST_CAPABILITY_KEYS = frozenset(
 _RESUME_VALUES = frozenset({"journal", "none"})
 _PARAM_TYPES = frozenset({"int", "bool", "str"})
 _EVIDENCE_TIERS = frozenset({"T1", "T2", "T3"})
+_PIPELINE_PROTOCOL = "paa-pipeline/1"
+_LIMIT_KEYS = ("max_tokens", "max_wall_s", "max_calls", "max_sub_runs")
+_DEFAULT_PREFIXES = ("agent:", "builtin:", "skill:", "out:")
+
+
+def _parse_runtime_range(text: str) -> tuple[tuple[str, tuple[int, ...]], ...]:
+    """Parse ``>=4.1,<5`` into clauses; an unparseable range is an error.
+
+    Mirrors ``scripts/pipeline_manifest_check.py``: the range must *parse*,
+    it is not enough for it to match a known string. A version nobody can
+    compare is a contract nobody can honour, so it is refused at load.
+    """
+    clauses: list[tuple[str, tuple[int, ...]]] = []
+    for clause in text.split(","):
+        clause = clause.strip()
+        for op in (">=", "<=", ">", "<", "=="):
+            if clause.startswith(op):
+                version = tuple(int(p) for p in clause[len(op) :].split("."))
+                clauses.append((op, version))
+                break
+        else:
+            raise ValueError(f"bad requires_runtime clause: {clause!r}")
+    if not clauses:
+        raise ValueError("requires_runtime has no clauses")
+    return tuple(clauses)
 
 
 class LocalManifestError(PipelineError):
@@ -104,18 +129,21 @@ class RegisteredPipeline:
         return self.declaration.version
 
 
-def _param_spec(name: str, raw: Any) -> ParamSpec:
+def _param_spec(name: str, raw: Any, *, manifest: str) -> ParamSpec:
     if not isinstance(raw, dict):
         raise LocalManifestError(
             f"params entry {name!r} must be a table",
-            manifest=name,
+            manifest=manifest,
         )
     ptype = raw.get("type")
-    if ptype not in _PARAM_TYPES:
+    # A TOML list is unhashable: testing it for frozenset membership would
+    # raise TypeError and escape the named-error contract. Type first,
+    # membership second — every off-contract shape must be nameable.
+    if not isinstance(ptype, str) or ptype not in _PARAM_TYPES:
         raise LocalManifestError(
             f"params entry {name!r} has type {ptype!r}; "
             f"expected one of {sorted(_PARAM_TYPES)}",
-            manifest=name,
+            manifest=manifest,
         )
     minimum = raw.get("min")
     maximum = raw.get("max")
@@ -123,7 +151,7 @@ def _param_spec(name: str, raw: Any) -> ParamSpec:
         if bound is not None and (isinstance(bound, bool) or not isinstance(bound, int)):
             raise LocalManifestError(
                 f"params entry {name!r} has a non-int {bound_name!r}",
-                manifest=name,
+                manifest=manifest,
             )
     return ParamSpec(
         type=ptype,
@@ -134,17 +162,33 @@ def _param_spec(name: str, raw: Any) -> ParamSpec:
     )
 
 
-def _slot_declaration(name: str, raw: Any) -> SlotDeclaration:
+def _slot_declaration(name: str, raw: Any, *, manifest: str) -> SlotDeclaration:
     if not isinstance(raw, dict):
-        raise LocalManifestError(f"slots entry {name!r} must be a table")
+        raise LocalManifestError(
+            f"slots entry {name!r} must be a table", manifest=manifest
+        )
     interface = raw.get("interface")
     default = raw.get("default")
     if not isinstance(interface, str) or not interface.strip():
         raise LocalManifestError(
-            f"slots entry {name!r} needs a non-empty 'interface'"
+            f"slots entry {name!r} needs a non-empty 'interface'", manifest=manifest
         )
     if not isinstance(default, str) or not default.strip():
-        raise LocalManifestError(f"slots entry {name!r} needs a non-empty 'default'")
+        raise LocalManifestError(
+            f"slots entry {name!r} needs a non-empty 'default'", manifest=manifest
+        )
+    name_part, sep, major = interface.rpartition("/")
+    if not sep or not name_part or not major.isdigit():
+        raise LocalManifestError(
+            f"slots entry {name!r} interface {interface!r} must be '<name>/<major>'",
+            manifest=manifest,
+        )
+    if not default.startswith(_DEFAULT_PREFIXES):
+        raise LocalManifestError(
+            f"slots entry {name!r} default {default!r} does not resolve "
+            f"to {list(_DEFAULT_PREFIXES)}",
+            manifest=manifest,
+        )
     return SlotDeclaration(
         name=name,
         interface=interface,
@@ -156,18 +200,22 @@ def _slot_declaration(name: str, raw: Any) -> SlotDeclaration:
 def declaration_from_manifest(path: Path) -> PipelineDeclaration:
     """Parse one local ``pipeline.toml`` into a declaration, or refuse.
 
-    The closed contract: the section set, the ``[pipeline]`` identity
-    keys (``name``/``version``/``requires_runtime`` required), the
-    declarable capability names, ``run.resume`` in its closed set, and
-    the params/slots entry shapes. An unparseable or unknown-keyed
-    manifest fails here — before any code is launched, the whole value
-    of declaring.
+    The closed contract (ADR-0052): the section set, the ``[pipeline]``
+    identity keys and protocol, a *parseable* ``requires_runtime`` range,
+    the declarable capability names, ``run.resume`` in its closed set,
+    all four ``[limits]`` keys, and the params/slots entry shapes. An
+    off-contract manifest fails here — named, not hidden, and before any
+    code is launched, the whole value of declaring.
     """
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
         raise LocalManifestError(
             f"manifest unreadable: {exc}", manifest=str(path)
+        ) from exc
+    except UnicodeDecodeError as exc:
+        raise LocalManifestError(
+            f"manifest is not valid UTF-8: {exc}", manifest=str(path)
         ) from exc
     try:
         parsed: dict[str, Any] = tomllib.loads(text)
@@ -186,72 +234,115 @@ def declaration_from_manifest(path: Path) -> PipelineDeclaration:
 
     pipeline = parsed.get("pipeline")
     if not isinstance(pipeline, dict):
-        raise LocalManifestError("manifest needs a [pipeline] table")
+        raise LocalManifestError(
+            "manifest needs a [pipeline] table", manifest=str(path)
+        )
     identity: dict[str, str] = {}
     for key in ("name", "version", "requires_runtime"):
         value = pipeline.get(key)
         if not isinstance(value, str) or not value.strip():
             raise LocalManifestError(
-                f"[pipeline].{key} must be a non-empty string"
+                f"[pipeline].{key} must be a non-empty string", manifest=str(path)
             )
         identity[key] = value
 
+    protocol = pipeline.get("protocol")
+    if protocol != _PIPELINE_PROTOCOL:
+        raise LocalManifestError(
+            f"[pipeline].protocol must be {_PIPELINE_PROTOCOL!r}, got {protocol!r}",
+            manifest=str(path),
+        )
+    try:
+        _parse_runtime_range(identity["requires_runtime"])
+    except ValueError as exc:
+        raise LocalManifestError(
+            f"[pipeline].requires_runtime is not a parseable range: {exc}",
+            manifest=str(path),
+        ) from exc
+
     run = parsed.get("run", {})
     if not isinstance(run, dict):
-        raise LocalManifestError("[run] must be a table")
+        raise LocalManifestError("[run] must be a table", manifest=str(path))
     resume = run.get("resume", "journal")
-    if resume not in _RESUME_VALUES:
+    # Same unhashable-shape guard as the param type: a list-valued TOML
+    # field must be a named refusal, not a TypeError from set membership.
+    if not isinstance(resume, str) or resume not in _RESUME_VALUES:
         raise LocalManifestError(
-            f"run.resume must be one of {sorted(_RESUME_VALUES)}, got {resume!r}"
+            f"run.resume must be one of {sorted(_RESUME_VALUES)}, got {resume!r}",
+            manifest=str(path),
         )
 
     evidence = parsed.get("evidence", {})
     if not isinstance(evidence, dict):
-        raise LocalManifestError("[evidence] must be a table")
+        raise LocalManifestError("[evidence] must be a table", manifest=str(path))
     declares_tier = evidence.get("declares_tier", "unrated")
-    if declares_tier not in _EVIDENCE_TIERS and declares_tier != "unrated":
+    # Same unhashable-shape guard as run.resume: a list-valued TOML field
+    # must be a named refusal, not a TypeError from set membership.
+    if not isinstance(declares_tier, str) or (
+        declares_tier not in _EVIDENCE_TIERS and declares_tier != "unrated"
+    ):
         raise LocalManifestError(
             f"evidence.declares_tier must be one of {sorted(_EVIDENCE_TIERS)}, "
-            f"got {declares_tier!r}",
+            f"or 'unrated'; got {declares_tier!r}",
+            manifest=str(path),
         )
     off_contract_evidence = set(evidence) - {"declares_tier"}
     if off_contract_evidence:
         raise LocalManifestError(
             f"[evidence] carries {sorted(off_contract_evidence)!r} outside "
             "the declarable set ['declares_tier']",
+            manifest=str(path),
         )
 
     capabilities = parsed.get("capabilities", {})
     if not isinstance(capabilities, dict):
-        raise LocalManifestError("[capabilities] must be a table")
+        raise LocalManifestError(
+            "[capabilities] must be a table", manifest=str(path)
+        )
     off_contract = set(capabilities) - _MANIFEST_CAPABILITY_KEYS
     if off_contract:
         raise LocalManifestError(
             f"[capabilities] carries {sorted(off_contract)!r} outside the "
             "declarable set",
+            manifest=str(path),
         )
 
     limits_raw = parsed.get("limits", {})
     if not isinstance(limits_raw, dict):
-        raise LocalManifestError("[limits] must be a table")
+        raise LocalManifestError("[limits] must be a table", manifest=str(path))
+    missing = [key for key in _LIMIT_KEYS if key not in limits_raw]
+    if missing:
+        raise LocalManifestError(
+            f"[limits] missing required keys {missing}", manifest=str(path)
+        )
     limits_kwargs: dict[str, int] = {}
     for key, value in limits_raw.items():
         if key not in RunLimits.__dataclass_fields__:
-            raise LocalManifestError(f"[limits] key {key!r} is not a RunLimits key")
+            raise LocalManifestError(
+                f"[limits] key {key!r} is not a RunLimits key", manifest=str(path)
+            )
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-            raise LocalManifestError(f"[limits] {key!r} must be a positive int")
+            raise LocalManifestError(
+                f"[limits] {key!r} must be a positive int", manifest=str(path)
+            )
         limits_kwargs[key] = value
     limits = RunLimits(**limits_kwargs)
 
     params_raw = parsed.get("params", {})
     if not isinstance(params_raw, dict):
-        raise LocalManifestError("[params] must be a table")
-    params = {key: _param_spec(key, raw) for key, raw in params_raw.items()}
+        raise LocalManifestError("[params] must be a table", manifest=str(path))
+    params = {
+        key: _param_spec(key, raw, manifest=str(path))
+        for key, raw in params_raw.items()
+    }
 
     slots_raw = parsed.get("slots", {})
     if not isinstance(slots_raw, dict):
-        raise LocalManifestError("[slots] must be a table")
-    slots = {key: _slot_declaration(key, raw) for key, raw in slots_raw.items()}
+        raise LocalManifestError("[slots] must be a table", manifest=str(path))
+    slots = {
+        key: _slot_declaration(key, raw, manifest=str(path))
+        for key, raw in slots_raw.items()
+    }
 
     return PipelineDeclaration(
         name=identity["name"],

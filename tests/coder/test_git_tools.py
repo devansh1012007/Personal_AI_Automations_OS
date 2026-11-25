@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -599,4 +600,144 @@ class TestArgumentValidation:
 
         payload = _payload(await tools["git_commit"].run({"message": "x" * 2049}))
         assert "error" in payload
+
+
+# ---------------------------------------------------------------------------
+# The git-config gate: a commit the host cannot author is refused as a
+# value before git runs, not as git's raw "Please tell me who you are".
+#
+# The gate probes ``git config user.name`` / ``user.email`` under the same
+# child environment a commit gets, so these tests isolate ``HOME`` (and the
+# Windows profile variables) — the host's own global identity cannot leak
+# into the verdict, and a global-only identity is provably found.
+# ---------------------------------------------------------------------------
+
+
+def _git_with_home(cwd: Path, home: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    """Run one setup git argv under an isolated ``HOME``."""
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        check=True,
+        env={"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"), "HOME": str(home)},
+    )
+
+
+def _make_repo_without_identity(tmp_path: Path) -> Workspace:
+    """A real git repository whose seed commit was authored with ``-c``
+    overrides — no ``user.name``/``user.email`` is configured anywhere the
+    tool's child environment can resolve (the tests isolate ``HOME``)."""
+    repo = tmp_path / "repo_noidentity"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "commit.gpgsign", "false")
+    (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+    _git(repo, "add", "--", "seed.txt")
+    _git(
+        repo,
+        "-c",
+        "user.name=Seed",
+        "-c",
+        "user.email=seed@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-m",
+        "seed",
+    )
+    return Workspace(root=repo)
+
+
+def _isolate_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """Point every home variable the git child can inherit at an empty dir,
+    so the developer's global identity cannot answer the gate's probe."""
+    home = tmp_path / "isolated_home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    for var in ("USERPROFILE", "HOMEDRIVE", "HOMEPATH", "XDG_CONFIG_HOME"):
+        monkeypatch.delenv(var, raising=False)
+    return home
+
+
+class TestConfigGate:
+    async def test_commit_without_any_identity_is_refused_by_the_gate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ws = _make_repo_without_identity(tmp_path)
+        _isolate_home(tmp_path, monkeypatch)
+        tools = build_git_tools(ws)
+        (ws.root / "work.txt").write_text("work\n", encoding="utf-8")
+        staged = _payload(await tools["git_stage"].run({"paths": ["work.txt"]}))
+        assert staged["exit_code"] == 0
+
+        payload = _payload(await tools["git_commit"].run({"message": "unauthored"}))
+
+        assert "error" in payload
+        assert "user.name" in payload["error"] and "user.email" in payload["error"]
+        assert sorted(payload["missing_config"]) == ["user.email", "user.name"]
+        assert "git config" in payload["remedy"]
+        assert payload["exit_code"] == 1
+        # The gate refused before git ran: the refusal is the gate's payload,
+        # not git's stderr wrapped in a generic exit-code error.
+        assert "detail" not in payload
+        count = _git(ws.root, "rev-list", "--count", "HEAD").stdout.strip()
+        assert count == "1"  # seed only: no phantom commit
+        staged_names = _git(ws.root, "diff", "--cached", "--name-only").stdout
+        assert staged_names == "work.txt\n"  # staging is untouched by the gate
+
+    async def test_commit_with_repo_local_identity_passes_the_gate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ws = _make_repo(tmp_path)  # _make_repo configures identity repo-locally
+        _isolate_home(tmp_path, monkeypatch)
+        tools = build_git_tools(ws)
+        (ws.root / "x.txt").write_text("x\n", encoding="utf-8")
+        await tools["git_stage"].run({"paths": ["x.txt"]})
+
+        payload = _payload(await tools["git_commit"].run({"message": "local identity"}))
+
+        assert payload["exit_code"] == 0
+        assert payload["commit"] == _head(ws)
+
+    async def test_commit_with_identity_only_in_global_config_passes_the_gate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ws = _make_repo_without_identity(tmp_path)
+        home = _isolate_home(tmp_path, monkeypatch)
+        _git_with_home(
+            ws.root, home, "config", "--global", "user.email", "global@example.invalid"
+        )
+        _git_with_home(ws.root, home, "config", "--global", "user.name", "Global")
+        tools = build_git_tools(ws)
+        (ws.root / "x.txt").write_text("x\n", encoding="utf-8")
+        await tools["git_stage"].run({"paths": ["x.txt"]})
+
+        payload = _payload(await tools["git_commit"].run({"message": "global identity"}))
+
+        assert payload["exit_code"] == 0
+        assert payload["commit"] == _head(ws)
+
+    async def test_read_tools_do_not_require_identity(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The gate is commit-only: status, diff and stage work on a host
+        with no author identity at all."""
+        ws = _make_repo_without_identity(tmp_path)
+        _isolate_home(tmp_path, monkeypatch)
+        tools = build_git_tools(ws)
+        (ws.root / "a.txt").write_text("a\n", encoding="utf-8")
+
+        status = _payload(await tools["git_status"].run({}))
+        assert status["exit_code"] == 0
+        assert "?? a.txt" in status["status"]
+
+        diff = _payload(await tools["git_diff"].run({}))
+        assert diff["exit_code"] == 0
+
+        staged = _payload(await tools["git_stage"].run({"paths": ["a.txt"]}))
+        assert staged["exit_code"] == 0
 

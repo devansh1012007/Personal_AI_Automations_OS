@@ -23,6 +23,7 @@ merely present):
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import Mapping
 from typing import Any
@@ -47,8 +48,9 @@ from paa.coder.pipeline import (
     CoderLoopFacade,
     CoderToolLoopPipeline,
 )
-from paa.coder.session import Session
+from paa.coder.session import Session, TurnRole
 from paa.core.types import EventType
+from paa.core.types import PermissionMode as SystemPermissionMode
 from paa.ledger.store import LedgerStore
 from paa.pipelines.base import (
     InvalidCallParamsError,
@@ -367,6 +369,29 @@ class TestEquivalence:
         _assert_equivalent(classic, piped, cs, ps)
         assert classic.stopped_reason == "token_budget_exhausted"
 
+    async def test_zero_max_tokens_matches_classic(self) -> None:
+        """0 means "no budget" in the classic loop; the pipeline must agree."""
+        turns = [
+            ModelTurn(text="working", tool_calls=[ToolCall("read_file", {})], tokens=5),
+            ModelTurn(text="done"),
+        ]
+        classic, cs, _ = await run_classic(
+            ScriptedModel(list(turns)),
+            [RecordingTool("read_file")],
+            "go",
+            max_tokens=0,
+            **BYPASS,
+        )
+        piped, ps, _ = await run_pipeline(
+            ScriptedModel(list(turns)),
+            [RecordingTool("read_file")],
+            "go",
+            params={"max_tokens": 0},
+            **BYPASS,
+        )
+        assert classic.stopped_reason == "model_finished"
+        _assert_equivalent(classic, piped, cs, ps)
+
     async def test_multi_call_turn_runs_in_order(self) -> None:
         tool_a = RecordingTool("alpha")
         tool_b = RecordingTool("beta")
@@ -481,6 +506,58 @@ class TestFacadeContract:
             await facade.recall("anything")
         with pytest.raises(CapabilityNotGrantedError, match="remember"):
             await facade.remember({"fact": "x"})
+
+    async def test_cancel_during_use_skill_closes_failed_row(self) -> None:
+        """A cancel inside the tool lands a FAILED row before it propagates."""
+
+        class HangingTool(RecordingTool):
+            def __init__(self) -> None:
+                super().__init__("bash")
+                self.cancel_seen = False
+
+            async def run(self, arguments: Mapping[str, Any]) -> str:
+                try:
+                    await asyncio.sleep(600.0)
+                except asyncio.CancelledError:
+                    self.cancel_seen = True
+                    raise
+                return "slept"  # pragma: no cover
+
+        tool = HangingTool()
+        journal = RecordingToolJournal()
+        session = Session()
+        turns = [
+            ModelTurn(
+                tool_calls=[ToolCall("bash", {"command": "sleep 600"}, call_id="c1")]
+            )
+        ]
+        facade = CoderLoopFacade(
+            model=ScriptedModel(turns),
+            tools={"bash": tool},
+            session=session,
+            tool_journal=journal,
+            permissions=ToolPermissionPolicy(mode=PermissionMode.BYPASS),
+            permission_mode=SystemPermissionMode.AUTO,
+        )
+        task = PipelineTask(
+            correlation_id=uuid.uuid4(),
+            session_id=None,
+            goal="run a long command",
+            params={},
+        )
+        run = asyncio.create_task(CoderToolLoopPipeline().run(task, facade))
+        await asyncio.sleep(0.1)  # let think and PROPOSED land; the tool now hangs
+        run.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await run
+
+        assert tool.cancel_seen
+        assert [r["kind"] for r in journal.rows] == ["PROPOSED", "FAILED"]
+        assert "result_sha256" not in journal.rows[-1]
+        assert any(
+            turn.role is TurnRole.TOOL_RESULT and "cancelled" in turn.content
+            for turn in session.turns
+        )
 
     async def test_think_refuses_schemas(self) -> None:
         facade = CoderLoopFacade(

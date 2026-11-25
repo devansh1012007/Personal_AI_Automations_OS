@@ -2,8 +2,9 @@
 
 **Status: built (SPEC 2 §3.1 C7.2, H3.1 attested change bundle).** `paa attest
 build` gathers the mandate, the diff, the commands run, the tests actually run,
-the approvals and a hash chain over all of it, signs the chain root with
-Ed25519, and leaves a **self-contained directory** a reviewer can verify
+the approvals and a hash chain over all of it, signs the header covering the
+chain root, sections, blob index and key claims with the algorithm it
+declares, and leaves a **self-contained directory** a reviewer can verify
 offline on a clean machine: `paa verify <dir>`. The builder is
 `src/paa/attest/bundle.py`, the verifier is `src/paa/attest/verify.py`, and
 the format facts both sides share live in `src/paa/attest/format.py`. The
@@ -64,6 +65,11 @@ should be inspectable with `sha256sum` and a text editor.
     "algorithm": "ed25519",
     "key_id": "sha256 of the public key's base64 text",
     "public_key_b64": "…",
+    "claims": {
+      "algorithm": "ed25519",
+      "key_id": "sha256 of the public key's base64 text",
+      "public_key_b64": "…"
+    },
     "value_b64": "…",
     "signed_over": "sha256 of the exact signed bytes"
   },
@@ -73,21 +79,25 @@ should be inspectable with `sha256sum` and a text editor.
 
 The **chain** walks the six sections in the fixed order above. Step *i* is
 `sha256(canonical_json({prev, section, sha256}))` folding from `"genesis"`; the
-root is the last step. The **signature** is Ed25519 over the canonical JSON of
-the signed header (schema, bundle_id, created_at, tool_version, sections,
-chain_root), via `paa.marketplace.signing` — the same signing the marketplace
-uses, reuses by design.
+root is the last step. The **signature** is over the canonical JSON of the
+signed header: `schema`, `bundle_id`, `created_at`, `tool_version`, `sections`,
+`chain_root`, `blobs`, `notes` and `signature_claims`. `signed_over` is the
+SHA-256 of those exact bytes, and the stateless helpers in
+`paa.attest.format` dispatch strictly on the *signed* algorithm claim — an
+HMAC tag relabelled `ed25519` is never sent to the symmetric branch. The
+outer `algorithm`, `key_id` and `public_key_b64` copies are conveniences;
+`signature.claims` is the signed authority and the two must agree.
 
 ## The sections
 
 | Section | Contents | Honesty rules |
 |---|---|---|
 | `mandate` | Who asked (asserted, `-asserted` naming), basis, the content-addressed policy version, scope, and the goal. | Identity is *asserted*, never authority (the mandate module's own rule). An empty goal is refused at build. |
-| `diff` | git's own view (head, status, diff, commits since `--diff-since`) plus the workspace's full content manifest (path/size/SHA-256 per file). | `git.available=false` with a reason is an honest answer. The manifest is what `paa verify --workspace` checks a checkout against. |
+| `diff` | git's own view (head, status, diff, commits since `--diff-since`) plus the workspace's full content manifest (path/size/SHA-256 per file). | `git.available=false` with a reason is an honest answer; a failed `status`/`diff` after HEAD resolves **refuses the build** rather than signing an empty clean diff. `--diff-since` is resolved through `rev-parse --end-of-options` to an object id before `git log`, so an option-looking token cannot make git write a file. An empty diff is reported as a warning, and every signed git caveat also appears in the `paa verify` verdict. |
 | `commands` | One row per command: argv, `source`, `exit_code`, `state`, `evidence_sha256`. | `observed` rows cite an embedded T1 bundle; `asserted` rows say so in the note. Never collapsed. |
 | `tests` | The same row shape, for test commands. | `command_green` is `exit_code == 0` — "the test command exited zero", no stronger claim. A bundle whose tests are all asserted carries a warning in the verdict. |
 | `approvals` | Sign-offs: approver (asserted), decision (`approved`/`rejected`/`changes_requested`), note, time. | Rejections are *recorded*, not refused — an attested rejection is more evidence, not less. |
-| `evidence` | The embedded `paa-observe-bundle/1` bundles: run id, digest, tier, command, outcome. | Only `phase="final"` observe bundles are accepted — a `started` bundle is the observer's crash marker, not evidence of a completed run. |
+| `evidence` | The embedded `paa-observe-bundle/1` bundles: run id, digest, tier, command, outcome. | Only `phase="final"` observe bundles with `evidence_tier="T1"` and `resume="none"` are accepted — a `started` bundle is the observer's crash marker, and a resumed or lower-tier run is not a fresh witness. |
 | `evidence` (recorder rows) | Since C7.3, the evidence section also carries `paa-record/1` flight records: run id, digest, event count, chain root. | Embedded by the recorder at close; the blob is the record as of the attestation point, and the live record's `record_finalised` event cites the blob's digest, so the extension is visible. |
 
 ## The recorder's rows (C7.3, additive)
@@ -118,7 +128,10 @@ words, counted separately.
 The manifest is written twice: a `phase="started"` skeleton before any
 evidence is gathered, the `phase="final"` record after the signature. A
 manifest still saying `started` is the crash marker for a build that never came
-back, and `paa verify` refuses it. Writes are atomic (`<name>.tmp` + rename).
+back, and `paa verify` refuses it. Writes are atomic against a **process crash**
+(`<name>.tmp` + rename: a reader sees the old file or the new one, never a
+splice). There is no file/parent-directory `fsync`, so this is not a
+power-loss durability guarantee.
 
 ## Verification — the five doors
 
@@ -127,9 +140,9 @@ back, and `paa verify` refuses it. Writes are atomic (`<name>.tmp` + rename).
 | Check | What it proves | What breaks it |
 |---|---|---|
 | `manifest` | Parses, `paa-attest-bundle/1`, `phase="final"`. | A started skeleton, a foreign schema. |
-| `blobs` | Every declared blob exists and hashes to its name. | **One flipped byte, anywhere.** |
+| `blobs` | The signed index is an exact set: every entry exists, hashes to its name and matches its declared size, and no signed section or evidence blob is omitted, added or relabelled. | **One flipped byte, anywhere**, or a changed evidence count. |
 | `chain` | The re-walked sections reproduce `chain_root`. | A substituted, renamed or reordered section. |
-| `signature` | The Ed25519 signature verifies over the signed header with the embedded public key. | Any manifest edit after signing. |
+| `signature` | The claim fields agree with the signed copies, `signed_over` reproduces the signed bytes, and the signature verifies under the declared algorithm with the embedded public key. | Any manifest edit after signing, including an algorithm downgrade. |
 | `key` | With `--trust <key>`: the embedded key **is** the pinned one. Without: reported `self-asserted`, never `trusted`. | A re-signed bundle from a different key. |
 
 **Integrity and origin are separate facts, on purpose.** A bundle re-signed by
@@ -146,19 +159,49 @@ checkout" means *this checkout, shown to match or shown how it doesn't*.
 ## The signing key
 
 `$PAA_HOME/attest/attest-key.json` (or `--key`): Ed25519, generated on first
-use, mode `0600`. The private half never leaves the producer. Building under
-the HMAC dev fallback (no `cryptography` package) is **refused** unless
-`--insecure-fallback-signing` is passed — a symmetric "signature" anyone can
-forge is worse than none, and the manifest labels the algorithm for every
-verifier either way.
+use when the `paa[attest]` extra supplies `cryptography`, mode `0600`. Mode
+`0600` is enforced on **load** too: a group/world-readable existing key is
+refused with `chmod 600` in the message, because a key anyone can read makes
+every later signature forgeable. The private half never leaves the producer.
+An existing key must match the host's algorithm: a symmetric dev key cannot
+be reused on a host that can sign Ed25519, because that is how a verifier is
+tricked into checking the wrong scheme. Building under the HMAC dev fallback
+is **refused** unless `--insecure-fallback-signing` is passed; the fallback is
+labelled `hmac-dev-fallback` in the signed claims and `paa verify` refuses it
+by default — anyone who can verify that bundle can forge it.
+
+## Secrets are refused, not redacted into history
+
+A bundle is portable and publishable, so high-confidence secret shapes
+(provider API keys, GitHub/Slack tokens, private-key blocks and named
+`*_SECRET`/`*_TOKEN`/`*_PASSWORD` assignments) in the goal, argv, approval
+notes, git status/diff or an embedded observe bundle **refuse the build**.
+The refusals name the *kind* found and never echo the value — error text is
+itself a place secrets get copied into tickets. The producer must remove or
+redact the material at source; silently rewriting a section or an embedded T1
+bundle would break the very hash chain the artifact exists to prove.
 
 ## `paa attest pr`
 
-Emits the PR comment body — a markdown summary with the goal, the chain root,
-the key id, the observed/asserted test split and the exact verification
-command — to the console or `--out <file>`. It **posts nothing**: this runtime
-has no network surface for posting, and a command that pretended to publish
-would be exactly the quietly-false artifact the attestation exists to catch.
+Verifies the bundle first (integrity doors only, with no `--trust` pin) and
+refuses with exit 2 if any door fails: a paste-ready summary of a started,
+tampered or fallback-signed bundle would be a quietly-false artifact. For a
+bundle that verifies, it emits the PR comment body — the goal, chain root,
+key id, observed/asserted test split and exact verification command — to the
+console or `--out <file>`. Every untrusted value is rendered as an inert,
+single-line markdown code span with a fence longer than any backtick run in
+the value; newlines and C0/DEL controls are flattened so no scalar can become
+a heading, link, reference definition or HTML block. (U+2028/U+2029 and bidi
+controls stay literal but inert inside the code span.) It verifies again
+after rendering, because the renderer reads the manifest a second time. A
+local writer who rewrites the directory between the first check and that
+second check — or before the `--out` write — can still show a body whose
+bytes differ from both checks; every field stays inert-escaped, but the
+reviewer's final act is still `paa verify` immediately before publishing.
+It **posts
+nothing**: this runtime has no network surface for posting, and a command
+that pretended to publish would be exactly the artifact the attestation
+exists to catch.
 
 ## A GitHub Action that verifies for real
 
@@ -181,7 +224,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -e .   # or: pip install paa
+      - run: pip install -e ".[attest]"   # or: pip install "paa[attest]"
       - run: paa verify "${{ inputs.bundle }}" --trust "${{ secrets.ATTEST_SIGNER_PUBLIC_KEY_B64 }}"
       # Exit code is CI's verdict: 0 only when every door held.
 ```

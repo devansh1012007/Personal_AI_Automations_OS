@@ -34,6 +34,31 @@ if TYPE_CHECKING:
 
 console = Console()
 
+#: The child environment is built from scratch by the sandbox, with a
+#: deliberately short PATH and no host toolchain. An ``--env`` value may
+#: add ordinary variables, but it must never be able to put a writable
+#: directory ahead of that PATH or preload a library into the child.
+_RESERVED_CHILD_ENV = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "TMPDIR",
+        "TEMP",
+        "TMP",
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+        "DYLD_INSERT_LIBRARIES",
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONSTARTUP",
+        "SYSTEMROOT",
+        "COMSPEC",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+    }
+)
+
 
 def _run(coro: Any) -> Any:
     return asyncio.run(coro)
@@ -103,7 +128,11 @@ async def run_observe_pipeline(
         except Exception as exc:
             from paa.core.errors import PaaError
 
-            reason = exc.message if isinstance(exc, PaaError) else str(exc)
+            # A foreign exception's text can carry the observed argv (with
+            # any secret in it); name its type, never its payload.
+            reason = (
+                exc.message if isinstance(exc, PaaError) else type(exc).__name__
+            )
             await journal.run_failed(reason)
             raise
 
@@ -148,6 +177,12 @@ def observe(
             console.print(f"[red]--env expects KEY=VAL, got {item!r}[/red]")
             raise typer.Exit(2)
         key, _, val = item.partition("=")
+        if not key or key.upper() in _RESERVED_CHILD_ENV:
+            console.print(
+                f"[red]--env refuses reserved child key {key!r}[/red] — "
+                "the sandbox owns PATH, HOME, temp and loader variables"
+            )
+            raise typer.Exit(2)
         child_env[key] = val
 
     from paa.core.errors import PaaError

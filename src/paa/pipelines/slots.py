@@ -31,11 +31,13 @@ from paa.pipelines.base import RunLimits
 
 __all__ = [
     "BUILTIN_DECLARATIONS",
+    "CONTEXT_PROVIDER_INTERFACE",
     "ParamSpec",
     "PipelineDeclaration",
     "SlotDeclaration",
     "builtin_context_provider",
     "declaration_for",
+    "interface_for_ref",
     "register_context_provider",
     "resolve_context_provider",
 ]
@@ -141,6 +143,13 @@ def builtin_context_provider(
 
 _PROVIDERS: dict[str, ContextProvider] = {"builtin:packet": builtin_context_provider}
 
+#: The interface a context-provider ref implements, declared with the ref. A
+#: callable's signature cannot say which slot interface it satisfies, and a
+#: runtime check would be too late — ADR-0052 refuses a bad ref at load.
+CONTEXT_PROVIDER_INTERFACE = "context-provider/1"
+_AGENT_REF_INTERFACE = "agent/1"
+_REF_INTERFACES: dict[str, str] = {"builtin:packet": CONTEXT_PROVIDER_INTERFACE}
+
 
 def register_context_provider(ref: str, provider: ContextProvider) -> None:
     """Register a context provider under a manifest-shaped ref.
@@ -154,6 +163,18 @@ def register_context_provider(ref: str, provider: ContextProvider) -> None:
             f"a context provider ref must be manifest-shaped ('prefix:name'), got {ref!r}"
         )
     _PROVIDERS[ref] = provider
+    _REF_INTERFACES[ref] = CONTEXT_PROVIDER_INTERFACE
+
+
+def interface_for_ref(ref: str) -> str | None:
+    """The interface ``ref`` declares, or ``None`` when nobody declares one."""
+    known = _REF_INTERFACES.get(ref)
+    if known is not None:
+        return known
+    prefix, sep, name = ref.partition(":")
+    if sep and prefix == "agent" and name:
+        return _AGENT_REF_INTERFACE
+    return None
 
 
 def resolve_context_provider(ref: str) -> ContextProvider:

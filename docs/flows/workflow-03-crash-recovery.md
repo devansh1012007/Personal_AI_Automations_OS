@@ -8,7 +8,7 @@ Verified against `src/paa/ledger/recovery.py`, `src/paa/ledger/store.py`,
 
 | Trigger | Entry | File |
 |---|---|---|
-| CLI | `paa recover` | `cli/main.py:287` → `Runtime.boot_recovery()` |
+| CLI | `paa recover` | `cli/main.py:285` → `Runtime.boot_recovery()` |
 | Service start | `paa serve` → `Daemon.start()` | `daemon.py:91` |
 | Runtime build | `Runtime.build(run_recovery=True)` (default) | `runtime.py:331` |
 
@@ -16,13 +16,13 @@ All lead to `ChiefOrchestrator.boot()` → `RecoveryEngine.boot_sweep()`.
 
 ## Step-by-step sweep
 
-`RecoveryEngine.boot_sweep(limit=1000)` (`recovery.py:243`):
+`RecoveryEngine.boot_sweep(limit=1000)` (`recovery.py:888`):
 
 ### 1. Verify hash chains
 
 `verify_all_chains()` (`ledger/store.py:447`): for every lineage, `verify_chain()` checks
 each event's digest recomputes, `prev_hash` links to predecessor, versions dense.
-Problems are **reported, never auto-repaired** (`recovery.py:252`) — silently
+Problems are **reported, never auto-repaired** (`recovery.py:897`) — silently
 fixing tampered history defeats auditability.
 
 ### 2. Enumerate open lineages
@@ -32,11 +32,11 @@ ORDER BY updated_at ASC` from the **head projection** — deliberately **not**
 the queue (`recovery.py:11`), because the queue is volatile and may have lost
 messages; the ledger is not.
 
-### 3. Recover each lineage (`recover_correlation`, `recovery.py:284`)
+### 3. Recover each lineage (`recover_correlation`, `recovery.py:929`)
 
 For each head:
 
-a. `project(store, cid)` → `TaskProjection` (replay from ledger, `ledger/replay.py:450`).
+a. `project(store, cid)` → `TaskProjection` (replay from ledger, `ledger/replay.py:512`).
 b. If `projection.is_terminal` → head projection lagged (crash between ledger
    insert and head upsert); `_mark_head_terminal()`; outcome `ALREADY_TERMINAL`
    (`:948`).
@@ -51,13 +51,13 @@ e. `_reconcile_workspace(projection)` (`:1051`):
    - Drift → `STATE_ROLLBACK_TRIGGERED` event with drifted/restored paths
      (`:1161`); `snapshotter.restore(root, expected)`; outcome `ROLLED_BACK`.
    - No checkpoint ever taken → nothing can have drifted (`:1123`).
-f. `_requeue(projection)` (`:437`): enqueue to `StreamName.ORCHESTRATOR_CORE`
+f. `_requeue(projection)` (`recovery.py:1196`): enqueue to `StreamName.ORCHESTRATOR_CORE`
    with `{correlation_id, session_id, resume_phase, resume_step_index,
    recovered: true}`. Enqueue failure logged, non-fatal — ledger already
-   records the task as open, so a later sweep retries (`recovery.py:520`).
-g. `_record_sweep()` (`:315`): append `RECOVERY_REPLAY_COMPLETED` audit event,
+   records the task as open, so a later sweep retries (`recovery.py:1226`).
+g. `_record_sweep()` (`recovery.py:1065`): append `RECOVERY_REPLAY_COMPLETED` audit event,
    suppressed if the latest event is already one (keeps repeated sweeps
-   no-op; ADR-0010 idempotency fix) (`:329`).
+   no-op; ADR-0010 idempotency fix) (`recovery.py:1088`).
 
 ## Outcomes
 
@@ -71,14 +71,14 @@ g. `_record_sweep()` (`:315`): append `RECOVERY_REPLAY_COMPLETED` audit event,
 | `ALREADY_TERMINAL` | Head projection lagged; task actually finished | No |
 
 `RecoveryReport` aggregates `started_at`, `finished_at`, `scanned`,
-`recoveries[]`, `chain_problems` (`recovery.py:125`).
+`recoveries[]`, `chain_problems` (`recovery.py:248`).
 
 ## Idempotency
 
 Recovery is idempotent: running twice yields the same end state
 (`recovery.py:17`). A crash during recovery is survivable because each sweep
 re-reads the ledger and the audit-event suppression prevents unbounded growth
-(`recovery.py:336`).
+(`recovery.py:1088`).
 
 ## Sequence diagram
 
@@ -143,11 +143,11 @@ runs each via `Runtime.run(cid)`, which re-projects and resumes at
 
 | Failure | Handling |
 |---|---|
-| Hash-chain problem | Reported in `RecoveryReport.chain_problems`, never repaired (`recovery.py:252`) |
+| Hash-chain problem | Reported in `RecoveryReport.chain_problems`, never repaired (`recovery.py:897`) |
 | Single lineage throws | Logged as `UNRECOVERABLE`; sweep continues (`recovery.py:912`) |
-| Requeue fails | Logged non-fatal; ledger already open; next sweep retries (`recovery.py:520`) |
-| Workspace missing | Logged warning, no drift recorded (`recovery.py:371`) |
-| No checkpoint taken | Nothing can have drifted (`recovery.py:375`) |
+| Requeue fails | Logged non-fatal; ledger already open; next sweep retries (`recovery.py:1226`) |
+| Workspace missing | Logged warning, no drift recorded (`recovery.py:1129`) |
+| No checkpoint taken | Nothing can have drifted (`recovery.py:1121`) |
 
 ## Persistence
 

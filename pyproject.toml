@@ -41,6 +41,11 @@ graph = ["kuzu>=0.11"]
 # fallback keeps the runtime functional without it.
 embeddings = ["sentence-transformers>=3.3"]
 api = ["fastapi>=0.115", "uvicorn[standard]>=0.32"]
+# Real Ed25519 signing for the attested change bundle (SPEC 2 C7.2). The
+# HMAC fallback stays importable without it, but attestation refuses to
+# produce an ambiguous "signed" artifact unless the asymmetric backend is
+# present; the documented `dev` install therefore carries this extra.
+attest = ["cryptography>=42"]
 redis = ["redis>=5.2"]
 postgres = ["psycopg[binary,pool]>=3.2"]
 # S3-backed cold lake for the Docker deployment (ADR-0019, ADR-0026). boto3
@@ -77,9 +82,14 @@ dev = [
     # a missing driver is a missing dependency, and a missing server is a
     # missing server, and neither is a failure.
     "paa[s3]",
+    # The real Ed25519 backend. Without it tests/attest/ fails loudly on the
+    # asymmetric path; the documented `pip install -e ".[dev]"` must be able
+    # to exercise what the CLI advertises, not merely install a verifier that
+    # can be tricked by an honestly-labelled symmetric fallback.
+    "paa[attest]",
 ]
 all = [
-    "paa[vector,graph,embeddings,api,redis,postgres,s3,otel]",
+    "paa[vector,graph,embeddings,api,redis,postgres,s3,otel,attest]",
 ]
 
 [project.scripts]
@@ -96,12 +106,14 @@ testpaths = ["tests"]
 addopts = "-q --strict-markers --strict-config"
 markers = [
     "slow: tests that take more than a second",
+    "adversarial: red-team probes that attack the coder tool boundaries as an adversary would",
     "requires_vector: needs the qdrant-client extra",
     "requires_graph: needs the kuzu extra",
     "requires_embeddings: needs the sentence-transformers extra",
     "requires_api: needs the fastapi/uvicorn extra",
     "requires_postgres: needs the psycopg extra and a live PostgreSQL server",
     "requires_s3: needs the boto3 extra and a live S3 server (PAA_TEST_S3_ENDPOINT)",
+    "requires_attest: needs the cryptography extra (paa[attest])",
     "chaos: crash-injection and recovery tests",
 ]
 filterwarnings = ["error::DeprecationWarning:paa.*"]

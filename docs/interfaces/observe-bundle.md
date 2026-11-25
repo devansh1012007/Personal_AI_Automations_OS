@@ -100,7 +100,8 @@ the child is spawned; the final record with `phase = "final"` lands after
 classification. A bundle that still says `started` is the crash marker for an
 observer or child that never came back — the file itself is the evidence, and
 nothing silently upgrades it. Writes are atomic (`<path>.tmp` + rename), so a
-reader never sees a splice.
+reader never sees a splice from a killed process. This is not a power-loss
+fsync contract: a host crash can still lose an unflushed rename.
 
 ## The honesty rules, field by field
 
@@ -118,8 +119,10 @@ reader never sees a splice.
 
 `read_bundle(path)` (same module) validates the schema tag and refuses a file
 that is not a `paa-observe-bundle/1` — a foreign file must not be silently
-reinterpreted. `bundle.sha256()` is the canonical content hash the ledger's
-`observe.run` COMPLETED row attests (`result_sha256` / `bundle_sha256`); the
+reinterpreted. `bundle.sha256()` is the canonical-JSON content hash the
+ledger's `observe.run` COMPLETED row attests (`result_sha256` /
+`bundle_sha256`) — it hashes sorted-key JSON, **not** the indented bytes of
+the file on disk, so `sha256sum bundle.json` is a different digest. The
 transcript text never rides the ledger.
 
 ## The pipeline door

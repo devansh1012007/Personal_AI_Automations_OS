@@ -224,8 +224,9 @@ TYPE_CHECKING_CLASS_KEYS: frozenset[str] = frozenset({"A", "B", "C", "D", "E"})
 TYPE_CHECKING_NOTES: dict[str, str] = {
     "paa.cli.attest": (
         "names paa.attest.bundle.Approval for the approval parser's return "
-        "annotation; the producer module itself is imported inside the "
-        "command bodies so `paa --version` pays only for the Typer surface"
+        "annotation; paa.attest.__init__ eagerly re-exports bundle and verify, "
+        "so the producer module is imported inside command bodies and no "
+        "paa.attest module is imported at CLI module scope"
     ),
     "paa.cli.chat": "names paa.config.Settings, loaded by every CLI path already: ~0 ms",
     "paa.cli.observe": (

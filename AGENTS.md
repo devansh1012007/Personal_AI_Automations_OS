@@ -560,19 +560,29 @@ the archive at the bottom. Keep prose out — this is a register, not a report.
 
 ### Environment (this development sandbox)
 
-- Repo: `/home/z/my-project/paa`, branch `main` @ b3eb061, clean tree at
-  the C7.1 close; C7.2 lands on top of it.
-- Full gate at the W7 C7.2 close: `python -m pytest tests/` → 4,475 passed /
-  244 env-gated skipped / 1 xfailed, 0 failures, exit 0 (4,720 collected;
-  C7.1 close was 4,429 → +46, exactly the new attest tests); `mypy src/paa`
-  clean (191 files); `ruff check src tests` clean. Note: pytest 9's double
+- Repo: this merge lands on `/home/devansh/Code/Personal_AI_Automations_OS`
+  branch `main` @ f5555b6 (the pushed base: W6 loops, C7.1 observe and C7.2
+  attest with local hardening — the W6 `0001`–`0007`, C7.1 `0020` and C7.2
+  `0021` patches, previously applied uncommitted, now landed as ccf0793 +
+  f5555b6). The C7.3 recorder work was built in the development sandbox
+  (`/home/z/my-project/paa` @ 63c5a0e, clean tree at the C7.3 close) and
+  arrives here as a merge, not a patch series.
+- Full gate at the C7.3 close (sandbox): `python -m pytest tests/` → 4,769
+  collected = 4,525 passed / 243 env-gated skipped / 1 xfailed, 0 failures,
+  exit 0 (+50 recorder tests over the C7.2 close); `mypy src/paa` clean
+  (197 files); `ruff check src tests` clean. The host's earlier pre-existing
+  failures lived only in its then-untracked `tests/test_git_host_exec_gate.py`
+  — that file is tracked and green in the merged tree. Note: pytest 9's double
   `-q` (addopts + a manual `-q`) suppresses the summary line — count with a
   single `-q` or read the dots.
-- venv: `/home/z/.venv` — **outside** the persistent project dir; after a sandbox
-  recycle reinstall with `pip install -e ".[dev,tui]"` from the repo root and
-  `export PATH=/home/z/.venv/bin:$PATH`. 2 CPU cores; run at most ~3 parallel jobs.
-- Tooling present: pytest 9.0.2, ruff 0.17.6 (newer than the `>=0.8` floor — see the
-  ruff note in the verified-facts register), mypy (strict, clean).
+- venv: sandbox `/home/z/.venv` — **outside** the persistent project dir; after
+  a sandbox recycle reinstall with `pip install -e ".[dev,tui]"` from the repo
+  root. Host repo: `.venv/` inside the repo (Python 3.12.3), gate commands
+  `PYTHONPATH=src .venv/bin/python -m …`. 2 CPU cores; run at most ~3 parallel
+  jobs.
+- Tooling present: pytest 9.x (9.0.2 sandbox / 9.2.0 host), ruff 0.17.x (above
+  the `>=0.8` floor — see the ruff note in the verified-facts register), mypy
+  (strict, clean).
 
 ### Archived campaign: W6-LOOPS — SPEC 2 Wave 6: loops everywhere (2026-11-24, closed)
 
@@ -583,7 +593,8 @@ stays gated on a first outside author (the spec's own rule).
 
 **WAVE 6 CLOSED (2026-11-24):** all six rows done, G-LOOPS gate met — three
 pipelines on one facade, conformance + chaos + overlay green, protocol still draft
-(freezing waits for P3's RPC run, per the spec's own rule).
+(freezing waits for P3's RPC run, per the spec's own rule). The W6-CLOSE row below
+stays this tree's evidence; the successor campaign is W7-EVIDENCE.
 
 | Task ID | Agent | Assignment | Status | Evidence / notes |
 |---|---|---|---|---|
@@ -592,21 +603,23 @@ pipelines on one facade, conformance + chaos + overlay green, protocol still dra
 | W6-C6.3 | orchestrator | replay/divergence logic + kill -9 chaos for chat and coder | **done** | commit f535071; ReplayView+ServedToolResults on the facade; coder chaos matrix (5 boundaries: sweep twice → resume, zero duplicate effects) + chat redelivery chaos (3 tests); 22 tests |
 | W6-C6.4 | orchestrator | slots + overlay loader, tighten-only at load | **done** | commit b87234e; slots.py declarations + overlay.py loader (every widening rejected at load by name); chat context-provider slot; the behaviour proof as a test; 31 tests |
 | W6-C6.5 | orchestrator | registry v0 + paa pipeline list/inspect/run/trace | **done** | commit b5390ea; builtin+local sources, mandate pipeline scope (Scope.pipelines, golden payload preserved), selection explicit→scope→default; CLI list/inspect/run/trace driven live in tests; 29 tests |
-| W6-C6.6 | orchestrator | conformance v0 for all registered pipelines | **done** | commit 215cb25; six-check standard in each pipeline's own vocabulary (coder: all six real; chat/builtin: real + honest n/a rows naming where pinned); all three GREEN |
-| W6-CLOSE | orchestrator | G-LOOPS gate evidence + truth pass + deliverables | **done** | this commit; full gate 4,368/244/1x/0 exit 0, mypy+ruff clean; conformance+chaos+overlay green; protocol still draft (freezing waits for P3's RPC run — the spec's own rule); docs truth pass (repointed replay.py + shifted line citations); deliverables regenerated |
+| W6-C6.6 | orchestrator | conformance v0 for all registered pipelines | **done** | commit 215cb25 (landed ccf0793), then remediated here; six-check standard in each pipeline's own vocabulary; all three GREEN. Applied here from patch `0006` and then remediated: the builtin no-secrets pass and the coder unknown-outcome fake pass became honest, pinned n/a rows; no-secrets now proves hash attestation; cancel, budget, double-run and the RED-row path are genuinely asserted. Focused gate: `tests/pipelines/test_conformance.py` 5 passed; `tests/pipelines tests/cli tests/chat tests/coder` 869 passed / 1 skipped; a new runnable builtin without a runner now renders RED by name instead of being silently skipped |
+| W6-CLOSE | orchestrator | G-LOOPS gate evidence + truth pass + deliverables | **done** | applied here from patch `0007` (landed ccf0793); docs truth pass repointed this tree's longer `ledger/replay.py` and the local CLI anchors to their real lines, docs-reference lock 5 passed + conventions 34 passed; final full suite 4,439 passed / 240 skipped / 1 xfailed / 3 pre-existing failures outside W6; protocol still draft (freezing waits for P3's RPC run — the spec's own rule) |
 
 ### Active campaign: W7-EVIDENCE — SPEC 2 Wave 7: the moat goes external (2026-11-24)
 
-Owner ask: continue down the report's "not started / partial" list in wave order;
-Wave 7 rows as capacity allows, C7.1 first (it is also the pipeline spec's P1.4:
-the fourth pipeline the rule-of-three was waiting on).
+Owner ask: continue down the satisfaction report's "not started / partial" list in
+wave order; Wave 7 rows as capacity allows, C7.1 first (it is also the pipeline
+spec's P1.4: the fourth pipeline the rule of three was waiting on).
 
 | Task ID | Agent | Assignment | Status | Evidence / notes |
 |---|---|---|---|---|
-| W7-C7.1 | orchestrator | `paa observe` — H3.2 observer mode, T1 evidence tier, pipeline #4 per P1.4: run any CLI in a workspace, record manifest diff + git changes + transcript, classify state after a crash | **done** | this commit; W7-IMPL-01 report; observer core + `paa-observe-bundle/1` (two-phase write, resume="none", tier="T1") + `builtin.observe` on the facade with an empty capability ask + `paa observe` CLI and `paa pipeline run builtin.observe` through one shared driver; done-when met as tests (fake harness → complete T1 bundle; kill -9/timeout/error/clean classification matrix + chaos); conformance 4 pipelines GREEN; registry/manifests carry the honesty ladder (`[evidence] declares_tier`); 57 observe tests, full gate 4,429/244/1x/0; docs/interfaces/observe-bundle.md + 125 citations re-anchored |
-| W7-C7.2 | orchestrator | attested change bundle + `paa verify` (H3.1) | **done** | this commit; W7-IMPL-02 report; `paa-attest-bundle/1`: six hash-chained sections (mandate/diff/commands/tests/approvals/evidence) as cold-lake CAS blobs + Ed25519-signed header (`src/paa/attest/{format,bundle,verify}.py`, format leaf shared by both sides); `paa attest build|pr` + top-level `paa verify` (five named doors: manifest/blobs/chain/signature/key — integrity vs origin never collapsed, `--trust` pins the signer, no pin says self-asserted); observed vs asserted rows never collapsed; two-phase started→final manifest; HMAC fallback refused without `--insecure-fallback-signing`; done-when met as tests: flip-one-byte (section blob, evidence blob, manifest) → fail naming the door; clean-checkout verify with PAA_HOME nonexistent → stays nonexistent; forged-resignation is intact-but-untrusted; workspace drift named (+/~/-); 46 attest tests, full gate 4,475/244/1x/0; docs/interfaces/attested-bundle-spec.md (incl. the GitHub Action template); 71 citations re-anchored (cli/main.py + README.md line shifts) |
-| W7-C7.3 | orchestrator | `paa record` — the harness-neutral flight recorder | **done** | this commit; W7-IMPL-03 report; `paa-record/1`: append-only, crash-safe hash-chained NDJSON (digest covers schema/seq/at/kind/data/prev, genesis seed; two-phase summary, torn-tail reported not dropped) + the sequential-writer handoff (core ↔ proxy append under flock, tail digest verified, one chain no splice); `src/paa/recorder/{record,tools,proxy,core}.py` + `paa record run\|proxy\|verify`; the MCP policy proxy over the shared framing kit (tool_call → shape → run's recorded policy → execute sandbox/jailed → tool_result/policy_denied; unattended ask = denied_unattended with the raw decision kept; deny wins; no token, reasoning stated); the harness under a real SandboxSession with live stdout relay; mediated vs observed never collapsed (the honesty block states it where the code enforces it); attest builder +2 additive validated params (extra_evidence, observed_command_rows backed by bundle blobs) — closes the C7.2 command-row-extractor finding; done-when met as a real chain: fake harness (real child) → real proxy subprocess over real stdio → real chain → `verify_bundle` green; chaos: self-SIGKILL → signalled, overrun → timed_out, both finalised+verifying; non-cooperating harness → T1 floor, zero proxy events; 50 recorder tests, full gate 4,769 collected = 4,525/243/1x/0 exit 0 (+50 exactly; one textual-gated TUI skip un-skipped), mypy 197 files, ruff clean; docs/interfaces/record-format.md + attest-spec additive section + 95 citation files re-anchored |
-| W7-C7.4 | orchestrator | cross-harness eval harness | not started | depends on C7.3 |
+| W7-C7.1 | orchestrator | `paa observe` — H3.2 observer mode, T1 evidence tier, pipeline #4 per P1.4: run any CLI in a workspace, record manifest diff + git changes + transcript, classify state after a crash; `paa-observe-bundle/1` (two-phase atomic write, `resume="none"`, `evidence_tier="T1"`), `builtin.observe` on the facade with an empty capability ask, one shared driver for `paa observe` and `paa pipeline run builtin.observe`, `[evidence] declares_tier` on manifests | **done** | landed ccf0793 (patch `0020`) with local hardening: reserved `--env` keys refused, argv secrets kept out of failed-journal reasons, missing git recorded not fatal, canonical-hash/atomic-write claims stated honestly; 63 observe tests; `PYTHONPATH=src .venv/bin/python -m pytest tests/ -q -o addopts=` → 4,506 passed / 240 skipped / 1 xfailed / **3 pre-existing failures** in the untracked `tests/test_git_host_exec_gate.py`; `mypy src` 0 issues / 186 files; `ruff check src tests` only those same 3 pre-existing findings; docs lock 5 passed; patch-author SHAs, counts and `/home/z/...` paths are not adopted |
+| W7-C7.2 | orchestrator | attested change bundle + `paa verify` (H3.1) | **done** | landed f5555b6 (patch `0021`) with local hardening: algorithm-aware signature dispatch + signed blob index, hostile-manifest verdicts, bounded decompression; git option injection closed via `rev-parse --end-of-options`, false-clean git refused, key mode checked on load, T1/`resume="none"` enforced, portable secrets refused, PR body verified before rendering with inert code-span escaping and terminal-safe refusals; `paa[attest]`/`requires_attest` added. 92 attest tests; focused `tests/attest` + conventions 126 passed; final full suite 4,599 passed / 239 skipped / 1 xfailed / **3 pre-existing failures** in untracked `tests/test_git_host_exec_gate.py`; `mypy src` 0 issues / 191 files; `ruff check src tests` only those same 3 findings; status lock matches; author-host claims and untrusted `.bin` evidence not adopted/committed |
+| W7-C7.3 | orchestrator | `paa record` — the harness-neutral flight recorder | **done** | landed by this merge (63c5a0e, built on the pre-hardening attest); W7-IMPL-03 report; `paa-record/1`: append-only, crash-safe hash-chained NDJSON (digest covers schema/seq/at/kind/data/prev, genesis seed; two-phase summary, torn-tail reported not dropped) + the sequential-writer handoff (core ↔ proxy append under flock, tail digest verified, one chain no splice); `src/paa/recorder/{record,tools,proxy,core}.py` + `paa record run\|proxy\|verify`; the MCP policy proxy over the shared framing kit (tool_call → shape → run's recorded policy → execute sandbox/jailed → tool_result/policy_denied; unattended ask = denied_unattended with the raw decision kept; deny wins; no token, reasoning stated); the harness under a real SandboxSession with live stdout relay; mediated vs observed never collapsed (the honesty block states it where the code enforces it); attest builder +2 additive validated params (extra_evidence, observed_command_rows backed by bundle blobs) — closes the C7.2 command-row-extractor finding; done-when met as a real chain: fake harness (real child) → real proxy subprocess over real stdio → real chain → `verify_bundle` green; chaos: self-SIGKILL → signalled, overrun → timed_out, both finalised+verifying; non-cooperating harness → T1 floor, zero proxy events; 50 recorder tests, full gate 4,769 collected = 4,525/243/1x/0 exit 0 (+50 exactly; one textual-gated TUI skip un-skipped), mypy 197 files, ruff clean; docs/interfaces/record-format.md + attest-spec additive section + 95 citation files re-anchored |
+| W7-C7.4 | orchestrator | cross-harness eval harness | not started | depends on C7.3 (met by this merge) |
+| W7-C7.5 | orchestrator | `paa thread` | not started | listed in Known left; no row detail in patch `0020` |
+| W7-C7.6 | orchestrator | ACP v1 | not started | listed in Known left; no row detail in patch `0020` |
 
 ### Archived campaign: T-VERIFY (2026-11-24, complete)
 
@@ -664,18 +677,20 @@ P0 → P1.1 → P1.2 → SPEC-2 W4 C4.1–C4.7 → W5 C5.2–C5.5 close).
 ### Known left (vs the spec's phases) — do not re-derive
 
 - ~~P1.3, P1.5, P2, P4-lite, conformance v0~~ → **done in Wave 6** (C6.1-C6.6;
-  the rule of three is met: builtin + chat + coder.tool-loop on the facade).
-- ~~P1.4 (observe as pipeline #4)~~ → **done in Wave 7** (C7.1: `builtin.observe`
-  on the facade, `resume="none"`, `evidence_tier="T1"`; four pipelines
-  registered, conformance GREEN ×4).
-- Wave 7 rest: ~~C7.2 attest + `paa verify`~~ → **done in Wave 7** (C7.2:
-  `paa-attest-bundle/1`, `paa attest build|pr`, `paa verify` offline).
-  ~~C7.3 `paa record`~~ → **done in Wave 7** (C7.3: `paa-record/1` chain,
-  the MCP policy proxy, the SandboxSession shim, the attested bundle at
-  close — `paa record run|proxy|verify`). C7.4 evals,
+  the rule of three was met: builtin + chat + coder.tool-loop on the facade).
+- ~~P1.4 (observe as pipeline #4)~~ → **done in Wave 7** (C7.1, landed: `builtin.observe`
+  on the facade, `resume="none"`, `evidence_tier="T1"`, conformance ×4;
+  gate evidence is in the W7 row above).
+- ~~H3.1 (attested change bundle + `paa verify`)~~ → **done in Wave 7** (C7.2,
+  landed: `paa-attest-bundle/1`, `paa attest build|pr`, `paa verify` offline,
+  hardened here — algorithm-aware signature dispatch, hostile-manifest
+  verdicts, git option injection closed; gate evidence is in the W7 row above).
+- Wave 7 rest: ~~C7.3 `paa record`~~ → **done in Wave 7** (C7.3, landed by this
+  merge: `paa-record/1` chain, the MCP policy proxy, the SandboxSession wrap,
+  the attested bundle at close — `paa record run|proxy|verify`). C7.4 evals,
   C7.5 `paa thread`, C7.6 ACP v1 → not started (C7.4's dependency is met).
 - P3 (RPC host/protocol), P5 (distribution), the P6 adapters beyond observe
-  (acp-client, mcp-host), P7 (authoring kit) → later waves; `paa-pipeline/1`
+  (acp-client, mcp-host), P7 (authoring kit) → not started; `paa-pipeline/1`
   stays draft — freezing waits for P3's RPC run (the spec's own rule).
 - C5.1/G1 real-model S1: PENDING, operator-blocking (no model key in this sandbox);
   run book in `docs/operations/2026-11-09-next-spec/g1-decision.md`.
@@ -684,7 +699,8 @@ P0 → P1.1 → P1.2 → SPEC-2 W4 C4.1–C4.7 → W5 C5.2–C5.5 close).
 
 - `/home/z/my-project/download/paa-spec2-w4-w7.patch` + `.bundle` — combined diff
   and git bundle of all unpushed commits through the C7.3 close (regenerated
-  at the C7.3 close; supersedes the w4-w6 pair and every earlier range).
+  at the C7.3 close; supersedes the w4-w6 pair, the host's working-tree series
+  and every earlier range).
 - `/home/z/my-project/download/paa-format-patch-series-w7/` — per-commit patches
   from `origin/main` (git am ready; the w6 series is superseded).
 - `/home/z/my-project/download/paa-observe-demo-bundle.json` — a complete T1
@@ -701,6 +717,7 @@ P0 → P1.1 → P1.2 → SPEC-2 W4 C4.1–C4.7 → W5 C5.2–C5.5 close).
 - Earlier ranges (`paa-pipeline-platform-work.patch`, `paa-spec2-w4-w5.*`,
   `paa-spec2-w4-w6.*`, `pipeline-platform-p0-p1.*`, the w6 series dirs) are
   superseded; `paa-report-cover.html` remains the report cover source.
-- This board (committed with each wave close — tracking state, not product).
+- This board (committed with each wave close — tracking state, not product;
+  the host's uncommitted-by-design copy is superseded by this landed history).
 
 ### Archive (finished rows)

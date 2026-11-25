@@ -30,6 +30,18 @@ decision, like an explicit deny below ``bypass``):
    passed the check. Validation is all-or-nothing: one protected or escaping
    path aborts the whole call before git runs, so a batch cannot stage "the
    safe half".
+3. **Git-config gate** (``git_commit`` only): a commit the host cannot
+   author is refused before git runs. Without a resolvable ``user.name`` /
+   ``user.email``, ``git commit`` dies mid-run with ``Please tell me who
+   you are`` stderr wrapped in a generic exit-code payload — a refusal the
+   model cannot act on and an operator cannot distinguish from a broken
+   repository. The gate probes both keys with fixed argv under the same
+   child environment the commit would get (the env passthrough carries
+   ``HOME`` and the user-profile variables, so repo-local, global and
+   system config resolve exactly as commit resolves them) and returns the
+   missing keys and the remedy as values. The gate never invents an
+   identity: a commit misattributed to a fabricated author is a lie in the
+   record, and the ledger exists to prevent exactly that.
 
 Subprocess discipline, borrowed from the sandbox backend's patterns
 (``sandbox/subprocess_backend.py``): capped output reads that drain past the
@@ -155,6 +167,13 @@ _ENV_PASSTHROUGH: frozenset[str] = frozenset(
 #: Forced child variables: no credential prompt (there are no network
 #: operations to authenticate, and a prompt would hang on a closed stdin).
 _ENV_FORCED: dict[str, str] = {"GIT_TERMINAL_PROMPT": "0"}
+
+#: The author-identity keys a commit needs (the git-config gate). Probed
+#: with ``git config <key>`` in the workspace, which resolves repo-local →
+#: global → system under the same child environment a commit gets, so the
+#: gate answers exactly what ``git commit`` would find — one source of
+#: truth, never a second resolution rule that could drift.
+_IDENTITY_KEYS: tuple[str, ...] = ("user.name", "user.email")
 
 
 @dataclass(frozen=True, slots=True)
@@ -300,6 +319,39 @@ async def _preflight(ws: Workspace, verb: str) -> dict[str, Any] | None:
             "workspace": str(resolved_root),
         }
     return None
+
+
+async def _identity_gate(ws: Workspace) -> dict[str, Any] | None:
+    """The git-config gate: refuse a commit the host cannot author.
+
+    Returns ``None`` when both identity keys resolve (commit may proceed);
+    otherwise an error payload naming the missing keys and the remedy as
+    values. An empty configured value counts as missing: git would reject
+    the commit just the same. The probe never raises — a spawn failure
+    becomes the same error payload every other spawn failure here uses.
+    """
+    missing: list[str] = []
+    for key in _IDENTITY_KEYS:
+        try:
+            result = await _run_git(("git", "--no-pager", "config", key), cwd=ws.root)
+        except OSError as exc:
+            return {"error": f"git executable could not be started: {exc}"}
+        if result.exit_code != 0 or not result.stdout.strip():
+            missing.append(key)
+    if not missing:
+        return None
+    return {
+        "error": (
+            "git_commit refused: no author identity is configured for this "
+            "host (missing: " + ", ".join(missing) + ")"
+        ),
+        "missing_config": missing,
+        "remedy": (
+            "configure an author identity for the repository or the host, "
+            "e.g. git config user.name / git config user.email"
+        ),
+        "exit_code": 1,
+    }
 
 
 def _emit(payload: dict[str, Any]) -> str:
@@ -614,6 +666,11 @@ class _GitCommit(_GitTool):
             return _emit({"error": "git_commit requires a non-empty 'message'"})
         if len(message) > _MAX_MESSAGE_CHARS:
             return _emit({"error": f"message exceeds the {_MAX_MESSAGE_CHARS} character limit"})
+        # The git-config gate runs after argument validation and before the
+        # commit: a refusal here is a value the model can act on (configure
+        # an identity), not git's raw ``Please tell me who you are`` stderr.
+        if gate := await _identity_gate(self._ws):
+            return _emit(gate)
         argv = (
             "git",
             "--no-pager",
@@ -666,6 +723,6 @@ class _GitCommit(_GitTool):
 
 
 def build_git_tools(ws: Workspace) -> dict[str, Any]:
-    """The four git tools bound to one jailed workspace (``ws	root`` must be
+    """The four git tools bound to one jailed workspace (``ws   root`` must be
     the git repository root; every call re-verifies)."""
     return {t.name: t for t in (_GitStatus(ws), _GitDiff(ws), _GitStage(ws), _GitCommit(ws))}

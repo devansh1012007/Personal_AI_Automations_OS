@@ -2,28 +2,38 @@
 
 The producer (:mod:`paa.attest.bundle`) and the verifier
 (:mod:`paa.attest.verify`) must agree on exactly one thing: the shape of
-the artifact. That agreement lives here, in a module whose import graph
-is deliberately bare — no settings, no ledger store, no runtime — so the
-verifier can be imported on a clean checkout without dragging the
-producer's world along, and the format's identity can never drift
-between the two sides because there is only one spelling of it.
+the artifact. That agreement lives here, in a module with no settings,
+no ledger store and no runtime — only hashing, canonical JSON and the
+stateless signing backend — so the verifier can be imported on a clean
+checkout without dragging the producer's world along, and the format's
+identity can never drift between the two sides because there is only one
+spelling of it. Algorithm dispatch lives here too: a manifest's
+``ed25519`` label is never verified by the symmetric fallback.
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 from collections.abc import Sequence
 
 from paa import __version__
 from paa.ledger.events import canonical_json
+from paa.marketplace.signing import sign as _marketplace_sign
+from paa.marketplace.signing import signing_is_secure
+from paa.marketplace.signing import verify as _marketplace_verify
 
 __all__ = [
     "APPROVAL_DECISIONS",
     "ATTEST_SCHEMA",
     "ATTEST_TOOL_VERSION",
     "SECTION_ORDER",
+    "attestation_algorithm",
     "chain_steps",
     "sha256_bytes",
+    "sign_attestation",
+    "verify_attestation_signature",
 ]
 
 #: The bundle format's identity. Additive changes only within ``/1``.
@@ -80,3 +90,69 @@ def chain_steps(section_digests: Sequence[tuple[str, str]]) -> list[str]:
         steps.append(step)
         prev = step
     return steps
+
+
+def attestation_algorithm() -> str:
+    """The one algorithm the current host can honestly produce.
+
+    The label is derived from the backend, never from a key file's prose:
+    a fallback key used on a host with ``cryptography`` installed is not a
+    symmetric signature, and an Ed25519 label on a host without it must
+    fail closed rather than silently verify as HMAC.
+    """
+    return "ed25519" if signing_is_secure() else "hmac-dev-fallback"
+
+
+def sign_attestation(payload: bytes, private_b64: str, algorithm: str) -> str:
+    """Sign with exactly the declared algorithm, or refuse.
+
+    The generic marketplace helper dispatches on the *verifier's* local
+    backend; that is safe for package signatures labelled by the same
+    helper, but an attestation's algorithm is a claim a reviewer acts on.
+    Dispatching it here, from the label, makes producer and verifier agree
+    on one meaning for ``ed25519`` and one for ``hmac-dev-fallback``.
+    """
+    if algorithm == "ed25519":
+        if not signing_is_secure():
+            raise ValueError("Ed25519 signing is unavailable on this host")
+        return _marketplace_sign(payload, private_b64)
+    if algorithm == "hmac-dev-fallback":
+        if signing_is_secure():
+            raise ValueError(
+                "the symmetric fallback cannot be produced on a host with "
+                "Ed25519 available; the algorithm label must match the backend"
+            )
+        key = base64.b64decode(private_b64, validate=True)
+        return base64.b64encode(
+            hmac.new(key, payload, hashlib.sha256).digest()
+        ).decode("ascii")
+    raise ValueError(f"unknown attestation signature algorithm {algorithm!r}")
+
+
+def verify_attestation_signature(
+    payload: bytes,
+    value_b64: str,
+    public_b64: str,
+    algorithm: str,
+    *,
+    allow_insecure_fallback: bool = False,
+) -> bool:
+    """Verify one signature under exactly the label the manifest declares.
+
+    ``hmac-dev-fallback`` is never trusted by default: its "public" key is
+    the shared secret, so a bundle that publishes it publishes the means to
+    forge it. It is accepted only by an explicitly insecure caller, and no
+    amount of relabelling lets it masquerade as Ed25519.
+    """
+    if algorithm == "ed25519":
+        if not signing_is_secure():
+            return False
+        return _marketplace_verify(payload, value_b64, public_b64)
+    if algorithm == "hmac-dev-fallback" and allow_insecure_fallback:
+        try:
+            key = base64.b64decode(public_b64, validate=True)
+            value = base64.b64decode(value_b64, validate=True)
+        except (ValueError, UnicodeEncodeError):
+            return False
+        return hmac.compare_digest(hmac.new(key, payload, hashlib.sha256).digest(), value)
+    return False

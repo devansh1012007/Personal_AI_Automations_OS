@@ -48,6 +48,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from paa.core.errors import PaaError
 from paa.core.types import EventType
 from paa.ledger.events import (
     BlobStoreLike,
@@ -115,8 +116,8 @@ class CallRecord:
 
     ``result`` is the decoded ``result_json`` — ``None`` when the row
     never recorded one (FAILED, PROPOSED) or when the blobbed original
-    was not resolvable at fold time. ``result_sha256`` is always the
-    attested digest, whatever the payload could carry.
+    was not resolvable at fold time. ``result_sha256`` is the attested
+    digest when the row carries one; an unresolved blob carries none.
     """
 
     seq: int
@@ -418,9 +419,9 @@ def _decode_result(payload: Mapping[str, Any]) -> Any:
     """The recorded result, decoded, or ``None``.
 
     Total over malformed rows: a ``result_json`` that does not parse
-    reads as absent (the sha remains the attestation); a blobbed payload
-    resolves through the store when one was supplied, and a resolution
-    failure degrades to ``None`` the same way.
+    reads as absent (the sha remains the attestation). Blob resolution
+    belongs to ``fold_call_journal``; an unresolved blobbed row simply
+    carries no ``result_json`` here.
     """
     raw = payload.get("result_json")
     if not isinstance(raw, str) or not raw:
@@ -428,6 +429,23 @@ def _decode_result(payload: Mapping[str, Any]) -> Any:
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
+        return None
+
+
+def _blobbed_seq(event: LedgerEvent) -> int | None:
+    """Recover a blobbed call row's seq from its sealed discriminator.
+
+    The blob stub replaces the whole payload, including ``seq``. Without
+    a store (or when resolution fails) the discriminator is the row's
+    only surviving identity; dropping the row would let replay mistake a
+    completed call for a new one.
+    """
+    parts = (event.discriminator or "").split(":")
+    if len(parts) != 3 or parts[0] != "call":
+        return None
+    try:
+        return _safe_int(int(parts[1]))
+    except ValueError:
         return None
 
 
@@ -440,8 +458,10 @@ def fold_call_journal(
 
     Total over any input — unknown event types, malformed payloads and
     foreign lineages fold without raising; a row without a usable seq is
-    skipped (the same defensive rule every house fold states). Records
-    return in seq order.
+    skipped (the same defensive rule every house fold states). A blobbed
+    row whose payload cannot be resolved keeps its seq from the sealed
+    ADR-0008 discriminator, so an outcome is never downgraded to a
+    missing record. Records return in seq order.
 
     The fold is **order-independent by precedence**, not by arrival: an
     outcome row (COMPLETED or FAILED) always beats a bare PROPOSED for
@@ -459,13 +479,18 @@ def fold_call_journal(
         if etype not in _CALL_ROW_TYPES:
             continue
         payload: Mapping[str, Any] = event.payload
-        if is_blobbed_payload(dict(payload)) and blob_store is not None:
-            try:
-                payload = resolve_blobbed_payload(dict(payload), blob_store)
-            except ValueError:
-                # An unresolvable blob degrades to the stub's fields; the
-                # sha stays the attestation either way.
-                payload = event.payload
+        if is_blobbed_payload(dict(payload)):
+            if blob_store is not None:
+                try:
+                    payload = resolve_blobbed_payload(dict(payload), blob_store)
+                except (ValueError, PaaError):
+                    # An unresolvable blob degrades to the stub's fields;
+                    # the fold stays total and the seq is recovered below.
+                    payload = event.payload
+            if is_blobbed_payload(dict(payload)):
+                # The stub carries none of the original fields. Keep the
+                # seq from the discriminator so the outcome still folds.
+                payload = {**payload, "seq": _blobbed_seq(event)}
         seq = _safe_int(payload.get("seq"))
         if seq is None:
             continue

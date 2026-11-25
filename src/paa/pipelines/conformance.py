@@ -32,18 +32,22 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from paa.core.types import EventType
+from paa.ledger.events import LedgerEvent
 from paa.ledger.store import LedgerStore
 from paa.pipelines.journal import (
     CallJournal,
+    CallOutcome,
     read_call_journal,
 )
-from paa.pipelines.replay import ReplayAction, ReplayView
+from paa.pipelines.replay import ReplayView
 
 __all__ = [
     "ConformanceCheck",
@@ -181,6 +185,7 @@ async def _payload_texts(store: LedgerStore, run_id: uuid.UUID) -> list[str]:
 
 async def coder_conformance(ledger: LedgerStore, tmp_path: Path) -> ConformanceReport:
     """The six checks over ``coder.tool-loop``, in its own vocabulary."""
+    from paa.coder.journal import LedgerToolJournal
     from paa.coder.loop import ModelTurn, ToolCall
     from paa.coder.permissions import PermissionMode, ToolPermissionPolicy
     from paa.coder.pipeline import CoderLoopFacade, CoderToolLoopPipeline
@@ -216,6 +221,7 @@ async def coder_conformance(ledger: LedgerStore, tmp_path: Path) -> ConformanceR
             session=Session(session_id="conformance", transcript_dir=transcript),
             run_id=run_id,
             call_journal=journal,
+            tool_journal=LedgerToolJournal(ledger, run_id),
             replay=replay,
             served_tools=served,
             permissions=ToolPermissionPolicy(mode=PermissionMode.BYPASS),
@@ -292,22 +298,22 @@ async def coder_conformance(ledger: LedgerStore, tmp_path: Path) -> ConformanceR
         )
 
     # -- 3. unknown-outcome never auto-repeats ------------------------------
-    run_c = uuid.uuid4()
-    journal_c = CallJournal(ledger, run_c)
-    await journal_c.run_started(CoderToolLoopPipeline.name, CoderToolLoopPipeline.version)
-    await journal_c.call_proposed(1, "commit", {"role": "worker"})
-    view_c = await ReplayView.load(ledger, run_c)
-    decision = view_c.check(1, "commit", {"role": "worker"})
-    if decision.action is ReplayAction.OUTCOME_UNKNOWN:
-        unknown = ConformanceCheck.passed(
-            CHECK_NAMES[2],
-            "a mutating call the crash left PROPOSED reads OUTCOME_UNKNOWN "
-            "(-32008); the pipeline decides",
-        )
-    else:
-        unknown = ConformanceCheck.failed(
-            CHECK_NAMES[2], f"decision was {decision.action}, not OUTCOME_UNKNOWN"
-        )
+    # No registered in-process pipeline journals a *mutating* call through
+    # CallJournal: coder journals only `think`, which is pure, and `use_skill`
+    # rides TOOL_CALL_*. A hand-written `commit` row would prove the fold in
+    # isolation and then be reported as a pipeline pass — the exact masking
+    # this standard exists to stop. The behaviour is pinned where the
+    # vocabulary exists; say so instead of claiming a green here.
+    unknown = ConformanceCheck.na(
+        CHECK_NAMES[2],
+        "no registered in-process pipeline journals a mutating call through "
+        "CallJournal: coder journals only `think` (coder/pipeline.py:340,359) "
+        "and it is pure (pipelines/replay.py:90), while `use_skill` rides "
+        "TOOL_CALL_* (coder/pipeline.py:451-506); -32008 is pinned in "
+        "tests/pipelines/test_replay.py::TestDecisionTable::"
+        "test_interrupted_mutating_call_never_auto_repeats and the kill-9 "
+        "sweep in tests/pipelines/test_replay_chaos.py:214-224",
+    )
 
     # -- 4. cancel within grace ---------------------------------------------
     run_d = uuid.uuid4()
@@ -325,6 +331,7 @@ async def coder_conformance(ledger: LedgerStore, tmp_path: Path) -> ConformanceR
         session=Session(session_id="conformance", transcript_dir=transcript_d),
         run_id=run_d,
         call_journal=journal_d,
+        tool_journal=LedgerToolJournal(ledger, run_d),
         permissions=ToolPermissionPolicy(mode=PermissionMode.BYPASS),
     )
     task_d = asyncio.create_task(
@@ -341,15 +348,36 @@ async def coder_conformance(ledger: LedgerStore, tmp_path: Path) -> ConformanceR
     except asyncio.CancelledError:
         cancelled_cleanly = True
     fold_d = await read_call_journal(ledger, run_d)
-    if cancelled_cleanly and fold_d:
+    rows_d = await ledger.read_correlation(run_d)
+    failed_seqs: set[int] = set()
+    for e in rows_d:
+        seq = e.payload.get("seq")
+        if (
+            e.event_type is EventType.PIPELINE_CALL_FAILED
+            and e.payload.get("reason") == "cancelled"
+            and isinstance(seq, int)
+            and not isinstance(seq, bool)
+        ):
+            failed_seqs.add(seq)
+    dangling = [r.seq for r in fold_d if r.outcome is CallOutcome.PROPOSED]
+    closed = bool(failed_seqs) and failed_seqs <= {
+        r.seq for r in fold_d if r.outcome is CallOutcome.FAILED
+    }
+    no_run_completed = not any(
+        e.event_type is EventType.PIPELINE_RUN_COMPLETED for e in rows_d
+    )
+    if cancelled_cleanly and closed and not dangling and no_run_completed:
         cancel = ConformanceCheck.passed(
             CHECK_NAMES[3],
-            f"the cancel propagated; the lineage still folds "
-            f"({len(fold_d)} call(s), terminal or closed)",
+            f"the cancel propagated; seq(s) {sorted(failed_seqs)} closed as "
+            "PIPELINE_CALL_FAILED(reason='cancelled') with no dangling "
+            "PROPOSED and no PIPELINE_RUN_COMPLETED",
         )
     else:
         cancel = ConformanceCheck.failed(
-            CHECK_NAMES[3], f"cancelled_cleanly={cancelled_cleanly} fold={len(fold_d)}"
+            CHECK_NAMES[3],
+            f"cancelled_cleanly={cancelled_cleanly} failed={sorted(failed_seqs)} "
+            f"dangling={dangling} run_completed={not no_run_completed}",
         )
 
     # -- 5. budget exhaustion ------------------------------------------------
@@ -372,16 +400,31 @@ async def coder_conformance(ledger: LedgerStore, tmp_path: Path) -> ConformanceR
         )
 
     # -- 6. no secrets in the journal ----------------------------------------
+    # A negative scan alone can pass on a vocabulary the runner never wrote.
+    # Prove both halves: the marker is absent from every payload, AND the
+    # two tool results it rides in are attested by hash in TOOL_CALL_COMPLETED.
     texts = await _payload_texts(ledger, run_a)
     leaked = [t for t in texts if secret in t]
-    if not leaked:
+    tool_rows = [
+        e
+        for e in await ledger.read_correlation(run_a)
+        if e.event_type is EventType.TOOL_CALL_COMPLETED
+    ]
+    attested = [e.payload.get("result_sha256") for e in tool_rows]
+    expected = [
+        hashlib.sha256(f"{secret}-{name}".encode()).hexdigest()
+        for name in ("alpha", "beta")
+    ]
+    if not leaked and attested == expected:
         secrets = ConformanceCheck.passed(
             CHECK_NAMES[5],
-            "the seeded marker (goal-adjacent prompts and both tool results) appears in no payload",
+            "the seeded tool-result marker appears in no payload; both "
+            "TOOL_CALL_COMPLETED rows attest it by result_sha256 only",
         )
     else:
         secrets = ConformanceCheck.failed(
-            CHECK_NAMES[5], f"the marker leaked into {len(leaked)} payload(s)"
+            CHECK_NAMES[5],
+            f"leaked={len(leaked)} attested={attested} expected={expected}",
         )
 
     return ConformanceReport(
@@ -406,17 +449,23 @@ async def coder_conformance(ledger: LedgerStore, tmp_path: Path) -> ConformanceR
 
 async def chat_conformance(tmp_path: Path) -> ConformanceReport:
     """The six checks over ``builtin.chat``, in the turn vocabulary."""
+    from paa.chat.context_bundle import ChatContextBundle, build_context_bundle
     from paa.chat.loop import ChatLoop, ChatReply
     from paa.chat.service import ChatService
+    from paa.chat.session import text_sha256
     from paa.config import ChatSettings, ContextSettings
     from paa.core.types import PermissionMode
     from paa.memory.creator import MemoryCreator
+    from paa.pipelines.slots import ContextProvider
     from paa.storage.coldlake.cas import ContentAddressedStore
     from paa.storage.coldlake.signals import SignalRepository
     from paa.storage.relational.database import Database
 
     async def service(
-        tmp: Path, *, settings: ChatSettings | None = None
+        tmp: Path,
+        *,
+        settings: ChatSettings | None = None,
+        context_provider: ContextProvider | None = None,
     ) -> ChatService:
         """One offline chat stack over its own throwaway database."""
         db = Database(tmp / "chat.db")
@@ -431,10 +480,41 @@ async def chat_conformance(tmp_path: Path) -> ConformanceReport:
             permission_mode=PermissionMode.ASK,
             context_settings=ContextSettings(),
             signals=SignalRepository(db, ContentAddressedStore(tmp / "cold")),
+            context_provider=context_provider,
         )
 
     dbs: list[Any] = []
     ledgers: list[LedgerStore] = []
+
+    def attested(
+        events: list[LedgerEvent], session_id: uuid.UUID
+    ) -> tuple[tuple[str, tuple[tuple[str, str], ...]], ...]:
+        """The hash attestations only: ids and timings are deliberately random.
+
+        The episodic consult hashes ``episodic:{session_id}`` (chat/loop.py:566),
+        so that one value is per-run by design. Normalise it to a sentinel;
+        every other attestation — the message, its recall, the reply — stays
+        byte-exact across the two sessions.
+        """
+        episodic_sha = text_sha256(f"episodic:{session_id}")
+        return tuple(
+            (
+                e.event_type.value,
+                tuple(
+                    sorted(
+                        (
+                            k,
+                            "<episodic-session>"
+                            if k == "query_sha256" and v == episodic_sha
+                            else v,
+                        )
+                        for k, v in e.payload.items()
+                        if k.endswith("_sha256") and isinstance(v, str)
+                    )
+                ),
+            )
+            for e in events
+        )
 
     try:
         # -- 1. double-run sequence equality --------------------------------
@@ -444,22 +524,34 @@ async def chat_conformance(tmp_path: Path) -> ConformanceReport:
         dir_two.mkdir()
         s1 = await service(dir_one)
         sid1 = await s1.create_session()
-        await s1.send(sid1, f"{secret} first")
+        first = await s1.send(sid1, f"{secret} first")
         s2 = await service(dir_two)
         sid2 = await s2.create_session()
-        await s2.send(sid2, f"{secret} first")
+        second = await s2.send(sid2, f"{secret} first")
         events1 = await ledgers[0].read_correlation(sid1)
         events2 = await ledgers[1].read_correlation(sid2)
         kinds1 = [e.event_type.value for e in events1]
         kinds2 = [e.event_type.value for e in events2]
-        if kinds1 == kinds2 and events1:
+        hashes1 = attested(events1, sid1)
+        hashes2 = attested(events2, sid2)
+        if (
+            kinds1 == kinds2
+            and events1
+            and hashes1 == hashes2
+            and first.status == second.status
+            and first.reply == second.reply
+        ):
             double_run = ConformanceCheck.passed(
                 CHECK_NAMES[0],
-                f"two sessions walked the same {len(events1)}-event turn sequence",
+                f"two sessions walked the same {len(events1)}-event turn "
+                "sequence with the same attested hashes (episodic session "
+                "id normalised) and terminal reply",
             )
         else:
             double_run = ConformanceCheck.failed(
-                CHECK_NAMES[0], f"{kinds1} vs {kinds2}"
+                CHECK_NAMES[0],
+                f"{kinds1} vs {kinds2}; hashes={hashes1} vs "
+                f"{hashes2}; status={first.status}/{second.status}",
             )
 
         # -- 2/3: the vocabulary boundary, stated honestly ------------------
@@ -513,20 +605,50 @@ async def chat_conformance(tmp_path: Path) -> ConformanceReport:
             )
 
         # -- 5. budget exhaustion degrades, never crashes --------------------
+        observed_ceilings: list[int] = []
+
+        def recording_provider(
+            *,
+            persona: str,
+            recalled_facts: list[dict[str, Any]],
+            recent_turns: list[dict[str, Any]],
+            token_ceiling: int,
+        ) -> ChatContextBundle:
+            observed_ceilings.append(token_ceiling)
+            return build_context_bundle(
+                persona=persona,
+                recalled_facts=recalled_facts,
+                recent_turns=recent_turns,
+                token_ceiling=token_ceiling,
+            )
+
         dir_four = tmp_path / "four"
         dir_four.mkdir()
-        s4 = await service(dir_four, settings=ChatSettings(token_budget=1))
+        s4 = await service(
+            dir_four,
+            settings=ChatSettings(token_budget=1),
+            context_provider=recording_provider,
+        )
         sid4 = await s4.create_session()
         result4 = await s4.send(sid4, "tight budget turn")
-        if result4.status == "completed":
+        if (
+            result4.status == "completed"
+            and observed_ceilings == [1]
+            and result4.token_ceiling == 1
+            and 0 <= result4.bundle_tokens <= 1
+        ):
             budget = ConformanceCheck.passed(
                 CHECK_NAMES[4],
-                "token_budget=1 still served the turn (the packet "
-                "degraded; the message rides outside the budget)",
+                "token_budget=1 reached the context provider as "
+                f"token_ceiling=1; the turn stayed completed with "
+                f"{result4.bundle_tokens} bundle tokens (an empty packet)",
             )
         else:
             budget = ConformanceCheck.failed(
-                CHECK_NAMES[4], f"status={result4.status} error={result4.error}"
+                CHECK_NAMES[4],
+                f"status={result4.status} ceilings={observed_ceilings} "
+                f"result_ceiling={result4.token_ceiling} "
+                f"bundle_tokens={result4.bundle_tokens} error={result4.error}",
             )
 
         # -- 6. no secrets in the journal --------------------------------------
@@ -569,6 +691,7 @@ async def builtin_conformance(ledger: LedgerStore) -> ConformanceReport:
     from paa.agents.base import Agent, AgentContext, AgentMessage, AgentResult
     from paa.agents.orchestrator import ChiefOrchestrator, TaskRequest
     from paa.core.types import AgentRole, PermissionMode
+    from paa.ledger.replay import TaskPhase
     from paa.pipelines.builtin import BuiltinPlanExecuteCritique
 
     class _FakeAgent(Agent):
@@ -600,23 +723,31 @@ async def builtin_conformance(ledger: LedgerStore) -> ConformanceReport:
         )
 
     secret = _marker()
+    phases: list[TaskPhase] = []
     kinds: list[list[str]] = []
     for _ in range(2):
         orch = orchestrator()
         cid = await orch.submit(TaskRequest(goal=f"{secret} conform"))
         outcome = await orch.run(cid)
-        from paa.ledger.replay import TaskPhase
-
-        assert outcome.phase is TaskPhase.COMMITTED
+        phases.append(outcome.phase)
         events = await ledger.read_correlation(cid)
         kinds.append([e.event_type.value for e in events])
-    if kinds[0] == kinds[1] and kinds[0]:
+    # A failed stage is a RED row, not an assertion escaping the library
+    # function: `render_reports` must always see all six checks.
+    if (
+        all(p is TaskPhase.COMMITTED for p in phases)
+        and kinds[0] == kinds[1]
+        and kinds[0]
+    ):
         double_run = ConformanceCheck.passed(
             CHECK_NAMES[0],
             f"two submissions walked the same {len(kinds[0])}-event task sequence",
         )
     else:
-        double_run = ConformanceCheck.failed(CHECK_NAMES[0], f"{kinds[0]} vs {kinds[1]}")
+        double_run = ConformanceCheck.failed(
+            CHECK_NAMES[0],
+            f"phases={[p.value for p in phases]} kinds={kinds[0]} vs {kinds[1]}",
+        )
 
     divergence = ConformanceCheck.na(
         CHECK_NAMES[1],
@@ -631,24 +762,29 @@ async def builtin_conformance(ledger: LedgerStore) -> ConformanceReport:
     )
     cancel = ConformanceCheck.na(
         CHECK_NAMES[3],
-        "the builtin's stages are host-driven and synchronous; mid-run "
-        "cancellation semantics belong to the host's queue, pinned in "
-        "tests/agents/test_orchestrator.py",
+        "the task vocabulary has no CANCELLED event type and "
+        "ChiefOrchestrator has no cancel path; "
+        "tests/agents/test_orchestrator.py pins event sequences, gates, "
+        "retries and resume, not cancellation. Cancellation is pinned where "
+        "a vocabulary exists: tests/chat/test_loop.py:212-243 and "
+        "tests/pipelines/test_coder_pipeline.py:510-560",
     )
     budget = ConformanceCheck.na(
         CHECK_NAMES[4],
         "the builtin ships unbounded RunLimits; budget enforcement is "
         "the facade's checks (pinned there) and the mandate's step budget",
     )
-    # The task vocabulary records the request (goal included) by design —
-    # TASK_REQUESTED is the task's own record. The no-secrets standard here:
-    # the stage outputs (plan, patch) stay inside their designed payload
-    # shapes; the raw-goal recording is the vocabulary's documented choice.
-    secrets = ConformanceCheck.passed(
+    # A seeded secret lands in TASK_REQUESTED verbatim (the orchestrator
+    # records the goal), and no builtin stage value is hash-attested. Calling
+    # that a pass would green-wash the exact property being checked; the
+    # honest row is n/a with a pointer to where attestation is pinned.
+    secrets = ConformanceCheck.na(
         CHECK_NAMES[5],
-        "stage outputs ride their designed payload shapes; the request "
-        "(goal included) is the task vocabulary's own record — the "
-        "hash-attestation discipline is the chat/coder vocabularies' rule",
+        "the task vocabulary carries the goal verbatim in TASK_REQUESTED "
+        "(agents/orchestrator.py:317-324) and attests no stage value by hash "
+        "(pipelines/builtin.py:463-473); the hash-attestation promise is "
+        "pinned in tests/chat/test_chat_events.py:249-275 and "
+        "tests/coder/test_secret_hygiene.py:626-652",
     )
 
     return ConformanceReport(
@@ -915,10 +1051,38 @@ async def observe_conformance(ledger: LedgerStore, tmp_path: Path) -> Conformanc
 async def every_builtin_conformance(
     ledger: LedgerStore, tmp_path: Path
 ) -> list[ConformanceReport]:
-    """Run the standard over every registered in-process pipeline."""
-    return [
+    """Run the standard over every runnable in-process pipeline.
+
+    A builtin added to the registry without a runner is not silently skipped:
+    it gets a RED report naming the gap, so the gate fails until the six
+    checks are expressed in that pipeline's own vocabulary.
+    """
+    from paa.pipelines.registry import PipelineRegistry
+
+    reports = [
         await builtin_conformance(ledger),
         await chat_conformance(tmp_path),
         await coder_conformance(ledger, tmp_path),
         await observe_conformance(ledger, tmp_path),
     ]
+    covered = {report.pipeline for report in reports}
+    missing = [
+        row.name
+        for row in PipelineRegistry(local_dir=None).list()
+        if row.runnable and row.name not in covered
+    ]
+    for name in missing:
+        reports.append(
+            ConformanceReport(
+                pipeline=name,
+                checks=_checks(
+                    **{
+                        check: ConformanceCheck.failed(
+                            check, "no conformance runner registered for this builtin"
+                        )
+                        for check in CHECK_NAMES
+                    }
+                ),
+            )
+        )
+    return reports

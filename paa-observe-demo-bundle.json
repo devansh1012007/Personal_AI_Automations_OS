@@ -1,0 +1,103 @@
+{
+  "child": {
+    "backend": "subprocess",
+    "duration_ms": 51.033,
+    "exit_code": 0,
+    "isolation_level": "PROCESS",
+    "killed_reason": null,
+    "peak_rss_mb": 0.4609375,
+    "timed_out": false,
+    "truncated_output": false
+  },
+  "classification": {
+    "commits": 0,
+    "duration_ms": 51.033,
+    "exit_code": 0,
+    "files_created": 1,
+    "files_deleted": 1,
+    "files_modified": 1,
+    "git_available": true,
+    "git_dirty": true,
+    "notes": "the observed CLI exited cleanly (0) after 51 ms; 1 created, 1 modified, 1 deleted; git reports a dirty worktree. The state is classified for a human decision \u2014 resume is 'none' by declaration, and nothing re-runs the command.",
+    "recoverable": false,
+    "resume": "none",
+    "signal": null,
+    "signal_name": null,
+    "state": "clean_exit",
+    "workspace_changed": true
+  },
+  "git": {
+    "available": true,
+    "commits": [],
+    "diff": "diff --git a/README.txt b/README.txt\ndeleted file mode 100644\nindex 502d090..0000000\n--- a/README.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-the project under observation\ndiff --git a/existing.txt b/existing.txt\nindex 930cc7a..9a9f8c9 100644\n--- a/existing.txt\n+++ b/existing.txt\n@@ -1 +1 @@\n-before the harness ran\n+modified under observation\n\\ No newline at end of file\n",
+    "dirty": true,
+    "head_after": "443cce0c0850a9008784e09342f37dfba88f80fe",
+    "head_before": "443cce0c0850a9008784e09342f37dfba88f80fe",
+    "reason": "",
+    "status": " D README.txt\n M existing.txt\n?? made-by-harness.txt"
+  },
+  "manifest": {
+    "after_count": 2,
+    "before_count": 2,
+    "created": [
+      {
+        "path": "made-by-harness.txt",
+        "sha256": "1d8cf87049886fc28f7b761573da0db15f315a71184e1d9aa42b5d4cd9467d15",
+        "size": 25
+      }
+    ],
+    "deleted": [
+      {
+        "path": "README.txt",
+        "sha256": "6032cf519b232d388d8f2fdc8c6ec0c0560dc9c9313eded84dd5e54617d0dfc9",
+        "size": 30
+      }
+    ],
+    "modified": [
+      {
+        "after": {
+          "path": "existing.txt",
+          "sha256": "9fc0ecb6f63555359d2cdb080634da31c3db1a4aa012d16b7978e724d98b8688",
+          "size": 26
+        },
+        "before": {
+          "path": "existing.txt",
+          "sha256": "1fb69cee116df6868c84e918242412ccce9e034be3fe2fc30bfa939f54ae943d",
+          "size": 23
+        }
+      }
+    ]
+  },
+  "phase": "final",
+  "run": {
+    "command": [
+      "/home/z/.venv/bin/python",
+      "-c",
+      "import pathlib, sys;\npathlib.Path('made-by-harness.txt').write_text('created under observation');\npathlib.Path('existing.txt').write_text('modified under observation');\npathlib.Path('README.txt').unlink();\nprint('fake harness: stdout line one');\nprint('fake harness: stderr line one', file=sys.stderr)"
+    ],
+    "ended_at": "2026-11-24T18:33:59.333+00:00",
+    "evidence_tier": "T1",
+    "observer_version": "4.1.0",
+    "resume": "none",
+    "run_id": "249b2f2b-a69b-41e7-9883-d110b00fb03c",
+    "started_at": "2026-11-24T18:33:58.985+00:00",
+    "workspace": "/tmp/paa-observe-demo-ws-qc090gmb"
+  },
+  "schema": "paa-observe-bundle/1",
+  "transcript": {
+    "stderr": {
+      "bytes": 30,
+      "sha256": "d983d01e72a8246447361073c122f912a0204d5116e313c3713edf58eff07019",
+      "stream": "stderr",
+      "text": "fake harness: stderr line one\n",
+      "truncated": false
+    },
+    "stdout": {
+      "bytes": 30,
+      "sha256": "19e11b7491895204bccf3f76f6e9ed300f31f176ed163a7aec78510b6d2bbee3",
+      "stream": "stdout",
+      "text": "fake harness: stdout line one\n",
+      "truncated": false
+    }
+  }
+}

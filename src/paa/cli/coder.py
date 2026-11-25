@@ -42,6 +42,7 @@ from rich.console import Console
 from rich.table import Table
 
 from paa.coder.permissions import PermissionMode
+from paa.coder.shell_tools import BASH_TOOL_NAME
 from paa.core.errors import PaaError
 from paa.core.types import ComplexityModality
 
@@ -407,10 +408,26 @@ async def prompt_yes(tool: str, arguments: dict[str, Any], reason: str) -> bool:
     / ``git_stage`` / ``git_commit``, offered only when ``--workspace`` was
     given) change the working tree or repository. A denied call never gets
     here — it is refused outright.
+
+    The prompt is honest about what an approval means. For ``bash`` the
+    words "workspace" would overstate the boundary: the tool jails the
+    child's *cwd* only — the script itself can name any path this host user
+    can reach, including the protected paths (``.git``, ``.env*``) the fs
+    and git tools refuse, and on a subprocess backend the network is not
+    severed. The operator approves the command as written, not a confined
+    execution, so the caveat is printed before the y/N read, every time.
     """
 
     def _ask() -> bool:
         console.print(f"[yellow]permission required[/yellow] {tool} — {reason}")
+        if tool == BASH_TOOL_NAME:
+            console.print(
+                "[dim]note[/dim] a shell command is not confined to the workspace: "
+                "only its working directory is jailed. The script itself can read or "
+                "write any path this host user can reach — including protected paths "
+                "(.git, .env*) and paths outside the workspace — and on a subprocess "
+                "backend the network is not severed."
+            )
         # The arguments are what the operator is being asked to approve, so
         # they are printed as JSON rather than as a raw dict repr: a
         # parameter-less tool would otherwise show a bare ``{}``, and a

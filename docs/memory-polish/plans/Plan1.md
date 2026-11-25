@@ -76,7 +76,7 @@
 - Contradictions never auto-resolved (creator.py, curator.py).
 
 **Conventions to follow:**
-- CLI: one `@app.command()` per verb, `_build_runtime()` + `try/finally rt.close()` pattern `[FACT cli/main.py:127-162]`.
+- CLI: one `@app.command()` per verb, `_build_runtime()` + `try/finally rt.close()` pattern `[FACT cli/main.py:126-162]`.
 - API: `_admit` backpressure gate, `_parse_uuid`, `response_model` schemas `[FACT api/app.py:92-171]`.
 - Tests: asyncio auto mode, tmp_path fixtures, no session-scoped state (AGENTS.md testing conventions).
 

@@ -117,6 +117,25 @@ class TestObserveCommand:
         assert result.exit_code == 2
         assert "KEY=VAL" in result.output
 
+    @pytest.mark.parametrize(
+        "assignment",
+        [
+            "PATH=/tmp/attacker",
+            "path=/tmp/attacker",
+            "LD_PRELOAD=/tmp/evil.so",
+            "HOME=/tmp/attacker",
+            "PYTHONPATH=/tmp/attacker",
+        ],
+    )
+    def test_reserved_child_env_keys_are_refused(self, assignment: str) -> None:
+        """`--env` may add variables, never undo the sandbox's sanitisation."""
+        result = runner.invoke(
+            app,
+            ["observe", "--env", assignment, "--", sys.executable, "-c", "pass"],
+        )
+        assert result.exit_code == 2
+        assert "reserved child key" in result.output
+
     def test_an_empty_command_is_refused(self) -> None:
         result = runner.invoke(app, ["observe", "--"])
         assert result.exit_code == 2  # typer: the argument is required

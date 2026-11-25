@@ -3,12 +3,7 @@
 This module is the consumer side of the attested change bundle, and its
 one discipline is **what it never does**: no settings are loaded, no
 store is opened, no ledger is queried, no cold-lake *service* is built,
-no database of any kind is touched. (Some producer-side modules are
-imported for their definitions along the way — Python runs a package's
-``__init__`` for any submodule — but importing a class is not opening a
-database, and the clean-checkout test pins the behaviour rather than
-the metaphor: a verifier run with ``PAA_HOME`` pointed at a path that
-does not exist leaves it nonexistent.) A reviewer copies a bundle to a
+no database of any kind is touched. A reviewer copies a bundle to a
 clean checkout, runs ``paa verify <dir>``, and the answer comes from
 the bundle's own bytes — hashes recomputed, chain re-walked, signature
 checked against the public key the manifest carries. The producer's
@@ -24,17 +19,20 @@ Five checks, each named so a failure says which door was breached:
     and is ``phase="final"`` — a ``started`` manifest is the build's own
     crash marker and is refused, never silently upgraded.
 ``blobs``
-    Every blob the manifest declares exists and hashes to its own name.
-    This is where "flip one byte" lands: a changed payload no longer
-    matches its content address, whichever payload it was.
+    Every blob the *signed* index declares exists, hashes to its own name,
+    matches its declared size, and is exactly the digest set referenced
+    by the signed sections and evidence rows. This is where "flip one
+    byte" lands, and where deleting an evidence row from the index can no
+    longer quietly change the verdict.
 ``chain``
     The chain re-walked over the declared sections, in the declared
     order, reproduces ``chain_root`` — a substituted section, a renamed
     section or a reordered walk all break it.
 ``signature``
-    The Ed25519 (or, honestly labelled, HMAC dev-fallback) signature
-    verifies over the canonical signed header with the embedded public
-    key. Integrity — the bundle is what was signed.
+    The signature verifies over the canonical signed header using the
+    algorithm the manifest *declares*. An HMAC tag relabelled ``ed25519``
+    never reaches the HMAC branch, and the symmetric fallback is refused
+    unless the caller explicitly opts into insecure mode.
 ``key``
     Origin, kept separate from integrity on purpose. With ``--trust``
     the embedded key must be the pinned one, else the check fails. With
@@ -51,6 +49,12 @@ the diff section's, reporting the drift (files created, modified,
 deleted since the attestation) instead of a bare mismatch — so "verify
 on a clean checkout" means *this checkout, shown to match or shown how
 it doesn't*.
+
+Every hostile input is a failed check, never an exception for the CLI
+to turn into a traceback. The verifier treats the entire bundle as
+untrusted bytes: shapes are checked before they are used, blob reads
+are bounded, and details carry field/type names rather than raw
+attacker-controlled text where a value would add no meaning.
 """
 
 from __future__ import annotations
@@ -62,9 +66,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from paa.attest.format import ATTEST_SCHEMA, SECTION_ORDER, chain_steps
+import zstandard
+
+from paa.attest.format import (
+    ATTEST_SCHEMA,
+    SECTION_ORDER,
+    chain_steps,
+    verify_attestation_signature,
+)
 from paa.ledger.events import canonical_json
-from paa.marketplace.signing import verify as verify_signature
 
 __all__ = [
     "CheckResult",
@@ -78,10 +88,28 @@ __all__ = [
 #: or compressed (``.zst``). The builder writes raw — a transparency
 #: artifact should be inspectable with ``sha256sum`` and a text editor —
 #: and the compressed spelling is read too so a future writer that
-#: compresses remains readable without a format bump. The compatibility
-#: is pinned by the build-then-verify round-trip test, not claimed here.
+#: compresses remains readable without a format bump.
 _RAW_SUFFIX = ".bin"
 _COMPRESSED_SUFFIX = ".zst"
+
+#: A failed verification must never be able to exhaust the reviewer's
+#: memory with a hand-built zstd bomb. Attestation payloads are small;
+#: 64 MiB leaves generous room for a source tree's manifest while
+#: making an unbounded expansion impossible.
+MAX_BLOB_BYTES = 64 * 1024 * 1024
+
+#: JSON permits far deeper nesting than the canonicaliser can walk, and a
+#: hostile manifest can use that to turn a verdict into a ``RecursionError``.
+#: A legitimate bundle nests a handful of levels; 64 is generous and keeps
+#: every later recursive walk (encoding, canonical JSON) inside the limit.
+MAX_MANIFEST_DEPTH = 64
+
+_HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+_B64_KEY_RE = re.compile(r"[A-Za-z0-9+/]{32,128}={0,2}")
+
+
+class _BlobProblem(Exception):
+    """A blob could not be read safely; the detail names the failure type."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,38 +147,141 @@ class VerificationResult:
     warnings: tuple[str, ...] = field(default_factory=tuple)
 
 
-def _read_blob(root: Path, digest: str) -> bytes | None:
-    """Read one blob read-only, returning ``None`` when absent.
+def _encodable(value: object, encoding: str = "utf-8") -> bool:
+    """A manifest is not usable if its text cannot be re-encoded or its
+    nesting is too deep to walk safely.
+
+    JSON accepts escaped lone surrogates that Python holds as ``str`` but
+    cannot encode to UTF-8, and accepts nesting far past Python's recursion
+    limit. Both would turn a verdict into an exception, so the manifest
+    door refuses them before any later door uses the structure. The walk is
+    iterative on purpose: using recursion here would be the very crash it
+    is meant to prevent.
+    """
+    stack: list[tuple[object, int]] = [(value, 0)]
+    while stack:
+        current, depth = stack.pop()
+        if depth > MAX_MANIFEST_DEPTH:
+            return False
+        if isinstance(current, str):
+            try:
+                current.encode(encoding)
+            except UnicodeEncodeError:
+                return False
+        elif isinstance(current, dict):
+            stack.extend((key, depth + 1) for key in current)
+            stack.extend((item, depth + 1) for item in current.values())
+        elif isinstance(current, list):
+            stack.extend((item, depth + 1) for item in current)
+    return True
+
+
+def _mapping(value: object) -> dict[str, Any]:
+    """Only a JSON object is a mapping; every other shape is empty."""
+    return value if isinstance(value, dict) else {}
+
+
+def _rows(value: object) -> list[dict[str, Any]]:
+    """A JSON array of objects; non-members and non-objects are omitted."""
+    if not isinstance(value, list):
+        return []
+    return [_mapping(item) for item in value]
+
+
+def _summary(problems: list[str], limit: int = 5) -> str:
+    return "; ".join(problems[:limit]) + (
+        f" (+{len(problems) - limit} more)" if len(problems) > limit else ""
+    )
+
+
+def _read_blob(root: Path, digest: str) -> bytes:
+    """Read one blob read-only and within a hard size bound.
 
     Mirrors the CAS's two-candidate lookup (raw first, then compressed)
     without constructing the store — the store's constructor creates its
     ``staging/`` directory, and a verifier that mutates the bundle it is
     verifying, or fails on a read-only bundle, is not a verifier.
     """
+    if not isinstance(digest, str) or not _HEX64_RE.fullmatch(digest):
+        raise _BlobProblem("malformed content digest")
     for suffix in (_RAW_SUFFIX, _COMPRESSED_SUFFIX):
         candidate = root / "blobs" / digest[:2] / digest[2:4] / f"{digest}{suffix}"
         if not candidate.is_file():
             continue
-        data = candidate.read_bytes()
+        try:
+            size = candidate.stat().st_size
+        except OSError as exc:
+            raise _BlobProblem(f"unreadable blob metadata ({type(exc).__name__})") from exc
+        if size > MAX_BLOB_BYTES:
+            raise _BlobProblem("blob exceeds the verifier's size bound")
+        try:
+            data = candidate.read_bytes()
+        except OSError as exc:
+            raise _BlobProblem(f"unreadable blob ({type(exc).__name__})") from exc
+        if len(data) > MAX_BLOB_BYTES:
+            raise _BlobProblem("blob exceeds the verifier's size bound")
         if suffix == _COMPRESSED_SUFFIX:
-            import zstandard
-
-            data = zstandard.ZstdDecompressor().decompress(data)
+            try:
+                with zstandard.ZstdDecompressor().stream_reader(data) as reader:
+                    data = reader.read(MAX_BLOB_BYTES + 1)
+            except (zstandard.ZstdError, OSError, EOFError, ValueError) as exc:
+                raise _BlobProblem(
+                    f"undecodable compressed blob ({type(exc).__name__})"
+                ) from exc
+            if len(data) > MAX_BLOB_BYTES:
+                raise _BlobProblem("decompressed blob exceeds the verifier's size bound")
         return data
-    return None
+    raise _BlobProblem("missing blob")
 
 
 def _load_section(
     root: Path, sha256: str
-) -> tuple[bytes | None, dict[str, Any] | None]:
+) -> tuple[bytes | None, dict[str, Any] | None, str | None]:
     """Read and parse one section blob; the bytes come back for hashing."""
-    data = _read_blob(root, sha256)
-    if data is None:
-        return None, None
     try:
-        return data, dict(json.loads(data.decode("utf-8")))
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return data, None
+        data = _read_blob(root, sha256)
+    except _BlobProblem as exc:
+        return None, None, str(exc)
+    try:
+        value = json.loads(data.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError, RecursionError) as exc:
+        return data, None, f"section is not UTF-8 JSON ({type(exc).__name__})"
+    if not isinstance(value, dict):
+        return data, None, "section is not a JSON object"
+    return data, value, None
+
+
+def _resolve_trust_key(trust_key: str) -> str | None:
+    """A public key from a base64 string or a file path holding one.
+
+    Accepts a raw base64 public key, a producer's key file (the JSON
+    ``KeyFile`` shape, whose *public* half is the pin — the private half
+    stays home), or a file holding one bare base64 key. ``None`` when
+    nothing readable is there: an unreadable pin is a failed pin, never
+    a skipped one.
+    """
+    text = trust_key.strip()
+    if not text:
+        return None
+    if _B64_KEY_RE.fullmatch(text):
+        return text
+    path = Path(text)
+    if not path.is_file():
+        return None
+    try:
+        content = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if _B64_KEY_RE.fullmatch(content):
+        return content
+    try:
+        raw = json.loads(content)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(raw, dict):
+        return None
+    candidate = raw.get("public_key_b64") or raw.get("public_b64")
+    return str(candidate) if candidate else None
 
 
 def verify_bundle(
@@ -171,72 +302,160 @@ def verify_bundle(
 
     # -- the manifest door ---------------------------------------------------
     try:
-        raw: dict[str, Any] = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        loaded: Any = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError) as exc:
         return VerificationResult(
             ok=False,
             checks=(
                 CheckResult(
-                    "manifest", False, f"manifest.json unreadable: {exc}"
+                    "manifest",
+                    False,
+                    f"manifest.json unreadable ({type(exc).__name__})",
+                ),
+            ),
+        )
+    if not isinstance(loaded, dict):
+        return VerificationResult(
+            ok=False,
+            checks=(CheckResult("manifest", False, "manifest.json is not an object"),),
+        )
+    raw: dict[str, Any] = loaded
+    if not _encodable(raw):
+        return VerificationResult(
+            ok=False,
+            checks=(
+                CheckResult(
+                    "manifest",
+                    False,
+                    "manifest contains text that cannot be encoded as UTF-8 "
+                    "or is too deeply nested",
                 ),
             ),
         )
     if raw.get("schema") != ATTEST_SCHEMA:
-        checks.append(
-            CheckResult(
-                "manifest",
-                False,
-                f"not a {ATTEST_SCHEMA} manifest (schema={raw.get('schema')!r})",
-            )
+        return VerificationResult(
+            ok=False,
+            checks=(
+                CheckResult(
+                    "manifest",
+                    False,
+                    f"not a {ATTEST_SCHEMA} manifest (schema tag refused)",
+                ),
+            ),
         )
-        return VerificationResult(ok=False, checks=tuple(checks))
     if raw.get("phase") != "final":
-        checks.append(
-            CheckResult(
-                "manifest",
-                False,
-                f"phase={raw.get('phase')!r}: a started manifest is the "
-                "builder's crash marker, not a bundle — nothing verifies",
-            )
+        return VerificationResult(
+            ok=False,
+            checks=(
+                CheckResult(
+                    "manifest",
+                    False,
+                    "phase is not final: a started manifest is the builder's "
+                    "crash marker, not a bundle — nothing verifies",
+                ),
+            ),
         )
-        return VerificationResult(ok=False, checks=tuple(checks))
     checks.append(
-        CheckResult("manifest", True, f"paa-attest-bundle/1, final, id {raw.get('bundle_id')}")
+        CheckResult(
+            "manifest",
+            True,
+            "paa-attest-bundle/1, final, id "
+            f"{str(raw.get('bundle_id') or '')[:24]}",
+        )
     )
 
-    sections_declared = [
-        (str(s.get("name") or ""), str(s.get("sha256") or ""))
-        for s in raw.get("sections") or []
-    ]
+    # -- parse the signed structure, refusing every hostile shape -----------
+    sections_raw = raw.get("sections")
+    sections_shape_ok = isinstance(sections_raw, list)
+    sections_declared: list[tuple[str, str]] = []
+    if sections_shape_ok:
+        for item in sections_raw or []:
+            if not isinstance(item, dict):
+                sections_shape_ok = False
+                continue
+            sections_declared.append(
+                (str(item.get("name") or ""), str(item.get("sha256") or ""))
+            )
 
-    # -- the blobs door ------------------------------------------------------
-    blob_entries = raw.get("blobs") or []
-    tampered: list[str] = []
-    for entry in blob_entries:
-        digest = str(entry.get("sha256") or "")
-        role = str(entry.get("role") or "?")
-        data = _read_blob(bundle_dir, digest)
-        if data is None:
-            tampered.append(f"{role}: missing blob {digest[:12]}…")
-        elif hashlib.sha256(data).hexdigest() != digest:
-            tampered.append(f"{role}: content does not hash to its name {digest[:12]}…")
-    if tampered:
+    blobs_raw = raw.get("blobs")
+    blobs_shape_ok = isinstance(blobs_raw, list)
+    blob_problems: list[str] = []
+    declared_pairs: set[tuple[str, str]] = set()
+    if not blobs_shape_ok:
+        blob_problems.append("blob index is not an array")
+    else:
+        for item in blobs_raw or []:
+            if not isinstance(item, dict):
+                blob_problems.append("blob entry is not an object")
+                continue
+            digest = str(item.get("sha256") or "")
+            role = str(item.get("role") or "?")
+            try:
+                data = _read_blob(bundle_dir, digest)
+            except _BlobProblem as exc:
+                blob_problems.append(f"{role}: {exc} {digest[:12]}")
+                continue
+            if hashlib.sha256(data).hexdigest() != digest:
+                blob_problems.append(f"{role}: content does not hash to its name")
+                continue
+            declared_bytes = item.get("bytes")
+            if declared_bytes != len(data):
+                blob_problems.append(f"{role}: declared size does not match the blob")
+            if (digest, role) in declared_pairs:
+                blob_problems.append(f"{role}: duplicate blob index entry")
+            declared_pairs.add((digest, role))
+
+    parsed_sections: dict[str, dict[str, Any]] = {}
+    for name, digest in sections_declared:
+        _, parsed, problem = _load_section(bundle_dir, digest)
+        if parsed is not None:
+            parsed_sections[name] = parsed
+        elif problem:
+            blob_problems.append(f"section:{name}: {problem}")
+
+    # The signed section digests and evidence rows are the authority for
+    # which blobs may be indexed. An index that omits one, adds one, or
+    # relabels one is a different artifact even when its own entries hash.
+    # A digest can legitimately appear under two section roles (two empty
+    # sections, for instance), so the authority is the (digest, role) pair,
+    # not a digest-keyed dict that would silently overwrite the first role.
+    expected_pairs = {
+        (digest, f"section:{name}") for name, digest in sections_declared
+    }
+    evidence_digests: set[str] = set()
+    evidence_rows = _rows((parsed_sections.get("evidence") or {}).get("bundles"))
+    for row in evidence_rows:
+        digest = str(row.get("sha256") or "")
+        run_id = str(row.get("run_id") or "")
+        if _HEX64_RE.fullmatch(digest) and run_id:
+            expected_pairs.add((digest, f"evidence:observe:{run_id}"))
+            evidence_digests.add(digest)
+    for section_name in ("commands", "tests"):
+        for row in _rows((parsed_sections.get(section_name) or {}).get("entries")):
+            ref = str(row.get("evidence_sha256") or "")
+            if ref and ref not in evidence_digests:
+                blob_problems.append(
+                    f"{section_name}: cites undeclared evidence {ref[:12]}"
+                )
+    for digest, role in sorted(expected_pairs - declared_pairs):
+        blob_problems.append(f"{role}: signed blob missing from index {digest[:12]}")
+    for digest, role in sorted(declared_pairs - expected_pairs):
+        blob_problems.append(f"{role}: unreferenced blob in index {digest[:12]}")
+
+    if blob_problems:
+        checks.append(CheckResult("blobs", False, _summary(blob_problems)))
+    else:
         checks.append(
             CheckResult(
                 "blobs",
-                False,
-                "; ".join(tampered[:5])
-                + (f" (+{len(tampered) - 5} more)" if len(tampered) > 5 else ""),
+                True,
+                f"{len(declared_pairs)} signed index entries match their bytes",
             )
-        )
-    else:
-        checks.append(
-            CheckResult("blobs", True, f"{len(blob_entries)} blobs match their names")
         )
 
     # -- the chain door ------------------------------------------------------
     names = [name for name, _ in sections_declared]
-    if names != list(SECTION_ORDER):
+    if not sections_shape_ok or names != list(SECTION_ORDER):
         checks.append(
             CheckResult(
                 "chain",
@@ -251,55 +470,78 @@ def verify_bundle(
                 CheckResult(
                     "chain",
                     False,
-                    f"re-walked root {recomputed[-1][:12]}… != declared "
-                    f"{str(raw.get('chain_root'))[:12]}…",
+                    "re-walked root does not match the declared chain_root",
                 )
             )
         elif recomputed != (raw.get("chain") or []):
-            checks.append(
-                CheckResult("chain", False, "chain steps do not match the walk")
-            )
+            checks.append(CheckResult("chain", False, "chain steps do not match the walk"))
         else:
             checks.append(CheckResult("chain", True, "root reproduced from sections"))
 
     # -- the signature door --------------------------------------------------
-    signature = raw.get("signature") or {}
-    signed_header = {
+    signature = _mapping(raw.get("signature"))
+    claims = _mapping(signature.get("claims"))
+    claim_algorithm = str(claims.get("algorithm") or "")
+    claim_key_id = str(claims.get("key_id") or "")
+    claim_public = str(claims.get("public_key_b64") or "")
+    try:
+        recomputed_key_id = (
+            hashlib.sha256(claim_public.encode("ascii")).hexdigest()
+            if claim_public
+            else ""
+        )
+    except UnicodeEncodeError:
+        recomputed_key_id = ""
+    claims_consistent = (
+        claim_algorithm in ("ed25519", "hmac-dev-fallback")
+        and signature.get("algorithm") == claim_algorithm
+        and signature.get("key_id") == claim_key_id
+        and signature.get("public_key_b64") == claim_public
+        and claim_key_id == recomputed_key_id
+    )
+    signed_header: dict[str, Any] = {
         "schema": raw.get("schema"),
         "bundle_id": raw.get("bundle_id"),
         "created_at": raw.get("created_at"),
         "tool_version": raw.get("tool_version"),
-        "sections": raw.get("sections") or [],
+        "sections": raw.get("sections") if sections_shape_ok else [],
         "chain_root": raw.get("chain_root"),
+        # Both of these were unsigned once; a reviewer could edit them
+        # without breaking the signature. They are part of the signed
+        # bytes now, so a claim cannot be swapped after the fact.
+        "blobs": raw.get("blobs") if blobs_shape_ok else [],
+        "notes": _mapping(raw.get("notes")),
+        "signature_claims": claims,
     }
     signed_bytes = canonical_json(signed_header).encode("utf-8")
     signed_over = hashlib.sha256(signed_bytes).hexdigest()
-    sig_ok = verify_signature(
+    signature_problems: list[str] = []
+    if not claims_consistent:
+        signature_problems.append("signature claims disagree with the signed claims")
+    if str(signature.get("signed_over") or "") != signed_over:
+        signature_problems.append("signed_over does not match the signed header")
+    if not verify_attestation_signature(
         signed_bytes,
         str(signature.get("value_b64") or ""),
-        str(signature.get("public_key_b64") or ""),
-    )
-    if not sig_ok:
-        checks.append(
-            CheckResult(
-                "signature",
-                False,
-                f"signature does not verify (algorithm={signature.get('algorithm')!r}; "
-                f"signed_over {str(signature.get('signed_over'))[:12]}… "
-                f"vs recomputed {signed_over[:12]}…)",
-            )
+        claim_public,
+        claim_algorithm,
+    ):
+        signature_problems.append(
+            "signature does not verify under the declared algorithm "
+            f"({claim_algorithm or 'unlabelled'})"
         )
+    if signature_problems:
+        checks.append(CheckResult("signature", False, _summary(signature_problems)))
     else:
         checks.append(
             CheckResult(
                 "signature",
                 True,
-                f"{signature.get('algorithm')} over the signed header holds",
+                f"{claim_algorithm} over the signed header holds",
             )
         )
 
     # -- the key door --------------------------------------------------------
-    embedded_key = str(signature.get("public_key_b64") or "")
     if trust_key is None:
         checks.append(
             CheckResult(
@@ -313,42 +555,29 @@ def verify_bundle(
         pinned = _resolve_trust_key(trust_key)
         if pinned is None:
             checks.append(
-                CheckResult("key", False, f"could not read a public key from {trust_key}")
+                CheckResult("key", False, "could not read a public key from the pin")
             )
-        elif pinned != embedded_key:
+        elif pinned != claim_public:
             checks.append(
                 CheckResult(
                     "key",
                     False,
-                    f"embedded key {str(signature.get('key_id'))[:12]}… is not the "
-                    "pinned key: intact bundle, wrong signer",
+                    "embedded key is not the pinned key: intact bundle, wrong signer",
                 )
             )
         else:
-            checks.append(
-                CheckResult("key", True, "embedded key is the pinned key")
-            )
+            checks.append(CheckResult("key", True, "embedded key is the pinned key"))
 
     # -- the workspace door (optional) ---------------------------------------
     if workspace is not None:
         checks.append(_workspace_check(bundle_dir, sections_declared, workspace))
 
     # -- the summary, so the verdict quotes what it verified ----------------
-    def _section(name: str) -> dict[str, Any] | None:
-        sha = next((d for n, d in sections_declared if n == name), "")
-        if not sha:
-            return None
-        _, parsed = _load_section(bundle_dir, sha)
-        return parsed
-
-    tests_section = _section("tests") or {}
-    approvals_section = _section("approvals") or {}
-    test_entries: list[dict[str, Any]] = [
-        dict(e) for e in tests_section.get("entries") or []
-    ]
+    test_entries = _rows((parsed_sections.get("tests") or {}).get("entries"))
+    approval_entries = _rows((parsed_sections.get("approvals") or {}).get("entries"))
     observed = sum(1 for e in test_entries if e.get("source") == "observed")
     warnings: list[str] = []
-    if str(signature.get("algorithm")) == "hmac-dev-fallback":
+    if claim_algorithm == "hmac-dev-fallback":
         warnings.append(
             "signed with the symmetric dev fallback — forgeable by anyone "
             "who can verify"
@@ -357,21 +586,33 @@ def verify_bundle(
         warnings.append(
             "every test row is asserted: no observe bundle witnessed a test run"
         )
+    # The builder's honesty caveats are signed in the diff section. A green
+    # integrity verdict must still tell the reviewer that git was absent or
+    # the diff was empty — integrity says the caveat is genuine, not that it
+    # can be dropped from the summary.
+    git_block = _mapping((parsed_sections.get("diff") or {}).get("git"))
+    git_notes = [
+        note for note in (git_block.get("warnings") or []) if isinstance(note, str)
+    ]
+    if git_block.get("available") is False and not git_notes:
+        git_notes.append(
+            "git was unavailable when this bundle was built; empty status and "
+            "diff are not evidence of a clean tree"
+        )
+    warnings.extend(git_notes)
 
     return VerificationResult(
         ok=all(c.ok for c in checks),
         checks=tuple(checks),
         bundle_id=str(raw.get("bundle_id") or ""),
         chain_root=str(raw.get("chain_root") or ""),
-        key_id=str(signature.get("key_id") or ""),
-        algorithm=str(signature.get("algorithm") or ""),
+        key_id=claim_key_id,
+        algorithm=claim_algorithm,
         created_at=str(raw.get("created_at") or ""),
-        evidence_count=len(raw.get("blobs") or [])
-        - sum(1 for b in raw.get("blobs") or []
-               if str(b.get("role", "")).startswith("section:")),
+        evidence_count=len(evidence_rows),
         observed_tests=observed,
         asserted_tests=len(test_entries) - observed,
-        approvals=len(approvals_section.get("entries") or []),
+        approvals=len(approval_entries),
         warnings=tuple(warnings),
     )
 
@@ -383,42 +624,8 @@ def read_section(bundle_dir: Path, sha256: str) -> dict[str, Any] | None:
     ``None`` when the blob is absent or not JSON: a consumer that needs
     certainty calls :func:`verify_bundle` and reads only when it held.
     """
-    _, parsed = _load_section(bundle_dir, sha256)
+    _, parsed, _ = _load_section(bundle_dir, sha256)
     return parsed
-
-
-#: A base64 public key's shape: short, single-line, exactly the b64
-#: alphabet. The alphabet includes ``/``, so a path-shaped test would
-#: misread every raw key as a file — the shape is the discriminator.
-_B64_KEY_RE = re.compile(r"[A-Za-z0-9+/]{32,128}={0,2}")
-
-
-def _resolve_trust_key(trust_key: str) -> str | None:
-    """A public key from a base64 string or a file path holding one.
-
-    Accepts a raw base64 public key, a producer's key file (the JSON
-    ``KeyFile`` shape, whose *public* half is the pin — the private half
-    stays home), or a file holding one bare base64 key. ``None`` when
-    nothing readable is there: an unreadable pin is a failed pin, never
-    a skipped one.
-    """
-    text = trust_key.strip()
-    if not text:
-        return None
-    if _B64_KEY_RE.fullmatch(text):
-        return text
-    path = Path(text)
-    if not path.is_file():
-        return None
-    content = path.read_text(encoding="utf-8").strip()
-    if _B64_KEY_RE.fullmatch(content):
-        return content
-    try:
-        raw: dict[str, Any] = json.loads(content)
-    except json.JSONDecodeError:
-        return None
-    candidate = raw.get("public_key_b64") or raw.get("public_b64")
-    return str(candidate) if candidate else None
 
 
 def _workspace_check(
@@ -426,14 +633,16 @@ def _workspace_check(
 ) -> CheckResult:
     """Recompute the workspace manifest and compare it to the attested one."""
     diff_sha = next((d for n, d in sections_declared if n == "diff"), "")
-    _, diff_section = _load_section(bundle_dir, diff_sha)
+    _, diff_section, problem = _load_section(bundle_dir, diff_sha)
     if diff_section is None:
         return CheckResult(
-            "workspace", False, "the diff section is unreadable; nothing to compare"
+            "workspace", False, f"the diff section is unreadable: {problem}"
         )
+    manifest = _mapping(diff_section.get("manifest"))
     attested = {
         str(f.get("path")): str(f.get("sha256"))
-        for f in (diff_section.get("manifest") or {}).get("files") or []
+        for f in _rows(manifest.get("files"))
+        if isinstance(f.get("path"), str) and isinstance(f.get("sha256"), str)
     }
     if not attested:
         return CheckResult(
@@ -446,9 +655,14 @@ def _workspace_check(
     # Local import on purpose: the manifest walk is the observe bundle's
     # own instrument, and the verifier stays importable without dragging
     # the walk's dependencies into every caller that never asks for it.
-    from paa.observe.bundle import snapshot_manifest
+    try:
+        from paa.observe.bundle import snapshot_manifest
 
-    current = snapshot_manifest(workspace.resolve()).by_path()
+        current = snapshot_manifest(workspace.resolve()).by_path()
+    except (OSError, ValueError, TypeError) as exc:
+        return CheckResult(
+            "workspace", False, f"workspace could not be walked ({type(exc).__name__})"
+        )
     created = sorted(current.keys() - attested.keys())
     deleted = sorted(attested.keys() - current.keys())
     modified = sorted(

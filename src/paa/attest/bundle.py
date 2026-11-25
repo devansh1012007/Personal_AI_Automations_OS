@@ -27,7 +27,10 @@ Three properties the format holds by construction:
   manifest is written twice — a ``phase="started"`` skeleton before any
   evidence is gathered, the ``phase="final"`` record after the signature.
   A manifest still saying ``started`` is the crash marker for a build
-  that never came back, and the verifier refuses it.
+  that never came back, and the verifier refuses it. The rename is atomic
+  against a process crash (a reader sees the old file or the new one,
+  never a splice); it is **not** a power-loss guarantee — there is no
+  fsync of the file and parent directory here.
 * **Integrity and origin are never conflated.** The Ed25519 signature
   over the signed header proves the bundle was not altered after
   signing — *integrity*, checkable with the public key embedded in the
@@ -50,6 +53,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 from collections.abc import Iterable, Mapping, Sequence
@@ -65,14 +69,16 @@ from paa.attest.format import (
     ATTEST_SCHEMA,
     ATTEST_TOOL_VERSION,
     SECTION_ORDER,
+    attestation_algorithm,
     chain_steps,
+    sign_attestation,
 )
 from paa.attest.format import (
     sha256_bytes as _sha256_bytes,
 )
 from paa.core.errors import PaaError
 from paa.ledger.events import canonical_json
-from paa.marketplace.signing import KeyPair, generate_keypair, sign, signing_is_secure
+from paa.marketplace.signing import KeyPair, generate_keypair, signing_is_secure
 from paa.observe.bundle import BUNDLE_SCHEMA as OBSERVE_SCHEMA
 from paa.observe.bundle import read_bundle, snapshot_manifest
 
@@ -91,6 +97,45 @@ __all__ = [
 ]
 
 log = structlog.get_logger(__name__)
+
+#: High-confidence secret shapes only. The bundle is a portable, publishable
+#: artifact: a token in its diff, argv or transcript is a leak with a long
+#: half-life. We name the *kind* in the refusal and never echo the value —
+#: an error message is itself a place secrets get copied into tickets.
+_SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("AWS access key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
+    ("OpenAI-style API key", re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b")),
+    ("GitHub token", re.compile(r"\b(?:ghp|gho|ghs|ghu)_[A-Za-z0-9]{20,}\b")),
+    ("Slack token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
+    ("private key block", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    (
+        "secret assignment",
+        re.compile(
+            r"(?im)^\s*(?:export\s+)?[A-Z0-9_]*"
+            r"(?:API_KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL)\s*=\s*\S+"
+        ),
+    ),
+)
+
+
+def _secret_findings(text: str) -> tuple[str, ...]:
+    """The kinds of secret-looking material in one piece of text."""
+    return tuple(
+        dict.fromkeys(
+            name for name, pattern in _SECRET_PATTERNS if pattern.search(text)
+        )
+    )
+
+
+def _refuse_secrets(where: str, *texts: str) -> None:
+    """Refuse to put secret-looking material into a portable bundle."""
+    findings = tuple(dict.fromkeys(f for text in texts for f in _secret_findings(text)))
+    if findings:
+        raise PaaError(
+            f"{where} carries secret-looking material ({', '.join(findings)}); "
+            "remove or redact it before attesting — this bundle is portable "
+            "and the secret's value is deliberately not repeated here"
+        )
 
 
 def _utc_now_iso() -> str:
@@ -142,33 +187,66 @@ def load_or_generate_key(path: Path, *, allow_insecure: bool = False) -> KeyFile
     an existing insecure key file is allowed with the same flag; the
     manifest still labels the algorithm honestly for the verifier.)
     """
+    expected_algorithm = attestation_algorithm()
+    secure_backend = signing_is_secure()
     if path.exists():
-        raw: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
-        key = KeyFile(
-            algorithm=str(raw["algorithm"]),
-            private_b64=str(raw["private_b64"]),
-            public_b64=str(raw["public_b64"]),
-            created_at=str(raw.get("created_at") or ""),
-            secure=bool(raw.get("secure") or False),
-        )
+        try:
+            parsed = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise PaaError(
+                f"{path} is not a readable attestation key file "
+                f"({type(exc).__name__})"
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise PaaError(f"{path} does not hold a key object")
+        try:
+            key = KeyFile(
+                algorithm=str(parsed["algorithm"]),
+                private_b64=str(parsed["private_b64"]),
+                public_b64=str(parsed["public_b64"]),
+                created_at=str(parsed.get("created_at") or ""),
+                secure=bool(parsed.get("secure") or False),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PaaError(
+                f"{path} is missing a required key field ({type(exc).__name__})"
+            ) from exc
         if not key.secure and not allow_insecure:
             raise PaaError(
                 f"{path} holds a dev-fallback (symmetric, forgeable) signing key; "
                 "attesting with it needs --insecure-fallback-signing, and the "
                 "manifest will label the algorithm for every verifier"
             )
+        if key.algorithm != expected_algorithm or key.secure != secure_backend:
+            raise PaaError(
+                f"{path} is labelled {key.algorithm!r} but this host can only "
+                f"produce {expected_algorithm!r}; a key cannot change algorithm "
+                "between machines, because that is how a symmetric secret gets "
+                "a signature the verifier did not actually check"
+            )
+        if os.name == "posix":
+            try:
+                mode = path.stat().st_mode & 0o777
+            except OSError as exc:
+                raise PaaError(f"{path} could not be statted") from exc
+            if mode & 0o077:
+                raise PaaError(
+                    f"{path} is group/world accessible (mode {mode:03o}); "
+                    "chmod 600 it before attesting — a key anyone can read "
+                    "makes every signature forgeable"
+                )
         return key
 
-    if not signing_is_secure() and not allow_insecure:
+    if not secure_backend and not allow_insecure:
         raise PaaError(
             "real asymmetric signing is unavailable (the cryptography package "
             "is not installed), and the HMAC fallback is symmetric — anyone "
-            "who can verify can forge. Install paa[all] or pass "
+            "who can verify can forge. Install paa[attest] or pass "
             "--insecure-fallback-signing to attest anyway, honestly labelled"
         )
     pair: KeyPair = generate_keypair()
     key = KeyFile(
-        algorithm="ed25519" if pair.secure else "hmac-dev-fallback",
+        algorithm=expected_algorithm,
         private_b64=pair.private_b64,
         public_b64=pair.public_b64,
         created_at=_utc_now_iso(),
@@ -178,7 +256,13 @@ def load_or_generate_key(path: Path, *, allow_insecure: bool = False) -> KeyFile
     # 0o600 from the start: the file holds the private half, and a
     # world-readable key file would make every later attestation
     # forgeable by anyone who read it once.
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        raise PaaError(
+            f"{path} appeared while its key was being generated; retry rather "
+            "than risk signing with a key another process is writing"
+        ) from exc
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         json.dump(key.to_json(), handle, indent=2, sort_keys=True)
     if not key.secure:
@@ -241,12 +325,11 @@ class Approval:
 def _git(workspace: Path, *args: str, timeout_s: int = 60) -> str | None:
     """One git query against ``workspace``; ``None`` on any absence.
 
-    git is resolved to an absolute path up front (``shutil.which``), so
-    the answer never depends on the caller's ``PATH`` and the call is a
-    fully named executable — and a host without git, or a workspace that
-    is not a repository, returns ``None`` rather than raising: "no git
-    evidence" is an honest answer the diff section records, not a failure
-    to suppress.
+    ``shutil.which`` resolves git once and the call then names an absolute
+    executable, so a later ``PATH`` change cannot swap the binary mid-run.
+    A host without git, a non-repository workspace, a timeout and a failed
+    command all return ``None``: "no git evidence" is an honest answer the
+    diff section records, never a false-clean result.
     """
     git = shutil.which("git")
     if git is None:
@@ -268,32 +351,87 @@ def _git(workspace: Path, *args: str, timeout_s: int = 60) -> str | None:
 
 
 def _git_facts(workspace: Path, since: str | None) -> dict[str, Any]:
-    """The diff section's git block: status, diff, head, commits since."""
+    """The diff section's git block: status, diff, head, commits since.
+
+    Every operator-supplied revision is resolved to an object id before it
+    reaches ``git log``: an unguarded ``--output=…`` token used to be read
+    as a git *option*, not a revision, and could make git write a file on
+    the producer's host while the bundle recorded "no commits". Resolving
+    through ``rev-parse --end-of-options`` turns any remaining input into
+    a revision lookup, so the argv handed to ``log`` is hex + ``..HEAD``.
+    """
     head = _git(workspace, "rev-parse", "HEAD")
-    available = head is not None
-    facts: dict[str, Any] = {
-        "available": available,
-        "reason": "" if available else "git unavailable, or not a repository",
-        "head": head.strip() if head else None,
-        "status": _git(workspace, "status", "--porcelain") or "",
-        "diff": _git(workspace, "diff", "HEAD") or "",
-        "since": since,
-        "commits_since": [],
-    }
-    if available and since:
-        # --since resolution is the one place a bad operator input can
-        # fail: refuse loudly rather than silently attesting "no commits".
-        log_out = _git(workspace, "log", "--oneline", f"{since}..HEAD")
-        if log_out is None:
+    if head is None:
+        return {
+            "available": False,
+            "reason": "git is unavailable, or this workspace is not a repository",
+            "head": None,
+            "status": "",
+            "diff": "",
+            "since": since,
+            "commits_since": [],
+            "warnings": [
+                "git could not describe this workspace; empty status and diff "
+                "are not evidence of a clean tree"
+            ],
+        }
+
+    status = _git(workspace, "status", "--porcelain")
+    diff = _git(workspace, "diff", "HEAD")
+    if status is None or diff is None:
+        failed = "status" if status is None else "diff"
+        raise PaaError(
+            f"git {failed} failed for this workspace after HEAD resolved; "
+            "refusing to attest an empty diff as a clean one"
+        )
+    _refuse_secrets("the git working-tree state", status, diff, since or "")
+
+    warnings: list[str] = []
+    if not status.strip() and not diff.strip():
+        warnings.append(
+            "git reports an empty working-tree diff: status and diff are both "
+            "empty, which means clean or that git saw nothing to report"
+        )
+
+    commits: list[dict[str, str]] = []
+    if since:
+        if since.startswith("-"):
+            raise PaaError(
+                f"--diff-since {since!r} looks like a git option, not a "
+                "revision; pass a commit, tag or branch name"
+            )
+        resolved = _git(
+            workspace,
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            f"{since}^{{commit}}",
+        )
+        if resolved is None or not resolved.strip():
             raise PaaError(
                 f"--diff-since {since!r} does not resolve against this "
                 "workspace's history; the attestation would silently claim "
                 "there are no commits since it"
             )
-        facts["commits_since"] = [
-            {"line": line} for line in log_out.splitlines() if line.strip()
-        ]
-    return facts
+        start = resolved.strip().splitlines()[-1]
+        log_out = _git(workspace, "log", "--oneline", f"{start}..HEAD")
+        if log_out is None:
+            raise PaaError(
+                f"git could not read commits since {since!r}; refusing to "
+                "attest 'none' when git did not answer"
+            )
+        commits = [{"line": line} for line in log_out.splitlines() if line.strip()]
+
+    return {
+        "available": True,
+        "reason": "",
+        "head": head.strip(),
+        "status": status,
+        "diff": diff,
+        "since": since,
+        "commits_since": commits,
+        "warnings": warnings,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +482,18 @@ def _observe_evidence(path: Path) -> tuple[dict[str, Any], bytes]:
             "finished watching this run, so it is not evidence of one — "
             "re-run paa observe and attest the final bundle"
         )
+    if bundle.evidence_tier != "T1":
+        raise PaaError(
+            f"{path} declares evidence_tier={bundle.evidence_tier!r}, not T1; "
+            "only a T1 observation is a witness this attestation may claim"
+        )
+    if bundle.resume != "none":
+        raise PaaError(
+            f"{path} declares resume={bundle.resume!r}, not 'none'; a resumed "
+            "run is not a fresh witness and cannot be attested as one"
+        )
     raw = path.read_bytes()
+    _refuse_secrets(f"{path}", raw.decode("utf-8", errors="replace"))
     summary = {
         "kind": OBSERVE_SCHEMA,
         "run_id": bundle.run_id,
@@ -412,6 +561,19 @@ def build_bundle(
             "'what was this work for' is the one field a reviewer cannot "
             "supply later"
         )
+    requested_commands = [list(cmd) for cmd in asserted_commands]
+    requested_tests = [list(cmd) for cmd in asserted_tests]
+    attest_approvals = list(approvals)
+    request_texts = [goal, requester, requester_kind, diff_since or ""]
+    request_texts.extend(arg for cmd in requested_commands for arg in cmd)
+    request_texts.extend(arg for cmd in requested_tests for arg in cmd)
+    request_texts.extend(
+        field
+        for a in attest_approvals
+        for field in (a.approver_kind, a.approver_id, a.note)
+    )
+    _refuse_secrets("the attestation request", *request_texts)
+
     workspace = workspace.resolve()
     created_at = _utc_now_iso()
     bundle_id = hashlib.sha256(
@@ -441,6 +603,22 @@ def build_bundle(
     # -- phase 2a: evidence blobs first, so section rows can cite them ----
     store = ContentAddressedStore(out_dir)
     blob_entries: list[dict[str, Any]] = []
+    indexed_blobs: set[tuple[str, str]] = set()
+
+    def _index_blob(ref: Any, role: str) -> None:
+        """Content addressing makes duplicate witnesses the same blob.
+
+        The repeatable CLI flags can name one observe bundle as both a
+        test and general evidence; the index records that witness once so
+        the verifier's exact-set check does not flag a benign duplicate.
+        """
+        key = (str(ref.sha256), role)
+        if key in indexed_blobs:
+            return
+        indexed_blobs.add(key)
+        blob_entries.append(
+            {"sha256": key[0], "bytes": int(ref.size_bytes), "role": role}
+        )
 
     test_rows: list[dict[str, Any]] = []
     command_rows: list[dict[str, Any]] = []
@@ -449,10 +627,7 @@ def build_bundle(
     for path in test_bundles:
         summary, raw = _observe_evidence(path)
         ref = store.put(raw, compress=False)
-        blob_entries.append(
-            {"sha256": ref.sha256, "bytes": ref.size_bytes,
-             "role": f"evidence:observe:{summary['run_id']}"}
-        )
+        _index_blob(ref, f"evidence:observe:{summary['run_id']}")
         evidence_rows.append(
             {
                 "kind": summary["kind"],
@@ -470,10 +645,7 @@ def build_bundle(
     for path in evidence_bundles:
         summary, raw = _observe_evidence(path)
         ref = store.put(raw, compress=False)
-        blob_entries.append(
-            {"sha256": ref.sha256, "bytes": ref.size_bytes,
-             "role": f"evidence:observe:{summary['run_id']}"}
-        )
+        _index_blob(ref, f"evidence:observe:{summary['run_id']}")
         evidence_rows.append(
             {
                 "kind": summary["kind"],
@@ -505,10 +677,7 @@ def build_bundle(
                 "evidence row a reader cannot interpret is not evidence"
             )
         run_ref = str(row_fields.get("run_id") or path.stem)
-        blob_entries.append(
-            {"sha256": ref.sha256, "bytes": ref.size_bytes,
-             "role": f"evidence:{role}:{run_ref}"}
-        )
+        _index_blob(ref, f"evidence:{role}:{run_ref}")
         row = dict(row_fields)
         row["sha256"] = ref.sha256
         evidence_rows.append(row)
@@ -564,13 +733,14 @@ def build_bundle(
     # is skipped by the walker (the observe bundle's own rule) because
     # git's churn is the git block's business, not the content manifest's.
     snapshot = snapshot_manifest(workspace)
+    git_facts = _git_facts(workspace, diff_since)
 
     sections: dict[str, dict[str, Any]] = {
         "mandate": {"v": 1, "goal": goal, **mandate.granted_payload()},
         "diff": {
             "v": 1,
             "workspace": str(workspace),
-            "git": _git_facts(workspace, diff_since),
+            "git": git_facts,
             "manifest": {
                 "count": snapshot.count,
                 "files": [f.to_json() for f in snapshot.files],
@@ -591,7 +761,7 @@ def build_bundle(
                     "note": "asserted by the producer; no observe bundle "
                     "witnessed it",
                 }
-                for cmd in asserted_commands
+                for cmd in requested_commands
             ],
         },
         "tests": {
@@ -608,10 +778,10 @@ def build_bundle(
                     "note": "asserted by the producer; no observe bundle "
                     "witnessed it and no outcome is claimed",
                 }
-                for cmd in asserted_tests
+                for cmd in requested_tests
             ],
         },
-        "approvals": {"v": 1, "entries": [a.to_json() for a in approvals]},
+        "approvals": {"v": 1, "entries": [a.to_json() for a in attest_approvals]},
         "evidence": {"v": 1, "bundles": evidence_rows},
     }
 
@@ -621,9 +791,7 @@ def build_bundle(
     for name in SECTION_ORDER:
         raw = canonical_json(sections[name]).encode("utf-8")
         ref = store.put(raw, compress=False)
-        blob_entries.append(
-            {"sha256": ref.sha256, "bytes": ref.size_bytes, "role": f"section:{name}"}
-        )
+        _index_blob(ref, f"section:{name}")
         section_digests.append((name, ref.sha256))
         section_sizes[name] = ref.size_bytes
 
@@ -631,6 +799,21 @@ def build_bundle(
     chain_root = steps[-1]
 
     # -- phase 3: the signature and the final manifest ----------------------
+    # The blob index is part of what is signed. It used to be appended after
+    # signing, which let a reviewer (or an attacker) delete an evidence row
+    # from the index and get a green verdict with a different evidence count;
+    # the only thing protecting it was the file's own readability.
+    blobs_index = sorted(blob_entries, key=lambda b: (b["role"], b["sha256"]))
+    notes = {
+        "workspace": str(workspace),
+        "diff_since": diff_since,
+        "signing_secure": key.secure,
+    }
+    signature_claims: dict[str, Any] = {
+        "algorithm": key.algorithm,
+        "key_id": key.key_id,
+        "public_key_b64": key.public_b64,
+    }
     signed_header = {
         "schema": ATTEST_SCHEMA,
         "bundle_id": bundle_id,
@@ -640,11 +823,17 @@ def build_bundle(
             {"name": name, "sha256": digest} for name, digest in section_digests
         ],
         "chain_root": chain_root,
+        "blobs": blobs_index,
+        "notes": notes,
+        # The algorithm and key are signed too. A manifest cannot claim
+        # "ed25519" over a symmetric tag without breaking the signature;
+        # ``signed_over`` below is the verifier's recomputation check.
+        "signature_claims": signature_claims,
     }
     signed_bytes = canonical_json(signed_header).encode("utf-8")
-    signature_value = sign(signed_bytes, key.private_b64)
+    signature_value = sign_attestation(signed_bytes, key.private_b64, key.algorithm)
 
-    warnings: list[str] = []
+    warnings: list[str] = [str(w) for w in git_facts.get("warnings", [])]
     if not key.secure:
         warnings.append(
             "signed with the symmetric dev fallback — forgeable by anyone who "
@@ -658,23 +847,15 @@ def build_bundle(
             "run, so the bundle records claims, not evidence"
         )
 
-    blobs_index = sorted(blob_entries, key=lambda b: (b["role"], b["sha256"]))
-    manifest = {
+    manifest: dict[str, Any] = {
         **signed_header,
         "phase": "final",
-        "blobs": blobs_index,
         "chain": steps,
         "signature": {
-            "algorithm": key.algorithm,
-            "key_id": key.key_id,
-            "public_key_b64": key.public_b64,
+            **signature_claims,
+            "claims": signature_claims,
             "value_b64": signature_value,
             "signed_over": _sha256_bytes(signed_bytes),
-        },
-        "notes": {
-            "workspace": str(workspace),
-            "diff_since": diff_since,
-            "signing_secure": key.secure,
         },
     }
     _write_json_atomic(out_dir / "manifest.json", manifest)

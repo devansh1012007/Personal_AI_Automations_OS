@@ -13,6 +13,26 @@ least_confident_about: the divergence check in conformance drives a served think
 confidence: high (full gate 4,368/244/1x/0 exit 0; mypy 181 files clean; ruff clean; every task's done-when re-run live)
 last_comms_line_read: n/a
 <!-- ORCH-DIGEST:END -->
+
+> **SUPERSESSION (2026-11-25, W6-CLOSE truth pass).** This report is retained as
+> the historical record of the upstream run. Two statements below describe
+> patch `0006` as first applied and are superseded for readers comparing it
+> with the current tree:
+>
+> - §2's "Coder: all six real" (now line 102). In the current tree five coder checks
+>   are real passes and `unknown-outcome-never-auto-repeats` is an honest,
+>   pinned `n/a` (`src/paa/pipelines/conformance.py:300-315`). No registered
+>   in-process pipeline journals a mutating call through `CallJournal`, so a
+>   green there would prove the fold in isolation and nothing about the
+>   pipeline. The behaviour is pinned at
+>   `tests/pipelines/test_replay.py::TestDecisionTable::test_interrupted_mutating_call_never_auto_repeats`
+>   and in the kill-9 sweep `tests/pipelines/test_replay_chaos.py:214-224`.
+> - §5's "a synthesised mutating PROPOSED row" (now lines 138-140). That row was
+>   removed by the remediation; `tests/pipelines/test_conformance.py:100` now
+>   asserts the `n/a` explicitly so a future fake pass fails the gate.
+>
+> All three pipelines remain GREEN, with `n/a` rows visible rather than hidden.
+
 # Implementation report — W6-ORCH — C6.3-C6.6 + the Wave 6 close
 
 ## 1. Tasks and acceptance criteria (restated)

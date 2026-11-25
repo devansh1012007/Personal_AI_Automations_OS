@@ -72,7 +72,7 @@ Gates run in order (content hash → contract → signature → sandbox scan →
 ## Known gaps
 
 - Per-gate installer checks not fully traced (installer.py investigation output was truncated); the exact gate sequence beyond "content hash → contract → signature → sandbox scan → validation → register" is inferred from module structure, not line-verified.
-- Marketplace is not wired into `src/` outside its own package; no publishing UI, user model, or payment model (`README.md:265`).
+- Marketplace is not wired into `src/` outside its own package; no publishing UI, user model, or payment model (`README.md:263`).
 - End-to-end signed-package installation through the runtime was not traced.
 
 ## Related documents

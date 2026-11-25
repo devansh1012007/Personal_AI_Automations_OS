@@ -140,6 +140,27 @@ class TestRealScriptedRuns:
         (ws / "seed.txt").write_text("seed\n", encoding="utf-8")
         return ws
 
+    async def test_a_host_without_git_still_finalises_the_bundle(
+        self, core: ObserverCore, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Git is a witness, not the subject: a missing binary is recorded."""
+
+        async def no_git(
+            self: ObserverCore, workspace: Path, args: tuple[str, ...]
+        ) -> SandboxResult:
+            raise SandboxError("git: executable not found")
+
+        monkeypatch.setattr(ObserverCore, "_git", no_git)
+        out = await core.observe(
+            [sys.executable, "-c", "pass"], workspace=workspace, timeout_s=60
+        )
+        assert out.classification.state is CrashClass.CLEAN_EXIT
+        bundle = read_bundle(out.bundle_path)
+        assert bundle.phase == "final"
+        assert bundle.git is not None
+        assert bundle.git.available is False
+        assert "git unavailable" in (bundle.git.reason or "")
+
     async def test_the_done_when_a_fake_harness_run_leaves_a_complete_t1_bundle(
         self, core: ObserverCore, workspace: Path
     ) -> None:

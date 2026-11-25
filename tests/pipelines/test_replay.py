@@ -84,6 +84,29 @@ class TestDecisionTable:
         assert decision.action is ReplayAction.SERVE
         assert decision.result == {"text": "hi", "tokens": 3}
 
+    def test_attested_null_result_is_served_as_null(self) -> None:
+        """A real JSON null with a digest is a value, not an unknown outcome."""
+        record = _record(1, result=None)
+        record = CallRecord(
+            seq=record.seq,
+            method=record.method,
+            fingerprint=record.fingerprint,
+            outcome=record.outcome,
+            result=None,
+            result_sha256="0" * 64,
+        )
+        view = ReplayView({1: record})
+        decision = view.check(1, "think", {"role": "worker"})
+        assert decision.action is ReplayAction.SERVE
+        assert decision.result is None
+
+    def test_completed_without_an_attested_result_is_outcome_unknown(self) -> None:
+        """An unresolvable blob is not a recorded ``null`` result (D-6)."""
+        view = ReplayView({1: _record(1, result=None)})
+        decision = view.check(1, "think", {"role": "worker"})
+        assert decision.action is ReplayAction.OUTCOME_UNKNOWN
+        assert "unavailable" in (decision.reason or "")
+
     def test_fingerprint_mismatch_diverges(self) -> None:
         view = ReplayView({1: _record(1, params={"role": "worker"})})
         decision = view.check(1, "think", {"role": "planner"})

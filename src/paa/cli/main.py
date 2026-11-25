@@ -916,6 +916,5 @@ app.command(name="verify")(verify_command)
 # the MCP server its tool calls ride, and ``verify`` checks the chain.
 app.add_typer(record_app, name="record")
 
-
 if __name__ == "__main__":
     app()

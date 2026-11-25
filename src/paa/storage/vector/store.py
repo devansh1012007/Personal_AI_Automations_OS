@@ -193,18 +193,16 @@ class VectorPoint(BaseModel):
 
     id: str = Field(min_length=1, max_length=512)
     # Annotated with the bare ``np.ndarray`` rather than the parametrised
-    # :data:`FloatArray` alias: pydantic cannot build a schema for a subscripted
-    # numpy generic, and the dtype is enforced at write time anyway. The
-    # ``type-arg`` ignore keeps strict mypy quiet about the deliberate bare form
-    # (newer numpy stubs flag it).
-    vector: list[float] | np.ndarray  # type: ignore[type-arg]
+    # :data:`FloatArray` alias: the dtype is enforced at write time anyway, and
+    # current numpy stubs give ``ndarray`` default shape/dtype type arguments,
+    # so strict mypy accepts the bare form without a suppression. The old
+    # ``type-arg`` ignores were needed only by the pre-default stubs.
+    vector: list[float] | np.ndarray
     payload: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("vector")
     @classmethod
-    def _check_vector(
-        cls, value: list[float] | np.ndarray  # type: ignore[type-arg]
-    ) -> list[float] | np.ndarray:  # type: ignore[type-arg]
+    def _check_vector(cls, value: list[float] | np.ndarray) -> list[float] | np.ndarray:
         array = np.asarray(value)
         if array.ndim != 1:
             raise ValueError(f"vector must be 1-D, got shape {array.shape}")

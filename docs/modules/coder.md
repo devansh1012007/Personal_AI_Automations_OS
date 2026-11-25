@@ -100,7 +100,7 @@ Custom commands from `.md` files with `$ARGUMENTS`/`$1`..`$9` substitution.
 | `AgentLoop` → `HookRegistry` | `fire()` | Hooks pre/post tool | `coder/loop.py:235`, `:313` |
 | `AgentLoop` → `Session` | record turns | Transcript persistence | `coder/loop.py:144` |
 | runtime tools → `Runtime.submit/run` | drive tasks | Ledger writes | `coder/runtime_tools.py:290`, `:329` |
-| `cli/coder.py` → `CoderAgent.build` | compose | `paa agent` CLI | `cli/coder.py:103` |
+| `cli/coder.py` → `CoderAgent.build` | compose | `paa agent` CLI | `cli/coder.py:104` |
 
 ## Runtime behavior
 
@@ -117,7 +117,7 @@ Custom commands from `.md` files with `$ARGUMENTS`/`$1`..`$9` substitution.
 - Hook raising → logged, treated as non-block (`hooks.py:95`).
 - Tool execution exception → recorded as error result, loop continues
   (`coder/loop.py:239`).
-- `PaaError` from agent turn → reported cleanly at CLI (`cli/coder.py:132`).
+- `PaaError` from agent turn → reported cleanly at CLI (`cli/coder.py:253`).
 
 ## Modification impact
 
@@ -131,7 +131,7 @@ Custom commands from `.md` files with `$ARGUMENTS`/`$1`..`$9` substitution.
 ## Known gaps
 
 - Coder agent not wired into the orchestrator's main task path; no built-in
-  file-edit/bash/web/git skills (`README.md:254`).
+  file-edit/bash/web/git skills (`README.md:252`).
 - `RouterToolCallingModel` is the only native-tool-calling-adjacent class;
   nothing in `models/` supports a `tools` wire field (`AGENTS.md:156`).
 

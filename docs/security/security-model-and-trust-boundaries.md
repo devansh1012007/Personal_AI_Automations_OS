@@ -149,7 +149,7 @@ backend.py` `_read_capped`).
 ### 14. Human gates cannot be auto-cleared
 
 `AWAITING_HUMAN_ATTESTATION` parks a task; recovery explicitly never clears it
-(`ledger/replay.py:62`, `recovery.py:295`). Only an external caller
+(`ledger/replay.py:62`, `recovery.py:1035`). Only an external caller
 (`clear_human_gate`, `src/paa/agents/orchestrator.py:657`) can approve/reject.
 
 ## Trust boundaries
@@ -169,14 +169,14 @@ backend.py` `_read_capped`).
 - **Subprocess sandbox is not real containment.** On the target (Windows) host,
   the default backend is `PROCESS`: same kernel, same user, same network stack.
   A determined adversary with arbitrary code execution defeats it. Use WSL2 or
-  Docker (NAMESPACE) for untrusted code (`README.md:213`, `sandbox/base.py:25`).
+  Docker (NAMESPACE) for untrusted code (`README.md:210`, `sandbox/base.py:25`).
 - **Network egress on subprocess is not severed.** `allow_network=False` is
   logged as a gap; enforcement is via the `PERM_NET_EGRESS` permission and the
   AST scanner's socket/urllib/requests patterns (`subprocess_backend.py`,
   `policy.py:_NET_PATTERNS`).
 - **No authentication or authorization beyond the single permission mode.** Any
   process on the loopback can call the API; there is no user model
-  (`README.md:257`).
+  (`README.md:254`).
 - **No TLS on the ingestion API.** Loopback only; no transport security
   configured (`AGENTS.md:132`).
 - **Observability is untested.** Metrics/tracing code exists but is never

@@ -15,7 +15,7 @@ uv pip install -e ".[embeddings]"# real embeddings, else hash embedder
 uv pip install -e ".[api]"       # FastAPI ingestion
 ```
 
-No Docker, no server, no GPU required (`README.md:81`).
+No Docker, no server, no GPU required (`README.md:78`).
 
 ## State root
 

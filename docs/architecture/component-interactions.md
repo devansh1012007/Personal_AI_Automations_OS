@@ -95,8 +95,8 @@ flowchart TD
 | `BoundedContextGatherer` (`context/gatherer.py`) | Enforces hard token ceiling on context packet | `compile()` | `TokenBudget`, `CharEstimator` | Context builders | Pure computation; no persistence |
 | `EscalatingModelRouter` (`models/router.py:165`) | Local-first routing with explicit, logged escalation to frontier | `complete()` / `complete_structured()` | Local provider, optional frontier provider, `LedgerStore` | `RouterModelAdapter` (via agents) | Writes `MODEL_ESCALATED` ledger event before frontier call |
 | `RouterModelAdapter` (`runtime.py:125`) | Bridges agents' `ModelLike` protocol to the escalation router | `complete_structured()` (`runtime.py:148`) | `EscalatingModelRouter` | All reasoning agents | No persistence (router logs escalations) |
-| `RecoveryEngine` (`ledger/recovery.py:500`) | Post-crash boot sweep: replay, reconcile workspace, re-queue | `RecoveryEngine.boot_sweep()` (`recovery.py:586`) | `LedgerStore`, `Database`, optional `WorkspaceSnapshotter`, optional queue requeuer | `ChiefOrchestrator.boot()` (`src/paa/agents/orchestrator.py:825`) | Writes `RECOVERY_REPLAY_COMPLETED`/`STATE_ROLLBACK_TRIGGERED`/`TASK_ABANDONED` events; restores workspace |
-| `Daemon` (`daemon.py:53`) | Background loops: dispatch, ingestion, maintenance | `Daemon.start()` (`daemon.py:91`) | `Runtime`, `MemoryCreator`, `DecaySweeper` | `paa serve` (`cli/main.py:471`) | Claims queue messages; runs decay sweep; ingests signals |
+| `RecoveryEngine` (`ledger/recovery.py:802`) | Post-crash boot sweep: replay, reconcile workspace, re-queue | `RecoveryEngine.boot_sweep()` (`recovery.py:888`) | `LedgerStore`, `Database`, optional `WorkspaceSnapshotter`, optional queue requeuer | `ChiefOrchestrator.boot()` (`src/paa/agents/orchestrator.py:825`) | Writes `RECOVERY_REPLAY_COMPLETED`/`STATE_ROLLBACK_TRIGGERED`/`TASK_ABANDONED` events; restores workspace |
+| `Daemon` (`daemon.py:53`) | Background loops: dispatch, ingestion, maintenance | `Daemon.start()` (`daemon.py:91`) | `Runtime`, `MemoryCreator`, `DecaySweeper` | `paa serve` (`cli/main.py:470`) | Claims queue messages; runs decay sweep; ingests signals |
 | `MemoryCreator` (`memory/creator.py`) | Ingests unprocessed signals into hot-serving facts | `MemoryCreator.run_batch()` | `Database`, `FactRepository` | Daemon ingestion loop | Writes entities/facts |
 | `DecaySweeper` (`memory/decay.py`) | Evicts stale facts via `C(t)=C₀·e⁻ˡᵃᵐᵇᵈᵃ·t` | `DecaySweeper.sweep()` | `Database`, `DomainPolicy` | Daemon maintenance loop | Deletes/archives stale fact rows |
 | `DeterministicValidationEngine` (`validation/engine.py:191`) | Binary PASS/FAIL: schema → AST → patch → drift → tests | `validate()` (`engine.py:214`) | `AstSecurityScanner`, `SchemaValidator`, `UnifiedDiffValidator`, `WorkspaceSnapshot`, optional `PytestRunner`/`Sandbox` | `CriticValidatorAdapter` (`runtime.py:77`) | Runs tests in sandbox (only check that executes code) |
@@ -110,7 +110,7 @@ flowchart TD
 ### Chain A: Task submission and execution (the main path)
 
 ```
-CLI `paa submit` (cli/main.py:65)
+CLI `paa submit` (cli/main.py:127)
   → Runtime.submit() (runtime.py:189)
     → ChiefOrchestrator.submit() (src/paa/agents/orchestrator.py:146)
       → LedgerStore.append(TASK_REQUESTED) (store.py:113)
@@ -119,7 +119,7 @@ CLI `paa submit` (cli/main.py:65)
 CLI `paa run <id>` / daemon dispatch / API `?run=true`
   → Runtime.run() (runtime.py:209)
     → ChiefOrchestrator.run() (src/paa/agents/orchestrator.py:267)
-      → project(ledger, cid) (ledger/replay.py:322)
+      → project(ledger, cid) (ledger/replay.py:512)
       → _hydrate → context builder (context_agents.py:241)
       → _plan → planner (reasoning.py:78)
       → _check_policy → policy agent (policy.py:139)
@@ -162,10 +162,10 @@ Daemon ingestion loop (daemon.py:139)
 ```
 paa recover / Daemon.start → Runtime.boot_recovery()
   → ChiefOrchestrator.boot() (src/paa/agents/orchestrator.py:801)
-    → RecoveryEngine.boot_sweep() (recovery.py:243)
+    → RecoveryEngine.boot_sweep() (recovery.py:888)
       → verify_all_chains() (store.py:349)
       → open_correlations() (store.py:278)  — from head projection, not queue
-      → per lineage: project() (ledger/replay.py:322)
+      → per lineage: project() (ledger/replay.py:512)
         → if AWAITING_HUMAN → PARKED_HUMAN (never auto-clear)
         → if attempts >= max → TASK_ABANDONED
         → _reconcile_workspace: manifest vs disk; drift → restore + STATE_ROLLBACK_TRIGGERED
@@ -183,7 +183,7 @@ paa agent "prompt" (cli/coder.py:44)
         → EscalatingModelRouter.complete_structured (router.py:274)
       → for each tool call:
         → HookRegistry.fire(PRE_TOOL_USE) (hooks.py:95)
-        → ToolPermissionPolicy.evaluate() (permissions.py:173)
+        → ToolPermissionPolicy.evaluate() (permissions.py:220)
         → confirm callback on ASK (loop.py:231)
         → tool.run() → build_runtime_tools tool (runtime_tools.py)
           → e.g. submit_task → Runtime.submit() (runtime.py:189)

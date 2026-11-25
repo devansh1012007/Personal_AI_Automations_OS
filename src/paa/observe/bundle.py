@@ -343,7 +343,13 @@ class ObserveBundle:
         }
 
     def write(self, path: Path) -> None:
-        """Write the bundle atomically (``<path>.tmp`` then rename)."""
+        """Write the bundle atomically (``<path>.tmp`` then rename).
+
+        Atomic against a killed *process*: a reader sees either the old
+        file or the complete new one. It is not a power-loss fsync
+        contract — no claim is made about an unflushed rename after a
+        host crash.
+        """
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.name + ".tmp")
         tmp.write_text(
@@ -358,7 +364,13 @@ class ObserveBundle:
         return self
 
     def sha256(self) -> str:
-        """The bundle's own content hash, for ledger-side attestation."""
+        """The canonical-JSON content hash the ledger attests.
+
+        It hashes ``json.dumps(to_json(), sort_keys=True)`` — the same
+        semantic content in a fixed form, not the bytes of the indented
+        file ``write()`` puts on disk. A consumer wanting to compare the
+        file itself must hash the file bytes separately.
+        """
         return _sha256_text(json.dumps(self.to_json(), sort_keys=True))
 
 

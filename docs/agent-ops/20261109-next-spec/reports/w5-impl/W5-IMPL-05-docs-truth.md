@@ -17,7 +17,7 @@ deferred_dependencies: 5 one-line anchor fixes left for a central pass with
   owners (glossary.md:110 + overview.md:122 base.py:55→:59; component-
   interactions.md:102 + data-lifecycle.md:184 runtime.py:77→:92; modules-and-
   services.md:383 base.py:625→:622; cli.md:81 base.py:405→:59/:738; the
-  README.md:172 :1320-vs-:1336 nuance) — all conventions-green, so recorded
+  README.md:169 :1320-vs-:1336 nuance) — all conventions-green, so recorded
   not fixed, per brief
 out_of_scope_findings: 3 (the 5s-probe prose staleness in AGENTS.md + 4 docs —
   already filed twice by earlier runs, component-interactions.md's copy fixed
@@ -41,7 +41,7 @@ last_comms_line_read: 2026-11-09T18:19:12Z W3-IMPR-01 (COMMS.md's last line on
 
 Task: spec `docs/plans/2026-11-21-next-spec-2.md` §4, task 4-d — the
 docs/conventions truth pass over Wave 5's in-flight tree: re-run the
-conventions suite and confirm green; verify `docs/README.md:172`'s citation
+conventions suite and confirm green; verify `docs/README.md:169`'s citation
 (orchestrator saw it citing `sandbox/subprocess_backend.py:1289`, a blank
 line); sweep the wave's modified docs against the implementation
 (`base.py::SandboxSession`, `skills/adapters/mcp.py`'s sandboxed spawn) and
@@ -93,10 +93,10 @@ after review.
 Suite composition: `test_docs_references.py` 5 + `test_import_conventions.py`
 21 + `test_markdown_links.py` 8 = **34**. The lock the orchestrator saw red —
 `test_docs_references.py::test_every_referenced_line_is_not_blank`, failing on
-`docs/README.md:172` citing `sandbox/subprocess_backend.py:1289` (a blank
+`docs/README.md:169` citing `sandbox/subprocess_backend.py:1289` (a blank
 line) — is green, standalone and in the full suite, on the final state.
 
-## 3. `docs/README.md:172` — the citation the brief named
+## 3. `docs/README.md:169` — the citation the brief named
 
 - **History**: at HEAD the sentence cited `sandbox/subprocess_backend.py:548`;
   the wave's diff changes it to `:1320` (the orchestrator's failing run saw an
@@ -263,7 +263,7 @@ same code (a truthful re-anchor, not a random new number).
    `SandboxResult.duration_ms` docstring ("actually paid for."). Pre-existing
    (HEAD:404 = same content). The truthful anchor is `:59`
    (`class IsolationLevel`) or `:738` (`Sandbox.isolation_level`).
-5. **docs/README.md:172** — the region-vs-exact-line nuance of §3
+5. **docs/README.md:169** — the region-vs-exact-line nuance of §3
    (`:1320` `if IS_WINDOWS:` vs `:1336` `os.killpg(os.getpgid(proc.pid),
    signal.SIGKILL)`).
 
@@ -311,7 +311,7 @@ same code (a truthful re-anchor, not a random new number).
 - [x] Conventions suite green, twice, verbatim quotes in §2 (34 passed; the
       named `test_every_referenced_line_is_not_blank` green standalone).
 - [x] `ruff check src tests` — `All checks passed!`.
-- [x] `docs/README.md:172` citation verified truthful (region anchor into
+- [x] `docs/README.md:169` citation verified truthful (region anchor into
       `_kill_tree`'s win32 branch; exact-line nuance `:1336` recorded §3).
 - [x] sandbox.md / skills.md / mcp-server.md / security-model / ADR-0051
       swept against `base.py::SandboxSession` and `mcp.py`'s sandboxed spawn —

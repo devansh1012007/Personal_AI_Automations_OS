@@ -368,6 +368,7 @@ class TestExecutionRealSandbox:
         assert facts["isolation_level"] == "PROCESS"
         assert facts["network_severed"] is False
         assert facts["filesystem_confined"] is False
+        assert facts["protected_paths_enforced"] is False
         assert facts["output_cap_bytes"] == 64 * 1024
         assert facts["shell"] == st.shell_executable()
 
@@ -445,6 +446,36 @@ class TestJailProtect:
         assert payload["ok"] is False
         assert "severance" in str(payload["error"]).lower()
         assert payload["network_severed"] is False
+
+
+class TestProtectedPathsFlag:
+    """Every payload shape states ``protected_paths_enforced`` honestly.
+
+    The tool jail-then-protects only the cwd; the script itself can name
+    any path this host can reach, and no backend denies a shell child a
+    protected path inside the mounted workspace. The flag exists so the
+    payloads say that instead of implying the fs/git tools' per-path
+    protection applies to shell commands.
+    """
+
+    async def test_success_payload_states_the_flag(self, tmp_path: Path) -> None:
+        tool = st.BashTool(_ws(tmp_path), sandbox=DryRunSandbox(stdout="hi"))
+        payload = _payload(await tool.run({"command": "echo hi"}))
+        assert payload["ok"] is True
+        assert payload["protected_paths_enforced"] is False
+
+    async def test_refusal_payload_states_the_flag(self, tmp_path: Path) -> None:
+        dry = DryRunSandbox(stdout="should-not-appear")
+        ws = Workspace(root=Path("//server/share"))
+        tool = st.BashTool(ws, sandbox=dry)
+        payload = _payload(await tool.run({"command": "echo hi"}))
+        assert payload["ok"] is False
+        assert payload["protected_paths_enforced"] is False
+        assert dry.invocations == []
+
+    def test_preflight_matches_the_constant(self, tmp_path: Path) -> None:
+        tool = st.BashTool(_ws(tmp_path), sandbox=DryRunSandbox())
+        assert tool.preflight()["protected_paths_enforced"] is st.PROTECTED_PATHS_ENFORCED
 
 
 class TestPermissions:

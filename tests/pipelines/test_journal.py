@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import uuid
+from dataclasses import FrozenInstanceError
 from typing import Any
 
 import pytest
@@ -292,8 +293,8 @@ async def test_fold_skips_foreign_lineage_events(journal: CallJournal) -> None:
 
 def test_call_record_is_frozen() -> None:
     record = CallRecord(seq=1, method="think", fingerprint="fp", outcome=CallOutcome.PROPOSED)
-    with pytest.raises(Exception):  # noqa: B017 - frozen dataclass raises
-        record.seq = 2  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        record.seq = 2
 
 
 async def test_oversized_result_blobs_through_the_store(
@@ -323,6 +324,25 @@ async def test_oversized_result_without_a_store_refuses(
         await journal.call_completed(1, "think", {"text": "x" * 20_000})
     events = await ledger.read_correlation(run_id)
     assert events == []
+
+
+async def test_blobbed_outcome_survives_a_read_without_the_store(
+    ledger: LedgerStore, run_id: uuid.UUID, tmp_path: Any
+) -> None:
+    """An unresolvable blob keeps its seq and outcome, with no invented result."""
+    from paa.storage.coldlake.cas import ContentAddressedStore
+
+    store = ContentAddressedStore(tmp_path / "blobs")
+    journal = CallJournal(ledger, run_id, blob_store=store)
+    await journal.call_proposed(1, "think", {"prompt": "a"})
+    await journal.call_completed(1, "think", {"text": "x" * 20_000})
+
+    records = await read_call_journal(ledger, run_id)
+    assert len(records) == 1
+    assert records[0].seq == 1
+    assert records[0].outcome is CallOutcome.COMPLETED
+    assert records[0].result is None
+    assert records[0].result_sha256 is None
 
 
 # ---------------------------------------------------------------------------

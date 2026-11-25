@@ -19,7 +19,7 @@ last_comms_line_read: 2026-11-07T08:31:18Z ORCH -> ALL CORRECTION W1 (re-read be
 Evidence = current target line content [VERIFIED by grep/read at final line numbers after FIX-CODE landed].
 
 ### cli/main.py — decorator lines re-pointed to def lines (REV R-W1-001: need def, not decorator)
-- docs/README.md:46, repository-map.md:118, backend/overview.md:13, request-lifecycle.md:11, workflow-01.md:10, documentation-audit.md:59 — `cli/main.py:76` → `:76` [VERIFIED cli/main.py:77 `def submit(`]
+- docs/README.md:46, repository-map.md:118, backend/overview.md:13, request-lifecycle.md:11, workflow-01.md:10, documentation-audit.md:59 — `cli/main.py:75` → `:76` [VERIFIED cli/main.py:76 `def submit(`]
 - README:47, repository-map:119, component-interactions:99 — `:290` → `:292` [def serve at 292]
 - README:48, repository-map:120, backend/overview:19, ops config-env:222, ops deploy:143 — `:225` → `:227` [def doctor at 227]
 - README:49, repository-map:121 — `:207` → `:209` [def recover at 209]
@@ -30,7 +30,7 @@ Evidence = current target line content [VERIFIED by grep/read at final line numb
 - backend/overview:18, workflow-03:11 — `:191` → `:209` [sentence claims `paa recover`; base :191 was `rt = await _build_runtime()` inside gate, unrelated; def recover at 209 holds the claim]
 - backend/overview:54, cli.md:36, ops deploy:46 — `:53` → `:54` [async def _build_runtime at 54]
 - daemon.md:69 — `:309` → `:310` [rt = await _build_runtime(run_recovery=False) inside serve at 310, next line Daemon(rt)]
-- Plan1.md:79 — `cli/main.py:70-99` → `:69-99` [range covers version decorator (69) through submit finally `await rt.close()` (99); base range was decorator 68 through close 98]
+- Plan1.md:79 — `cli/main.py:69-99` → `:69-99` [range covers version decorator (69) through submit finally `await rt.close()` (99); base range was decorator 68 through close 98]
 
 ### runtime.py
 - component-interactions:226, overview:96 (`:496`), sandbox.md:114, sandbox.md:151, storage.md:86 — `runtime.py:496` → `:497` [async def _acquire_sandbox at 497]
@@ -61,7 +61,7 @@ Evidence = current target line content [VERIFIED by grep/read at final line numb
 
 ## ADR-0036 (R-W1-003, R-W1-004) and ADR-0037–0043 semantic scan
 - R-W1-003: creator.py:1490 → :1497 twice (0036 lines 31 and 98) [VERIFIED creator.py:1497 `async def drain_pending_embeddings(self, limit: int = 100)`; :1490 is a body line `indexed = await self._sink.enqueue(facts)`].
-- R-W1-004: §P01 amended in place with one paragraph (no other 0036 content changed): the 200-char bound applies to rendered operator-console text at the CLI drain site (`cli/main.py:637` `_MAX_DRAIN_ERROR_CHARS`, marker inside the 200 budget per cli/main.py:667-668); the runtime site (`src/paa/runtime.py:482`) is a structlog kwarg, redact-only and unbounded, mirroring `src/paa/runtime.py:474`. New citations verified non-blank and semantically exact.
+- R-W1-004: §P01 amended in place with one paragraph (no other 0036 content changed): the 200-char bound applies to rendered operator-console text at the CLI drain site (`src/paa/cli/main.py:636` `_MAX_DRAIN_ERROR_CHARS`, marker inside the 200 budget per cli/main.py:666-668); the runtime site (`src/paa/runtime.py:482`) is a structlog kwarg, redact-only and unbounded, mirroring `src/paa/runtime.py:474`. New citations verified non-blank and semantically exact.
 - ADR-0036 other citations verified correct, unchanged: queue/base.py:48 (class StreamName), :60 (WORKERS_ALLOC), replay.py:291 (_NO_PHASE_CHANGE), models/base.py:256 (def redact), :278 (def redact_detail).
 - ADR-0037–0043 scan [VERIFIED each cited line]: 0037 replay.py:291 ✓; 0038 world_model.py:42 (class BeliefDocument, members follow — acceptable class citation), :107 (def update_belief_state ✓), :89 (def path_for flat join ✓); 0041 core/types.py:424 (class AgentRole ✓), :165 (STATE_ROLLBACK_TRIGGERED ✓), :187 (TERMINAL_EVENTS ✓), replay.py:166 (STATE_ROLLBACK_TRIGGERED → ROLLED_BACK ✓); 0042 docker-compose.yml:67 (image: paa/runtime:4.1 ✓), pyproject.toml:42 (embeddings = sentence-transformers ✓); 0043 graph/base.py:68 (EDGE_TYPES ✓). No other semantically-stale ADR citation found.
 

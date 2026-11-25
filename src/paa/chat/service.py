@@ -116,7 +116,11 @@ class ChatService:
 
     @classmethod
     def from_runtime(
-        cls, runtime: Runtime, *, settings: ChatSettings | None = None
+        cls,
+        runtime: Runtime,
+        *,
+        settings: ChatSettings | None = None,
+        context_provider: ContextProvider | None = None,
     ) -> ChatService:
         """Wire a chat host off a built runtime.
 
@@ -125,6 +129,11 @@ class ChatService:
         *factory*, so a deployment configured for S3 does not quietly keep
         chat payloads on local disk — and, like every factory in this tree,
         it degrades to ``None`` rather than failing boot.
+
+        ``context_provider`` is the host-resolved context slot (C6.4): the
+        factory accepts a replacement rather than resolving one itself, so
+        a one-shot pipeline runner can apply an overlay's ref before the
+        service exists. ``None`` keeps the shipped compiler.
         """
         signals: SignalRepository | None = None
         try:
@@ -147,6 +156,7 @@ class ChatService:
             permission_mode=runtime.settings.policy.mode,
             context_settings=runtime.settings.context,
             signals=signals,
+            context_provider=context_provider,
         )
 
     # -- sessions -------------------------------------------------------------

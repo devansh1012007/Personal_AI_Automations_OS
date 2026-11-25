@@ -20,6 +20,7 @@ manifest hash stable.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -99,7 +100,7 @@ def _runner() -> tuple[PytestRunner, _RecordingSandbox]:
 def test_a_missing_pytest_is_a_failure() -> None:
     """Nothing ran, so nothing passed.
 
-    ``python3 -m pytest`` without pytest installed exits 1 with a greppable
+    ``python -m pytest`` without pytest installed exits 1 with a greppable
     ``No module named pytest``; the runner's job is to notice that the
     *runner itself* is missing, not to count zero failures.
     """
@@ -269,19 +270,24 @@ def test_the_result_is_ledger_shaped() -> None:
 
 
 async def test_the_suite_is_run_as_a_module(tmp_path: Path) -> None:
-    """``python3 -m pytest``, not the ``pytest`` script.
+    """``<sys.executable> -m pytest``, not the ``pytest`` script.
 
     The module form guarantees the interpreter and the test runner are the
     same environment, and it fails with a clean, greppable ``No module
     named pytest`` when the package is absent — where a missing console
     script fails with a shell-level "not found" that varies by platform.
+    The interpreter itself is ``sys.executable`` by default (``_runner``
+    passes no override): the runtime's own interpreter is the one
+    environment that provably has pytest, where a PATH-resolved
+    ``python3`` can land on a system interpreter without it — a container
+    backend passes ``python_executable`` explicitly.
     """
     runner, sandbox = _runner()
 
     await runner.run(tmp_path, test_paths=("tests/test_x.py",))
 
     command = sandbox.specs[0].command
-    assert command[:3] == ("python3", "-m", "pytest")
+    assert command[:3] == (sys.executable, "-m", "pytest")
     assert command[-1] == "tests/test_x.py"
 
 

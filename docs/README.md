@@ -43,17 +43,19 @@ Major subsystems:
 
 Primary entry points:
 
-* `paa submit "goal"` — submit and run one task to completion (`cli/main.py:128`)
-* `paa serve` — FastAPI API + background daemon (`cli/main.py:471`)
-* `paa doctor` — report live backends/sandbox plus the chat model, MCP token env and TUI extra (`cli/main.py:305`)
-* `paa recover` — post-crash boot sweep (`cli/main.py:287`)
-* `paa ledger <id>` — walk a task's event chain (`cli/main.py:214`)
-* `paa memory <subcommand>` — facts/search/signals/drain/world-model (`cli/main.py:697`)
-* `paa observe -- <cmd>` — run any CLI under observation, leave the T1 evidence bundle (`src/paa/cli/observe.py:118`)
+* `paa submit "goal"` — submit and run one task to completion (`src/paa/cli/main.py:127`)
+* `paa serve` — FastAPI API + background daemon (`src/paa/cli/main.py:470`)
+* `paa doctor` — report live backends/sandbox plus the chat model, MCP token env and TUI extra (`src/paa/cli/main.py:304`)
+* `paa recover` — post-crash boot sweep (`src/paa/cli/main.py:286`)
+* `paa ledger <id>` — walk a task's event chain (`src/paa/cli/main.py:213`)
+* `paa memory <subcommand>` — facts/search/signals/drain/world-model (`src/paa/cli/main.py:695`)
+* `paa observe -- <cmd>` — run any CLI under observation, leave the T1 evidence bundle (`src/paa/cli/observe.py:147`)
+* `paa record run -- <cmd>` — the flight recorder: the harness under the evidence boundary, tool calls through the MCP policy proxy, the attested bundle at close (`src/paa/cli/record.py:88`)
+* `paa record verify <run-dir>` — the flight record's own chain: schema, sequence, every link (`src/paa/cli/record.py:220`)
 * `paa attest build` / `paa verify` — the attested change bundle and its offline verifier (H3.1): mandate, diff, commands, tests, approvals, hash chain, Ed25519 signature (`src/paa/cli/attest.py:88`)
 * `paa chat` — the chat surface: TUI, or `--plain` (`src/paa/cli/chat.py:160`)
 * `paa mcp serve` — the stdio MCP server (`src/paa/cli/mcp.py:120`)
-* `paa agent "prompt"` — tool-using coder loop (`src/paa/cli/coder.py:56`)
+* `paa agent "prompt"` — tool-using coder loop (`src/paa/cli/coder.py:58`)
 
 The composition root is `Runtime.build()` (`src/paa/runtime.py:353`).
 

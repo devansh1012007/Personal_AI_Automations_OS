@@ -59,21 +59,22 @@ class TestSwappingTheContextProviderChangesBehaviour:
         second = await default_harness.service.send(sid, "What happens on Friday?")
         assert "(from memory:" in second.reply
 
-        # -- the overlay: fill the slot, tighten a knob — accepted at load
-        overlay = load_overlay(
-            """
+        # -- the overlay: fill the slot, tighten a knob — accepted at load.
+        # Registration sits inside the guarded block so a failed load
+        # cannot leak a provider into a later test in the same process.
+        try:
+            register_context_provider("test:terse", _terse)
+            overlay = load_overlay(
+                """
 [slots]
 context_provider = "test:terse"
 
 [params]
 recall_k = 1
 """,
-            CHAT,
-        )
-        assert overlay.slots == {"context_provider": "test:terse"}
-
-        register_context_provider("test:terse", _terse)
-        try:
+                CHAT,
+            )
+            assert overlay.slots == {"context_provider": "test:terse"}
             provider = resolve_context_provider(overlay.slots["context_provider"])
             # The host threads the resolved provider into the service it
             # builds — validation at load, application here, never inside
@@ -86,13 +87,18 @@ recall_k = 1
                 settings=terse_harness.settings,
                 permission_mode=PermissionMode.ASK,
                 context_settings=terse_harness.context_settings,
+                signals=terse_harness.signals,
                 context_provider=provider,
             )
             sid2 = await terse_service.create_session()
             await terse_service.send(sid2, "Apollo is blocked until Friday.")
             terse_second = await terse_service.send(sid2, "What happens on Friday?")
             assert "(from memory:" not in terse_second.reply
+            assert terse_second.recalled_fact_ids, (
+                "recall must still serve the fact; only rendering changed"
+            )
         finally:
             from paa.pipelines import slots as slots_module
 
             slots_module._PROVIDERS.pop("test:terse", None)
+            slots_module._REF_INTERFACES.pop("test:terse", None)

@@ -51,8 +51,8 @@ unsupported keywords ignored unless `strict_keywords` (`:340`). Used for skill
 output validation by the USA (`skills/usa.py:48`).
 
 ### `test_runner.py` — PytestRunner
-Runs `python -m pytest` inside a sandbox; `ok` requires positive evidence
-(pytest present, tests collected, exit 0, passed>0) (`:81`).
+Runs `<interpreter> -m pytest` inside a sandbox; `ok` requires positive
+evidence (pytest present, tests collected, exit 0, passed>0) (`:82`).
 
 ### `workspace.py` — WorkspaceSnapshot
 Manifest capture + drift detection (`hash_file`).
@@ -82,7 +82,7 @@ Manifest capture + drift detection (`hash_file`).
 - Lazy import in `runtime.py` (`try/except`) — validation unavailable degrades
   gracefully (`runtime.py:692`).
 - Tests run last and only inside a sandbox (`engine.py:245`).
-- `ok` requires positive evidence; absence of failure ≠ pass (`test_runner.py:81`).
+- `ok` requires positive evidence; absence of failure ≠ pass (`test_runner.py:83`).
 
 ## Failure behavior
 

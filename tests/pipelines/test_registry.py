@@ -45,6 +45,7 @@ _VALID_MANIFEST = """
 [pipeline]
 name = "tdd-loop"
 version = "0.1.0"
+protocol = "paa-pipeline/1"
 description = "Write a failing test, make it pass, refactor."
 requires_runtime = ">=4.1,<5"
 
@@ -58,6 +59,9 @@ use_skill = ["read_file", "bash"]
 
 [limits]
 max_tokens = 200000
+max_wall_s = 1800
+max_calls = 400
+max_sub_runs = 2
 
 [params]
 max_cycles = { type = "int", default = 5, min = 1, max = 20 }
@@ -127,7 +131,9 @@ class TestTheRegistry:
         bad.mkdir()
         (bad / "pipeline.toml").write_text(
             "[pipeline]\nname = 'broken'\nversion = '0.1'\n"
-            "requires_runtime = '>=4.1,<5'\n\n[banana]\nx = 1\n",
+            "protocol = 'paa-pipeline/1'\nrequires_runtime = '>=4.1,<5'\n\n"
+            "[limits]\nmax_tokens = 1\nmax_wall_s = 1\nmax_calls = 1\n"
+            "max_sub_runs = 1\n\n[banana]\nx = 1\n",
             encoding="utf-8",
         )
         registry = PipelineRegistry(local_dir=home / "pipelines")
@@ -196,6 +202,14 @@ class TestTheRegistry:
         with pytest.raises(LocalManifestError, match="declares_tier"):
             declaration_from_manifest(manifest)
 
+        # A TOML list is unhashable; membership in the ladder must still be
+        # a named refusal, not a TypeError escaping the parse contract.
+        manifest.write_text(
+            original + '\n[evidence]\ndeclares_tier = ["T1"]\n', encoding="utf-8"
+        )
+        with pytest.raises(LocalManifestError, match="declares_tier"):
+            declaration_from_manifest(manifest)
+
         manifest.write_text(
             original + '\n[evidence]\ndeclares_tier = "T1"\nmood = "honest"\n',
             encoding="utf-8",
@@ -204,6 +218,53 @@ class TestTheRegistry:
             declaration_from_manifest(manifest)
 
         manifest.write_text(original, encoding="utf-8")
+
+    @pytest.mark.parametrize(
+        "old,new,reason",
+        [
+            ('protocol = "paa-pipeline/1"', 'protocol = "paa-pipeline/2"', "protocol"),
+            (
+                'requires_runtime = ">=4.1,<5"',
+                'requires_runtime = "4.1"',
+                "requires_runtime",
+            ),
+            ("max_calls = 400", "", "max_calls"),
+            ('interface = "agent/1"', 'interface = "agent"', "<name>/<major>"),
+            ('default = "agent:critic"', 'default = "memory:critic"', "default"),
+            # TOML lists are unhashable: a membership test on one used to
+            # raise TypeError and escape the named-error contract.
+            ('resume = "journal"', 'resume = ["journal"]', "run.resume"),
+            ('type = "int"', 'type = ["int"]', "expected one of"),
+        ],
+    )
+    def test_each_contract_rule_is_named(
+        self, tmp_path: Path, old: str, new: str, reason: str
+    ) -> None:
+        """Every ADR-0052 parse rule refuses, and names the manifest.
+
+        A manifest that is off contract must land in ``local_errors``
+        under its own name — silently dropping it would make ``list``
+        lie about what exists in the local directory.
+        """
+        home = _local_home(tmp_path)
+        manifest = home / "pipelines" / "tdd-loop" / "pipeline.toml"
+        text = manifest.read_text(encoding="utf-8")
+        assert old in text
+        manifest.write_text(text.replace(old, new), encoding="utf-8")
+
+        registry = PipelineRegistry(local_dir=home / "pipelines")
+        assert "tdd-loop" not in [r.name for r in registry.list()]
+        assert "tdd-loop" in registry.local_errors
+        assert reason in registry.local_errors["tdd-loop"]
+
+    def test_invalid_utf8_manifest_is_named(self, tmp_path: Path) -> None:
+        """Corrupt bytes are a named refusal, not a decode traceback."""
+        home = _local_home(tmp_path)
+        manifest = home / "pipelines" / "tdd-loop" / "pipeline.toml"
+        manifest.write_bytes(b"[pipeline]\nname = '\xff'\n")
+        registry = PipelineRegistry(local_dir=home / "pipelines")
+        assert "tdd-loop" not in [r.name for r in registry.list()]
+        assert "UTF-8" in registry.local_errors["tdd-loop"]
 
 
 class TestSelection:

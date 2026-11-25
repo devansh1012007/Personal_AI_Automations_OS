@@ -136,7 +136,9 @@ class TestTheFacadeJournalsTheRun:
         run = uuid.uuid4()
 
         async def explode(self: ObserverCore, *a: object, **k: object) -> Any:
-            raise SandboxError("observer vanished mid-run")
+            # A real start failure includes the child's argv; a token in
+            # that argv must never be copied into the ledger reason.
+            raise SandboxError("observer vanished: --token SECRET-1234")
 
         monkeypatch.setattr(ObserverCore, "observe", explode)
         facade = await _facade(ledger, run, ws, tmp_path)
@@ -148,6 +150,8 @@ class TestTheFacadeJournalsTheRun:
         assert kinds == ["PIPELINE_RUN_STARTED", "PIPELINE_CALL_PROPOSED", "PIPELINE_CALL_FAILED"]
         failed = next(p for k, p in events if k == "PIPELINE_CALL_FAILED")
         assert "observer did not resolve" in failed["reason"]
+        assert "SECRET-1234" not in failed["reason"]
+        assert "SandboxError" in failed["reason"]
 
 
 class TestThePipeline:

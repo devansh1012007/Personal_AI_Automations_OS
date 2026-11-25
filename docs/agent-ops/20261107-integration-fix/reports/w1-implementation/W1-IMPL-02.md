@@ -1,6 +1,6 @@
 <!-- ORCH-DIGEST:START -->
 agent: W1-IMPL-02 | domain: P-001 redaction of two unredacted str(exc) paths | status: DONE
-items: 2 sites fixed (runtime.py:481, cli/main.py:650); 0 already-fixed; 0 not-reproducible
+items: 2 sites fixed (runtime.py:481, cli/main.py:649); 0 already-fixed; 0 not-reproducible
 proposed_tasks: 1 completed (SURFACE — T-001-P001): redact + ≤200-rendered bound + explicit marker, both sites driven by tests, reversal-proven
 top_risks: (1) ADR-0036 §P01 read at commit time — implementation matches all three spec bullets; marker deliberately inside the 200 budget (§1); (2) raw ANSI/control passthrough at the drain line is a sibling injection class, FINDING not P-001
 cross_domain_conflicts: none (W1-IMPL-03's context_agents.py/creator.py untouched; W1-IMPL-01's config.py/ADRs untouched)
@@ -20,7 +20,7 @@ WRITE-SET: `src/paa/runtime.py`, `src/paa/cli/main.py`, `tests/runtime/test_reda
 - Working tree at start: `M docs/agent-ops/20261107-integration-fix/COMMS.md` (ORCH-owned), `M src/paa/config.py` (W1-IMPL-01-owned, untracked-dir `reports/w1-implementation/` present) — neither is mine; I will not touch, stage, or commit them.
 - Required reading done in order: STANDING-ORDERS.md, AGENTS.md, 00-mission.md, plan rev 5 (§E P01, §H T01, §K), W0-INV-04 §P-001 (authoritative write-set, Fix A), report/gate templates, then the code sites.
 - Code verified at HEAD: `src/paa/runtime.py:474` (already `redact(str(exc))`, imported at :43) vs `:481` (unredacted) — one-function inconsistency as INV-04 states. [VERIFIED src/paa/runtime.py:474,481; :43]
-- `cli/main.py:651` prints `f"[red]embedding drain failed: {exc}[/red]"` unredacted, unbounded. [VERIFIED cli/main.py:643-649]
+- `src/paa/cli/main.py:650` prints `f"[red]embedding drain failed: {exc}[/red]"` unredacted, unbounded. [VERIFIED src/paa/cli/main.py:642-649]
 - Helper: `redact` at `src/paa/models/base.py:256` — stdlib+pydantic+`paa.core` imports only, safe at module scope in cli/main.py. [VERIFIED src/paa/models/base.py:67-78]
 - cli/main.py today imports `redact` only function-locally inside `_touch_recalled` (:714) — the drift INV-04 flagged. Fix A uses a module-level import instead (see §1).
 - ADR-0036 §P01 comparison at commit time (W1-IMPL-01's `docs/adr/0036-allocator-and-attention-loop.md:102-117`): all three spec bullets match (see §1). No divergence FINDING needed.
@@ -40,7 +40,7 @@ except Exception as exc:  # degradation path: never crash boot on vectors
 
 Event name (`memory.embedding_sink`), status kwarg, and degrade-to-None behaviour unchanged. `redact` was already imported at `runtime.py:43` (`from paa.models.base import redact`), so the site needed no import change. No truncation at this site: the ADR §P01 bound is for rendered console text; the structlog kwarg is unbounded structured logging (the :474 sibling already logs unboundedly), and the plan assigns the 200-char bound to the CLI path only.
 
-### Phase 2 — cli/main.py:650 (redact + 200-char bound + marker)
+### Phase 2 — cli/main.py:649 (redact + 200-char bound + marker)
 
 [VERIFIED via `git diff src/paa/cli/main.py` post-edit]
 

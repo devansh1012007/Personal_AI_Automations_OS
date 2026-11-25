@@ -167,6 +167,16 @@ class ReplayView:
             )
 
         if record.outcome is CallOutcome.COMPLETED:
+            if record.result is None and record.result_sha256 is None:
+                # A blobbed result whose store was unavailable folds to a
+                # COMPLETED row with no value and no attestation. Serving
+                # that as a real result would forge a null outcome; D-6
+                # says the pipeline must decide instead.
+                return ReplayDecision(
+                    action=ReplayAction.OUTCOME_UNKNOWN,
+                    seq=seq,
+                    reason="recorded result unavailable",
+                )
             return ReplayDecision(
                 action=ReplayAction.SERVE, seq=seq, result=record.result
             )

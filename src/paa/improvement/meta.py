@@ -63,7 +63,7 @@ class Prototype:
         from the whole history — the "learn from few, keep learning" property.
         """
         n = self.exemplar_count
-        new_vec = (self.vector * n + embedding) / (n + 1)
+        new_vec = np.asarray((self.vector * n + embedding) / (n + 1), dtype=np.float32)
         return Prototype(self.label, _normalise(new_vec), n + 1)
 
 
