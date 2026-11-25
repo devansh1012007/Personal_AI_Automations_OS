@@ -677,9 +677,15 @@ def build_bundle(
                 "evidence row a reader cannot interpret is not evidence"
             )
         run_ref = str(row_fields.get("run_id") or path.stem)
-        _index_blob(ref, f"evidence:{role}:{run_ref}")
+        index_role = f"evidence:{role}:{run_ref}"
+        _index_blob(ref, index_role)
         row = dict(row_fields)
         row["sha256"] = ref.sha256
+        # The signed row names its own index role so the verifier's
+        # exact-set check can tell this door's blobs from observe bundles
+        # without guessing: both sides are inside the signed manifest, so
+        # a relabel needs a re-sign.
+        row["index_role"] = index_role
         evidence_rows.append(row)
 
     # The recorder's command rows (C7.3): commands a flight record

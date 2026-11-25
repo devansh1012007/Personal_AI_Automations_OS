@@ -146,11 +146,14 @@ class TestRealScriptedRuns:
         """Git is a witness, not the subject: a missing binary is recorded."""
 
         async def no_git(
-            self: ObserverCore, workspace: Path, args: tuple[str, ...]
+            sandbox: object, workspace: Path, args: tuple[str, ...]
         ) -> SandboxResult:
             raise SandboxError("git: executable not found")
 
-        monkeypatch.setattr(ObserverCore, "_git", no_git)
+        # C7.3 moved the git questions to module level (``git_query``) so the
+        # recorder asks them through the same containment — a host without
+        # git therefore patches the shared vocabulary, not a method.
+        monkeypatch.setattr("paa.observe.observer.git_query", no_git)
         out = await core.observe(
             [sys.executable, "-c", "pass"], workspace=workspace, timeout_s=60
         )

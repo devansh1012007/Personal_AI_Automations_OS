@@ -191,7 +191,7 @@ class TestTheDoneWhen:
         assert outcome.attest_built
         assert outcome.attest_error is None
         result = verify_bundle(outcome.attest_bundle_dir or Path())
-        assert result.ok, [c.reason for c in result.checks if not c.ok]
+        assert result.ok, [f"{c.name}: {c.detail}" for c in result.checks if not c.ok]
 
         # The mediated commands are observed rows backed by the record
         # blob — never asserted.

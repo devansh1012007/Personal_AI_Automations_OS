@@ -114,7 +114,7 @@ responsibility and the files it contains. All paths are repository-relative.
 
 | Entry point | File | Function |
 |---|---|---|
-| `paa` CLI | `src/paa/cli/main.py:48` | `app = typer.Typer(...)`; `__main__` at line 914 |
+| `paa` CLI | `src/paa/cli/main.py:49` | `app = typer.Typer(...)`; `__main__` at line 914 |
 | `paa submit` | `src/paa/cli/main.py:127` | `submit` |
 | `paa serve` | `src/paa/cli/main.py:470` | `serve` |
 | `paa doctor` | `src/paa/cli/main.py:304` | `doctor` |
@@ -123,7 +123,7 @@ responsibility and the files it contains. All paths are repository-relative.
 | `paa gate` | `src/paa/cli/main.py:259` | `gate` |
 | `paa agent` | `src/paa/cli/coder.py:54` | `register_agent` → `agent` |
 | `paa tui` | `src/paa/cli/main.py:533` | `tui` |
-| `paa memory` | `src/paa/cli/main.py:695` | `memory_app`: facts/search/signals/drain/world-model |
+| `paa memory` | `src/paa/cli/main.py:696` | `memory_app`: facts/search/signals/drain/world-model |
 | `paa observe` | `src/paa/cli/observe.py:147` | `observe`: run a CLI under observation, leave a T1 bundle (SPEC 2 W7) |
 | `paa chat` | `src/paa/cli/chat.py:160` | the chat surface — TUI, or `--plain` (SPEC 2 W4) |
 | `paa mcp serve` | `src/paa/cli/mcp.py:120` | stdio MCP server (SPEC 2 W4) |

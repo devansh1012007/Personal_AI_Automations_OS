@@ -105,6 +105,15 @@ MAX_BLOB_BYTES = 64 * 1024 * 1024
 MAX_MANIFEST_DEPTH = 64
 
 _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+
+#: The shape of a legal evidence index role: ``evidence:<door>:<ref>`` —
+#: the door names which builder input stored the blob (``observe`` for
+#: T1 observe bundles, ``record`` for the recorder's flight records), the
+#: ref names the run. A row may carry its own ``index_role`` (stamped by
+#: the builder, covered by the section hash chain and the signature);
+#: rows without one are observe rows, the only evidence door the format
+#: had before C7.3 added the recorder's.
+_EVIDENCE_ROLE_RE = re.compile(r"^evidence:[a-z0-9_.-]+:[^\s]+$")
 _B64_KEY_RE = re.compile(r"[A-Za-z0-9+/]{32,128}={0,2}")
 
 
@@ -428,7 +437,20 @@ def verify_bundle(
         digest = str(row.get("sha256") or "")
         run_id = str(row.get("run_id") or "")
         if _HEX64_RE.fullmatch(digest) and run_id:
-            expected_pairs.add((digest, f"evidence:observe:{run_id}"))
+            # A row may name its own index role (the recorder's flight
+            # records are evidence:record:<run>, not observe bundles); a
+            # row without one is an observe row — the format's original
+            # and still only builder-populated door.
+            role = str(row.get("index_role") or "")
+            if role:
+                if not _EVIDENCE_ROLE_RE.fullmatch(role):
+                    blob_problems.append(
+                        f"evidence:{run_id}: malformed index_role {role[:48]!r}"
+                    )
+                else:
+                    expected_pairs.add((digest, role))
+            else:
+                expected_pairs.add((digest, f"evidence:observe:{run_id}"))
             evidence_digests.add(digest)
     for section_name in ("commands", "tests"):
         for row in _rows((parsed_sections.get(section_name) or {}).get("entries")):

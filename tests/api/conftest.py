@@ -110,7 +110,20 @@ async def runtime_full(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Async
 
     Needed by daemon tests that exercise the queue-drain loop, which is a no-op
     without a queue backend.
+
+    The encoder is pinned to the hash fallback even when sentence-transformers
+    is installed: the drain test's subject is the dispatch loop, not the
+    encoder, and the real encoder's lazy first embed loads a torch model —
+    seconds on two cores — which turns the test into a model-load timing race
+    on exactly the hosts that installed the extra (the same patch-pattern as
+    ``tests/cli/test_doctor.py``'s find_spec stub). The real encoder's own
+    selection is proven where it belongs, in
+    ``tests/storage/test_vector.py``.
     """
+    monkeypatch.setattr(
+        "paa.storage.vector.embeddings._sentence_transformers_available",
+        lambda: False,
+    )
     home = tmp_path / "paa_home_full"
     home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("PAA_HOME", str(home))

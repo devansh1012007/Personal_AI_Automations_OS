@@ -214,11 +214,15 @@ class TestTheFailClosedContract:
     async def test_a_corrupt_row_resolves_to_no_match(self, postgres: PostgresDatabase) -> None:
         """One unreadable row does not break resolution for every term.
 
-        The alias column is JSON held as *text* on both substrates, and the
-        server dialect casts it back to ``jsonb`` to expand it. A row
-        holding something that is not JSON makes that cast fail — and
-        because the expansion scans the table, one corrupt row breaks the
-        lookup for *every* term.
+        The alias rung expands the *normalised* alias column — JSON held
+        as text on both substrates, cast back to ``jsonb`` on the server
+        to expand it (ADR-0029 (d) / P003). A row holding something that
+        is not JSON makes that cast fail — and because the expansion
+        scans the table, one corrupt row breaks the lookup for *every*
+        term. The sqlite twin of this test (``tests/memory/test_facts.py``)
+        corrupts the same column; this one drifted to the raw blob at
+        P003 and could not say so, because a postgres-gated test that
+        never runs is a contract nobody checks.
 
         The positive control is what makes this a contract rather than a
         tautology. Before the row is corrupted, the term resolves through
@@ -234,7 +238,7 @@ class TestTheFailClosedContract:
         assert before.match == "alias"
 
         await postgres.execute(
-            "UPDATE hot_serving_entity_index SET aliases = 'not json at all' "
+            "UPDATE hot_serving_entity_index SET aliases_norm = 'not json at all' "
             "WHERE canonical_name = 'Widget Service'"
         )
 

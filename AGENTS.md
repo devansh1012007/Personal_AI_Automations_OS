@@ -580,6 +580,14 @@ the archive at the bottom. Keep prose out — this is a register, not a report.
   root. Host repo: `.venv/` inside the repo (Python 3.12.3), gate commands
   `PYTHONPATH=src .venv/bin/python -m …`. 2 CPU cores; run at most ~3 parallel
   jobs.
+- The skip sweep (W7-IMPL-04): `scripts/test-env.sh up` brings up Redis
+  (redislite), PostgreSQL 16 + pg_trgm + pgvector (pgserver + compiled
+  contrib), and two distinct S3 implementations (SeaweedFS + Garage;
+  MinIO's OSS server is archived, 410 Gone). With
+  `PAA_TEST_POSTGRES_DSN`/`PAA_TEST_S3_*` set from its output plus the
+  `qdrant-client`/`kuzu`/`psycopg[_pool]`/`boto3`/`sentence-transformers`
+  extras, every server-gated suite runs; the remaining skips are by
+  design (either-or driver gates, platform gates, live-model key gates).
 - Tooling present: pytest 9.x (9.0.2 sandbox / 9.2.0 host), ruff 0.17.x (above
   the `>=0.8` floor — see the ruff note in the verified-facts register), mypy
   (strict, clean).

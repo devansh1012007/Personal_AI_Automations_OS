@@ -19,7 +19,7 @@ the CLI and API are both thin edges over the same `Runtime` object
 | `paa doctor` | `src/paa/cli/main.py:304` | Reports which backends/sandbox are actually live, plus the chat model, MCP token env and TUI extra |
 | `paa serve [host] [port]` | `src/paa/cli/main.py:470` | Starts FastAPI API + background daemon over one shared runtime |
 | `paa agent "prompt"` | `src/paa/cli/coder.py:44` | Tool-using coder loop over the runtime |
-| `paa memory <subcommand>` | `src/paa/cli/main.py:695` | Facts/search/signals/drain/world-model reads over the memory subsystem |
+| `paa memory <subcommand>` | `src/paa/cli/main.py:696` | Facts/search/signals/drain/world-model reads over the memory subsystem |
 | `paa chat` | `src/paa/cli/chat.py:160` | The chat surface — Textual TUI, or `--plain` (SPEC 2 W4) |
 | `paa mcp serve` | `src/paa/cli/mcp.py:120` | Stdio MCP server exposing memory + chat as tools (SPEC 2 W4) |
 | `paa tui` | `src/paa/cli/main.py:533` | Interactive dashboard |
@@ -54,7 +54,7 @@ There is no HTTP "business" API surface beyond ingestion. The backend is driven
 by:
 
 1. **CLI one-shot commands** — each builds a `Runtime` (`Runtime.build()`),
-   performs one operation, prints, and closes (`cli/main.py:105`).
+   performs one operation, prints, and closes (`cli/main.py:106`).
 2. **`paa serve`** — builds one `Runtime`, starts a `Daemon` and a FastAPI app
    over it (`cli/main.py:470`). The API delegates to the same `Runtime`.
 3. **Programmatic `Runtime`** — `async with await Runtime.build() as rt:
@@ -69,7 +69,7 @@ All three converge on `ChiefOrchestrator` (`src/paa/agents/orchestrator.py:158`)
   (`PermissionMode`, `core/types.py:384`).
 - No multi-user or multi-tenancy.
 - No built-in concrete tools (file edit, bash, web, git) wired into the
-  orchestrator's main task path (`README.md:252`).
+  orchestrator's main task path (`README.md:255`).
 - No web dashboard (`README.md:262`); batch task commands print phase lines
   rather than streaming (`paa chat` streams).
 - Observability (metrics, tracing, runs, logging) is built but untested

@@ -143,7 +143,7 @@ TASK_REQUESTED → TASK_QUEUED → CONTEXT_HYDRATED → PLAN_COMPILED
                 └── STATE_ROLLBACK_TRIGGERED             (drift → restore)
 ```
 
-`README.md:218`. `EXECUTION_COMPLETED` fires **per step**, not per task, and is
+`README.md:221`. `EXECUTION_COMPLETED` fires **per step**, not per task, and is
 not terminal (`docs/adr/0010`).
 
 Orchestrator phases (`src/paa/agents/orchestrator.py:401`):
@@ -238,7 +238,7 @@ access layer, not business logic).
 - Beyond CLI there is a TUI (`src/paa/tui/`) with five panels
   (`src/paa/tui/snapshot.py:57`, mirrored at `src/paa/api/app.py:99`); no web dashboard (`README.md:262`).
 - No built-in concrete tools for real work (no file edit, bash, web search,
-  git) wired into the orchestrator yet (`README.md:252`).
+  git) wired into the orchestrator yet (`README.md:255`).
 - Observability code exists but is untested (`AGENTS.md:97`).
 - `src/paa/agents/specialists/` holds the `coding` pilot specialist
   (`src/paa/agents/specialists/coding.py:1`, ADR-0041); others are not built.
