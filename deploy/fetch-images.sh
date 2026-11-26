@@ -100,11 +100,13 @@
 #
 # Requirements
 # ------------
-# GNU coreutils. The script bounds every network operation with `timeout`,
-# which is a GNU coreutils program: it is not in a stock macOS or BSD system,
-# and a busybox `timeout` is a different program with different flags. The
-# script checks for it and says so plainly, rather than failing with
-# "command not found" in the middle of a pull.
+# A coreutils `timeout`. The script bounds every network operation with
+# `timeout <seconds> <command>`, and two implementations speak that form:
+# GNU coreutils, and the uutils rewrite (Rust) that Ubuntu 26.04 ships as
+# `/usr/bin/timeout` by default. A busybox `timeout` is a different program
+# with different flags, and neither is in a stock macOS or BSD system. The
+# script checks the version banner and says so plainly, rather than failing
+# with "command not found" in the middle of a pull.
 #
 # Usage
 # -----
@@ -1209,20 +1211,25 @@ fetch_images() {
 }
 
 # --- the gates --------------------------------------------------------------
-# GNU coreutils' `timeout`, checked before anything is fetched so the failure
+# A coreutils `timeout`, checked before anything is fetched so the failure
 # is a sentence about the requirement rather than "command not found" in the
 # middle of a pull.
-require_gnu_timeout() {
+require_coreutils_timeout() {
   if ! command -v timeout >/dev/null 2>&1; then
-    err "GNU coreutils 'timeout' is required and was not found on PATH."
-    err "The script bounds every pull with it. Install GNU coreutils"
-    err "(macOS: 'brew install coreutils' and put 'gtimeout' on PATH)."
+    err "A coreutils 'timeout' is required and was not found on PATH."
+    err "The script bounds every pull with it. GNU coreutils or the uutils"
+    err "rewrite both do; a busybox 'timeout' does not. (macOS: 'brew"
+    err "install coreutils' and put 'gtimeout' on PATH.)"
     exit 1
   fi
-  if ! timeout --version 2>/dev/null | grep -q "GNU coreutils"; then
-    err "'timeout' on PATH is not GNU coreutils'."
-    err "The script requires GNU coreutils' timeout (macOS: 'brew install"
-    err "coreutils')."
+  # GNU's banner says "GNU coreutils"; Ubuntu 26.04 ships the uutils
+  # rewrite, whose banner says "uutils coreutils". Both speak the form this
+  # script uses (`timeout <seconds> <command>`); busybox — the program this
+  # gate exists to refuse — names neither.
+  if ! timeout --version 2>/dev/null | grep -qiE '(GNU|uutils) coreutils'; then
+    err "'timeout' on PATH is not a coreutils implementation."
+    err "GNU coreutils and the uutils rewrite (Ubuntu 26.04's default) both"
+    err "work; a busybox 'timeout' has different flags and does not."
     exit 1
   fi
 }
@@ -1308,7 +1315,7 @@ if [ "$mode" = "list" ]; then
   exit 0
 fi
 
-require_gnu_timeout
+require_coreutils_timeout
 
 command -v docker >/dev/null 2>&1 || { err "docker is not on PATH"; exit 1; }
 docker info >/dev/null 2>&1 || { err "the docker daemon is not reachable"; exit 1; }

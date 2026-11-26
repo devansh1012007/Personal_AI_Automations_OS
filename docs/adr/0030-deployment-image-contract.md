@@ -197,12 +197,15 @@ It now exits non-zero when the plan names an image this deployment cannot pin. T
 still prints, because the operator needs to see *what* is wrong, and the exit status is
 the verdict.
 
-**The GNU requirement is stated and checked.**
+**The coreutils requirement is stated and checked.**
 
-The script bounds every network operation with `timeout`, which is GNU coreutils: it is
-not in a stock macOS or BSD system, and a busybox `timeout` is a different program with
-different flags. The header says so, and the script fails with a sentence about the
-requirement — rather than "command not found" in the middle of a pull.
+The script bounds every network operation with `timeout <seconds> <command>`, and two
+implementations speak that form: GNU coreutils, and the uutils rewrite (Rust) that
+Ubuntu 26.04 ships as `/usr/bin/timeout` — measured on a GitHub runner: the banner reads
+`timeout (uutils coreutils) 0.10.0`, and GNU coreutils is nowhere on that image. A
+busybox `timeout` is a different program with different flags and names neither banner.
+The header says so, and the script fails with a sentence about the requirement — rather
+than "command not found" in the middle of a pull.
 
 **`paa-init` gets a `build:` section**, the same `context:` and `dockerfile:` as the
 `paa` service. Two services with the same build section build the same tag, and the layer

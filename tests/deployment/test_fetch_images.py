@@ -752,20 +752,20 @@ class _Stub:
         }
 
 
-def _gnu_timeout() -> str:
-    """The path of a GNU coreutils ``timeout``, found by banner.
+def _coreutils_timeout() -> str:
+    """The path of a coreutils ``timeout``, found by banner.
 
-    ``shutil.which("timeout")`` returns the FIRST ``timeout`` on PATH, and
-    on a GitHub ubuntu-26.04 runner that first hit does not answer the
-    script's version banner — the whole suite fails the gate with
-    ``'timeout' on PATH is not GNU coreutils'`` — while the same image
-    carries a real GNU coreutils ``timeout`` further down. The stub PATH is
-    meant to provision GNU coreutils' ``timeout`` (the thing the script
-    requires), so it is found deliberately: walk the PATH in order, then
-    the conventional locations, and take the first whose ``--version``
-    banner says GNU coreutils. The failure mode names every candidate it
-    saw, so a host where nothing qualifies is a readable fact rather than
-    a mystery.
+    Two implementations speak the form the script uses
+    (``timeout <seconds> <command>``): GNU coreutils, and the uutils
+    rewrite that Ubuntu 26.04 ships as ``/usr/bin/timeout`` — measured on
+    a GitHub runner, where the banner reads ``timeout (uutils coreutils)
+    0.10.0`` and GNU coreutils is nowhere on the image. A busybox
+    ``timeout`` names neither banner, which is the refusal the script's
+    gate exists to make. So the binary is found deliberately: walk the
+    PATH in order, then the conventional locations, and take the first
+    whose banner names a compatible coreutils. The failure mode names
+    every candidate it saw, so a host where nothing qualifies is a
+    readable fact rather than a mystery.
     """
     candidates: list[str] = []
     for directory in os.environ.get("PATH", "").split(os.pathsep):
@@ -792,10 +792,10 @@ def _gnu_timeout() -> str:
             continue
         first = (probe.stdout or probe.stderr).strip().splitlines()
         banners.append(f"{candidate} -> {first[0] if first else '(no output)'}")
-        if "GNU coreutils" in probe.stdout:
+        if re.search(r"(GNU|uutils) coreutils", probe.stdout):
             return candidate
     raise AssertionError(
-        "no GNU coreutils timeout found for the stub PATH; the candidates "
+        "no coreutils timeout found for the stub PATH; the candidates "
         "seen were: " + "; ".join(banners)
     )
 
@@ -805,18 +805,19 @@ def _tool_path(root: Path, *, without: str = "") -> str:
 
     The tools are symlinks into the real PATH, so the stub PATH is a real
     PATH with one program removed rather than a hand-made miniature of one.
-    ``timeout`` is the one exception: it is resolved by banner (see
-    :func:`_gnu_timeout`), because the first ``timeout`` on a PATH is not
-    always GNU's and the script refuses anything else.
+    ``timeout`` is the one exception: it is resolved lazily — a test that
+    EXCLUDES it must not need one to exist — and by banner (see
+    :func:`_coreutils_timeout`), because the first ``timeout`` on a PATH is
+    not always one the script accepts.
     """
     directory = root / "tools"
     directory.mkdir(parents=True, exist_ok=True)
     for name in _TOOLS:
         if name == without:
             continue
-        # `timeout` is resolved lazily — a test that EXCLUDES it must not
-        # need one to exist — and by banner, not by first PATH hit.
-        found = _gnu_timeout() if name == "timeout" else shutil.which(name)
+        found = (
+            _coreutils_timeout() if name == "timeout" else shutil.which(name)
+        )
         assert found is not None, f"{name} is not on PATH, and the test needs it"
         link = directory / name
         if not link.exists():
@@ -2285,17 +2286,18 @@ def test_an_empty_plan_is_refused(tmp_path: Path) -> None:
 
 
 def test_the_script_fails_clearly_when_timeout_is_absent(tmp_path: Path) -> None:
-    """The GNU requirement is stated, and it is checked.
+    """The coreutils requirement is stated, and it is checked.
 
-    The script bounds every pull with GNU coreutils' ``timeout``. A host
-    without it has to be told that, in a sentence about the requirement —
-    not with "command not found" in the middle of a pull.
+    The script bounds every pull with a coreutils ``timeout`` (GNU's, or
+    the uutils rewrite Ubuntu 26.04 ships). A host without one has to be
+    told that, in a sentence about the requirement — not with "command
+    not found" in the middle of a pull.
     """
     path = _tool_path(tmp_path, without="timeout")
     result = _run([], path=path)
     assert result.returncode == 1, result.stdout
     assert "timeout" in result.stderr
-    assert "GNU coreutils" in result.stderr
+    assert "coreutils" in result.stderr
 
 
 def test_the_script_fails_clearly_when_the_docker_cli_is_absent(tmp_path: Path) -> None:

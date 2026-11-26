@@ -447,11 +447,13 @@ a `docker save` / `docker load` round trip restores an image by its configuratio
 the manifest digest the registry served is not what the load path can be asked about. The
 pin is enforced on the pull path.
 
-**Requirements: GNU coreutils.** The script bounds every pull with `timeout`, which is a
-GNU coreutils program — it is not in a stock macOS or BSD system, and a busybox
-`timeout` is a different program with different flags. The script says so plainly rather
-than failing with "command not found" in the middle of a pull. On macOS:
-`brew install coreutils`.
+**Requirements: a coreutils `timeout`.** The script bounds every pull with
+`timeout <seconds> <command>`, and two implementations speak that form: GNU
+coreutils, and the uutils rewrite (Rust) that Ubuntu 26.04 ships as
+`/usr/bin/timeout` by default (the banner reads `timeout (uutils coreutils) 0.10.0`).
+A busybox `timeout` is a different program with different flags and names neither
+banner. The script says so plainly rather than failing with "command not found" in the
+middle of a pull. On macOS: `brew install coreutils`.
 
 **Behind a mirror:** `PAA_IMAGE_MIRROR=registry.example.com deploy/fetch-images.sh`. The
 variable is a *prefix*, not a registry: the pull is given `<mirror>/<repository>`, with
