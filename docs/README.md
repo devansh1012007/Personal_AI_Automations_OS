@@ -96,6 +96,8 @@ Module-specific deep dives
 - [modules/observability.md](modules/observability.md)
 - [modules/daemon.md](modules/daemon.md)
 - [modules/cli.md](modules/cli.md)
+- [modules/console.md](modules/console.md)
+- [modules/pipelines.md](modules/pipelines.md)
 
 Data and storage
 - [data/data-models-and-relationships.md](data/data-models-and-relationships.md)
