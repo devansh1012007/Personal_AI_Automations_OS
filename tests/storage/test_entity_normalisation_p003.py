@@ -196,8 +196,15 @@ async def _v5_database_with_rows(path: Path) -> None:
 
 
 def test_schema_version_is_six() -> None:
-    """The runner's version is derived from the migration list's last entry."""
-    assert SCHEMA_VERSION == 6
+    """The runner's version is derived from the migration list's last entry.
+
+    The name carries the historical version this test first pinned; the
+    value is the CURRENT version — v7 (W8, C8.6: the marketplace kind
+    vocabulary admits 'pipeline') is the latest now. The test's purpose
+    (version derived from the migration list, never restated) is
+    unchanged.
+    """
+    assert SCHEMA_VERSION == 7
 
 
 async def test_a_fresh_database_has_the_normalised_columns(tmp_path: Path) -> None:

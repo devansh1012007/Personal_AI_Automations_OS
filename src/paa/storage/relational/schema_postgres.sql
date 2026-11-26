@@ -548,7 +548,12 @@ CREATE TABLE IF NOT EXISTS marketplace_packages (
     installed_at    TIMESTAMPTZ,
     trust_score     DOUBLE PRECISION NOT NULL DEFAULT 0.0,
     CONSTRAINT uq_marketplace_pkg UNIQUE (package_name, version),
-    CONSTRAINT ck_market_kind CHECK (kind IN ('skill','agent','playbook','config','bundle')),
+    -- C8.6: 'pipeline' is the pipeline-package kind (SPEC 2 Wave 8) — a
+    -- package whose payload is a pipeline declaration plus its
+    -- implementation. One list, both engines, and the v7 migration that
+    -- relaxes the server's copy of this constraint (tests/storage/
+    -- test_marketplace_kind_migration.py).
+    CONSTRAINT ck_market_kind CHECK (kind IN ('skill','agent','playbook','config','bundle','pipeline')),
     CONSTRAINT ck_market_sig CHECK (signature_state IN ('unverified','valid','invalid','untrusted_key'))
 );
 
