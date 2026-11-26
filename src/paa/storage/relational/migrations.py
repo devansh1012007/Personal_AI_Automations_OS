@@ -1551,9 +1551,10 @@ def _market_kind_step(table: str, column: str) -> MigrationStep:
     no ``S608`` marker where the built guards elsewhere in this module
     do: nothing in a guard is ever caller input, and here the text says
     so by construction rather than by marker. The server guard names the
-    schema through ``SCHEMA_PLACEHOLDER``'s own value (``'$schema$'``)
-    rather than by interpolating the constant, and the placeholder's
-    linkage is enforced, not assumed:
+    schema through ``SCHEMA_PLACEHOLDER``'s own value (``$schema$`` —
+    written unquoted: the comparison renderer writes the schema in as a
+    quoted *literal*, so quotes in the source text would double up), and
+    the placeholder's linkage is enforced, not assumed:
     ``test_every_schema_scoped_guard_names_its_schema`` in
     ``tests/storage/test_migrations.py`` fails this step's guard if the
     constant's value ever changes underneath the literal.
@@ -1628,7 +1629,7 @@ def _market_kind_step(table: str, column: str) -> MigrationStep:
                         "SELECT 1 WHERE NOT EXISTS ("
                         "SELECT 1 FROM information_schema.check_constraints "
                         "WHERE constraint_name = 'ck_market_kind' "
-                        "AND constraint_schema = '$schema$' "
+                        "AND constraint_schema = $schema$ "
                         "AND check_clause LIKE '%pipeline%')"
                     ),
                     guard_params=(),

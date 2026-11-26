@@ -17,6 +17,7 @@ start-on-console behaviour it wires is what the pilot suite pins, through
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -26,6 +27,17 @@ from typer.testing import CliRunner
 from paa.cli.main import app
 
 runner = CliRunner()
+
+#: Rendered CLI output as content: no escape sequences, no line breaks — the
+#: runner's Rich-styled help can wrap a token mid-token, and these assertions
+#: are about content (the ``tests/coder/test_agent.py`` precedent, twice
+#: re-proven on ``--max-steps`` and ``--gate`` in the W8 runner rounds).
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _plain(output: str) -> str:
+    """Rendered CLI output as content: no escape sequences, no line breaks."""
+    return _ANSI.sub("", output).replace("\r", "").replace("\n", "")
 
 
 @pytest.fixture(autouse=True)
@@ -58,10 +70,11 @@ class TestChatConsoleFlag:
     def test_help_names_the_console_flag(self) -> None:
         result = runner.invoke(app, ["chat", "--help"])
         assert result.exit_code == 0
-        assert "--console" in result.stdout
+        help_text = _plain(result.stdout)
+        assert "--console" in help_text
         # The help carries the row's own vocabulary, not a private one.
-        assert "Loop Console" in result.stdout
-        assert "conformance" in result.stdout
+        assert "Loop Console" in help_text
+        assert "conformance" in help_text
 
     def test_console_refuses_the_plain_combination(self) -> None:
         """A screen flag on the screen-less loop is a usage error, exit 2."""
