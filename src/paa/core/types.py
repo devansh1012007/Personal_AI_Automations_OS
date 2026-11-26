@@ -374,6 +374,51 @@ class EventType(str, enum.Enum):
     EXTENSION_REFUSED = "EXTENSION_REFUSED"
     EXTENSION_ACTIVATED = "EXTENSION_ACTIVATED"
 
+    # -- pipeline packages (W8 C8.6, ADR-0046 pattern) -----------------------
+    # Pipeline-package events are the audit record of the `pipeline` package
+    # kind (SPEC 2 Wave 8, C8.6 / the pipeline spec's P5-lite): a pipeline
+    # package installed from a local directory, a pinned git URL or a signed
+    # ``.paapkg``, through the five-gate installer plus the two stages the
+    # kind adds — the capability review (a human rules on the declaration's
+    # ask; refusal-by-default, never model-decided) and the conformance run.
+    # Like the extension events they are *informational*, never lifecycle:
+    # both map to `_NO_PHASE_CHANGE` in ledger/replay.py and neither enters
+    # TERMINAL_EVENTS. An install is an operator action, not a task — it
+    # moves no phase, closes nothing, and must not let the boot sweep requeue
+    # a package lineage as task work (ledger/recovery.py's
+    # pipeline-package-only-lineage exemption is the sweep's half of this
+    # same rule). The conformance *runs* an install drives are real pipeline
+    # runs on their own fresh lineages (PIPELINE_RUN_*/PIPELINE_CALL_*), so
+    # the evidence is traceable with `paa pipeline trace` — only the install
+    # decision itself rides these rows.
+    #
+    # One install action is one fresh lineage (the journal mints the
+    # correlation id), so a refused install's rows are the whole story of
+    # what was tried and why it stopped. ADR-0008 idempotency: attempt=0
+    # and the discriminators `install:<package>:<version>` /
+    # `refused:<package>:<stage>`, so a redelivered append dedupes under the
+    # standard key.
+    #
+    # Every payload carries `v` (schema version, currently 1). Payload
+    # discipline (ADR-0046): identifiers are closed-vocabulary or uuids —
+    # `source` is one of {local_dir, git_pinned, paapkg}, `stage` is one of
+    # {source, declaration, signature, content_hash, ast_scan, permissions,
+    # smoke_test, capability_review, conformance}, and the declaration's
+    # capability ask rides as the manifest's own closed-vocabulary mapping,
+    # never as prose. The review decision is the C8.1 human-gate artifact's
+    # vocabulary (approver kind/id asserted, note bounded); the refusal
+    # reason is bounded and ledger-safe. No payload carries the exact key
+    # `fact_id` — the tier fold must ignore a package row.
+    #
+    #   PIPELINE_PACKAGE_INSTALLED {v, lineage, package_name, version,
+    #                               source, source_ref, content_hash,
+    #                               gates, signature_state, capabilities,
+    #                               review, conformance}
+    #   PIPELINE_PACKAGE_REFUSED   {v, lineage, package_name, version,
+    #                               source, stage, reason}
+    PIPELINE_PACKAGE_INSTALLED = "PIPELINE_PACKAGE_INSTALLED"
+    PIPELINE_PACKAGE_REFUSED = "PIPELINE_PACKAGE_REFUSED"
+
     # -- thread control plane (W7 C7.5, ADR-0046 pattern) -------------------
     # Thread events are the audit record of the local-first control plane:
     # one coding thread across harnesses, journalled under the thread id

@@ -12,6 +12,16 @@ anything. Sources, with their trust levels:
   inspected, not executed** — running an out-of-process pipeline is
   P3's RPC transport, and pretending otherwise would be a trust claim
   the tree cannot defend. The row says so.
+* ``installed`` — ``PAA_HOME/pipelines/installed/<name>/<version>/``
+  (C8.6): a pipeline *package* that went through the five-gate
+  installer, the capability review and the conformance run
+  (:mod:`paa.pipelines.packages`), staged by that flow. These rows are
+  **runnable through the sandboxed adapter**
+  (:mod:`paa.pipelines.sandboxed`) — the bytes execute as a sandboxed
+  subprocess, never as an import, which is a different (and honest)
+  claim from the local manifest's: the installed row's code was gated
+  and reviewed before it ever ran, and its containment is the sandbox
+  the smoke gate already used.
 
 Selection (:func:`select`) is explicit and mandate-scoped, never
 scored — the C6.5 rule, restating ADR-0052's supersession of the
@@ -41,12 +51,21 @@ from paa.pipelines.slots import (
 __all__ = [
     "CODING_FALLBACK_PIPELINE",
     "DEFAULT_PIPELINE",
+    "INSTALLED_DIR_NAME",
     "LocalManifestError",
     "PipelineRegistry",
     "PipelineSelectionError",
     "RegisteredPipeline",
     "select",
 ]
+
+#: The subdirectory of the local dir where the five-gate installer
+#: stages pipeline packages (C8.6): ``installed/<name>/<version>/`` —
+#: ADR-0052's P4.1 layout. The name is **reserved** under the local
+#: dir: a local manifest directory literally named ``installed`` would
+#: be read as the staging root, so the operator's local pipelines keep
+#: their own names and this one belongs to the installer.
+INSTALLED_DIR_NAME = "installed"
 
 #: What a run gets when nothing and no mandate names a pipeline.
 DEFAULT_PIPELINE = "builtin.plan-execute-critique"
@@ -379,13 +398,22 @@ class PipelineRegistry:
     read at construction, not on every lookup — a manifest that changes
     mid-process is a new registry, the same rule the settings cache and
     the model registry follow.
+
+    The local directory carries two layouts: the operator's flat
+    ``<name>/pipeline.toml`` manifests (trust ``local``) and the
+    installer's ``installed/<name>/<version>/pipeline.toml`` stagings
+    (trust ``installed`` — C8.6). Both are scanned at construction;
+    both are named in ``local_errors`` when off contract, keyed by
+    directory (``<name>`` and ``<name>/<version>`` respectively).
     """
 
     def __init__(self, *, local_dir: Path | None = None) -> None:
         self._local_dir = local_dir
         self._local: dict[str, RegisteredPipeline] = {}
         self._local_errors: dict[str, str] = {}
+        self._installed: dict[str, RegisteredPipeline] = {}
         self._scan_local()
+        self._scan_installed()
 
     @classmethod
     def default(cls, *, home: Path | None = None) -> PipelineRegistry:
@@ -431,6 +459,58 @@ class PipelineRegistry:
     def refresh(self) -> None:
         """Rescan the local directory (builtins never move)."""
         self._scan_local()
+        self._scan_installed()
+
+    def _scan_installed(self) -> None:
+        """Scan the installer's staging layout: ``installed/<name>/<version>/``.
+
+        The rows this scan adds are **runnable** — through the sandboxed
+        adapter, which is the loading contract the installer pinned
+        when it staged these bytes. The declaration is parsed by the
+        same closed contract as every other manifest, and the directory
+        names must agree with it (``<name>/<version>``), or the row is
+        named in ``local_errors`` rather than silently dropped — the
+        same rule the flat layout follows.
+        """
+        self._installed = {}
+        if self._local_dir is None:
+            return
+        root = self._local_dir / INSTALLED_DIR_NAME
+        if not root.is_dir():
+            return
+        for name_dir in sorted(root.iterdir()):
+            if not name_dir.is_dir():
+                continue
+            for version_dir in sorted(name_dir.iterdir()):
+                if not version_dir.is_dir():
+                    continue
+                manifest = version_dir / "pipeline.toml"
+                if not manifest.is_file():
+                    continue
+                key = f"{name_dir.name}/{version_dir.name}"
+                try:
+                    declaration = declaration_from_manifest(manifest)
+                except LocalManifestError as exc:
+                    self._local_errors[key] = exc.message
+                    continue
+                if declaration.name != name_dir.name:
+                    self._local_errors[key] = (
+                        f"manifest name {declaration.name!r} does not match its "
+                        f"directory {name_dir.name!r}"
+                    )
+                    continue
+                if declaration.version != version_dir.name:
+                    self._local_errors[key] = (
+                        f"manifest version {declaration.version!r} does not match "
+                        f"its directory {version_dir.name!r}"
+                    )
+                    continue
+                self._installed[declaration.name] = RegisteredPipeline(
+                    declaration=declaration,
+                    source=str(manifest),
+                    trust="installed",
+                    runnable=True,
+                )
 
     def list(self) -> list[RegisteredPipeline]:
         """Every registered pipeline, builtins first, then local by name."""
@@ -444,6 +524,7 @@ class PipelineRegistry:
             for declaration in BUILTIN_DECLARATIONS.values()
         ]
         rows.extend(self._local.values())
+        rows.extend(self._installed.values())
         return rows
 
     def get(self, name: str) -> RegisteredPipeline | None:

@@ -24,7 +24,7 @@ Two gate points in the built-in pipeline's `run()`:
 
 The `TaskProjection.phase` becomes `AWAITING_HUMAN`; `is_resumable` is
 **False** (`ledger/replay.py:62`) — recovery will park it, never auto-clear
-(`recovery.py:1105`).
+(`recovery.py:1156`).
 
 ## Events emitted
 
@@ -62,9 +62,9 @@ On `HUMAN_GATE_REJECTED` → `policy_decision` set, phase `BLOCKED` via
 
 ## Recovery behavior
 
-`RecoveryEngine.recover_correlation()` (`recovery.py:981`):
+`RecoveryEngine.recover_correlation()` (`recovery.py:1032`):
 - `projection.phase is AWAITING_HUMAN` → `PARKED_HUMAN`, left waiting
-  (`recovery.py:1105`). Never auto-cleared.
+  (`recovery.py:1156`). Never auto-cleared.
 
 ## Sequence diagram
 
@@ -111,7 +111,7 @@ sequenceDiagram
 | Condition | Behavior | Source |
 |---|---|---|
 | Gate cleared on non-parked task | `PaaError` "task is not awaiting human attestation" → API 409 | `src/paa/pipelines/builtin.py:430`, `api/app.py:136` |
-| Recovery encounters AWAITING_HUMAN | `PARKED_HUMAN`; left across restart | `recovery.py:1105` |
+| Recovery encounters AWAITING_HUMAN | `PARKED_HUMAN`; left across restart | `recovery.py:1156` |
 | Automated path tries to clear | Not possible — no internal caller | `src/paa/agents/orchestrator.py:722` |
 
 ## Persistence

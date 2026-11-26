@@ -184,11 +184,12 @@ def test_schema_version_is_five() -> None:
 
     The name carries the historical version this test first pinned; the
     value is the CURRENT version — v6 landed (ADR-0036/P-003 stored
-    normalisation), so 6 is the expected number now. The test's purpose
+    normalisation), then v7 (W8, C8.6: the marketplace kind vocabulary
+    admits 'pipeline') — so 7 is the expected number now. The test's purpose
     (version derived from the migration list, never restated) is
     unchanged. [C4 deliberate update: REV-W4 rates this STALE-not-defect.]
     """
-    assert SCHEMA_VERSION == 6
+    assert SCHEMA_VERSION == 7
 
 
 async def test_a_fresh_database_has_the_tier_columns(tmp_path: Path) -> None:
@@ -786,14 +787,21 @@ async def test_v5_shape_corrupt_blob_migrates_to_v6(tmp_path: Path) -> None:
     assert len(backfills) == 1
     assert backfills[0]["corrupt_rows"] == 1
 
-    # Idempotency: rewind only the version row so the v6 steps re-run
-    # against the repaired shape. The pre-repair guard ("no row fails
-    # json_valid") and the backfill guard ("no row is unnormalised") are
-    # both false now, so nothing is rewritten and no second
-    # corrupt-count line is emitted.
+    # Idempotency: rewind the log to the pre-v6 version so the v6 steps
+    # re-run against the repaired shape (and every later version — v7's
+    # marketplace-kind step among them — re-runs behind it, a no-op by
+    # its own guard). The pre-repair guard ("no row fails json_valid")
+    # and the backfill guard ("no row is unnormalised") are both false
+    # now, so nothing is rewritten and no second corrupt-count line is
+    # emitted.
     conn = _raw(path)
     try:
-        conn.execute("DELETE FROM schema_migrations WHERE version = 6")
+        conn.execute("DELETE FROM schema_migrations WHERE version > 5")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at, description) "
+            "VALUES (?, ?, ?)",
+            (5, _STAMP, description_for(5)),
+        )
         conn.commit()
     finally:
         conn.close()

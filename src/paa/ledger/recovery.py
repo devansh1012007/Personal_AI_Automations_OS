@@ -209,6 +209,28 @@ class RecoveryOutcome(str, enum.Enum):
     closes.
     """
 
+    SKIPPED_PIPELINE_PACKAGE_LINEAGE = "SKIPPED_PIPELINE_PACKAGE_LINEAGE"
+    """A pipeline-package-only lineage: the install record, not a task.
+
+    W8 (C8.6, the N2.3 exemption's fifth mirror) — a lineage carrying
+    only the `pipeline` package kind's audit events
+    (``PIPELINE_PACKAGE_INSTALLED`` / ``PIPELINE_PACKAGE_REFUSED``)
+    projects to the initial phase and is never terminal, because both
+    types are ``_NO_PHASE_CHANGE``. The package installer journals one
+    install action per fresh lineage; without the exemption the boot
+    sweep would read every recorded install — and every recorded
+    *refusal* — as resumable task work and re-queue it on every boot,
+    forever. Like the extension surface, an install is re-driven by the
+    operator running the installer again, never by re-queuing it as a
+    task, and the sweep writes nothing here: the gates, the capability
+    review and the conformance run are atomic — the staged directory
+    and the registry row land only after every stage passes, and a
+    refusal at any stage leaves zero trace. The conformance *runs* the
+    install drives are real pipeline runs on their own fresh lineages,
+    which the pipeline-lineage path above already treats exactly as it
+    treats any other run.
+    """
+
 
 class InterruptionState(str, enum.Enum):
     """What an interrupted tool call did before the crash.
@@ -452,6 +474,23 @@ _EXTENSION_EVENT_TYPES = frozenset(
 #: recovery audit row must not flip an extension lineage back to "task
 #: work".
 _EXTENSION_NEUTRAL_TYPES = frozenset({EventType.RECOVERY_REPLAY_COMPLETED})
+
+#: W8 (C8.6) — the `pipeline` package kind's audit vocabulary: the
+#: install/refuse record of a pipeline package that went through the
+#: five-gate installer, the capability review and the conformance run.
+#: A lineage of only these is an operator action's record, never task
+#: work (see :attr:`RecoveryOutcome.SKIPPED_PIPELINE_PACKAGE_LINEAGE`).
+_PIPELINE_PACKAGE_EVENT_TYPES = frozenset(
+    {
+        EventType.PIPELINE_PACKAGE_INSTALLED,
+        EventType.PIPELINE_PACKAGE_REFUSED,
+    }
+)
+
+#: Symmetric with the coder/chat/pipeline/thread/extension neutral rule:
+#: a stale recovery audit row must not flip a package lineage back to
+#: "task work".
+_PIPELINE_PACKAGE_NEUTRAL_TYPES = frozenset({EventType.RECOVERY_REPLAY_COMPLETED})
 
 #: The call-row kinds the interrupted-call scan reads (proposal + its
 #: two outcomes), for :func:`find_interrupted_pipeline_calls`.
@@ -763,6 +802,18 @@ def _is_extension_only_lineage(events: list[LedgerEvent]) -> bool:
     """
     kinds = {e.event_type for e in events} - _EXTENSION_NEUTRAL_TYPES
     return bool(kinds) and kinds <= _EXTENSION_EVENT_TYPES
+
+
+def _is_pipeline_package_only_lineage(events: list[LedgerEvent]) -> bool:
+    """Whether a lineage is pipeline-package audit, never task work.
+
+    The fifth mirror of the same determination (W8, C8.6): a package
+    install's lineage carries its stages' verdict; a lineage mixing
+    these rows with ``TASK_*`` rows is a task lineage the ordinary path
+    recovers, and the phase-inert package rows disturb nothing there.
+    """
+    kinds = {e.event_type for e in events} - _PIPELINE_PACKAGE_NEUTRAL_TYPES
+    return bool(kinds) and kinds <= _PIPELINE_PACKAGE_EVENT_TYPES
 
 
 def find_interrupted_pipeline_calls(events: list[LedgerEvent]) -> list[LedgerEvent]:
@@ -1158,6 +1209,22 @@ class RecoveryEngine:
             return CorrelationRecovery(
                 cid,
                 RecoveryOutcome.SKIPPED_EXTENSION_LINEAGE,
+                projection.phase,
+                interrupted=interrupted,
+            )
+
+        if _is_pipeline_package_only_lineage(events):
+            # Pipeline-package audit only (W8, C8.6): never task work.
+            # The same operator-action rule the extension surface states,
+            # for the kind that carries a capability review and a
+            # conformance run: a refused install is a decision, not a
+            # crash to recover from, and the conformance runs it drove
+            # before the refusal are closed runs on their own lineages.
+            # No workspace reconcile, no requeue, no sweep audit event.
+            log.info("recovery.skipped_pipeline_package_lineage", correlation_id=str(cid))
+            return CorrelationRecovery(
+                cid,
+                RecoveryOutcome.SKIPPED_PIPELINE_PACKAGE_LINEAGE,
                 projection.phase,
                 interrupted=interrupted,
             )

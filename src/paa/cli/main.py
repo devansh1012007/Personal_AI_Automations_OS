@@ -899,6 +899,103 @@ def world_model(
     _run(_run_with_runtime(_do))
 
 
+# ---------------------------------------------------------------------------
+# The pipeline package install door (C8.6, SPEC 2 Wave 8) — a self-contained
+# additive block: everything the door needs is defined or imported here, so
+# the block moves as one unit at merge time. The flow itself lives in
+# ``paa.pipelines.packages``; this is only its terminal surface, shaped after
+# ``paa skills install`` (the same unsigned opt-in, the same exit-code
+# contract) with the two things a pipeline package adds: the pinned git ref
+# and the capability review a human answers at a prompt.
+# ---------------------------------------------------------------------------
+
+
+@pipeline_app.command("install")
+def pipeline_install(
+    source: str = typer.Argument(
+        ...,
+        help=(
+            "A pipeline package source: a local directory, git+<scheme>://… "
+            "at a pinned --ref (a commit SHA or a tag), or a signed .paapkg."
+        ),
+    ),
+    ref: str | None = typer.Option(
+        None,
+        "--ref",
+        help="The pinned git ref for a git source: a commit SHA or a tag. A "
+        "moving branch is refused — the bytes would change under the gates "
+        "that cleared them.",
+    ),
+    allow_unverified: bool = typer.Option(
+        False,
+        "--allow-unverified",
+        help="A local directory or a git worktree is unsigned; this opt-in "
+        "is what the signature gate needs. The other four gates, the "
+        "conformance run and the capability review still run.",
+    ),
+) -> None:
+    """Install a pipeline package: gates, conformance, review, then stage.
+
+    The flow runs unmodified from the runtime: the five gates, the
+    six-check conformance standard driven against the gated bytes, and
+    the capability review — a prompt a human answers, refusal by
+    default, never model-decided. The hosted marketplace stays parked:
+    there is no publish verb, and the only remotes this door talks to
+    are git URLs the operator names at a ref the operator pins.
+    """
+    from paa.core.errors import PaaError
+    from paa.pipelines.packages import (
+        install_pipeline_package,
+        terminal_review_approver,
+    )
+
+    async def _do() -> None:
+        from paa.validation.ast_scanner import AstSecurityScanner
+
+        runtime = await _build_runtime()
+        try:
+            report = await install_pipeline_package(
+                source,
+                ref=ref,
+                ledger=runtime.ledger,
+                db=runtime.db,
+                home=runtime.settings.home,
+                sandbox=runtime.sandbox,
+                scanner=AstSecurityScanner(),
+                permission_mode=runtime.settings.policy.mode,
+                allow_unverified=allow_unverified,
+                approver=terminal_review_approver(who="cli"),
+            )
+        except PaaError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1) from exc
+        finally:
+            await runtime.close()
+
+        if report.installed:
+            gates = ", ".join(report.gates)
+            origin = f"source: {report.source}"
+            if report.source_ref:
+                origin += f" @ {report.source_ref[:12]}"
+            console.print(
+                f"[green]installed[/green] {report.package_name} "
+                f"v{report.version} ({origin}; gates: {gates})"
+            )
+            if report.staged is not None:
+                console.print(
+                    f"  staged at {report.staged} — `paa pipeline list` "
+                    "reads the registry row the layout gives"
+                )
+            return
+        console.print(
+            f"[red]refused[/red] {report.package_name} at the "
+            f"{report.stage or 'unknown'} stage: {report.reason}"
+        )
+        raise typer.Exit(1)
+
+    _run(_do())
+
+
 app.add_typer(memory_app, name="memory")
 
 app.add_typer(chat_app, name="chat")

@@ -271,6 +271,112 @@ class TestTheRegistry:
         assert "UTF-8" in registry.local_errors["tdd-loop"]
 
 
+class TestTheInstalledLayout:
+    """The installer's staging root: ``installed/<name>/<version>/`` (C8.6).
+
+    Staging IS registration: a package the five-gate installer staged is
+    a registry row with trust ``installed`` that is **runnable** —
+    through the sandboxed adapter, the loading contract the installer
+    pinned — which is the one trust level whose rows execute without
+    being in-process builtins. The declaration parses under the same
+    closed contract as every local manifest, and the directory names
+    must agree with it or the row is named in ``local_errors``, exactly
+    as the flat layout's are.
+    """
+
+    def _stage(
+        self, home: Path, name: str = "tdd-loop", version: str = "0.1.0"
+    ) -> Path:
+        staged = home / "pipelines" / "installed" / name / version
+        staged.mkdir(parents=True)
+        (staged / "pipeline.toml").write_text(
+            _VALID_MANIFEST, encoding="utf-8"
+        )  # the manifest's own name is tdd-loop
+        return staged
+
+    def test_a_staged_package_registers_runnable(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        self._stage(home)
+        registry = PipelineRegistry(local_dir=home / "pipelines")
+        row = registry.get("tdd-loop")
+        assert row is not None
+        assert row.trust == "installed"
+        assert row.runnable is True
+        assert row.version == "0.1.0"
+        assert row.source.endswith("installed/tdd-loop/0.1.0/pipeline.toml")
+        assert registry.local_errors == {}
+
+    def test_a_name_mismatch_is_named_by_directory(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        self._stage(home, name="other-name")
+        registry = PipelineRegistry(local_dir=home / "pipelines")
+        assert registry.get("tdd-loop") is None
+        assert "other-name/0.1.0" in registry.local_errors
+        assert "does not match" in registry.local_errors["other-name/0.1.0"]
+
+    def test_a_version_mismatch_is_named_by_directory(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        self._stage(home, version="9.9.9")
+        registry = PipelineRegistry(local_dir=home / "pipelines")
+        assert registry.get("tdd-loop") is None
+        assert "tdd-loop/9.9.9" in registry.local_errors
+        assert "version" in registry.local_errors["tdd-loop/9.9.9"]
+
+    def test_an_off_contract_staged_manifest_is_named(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        staged = self._stage(home)
+        (staged / "pipeline.toml").write_text(
+            (staged / "pipeline.toml").read_text(encoding="utf-8") + "\n[banana]\nx = 1\n",
+            encoding="utf-8",
+        )
+        registry = PipelineRegistry(local_dir=home / "pipelines")
+        assert registry.get("tdd-loop") is None
+        assert "banana" in registry.local_errors["tdd-loop/0.1.0"]
+
+    def test_the_installed_name_belongs_to_the_staging_root(
+        self, tmp_path: Path
+    ) -> None:
+        """A directory named ``installed`` is the staging root, not a
+        local pipeline: the flat scan reads ``<local>/<name>/pipeline.toml``
+        and the root carries none, so nothing phantom registers and
+        nothing errors."""
+        home = tmp_path / "home"
+        (home / "pipelines" / "installed" / "demo.echo" / "1.0.0").mkdir(parents=True)
+        registry = PipelineRegistry(local_dir=home / "pipelines")
+        assert [r.name for r in registry.list()] == [
+            r.name for r in PipelineRegistry(local_dir=None).list()
+        ]
+        assert registry.local_errors == {}
+
+    def test_refresh_sees_a_newly_staged_package(self, tmp_path: Path) -> None:
+        """A registry constructed before the install sees it after a
+        refresh — and when a flat local manifest and a staged package
+        share a name, both list, and ``get`` answers with the operator's
+        hand-placed one: the local directory is the operator's word, and
+        the staged row never silently shadows it."""
+        home = _local_home(tmp_path)
+        registry = PipelineRegistry(local_dir=home / "pipelines")
+        assert registry.get("tdd-loop") is not None  # the flat local manifest
+
+        self._stage(home)
+        registry.refresh()
+        by_trust = {r.trust for r in registry.list() if r.name == "tdd-loop"}
+        assert by_trust == {"local", "installed"}  # both rows, nothing hidden
+        row = registry.get("tdd-loop")
+        assert row is not None
+        assert row.trust == "local"  # the operator's directory is their word
+
+        # Without the flat manifest, the staged row is the one `get` answers
+        # with — the shape an install into a clean home leaves behind.
+        clean = tmp_path / "clean-home"
+        self._stage(clean)
+        clean_registry = PipelineRegistry(local_dir=clean / "pipelines")
+        clean_row = clean_registry.get("tdd-loop")
+        assert clean_row is not None
+        assert clean_row.trust == "installed"
+        assert clean_row.runnable is True
+
+
 class TestSelection:
     def _registry(self, tmp_path: Path) -> PipelineRegistry:
         return PipelineRegistry(local_dir=_local_home(tmp_path) / "pipelines")

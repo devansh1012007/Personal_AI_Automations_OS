@@ -2,7 +2,9 @@
 
 A ``.paapkg`` is a zip with a ``manifest.json`` at its root plus the package's
 files. It is the unit a publisher ships and a user installs: a skill, an agent
-config, a playbook, a config bundle.
+config, a playbook, a config bundle — and, since C8.6, a pipeline (its
+declaration plus the implementation the entrypoint names; see
+:mod:`paa.pipelines.packages` for the loading contract that kind carries).
 
 The manifest declares everything the installer needs to make a trust decision
 *before* unpacking any code: what permissions the package will demand, who
@@ -26,12 +28,24 @@ import structlog
 
 from paa.core.errors import PaaError
 
-__all__ = ["PackageError", "PackageManifest", "SkillPackage"]
+__all__ = ["PIPELINE_KIND", "PackageError", "PackageManifest", "SkillPackage"]
 
 log = structlog.get_logger(__name__)
 
 _MANIFEST_NAME = "manifest.json"
-_VALID_KINDS = frozenset({"skill", "agent", "playbook", "config", "bundle"})
+
+#: The ``pipeline`` package kind (SPEC 2 Wave 8, C8.6 / the pipeline spec's
+#: P5-lite): a package whose payload is a pipeline — its ADR-0052
+#: ``pipeline.toml`` declaration plus the implementation module(s) the
+#: entrypoint names. It rides the same five gates and the same signed
+#: ``.paapkg`` form as every other kind; what a pipeline package *adds*
+#: is a capability review (a human rules on the declaration's ask before
+#: anything is registered) and a conformance run, both enforced by
+#: :mod:`paa.pipelines.packages` — the loading contract this repo pins.
+#: Stated here, beside the kind set, so the constant has exactly one home.
+PIPELINE_KIND = "pipeline"
+
+_VALID_KINDS = frozenset({"skill", "agent", "playbook", "config", "bundle", PIPELINE_KIND})
 
 #: The fields a manifest cannot do without. The installer gates a package on
 #: its name and its version, and the manifest's own constructor needs the

@@ -199,6 +199,7 @@ TYPE_CHECKING_CLASSES: dict[str, str] = {
     "paa.models.router": "C",
     "paa.observability.logging": "E",
     "paa.observability.tracing": "E",
+    "paa.pipelines.packages": "E",
     "paa.runtime": "C",
     "paa.skills.adapters.base": "E",
     "paa.skills.adapters.claw_hub": "E",
@@ -235,6 +236,12 @@ TYPE_CHECKING_NOTES: dict[str, str] = {
         "names paa.sandbox.base and paa.validation.ast_scanner for the "
         "constructor's annotation-only seams, both already on the module's "
         "import path by other routes: -5.1 ms"
+    ),
+    "paa.pipelines.packages": (
+        "names paa.sandbox.base and paa.validation.ast_scanner for the "
+        "installer's annotation-only seams — the same pair as "
+        "paa.chat.extensions, both already on the module's import path by "
+        "other routes: -1.3 ms"
     ),
     "paa.chat.service": (
         "names paa.chat.extensions (the extension surface — marketplace, "

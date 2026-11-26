@@ -85,6 +85,12 @@ _NOT_RUNTIME_TABLES: Final[dict[str, str]] = {
     "pragma_table_info": "a pragma table-valued function",
     "json_each": "a table-valued function",
     "json_tree": "a table-valued function",
+    # Version 7's SQLite rebuild (W8, C8.6): the pre-migration
+    # marketplace table under the transient name the rename leaves it
+    # holding — a shape no runtime statement reads, only the one
+    # migration's copy step does, and it is gone before the version row
+    # is written.
+    "marketplace_packages_v6": "v7's transient rebuild source",
 }
 
 

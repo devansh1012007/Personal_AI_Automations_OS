@@ -72,7 +72,7 @@ Branches: `POLICY_BLOCKED / SECURITY_VIOLATION` (terminal blocked),
   `PERM_CROSS_SESSION_READ`). `src/paa/core/types.py:290`.
 - **PermissionMode** — System-wide autonomy posture: `AUTO`, `ASK`,
   `SUPERVISED`, `LOCKDOWN`, `SAFE`, `HIGH_RISK`. Each grants a fixed permission
-  set without a human gate. `src/paa/core/types.py:421`.
+  set without a human gate. `src/paa/core/types.py:466`.
 - **coder PermissionMode** — Separate session posture for `paa agent`:
   `ask`, `accept_edits`, `plan` (read-only), `bypass`. Precedence: deny >
   allow > mode default. `src/paa/coder/permissions.py:40`.
@@ -81,9 +81,9 @@ Branches: `POLICY_BLOCKED / SECURITY_VIOLATION` (terminal blocked),
 
 - **ComplexityModality** — `SIMPLE`, `STANDARD`, `COMPLEX`, `MAX`. Bounds graph
   hops, recursion ceiling, token ceiling, memory, CPU, timeout, branch factor via
-  `MODALITY_PROFILES`. `src/paa/core/types.py:517`.
+  `MODALITY_PROFILES`. `src/paa/core/types.py:562`.
 - **ModalityProfile** — Hard resource envelope per modality; nothing in it is
-  advisory. `src/paa/core/types.py:527`.
+  advisory. `src/paa/core/types.py:572`.
 - **Escalation** — Local model first, frontier model on failure (only when
   modality ≥ `escalate_at_or_above` and the permission mode allows it). Every
   escalation writes a `MODEL_ESCALATED` ledger event *before* the frontier call.

@@ -517,6 +517,8 @@ _NO_PHASE_CHANGE = frozenset(
         EventType.EXTENSION_INSTALLED,
         EventType.EXTENSION_REFUSED,
         EventType.EXTENSION_ACTIVATED,
+        EventType.PIPELINE_PACKAGE_INSTALLED,
+        EventType.PIPELINE_PACKAGE_REFUSED,
     }
 )
 

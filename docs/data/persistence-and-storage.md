@@ -132,7 +132,7 @@ SHEDDING decision on queue depth; control-plane streams always accepted.
 
 Consumers: `Runtime` (`runtime.py:393`), `ChiefOrchestrator.submit` enqueues
 (`src/paa/agents/orchestrator.py:313`), daemon dispatch claims (`daemon.py:159`),
-recovery requeue (`recovery.py:1266`), API backpressure gate
+recovery requeue (`recovery.py:1333`), API backpressure gate
 (`api/app.py:200`).
 
 ## 6. Writes, transactions, and durability

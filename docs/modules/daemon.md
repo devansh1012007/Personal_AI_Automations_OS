@@ -83,7 +83,7 @@ to `None` (ingestion skipped).
   `max_delivery_attempts`) (`src/paa/daemon.py:159`).
 - Ingestion failure → logged, skipped (`src/paa/daemon.py:182`).
 - Maintenance failure → logged, skipped (`src/paa/daemon.py:209`).
-- Recovery enqueue failure → logged, non-fatal (`recovery.py:1296`).
+- Recovery enqueue failure → logged, non-fatal (`recovery.py:1363`).
 
 ## Modification impact
 

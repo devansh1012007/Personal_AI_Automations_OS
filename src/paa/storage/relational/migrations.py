@@ -1514,6 +1514,138 @@ def _entity_norm_pre_repair_step(table: str, column: str) -> MigrationStep:
     )
 
 
+def _market_kind_step(table: str, column: str) -> MigrationStep:
+    """The step that admits the ``pipeline`` package kind (W8, C8.6).
+
+    ``ck_market_kind`` is a closed vocabulary, and version 7 extends it by
+    one word: ``'pipeline'`` — the pipeline-package kind, whose payload is
+    a pipeline declaration plus its implementation (SPEC 2 Wave 8, the
+    pipeline spec's P5-lite). A CHECK constraint is the right place for a
+    vocabulary and the wrong place to change it in place, so the two
+    engines each get the dialect's one honest move:
+
+    * SQLite cannot touch a table's CHECK at all — the table is rebuilt
+      under the classic dance (rename, create, copy, drop), which is a
+      whole-table statement and so lands in one guarded block inside the
+      migration transaction. The rebuild recreates the table **exactly**
+      as the ``.sql`` file declares it — same columns, same constraints,
+      same STRICT flag — with ``'pipeline'`` in the kind list, and
+      re-creates the one declared index the drop takes with the old
+      table. SQLite renumbers the constraint-backed autoindexes by table
+      name, so the rebuilt table's ``sqlite_autoindex_*`` rows carry the
+      same names a fresh database's do — the shape a migrated database
+      must not differ on.
+    * PostgreSQL replaces the constraint: drop, then add the same name
+      with the extended list. Its DDL is transactional, so the pair is
+      one guarded block.
+
+    The guard asks the *finished effect* on both engines — "no stored
+    definition of this table's kind vocabulary names ``pipeline``" —
+    which is satisfied by a fresh v7 database's schema and by a completed
+    rebuild alike, so a re-run of the step changes nothing. The word
+    ``pipeline`` cannot appear in a v6 ``marketplace_packages`` DDL by
+    accident: the kind column's CHECK is the only list in it.
+
+    The guards and the copy statement are written as **static SQL** —
+    no interpolation anywhere in them — which is why this step carries
+    no ``S608`` marker where the built guards elsewhere in this module
+    do: nothing in a guard is ever caller input, and here the text says
+    so by construction rather than by marker. The server guard names the
+    schema through ``SCHEMA_PLACEHOLDER``'s own value (``'$schema$'``)
+    rather than by interpolating the constant, and the placeholder's
+    linkage is enforced, not assumed:
+    ``test_every_schema_scoped_guard_names_its_schema`` in
+    ``tests/storage/test_migrations.py`` fails this step's guard if the
+    constant's value ever changes underneath the literal.
+    """
+    legacy = f"{table}_v6"
+    return MigrationStep(
+        description=f"{table}.{column} admits the 'pipeline' package kind (C8.6)",
+        table=table,
+        column=column,
+        sqlite=EngineStep(
+            guarded=(
+                GuardedStatement(
+                    guard=(
+                        "SELECT 1 WHERE NOT EXISTS ("
+                        "SELECT 1 FROM sqlite_master "
+                        "WHERE type = 'table' AND name = 'marketplace_packages' "
+                        "AND sql LIKE '%pipeline%')"
+                    ),
+                    guard_params=(),
+                    statements=(
+                        f"ALTER TABLE {table} RENAME TO {legacy}",
+                        (
+                            f"CREATE TABLE {table} ("
+                            "    id              TEXT PRIMARY KEY,"
+                            "    package_name    TEXT NOT NULL,"
+                            "    version         TEXT NOT NULL,"
+                            f"    {column}        TEXT NOT NULL,"
+                            "    publisher       TEXT NOT NULL,"
+                            "    publisher_key   TEXT,"
+                            "    description     TEXT NOT NULL DEFAULT '',"
+                            "    manifest        TEXT NOT NULL,"
+                            "    content_hash    TEXT NOT NULL,"
+                            "    signature       TEXT,"
+                            "    signature_state TEXT NOT NULL DEFAULT 'unverified',"
+                            "    source_registry TEXT,"
+                            "    installed_at    TEXT,"
+                            "    trust_score     REAL NOT NULL DEFAULT 0.0,"
+                            "    CONSTRAINT uq_marketplace_pkg"
+                            "      UNIQUE (package_name, version),"
+                            "    CONSTRAINT ck_market_kind CHECK (kind IN"
+                            "      ('skill','agent','playbook','config','bundle','pipeline')),"
+                            "    CONSTRAINT ck_market_sig CHECK (signature_state IN"
+                            "      ('unverified','valid','invalid','untrusted_key')),"
+                            "    CONSTRAINT ck_market_manifest_json"
+                            "      CHECK (json_valid(manifest))"
+                            ") STRICT"
+                        ),
+                        (
+                            "INSERT INTO marketplace_packages "
+                            "(id, package_name, version, kind, publisher, publisher_key, "
+                            "description, manifest, content_hash, signature, "
+                            "signature_state, source_registry, installed_at, trust_score) "
+                            "SELECT id, package_name, version, kind, publisher, "
+                            "publisher_key, description, manifest, content_hash, "
+                            "signature, signature_state, source_registry, installed_at, "
+                            "trust_score FROM marketplace_packages_v6"
+                        ),
+                        f"DROP TABLE {legacy}",
+                        (
+                            "CREATE INDEX IF NOT EXISTS idx_marketplace_installed"
+                            f"    ON {table}(installed_at DESC)"
+                            " WHERE installed_at IS NOT NULL"
+                        ),
+                    ),
+                ),
+            )
+        ),
+        postgres=EngineStep(
+            guarded=(
+                GuardedStatement(
+                    guard=(
+                        "SELECT 1 WHERE NOT EXISTS ("
+                        "SELECT 1 FROM information_schema.check_constraints "
+                        "WHERE constraint_name = 'ck_market_kind' "
+                        "AND constraint_schema = '$schema$' "
+                        "AND check_clause LIKE '%pipeline%')"
+                    ),
+                    guard_params=(),
+                    schema_scoped=True,
+                    statements=(
+                        f"ALTER TABLE {SCHEMA_PLACEHOLDER}.{table} "
+                        "DROP CONSTRAINT IF EXISTS ck_market_kind",
+                        f"ALTER TABLE {SCHEMA_PLACEHOLDER}.{table} "
+                        "ADD CONSTRAINT ck_market_kind CHECK (kind IN"
+                        "  ('skill','agent','playbook','config','bundle','pipeline'))",
+                    ),
+                ),
+            )
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # The list
 # ---------------------------------------------------------------------------
@@ -1567,6 +1699,13 @@ MIGRATIONS: tuple[Migration, ...] = (
                 "hot_serving_entity_index", "canonical_name_norm"
             ),
         ),
+    ),
+    Migration(
+        version=7,
+        description=(
+            "the marketplace kind vocabulary admits 'pipeline' (W8, C8.6)"
+        ),
+        steps=(_market_kind_step("marketplace_packages", "kind"),),
     ),
 )
 

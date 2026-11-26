@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from paa.core.errors import SandboxError
 from paa.core.types import EventType
 from paa.ledger.events import LedgerEvent
 from paa.ledger.store import LedgerStore
@@ -48,6 +49,14 @@ from paa.pipelines.journal import (
     read_call_journal,
 )
 from paa.pipelines.replay import ReplayView
+from paa.pipelines.slots import PipelineDeclaration
+from paa.sandbox.base import (
+    IsolationLevel,
+    Sandbox,
+    SandboxResult,
+    SandboxSession,
+    SandboxSpec,
+)
 
 __all__ = [
     "ConformanceCheck",
@@ -57,6 +66,7 @@ __all__ = [
     "coder_conformance",
     "every_builtin_conformance",
     "improve_conformance",
+    "installed_conformance",
     "manager_conformance",
     "observe_conformance",
     "render_reports",
@@ -1792,6 +1802,388 @@ async def manager_conformance(ledger: LedgerStore) -> ConformanceReport:
 
     return ConformanceReport(
         pipeline=ManagerPipeline.name,
+        checks=_checks(
+            **{
+                CHECK_NAMES[0]: double_run,
+                CHECK_NAMES[1]: divergence,
+                CHECK_NAMES[2]: unknown,
+                CHECK_NAMES[3]: cancel,
+                CHECK_NAMES[4]: budget,
+                CHECK_NAMES[5]: secrets,
+            }
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# installed pipeline packages — the sandboxed adapter's own vocabulary (C8.6)
+# ---------------------------------------------------------------------------
+
+
+class _HeldSandbox(Sandbox):
+    """A sandbox wrapper that holds the run window open, once.
+
+    The installed vocabulary's ``_SlowModel``: the seam the runner drives
+    (the sandbox) is made to wait a beat before it launches the child, so
+    a cancel can land *inside* the entrypoint call deterministically —
+    the same trick the coder standard plays on the model seam. The inner
+    sandbox is the caller's own (the real one, in an install), and it
+    still runs everything the hold does not intercept.
+    """
+
+    def __init__(self, inner: Sandbox) -> None:
+        self._inner = inner
+        self.entered = asyncio.Event()
+
+    @property
+    def name(self) -> str:
+        return self._inner.name
+
+    @property
+    def isolation_level(self) -> IsolationLevel:
+        return self._inner.isolation_level
+
+    async def run(self, spec: SandboxSpec) -> SandboxResult:
+        self.entered.set()
+        await asyncio.sleep(1.0)
+        return await self._inner.run(spec)
+
+    async def open(self, spec: SandboxSpec) -> SandboxSession:
+        return await self._inner.open(spec)
+
+    async def healthcheck(self) -> bool:
+        return await self._inner.healthcheck()
+
+
+class _ExhaustedSandbox(Sandbox):
+    """A sandbox that answers with the shape a fired clock leaves.
+
+    The budget check pins the *runner's* rule — an exhausted containment
+    budget folds to a failed run by rule, never a crash — and the shape
+    it must fold is the one every real backend's watchdog returns
+    (``timed_out`` with no exit code). The backends' own clocks are
+    pinned in ``tests/sandbox``; this double is how the standard says so
+    without depending on a child slow enough to exceed a real one.
+    """
+
+    @property
+    def name(self) -> str:
+        return "scripted-exhausted"
+
+    @property
+    def isolation_level(self) -> IsolationLevel:
+        return IsolationLevel.NONE
+
+    async def run(self, spec: SandboxSpec) -> SandboxResult:
+        return SandboxResult(
+            exit_code=None,
+            stdout="",
+            stderr="",
+            timed_out=True,
+            killed_reason="timeout",
+            backend=self.name,
+        )
+
+    async def open(self, spec: SandboxSpec) -> SandboxSession:
+        raise SandboxError(
+            "the scripted exhausted double cannot open sessions",
+            backend=self.name,
+        )
+
+    async def healthcheck(self) -> bool:
+        return True
+
+
+async def installed_conformance(
+    ledger: LedgerStore,
+    tmp_path: Path,
+    *,
+    staged: Path,
+    declaration: PipelineDeclaration,
+    sandbox: Sandbox,
+) -> ConformanceReport:
+    """The six checks over an *installed* pipeline, in its own vocabulary.
+
+    What the installed vocabulary can promise for real — and what it
+    honestly cannot:
+
+    * the host's own call sequence (the runner journals one entrypoint
+      call per run; two runs of the same goal must fold identically);
+    * the replay discipline (a re-drive that stops matching its journal
+      halts loudly with a divergence row; a call whose outcome a crash
+      left unclassifiable is never auto-repeated — the child is a
+      mutating call by definition, so D-6 applies in full);
+    * the cancel (a cancelled run closes its call and propagates, with
+      nothing half-closed at the call level) and the containment clock
+      (an exhausted budget fails the run by rule);
+    * the no-secrets rule (the goal rides the args file and the
+      fingerprint, never a payload text).
+
+    What it cannot promise is the *child's* behaviour, and the rows say
+    so rather than faking it: the child's own determinism beyond the
+    call sequence is the package's claim, verified by its own tests, and
+    a package declaring ``resume = "none"`` has no replay to diverge.
+    """
+    from paa.pipelines.base import (
+        OutcomeUnknownError,
+        PipelineDivergedError,
+        PipelineStatus,
+    )
+    from paa.pipelines.journal import fingerprint
+    from paa.pipelines.sandboxed import (
+        ENTRYPOINT_METHOD,
+        SandboxedPipelineRunner,
+    )
+
+    async def drive(
+        run_id: uuid.UUID,
+        goal: str,
+        *,
+        runner_sandbox: Sandbox | None = None,
+        timeout_s: float | None = None,
+    ) -> Any:
+        journal = CallJournal(ledger, run_id)
+        await journal.run_started(
+            declaration.name,
+            declaration.version,
+            run_kind="installed",
+            resume=declaration.resume,
+            evidence_tier=declaration.evidence_tier or None,
+        )
+        runner = SandboxedPipelineRunner(
+            sandbox=runner_sandbox if runner_sandbox is not None else sandbox,
+            journal=journal,
+            staged=staged,
+            declaration=declaration,
+            timeout_s=timeout_s,
+        )
+        result = await runner.run(goal)
+        await journal.run_completed(result.status.value, metrics=dict(result.metrics))
+        return result
+
+    # -- 1. double-run call-sequence equality -----------------------------
+    probe = "conformance: the sequence probe"
+    run_a, run_b = uuid.uuid4(), uuid.uuid4()
+    result_a = await drive(run_a, probe)
+    result_b = await drive(run_b, probe)
+    fold_a = await read_call_journal(ledger, run_a)
+    fold_b = await read_call_journal(ledger, run_b)
+
+    def shape(records: list[Any]) -> list[tuple[Any, ...]]:
+        return [(r.seq, r.method, r.fingerprint, r.outcome) for r in records]
+
+    if (
+        shape(fold_a) == shape(fold_b)
+        and len(fold_a) == 1
+        and result_a.status is PipelineStatus.COMPLETED
+        and result_b.status is PipelineStatus.COMPLETED
+    ):
+        double_run = ConformanceCheck.passed(
+            CHECK_NAMES[0],
+            "two runs of the same goal folded to the same 1-call sequence "
+            "and completed — the runner's sequence is the promise, not the "
+            "package's inner behaviour",
+        )
+    else:
+        double_run = ConformanceCheck.failed(
+            CHECK_NAMES[0],
+            f"sequences differ or a probe failed: {shape(fold_a)} vs "
+            f"{shape(fold_b)} ({result_a.status.value}/{result_b.status.value})",
+        )
+
+    # -- 2. divergence halt -----------------------------------------------
+    if declaration.resume != "journal":
+        divergence = ConformanceCheck.na(
+            CHECK_NAMES[1],
+            "the declaration says resume='none' (spec §6): the host refuses "
+            "to mark such a run recoverable, so there is no replay to "
+            "diverge — the halt-on-divergence property itself is pinned on "
+            "coder.tool-loop (tests/pipelines/test_replay.py)",
+        )
+    else:
+        div_id = uuid.uuid4()
+        journal = CallJournal(ledger, div_id)
+        await journal.run_started(
+            declaration.name,
+            declaration.version,
+            run_kind="installed",
+            resume=declaration.resume,
+            evidence_tier=declaration.evidence_tier or None,
+        )
+        runner = SandboxedPipelineRunner(
+            sandbox=sandbox,
+            journal=journal,
+            staged=staged,
+            declaration=declaration,
+        )
+        await runner.run(probe)
+        view = await ReplayView.load(ledger, div_id)
+        halted = False
+        try:
+            await runner.run("conformance: a DIFFERENT goal", replay=view)
+        except PipelineDivergedError:
+            halted = True
+        folded = await read_call_journal(ledger, div_id)
+        events = await ledger.read_correlation(div_id)
+        diverged_rows = [
+            e for e in events if e.event_type is EventType.PIPELINE_RUN_DIVERGED
+        ]
+        if halted and len(folded) == 1 and len(diverged_rows) == 1:
+            divergence = ConformanceCheck.passed(
+                CHECK_NAMES[1],
+                "a re-drive with a changed goal halted at seq 1 with one "
+                "RUN_DIVERGED row and no second call — the host never "
+                "resyncs",
+            )
+        else:
+            divergence = ConformanceCheck.failed(
+                CHECK_NAMES[1],
+                f"halted={halted} calls={len(folded)} "
+                f"divergence_rows={len(diverged_rows)}",
+            )
+
+    # -- 3. unknown outcome never auto-repeats ----------------------------
+    # One PROPOSED row with no outcome — the shape a crash between the
+    # proposal and the child's answer leaves — and the re-drive must
+    # refuse to execute it again: the entrypoint is a mutating call by
+    # definition, so D-6 applies in full.
+    unknown_id = uuid.uuid4()
+    unknown_journal = CallJournal(ledger, unknown_id)
+    await unknown_journal.call_proposed(
+        1, ENTRYPOINT_METHOD, {"goal": probe, "params": {}}
+    )
+    unknown_view = await ReplayView.load(ledger, unknown_id)
+    unknown_runner = SandboxedPipelineRunner(
+        sandbox=sandbox,
+        journal=unknown_journal,
+        staged=staged,
+        declaration=declaration,
+    )
+    refused = False
+    try:
+        await unknown_runner.run(probe, replay=unknown_view)
+    except OutcomeUnknownError:
+        refused = True
+    unknown_rows = await read_call_journal(ledger, unknown_id)
+    if refused and len(unknown_rows) == 1:
+        unknown = ConformanceCheck.passed(
+            CHECK_NAMES[2],
+            "the interrupted call was reported as the unknown outcome it is "
+            "and never re-executed — exactly one PROPOSED row stands",
+        )
+    else:
+        unknown = ConformanceCheck.failed(
+            CHECK_NAMES[2],
+            f"refused={refused} rows={len(unknown_rows)}",
+        )
+
+    # -- 4. cancel within grace -------------------------------------------
+    cancel_id = uuid.uuid4()
+    held = _HeldSandbox(sandbox)
+    cancel_task = asyncio.create_task(drive(cancel_id, probe, runner_sandbox=held))
+    await held.entered.wait()
+    cancel_task.cancel()
+    cancelled = False
+    try:
+        await cancel_task
+    except asyncio.CancelledError:
+        cancelled = True
+    cancel_rows = await read_call_journal(ledger, cancel_id)
+    coherently_closed = (
+        len(cancel_rows) == 1
+        and cancel_rows[0].outcome is CallOutcome.FAILED
+        and cancel_rows[0].error == "cancelled"
+    )
+    if cancelled and coherently_closed:
+        cancel = ConformanceCheck.passed(
+            CHECK_NAMES[3],
+            "the cancel landed inside the entrypoint call and the call "
+            "closed FAILED('cancelled') before the CancelledError "
+            "propagated — nothing half-closed at the call level",
+        )
+    else:
+        cancel = ConformanceCheck.failed(
+            CHECK_NAMES[3],
+            f"cancelled={cancelled} rows={[(r.outcome, r.error) for r in cancel_rows]}",
+        )
+
+    # -- 5. budget exhaustion ---------------------------------------------
+    budget_id = uuid.uuid4()
+    budget_result = await drive(
+        budget_id,
+        probe,
+        runner_sandbox=_ExhaustedSandbox(),
+        timeout_s=0.5,
+    )
+    budget_rows = await read_call_journal(ledger, budget_id)
+    if (
+        budget_result.status is PipelineStatus.FAILED
+        and budget_result.metrics.get("state") == "timeout"
+        and len(budget_rows) == 1
+        and budget_rows[0].outcome is CallOutcome.COMPLETED
+    ):
+        budget = ConformanceCheck.passed(
+            CHECK_NAMES[4],
+            "an exhausted containment clock folded to a FAILED run by rule — "
+            "a classified outcome row, not a crash (the sandbox double plays "
+            "the watchdog's answer; the backends' own clocks are pinned in "
+            "tests/sandbox)",
+        )
+    else:
+        budget = ConformanceCheck.failed(
+            CHECK_NAMES[4],
+            f"status={budget_result.status.value} "
+            f"state={budget_result.metrics.get('state')} rows={len(budget_rows)}",
+        )
+
+    # -- 6. no secrets in journal -----------------------------------------
+    # The goal is the one input that can carry a secret (a prompt is the
+    # coder vocabulary's own example), so it rides this probe. The scan
+    # covers every payload the host renders, with one stated exclusion:
+    # the child's own answer. ``CALL_COMPLETED``'s result_json and
+    # ``RUN_COMPLETED``'s metrics are the child's words carried for
+    # replay (ADR-0050 serves the recorded value verbatim — the same
+    # property the coder vocabulary gives the model's own think text),
+    # and a package that echoes its input is a package the capability
+    # review reads, not a leak the host made. The host's promise is the
+    # input side, and the positive control attests exactly that: the
+    # fingerprint — the SHA-256 the journal holds over the very params
+    # that carried the marker.
+    secret = _marker()
+    secret_id = uuid.uuid4()
+    await drive(secret_id, f"conformance probe with {secret}")
+    leaked: list[str] = []
+    for event in await ledger.read_correlation(secret_id):
+        payload = dict(event.payload)
+        if event.event_type is EventType.PIPELINE_CALL_COMPLETED:
+            payload.pop("result_json", None)
+        if event.event_type is EventType.PIPELINE_RUN_COMPLETED:
+            payload.pop("metrics", None)
+        if secret in json.dumps(payload, sort_keys=True):
+            leaked.append(event.event_type.value)
+    secret_rows = await read_call_journal(ledger, secret_id)
+    expected_fp = fingerprint(
+        ENTRYPOINT_METHOD, {"goal": f"conformance probe with {secret}", "params": {}}
+    )
+    positive_control = (
+        len(secret_rows) == 1 and secret_rows[0].fingerprint == expected_fp
+    )
+    if not leaked and positive_control:
+        secrets = ConformanceCheck.passed(
+            CHECK_NAMES[5],
+            "the goal's marker rode the call (attested by the param "
+            "fingerprint) and never appeared in a payload the host wrote; "
+            "the child's own answer rides the recorded result ADR-0050 "
+            "serves back — the child's words, not the host's leak",
+        )
+    else:
+        secrets = ConformanceCheck.failed(
+            CHECK_NAMES[5],
+            f"leaked={leaked} positive_control={positive_control}",
+        )
+
+    return ConformanceReport(
+        pipeline=declaration.name,
         checks=_checks(
             **{
                 CHECK_NAMES[0]: double_run,
