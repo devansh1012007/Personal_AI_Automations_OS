@@ -17,7 +17,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -32,6 +32,9 @@ from paa.memory.creator import MemoryCreator
 from paa.storage.coldlake.cas import ContentAddressedStore
 from paa.storage.coldlake.signals import SignalRepository
 from paa.storage.relational.database import Database
+
+if TYPE_CHECKING:
+    from paa.chat.extensions import ChatExtensionSurface
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +93,7 @@ def chat(
         model: ChatModel | None = None,
         creator: MemoryCreator | None = None,
         signals: SignalRepository | None = None,
+        extensions: ChatExtensionSurface | None = None,
     ) -> ChatHarness:
         resolved_settings = settings if settings is not None else ChatSettings()
         context_settings = ContextSettings()
@@ -108,6 +112,7 @@ def chat(
             context_settings=context_settings,
             model=model,
             signals=resolved_signals,
+            extensions=extensions,
         )
         return ChatHarness(
             service=service,
