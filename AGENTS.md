@@ -15,9 +15,9 @@ The `dev` extra carries `paa[api]`, so the documented setup installs FastAPI and
 suite **runs**. It did not used to: `tests/api/conftest.py` skips the whole directory when
 the extra is absent, so a developer following the documented setup was never exercising a
 single route, and it said so by *skipping* — the quietest way to not test something. The
-`dev` extra now resolves `paa[api]` and `paa[s3]` itself (the same self-referential form
-`all` already used), so there is no environment in which the gate below can pass while the
-API or the S3 path is untested.
+`dev` extra now resolves `paa[api]`, `paa[s3]`, `paa[attest]` and `paa[tui]` itself (the same
+self-referential form `all` already used), so there is no environment in which the gate
+below can pass while the API, S3, attest or chat-TUI path is untested.
 
 Verify in this order before calling work done:
 
@@ -339,6 +339,16 @@ Full write-up: `docs/coder-agent.md`.
 composes a real `Runtime` + `coder/runtime_tools.py` + `RouterToolCallingModel` + `AgentLoop`.
 Read `coder/__init__.py` before adding to that package — the pieces are deliberately decoupled.
 
+**Position (SPEC 2 C8.3, Wave 8):** the coder is the *preliminary* loop — the fallback
+coding loop a run reaches for when **no external harness is attached**. It stays
+deliberately small, per the owner's direction ("not overkill, just enough to add features
+to the OS"); external coding harnesses arrive via `paa record` (the flight recorder
+mediating their tool calls) and `paa thread` (the control plane that swaps them
+mid-task), never by growing this loop. The position is machine-readable in the pipeline
+registry: `CODING_FALLBACK_PIPELINE = "coder.tool-loop"`
+(`pipelines/registry.py`), pinned by `tests/pipelines/test_registry.py::TestTheCodingFallback`,
+and surfaced by `paa pipeline inspect coder.tool-loop`.
+
 - **The model seam is constrained JSON, not native tool calls.** `coder/model_adapter.py` asks the
   router for a `{text, tool_calls[]}` object conforming to a schema with tool names in an `enum`;
   `ModelProvider.complete_structured` does the validate-and-repair. No provider surface accepts a
@@ -449,9 +459,11 @@ request — `ruff check src tests`, `mypy src`, and the whole `pytest` suite wit
 shapes** (a minimal one, the documented `.[dev]` one, and `.[all]`), because "never
 import one at module scope in a core path" is a claim a minimal install has to be
 tested against rather than asserted. The developer shape installs `.[dev]`, **not**
-`.`: the `dev` extra is what carries `paa[api]` and `paa[s3]`, and without it the API
-suite and the live S3 suite skip themselves at import — the quietest way to not test
-something.
+`.`: the `dev` extra is what carries `paa[api]`, `paa[s3]`, `paa[attest]` and
+`paa[tui]`, and without it the API suite, the live S3 suite, the attestation suite
+and the chat-TUI suite skip themselves at import — the quietest way to not test
+something. The minimal shape's mypy excludes the two trees whose extras it lacks
+(`src/paa/api`, `src/paa/tui`); the `dev` and `all` shapes type-check all of `src`.
 
 Two things in it are landmines rather than choices:
 
@@ -560,13 +572,16 @@ the archive at the bottom. Keep prose out — this is a register, not a report.
 
 ### Environment (this development sandbox)
 
-- Repo: this merge lands on `/home/devansh/Code/Personal_AI_Automations_OS`
-  branch `main` @ f5555b6 (the pushed base: W6 loops, C7.1 observe and C7.2
-  attest with local hardening — the W6 `0001`–`0007`, C7.1 `0020` and C7.2
-  `0021` patches, previously applied uncommitted, now landed as ccf0793 +
-  f5555b6). The C7.3 recorder work was built in the development sandbox
-  (`/home/z/my-project/paa` @ 63c5a0e, clean tree at the C7.3 close) and
-  arrives here as a merge, not a patch series.
+- Repo: `/home/z/my-project/paa`, branch `wave-7f` @ ebbb439 (pushed to
+  `origin/main` — the Wave 7 close) plus this campaign's commits. The sandbox
+  was recycled before W8 opened: the fresh venv is `.venv/` **inside the repo**
+  (Python 3.12.16), installed `pip install -e ".[dev]"` — the exact shape
+  CI's `gate (dev)` and `status` jobs pin (dev now carries `paa[tui]`, so the
+  shape is core+api+s3+attest+tui+tooling; pytest 9.2.0 / mypy 2.4.1 /
+  ruff 0.17.6, the same versions CI resolves). No service containers this
+  session: `scripts/test-env.sh` was not brought up, so server-gated suites
+  skip by design and CI's gate job (postgres+seaweedfs+rustfs) is the
+  authority for those paths.
 - Full gate at the C7.3 close (sandbox): `python -m pytest tests/` → 4,769
   collected = 4,525 passed / 243 env-gated skipped / 1 xfailed, 0 failures,
   exit 0 (+50 recorder tests over the C7.2 close); `mypy src/paa` clean
@@ -596,9 +611,11 @@ the archive at the bottom. Keep prose out — this is a register, not a report.
   (d366655; the union of three registrations shifted the file; re-anchored
   against the integration base 1602467 with the feature tips as fallback
   parents).
-- venv: sandbox `/home/z/.venv` — **outside** the persistent project dir; after
-  a sandbox recycle reinstall with `pip install -e ".[dev,tui]"` from the repo
-  root. Host repo: `.venv/` inside the repo (Python 3.12.3), gate commands
+- venv: repo-local `.venv/` (this session; see the repo bullet above — same
+  layout and shape as CI). Earlier sessions used `/home/z/.venv` outside the
+  project dir; after a sandbox recycle reinstall with `pip install -e ".[dev]"`
+  from the repo root (dev carries `tui` since W8-CI). Host repo: `.venv/`
+  inside the repo (Python 3.12.3), gate commands
   `PYTHONPATH=src .venv/bin/python -m …`. 2 CPU cores; run at most ~3 parallel
   jobs.
 - The skip sweep (W7-IMPL-04): `scripts/test-env.sh up` brings up Redis
@@ -635,7 +652,7 @@ stays this tree's evidence; the successor campaign is W7-EVIDENCE.
 | W6-C6.6 | orchestrator | conformance v0 for all registered pipelines | **done** | commit 215cb25 (landed ccf0793), then remediated here; six-check standard in each pipeline's own vocabulary; all three GREEN. Applied here from patch `0006` and then remediated: the builtin no-secrets pass and the coder unknown-outcome fake pass became honest, pinned n/a rows; no-secrets now proves hash attestation; cancel, budget, double-run and the RED-row path are genuinely asserted. Focused gate: `tests/pipelines/test_conformance.py` 5 passed; `tests/pipelines tests/cli tests/chat tests/coder` 869 passed / 1 skipped; a new runnable builtin without a runner now renders RED by name instead of being silently skipped |
 | W6-CLOSE | orchestrator | G-LOOPS gate evidence + truth pass + deliverables | **done** | applied here from patch `0007` (landed ccf0793); docs truth pass repointed this tree's longer `ledger/replay.py` and the local CLI anchors to their real lines, docs-reference lock 5 passed + conventions 34 passed; final full suite 4,439 passed / 240 skipped / 1 xfailed / 3 pre-existing failures outside W6; protocol still draft (freezing waits for P3's RPC run — the spec's own rule) |
 
-### Active campaign: W7-EVIDENCE — SPEC 2 Wave 7: the moat goes external (2026-11-24)
+### Archived campaign: W7-EVIDENCE — SPEC 2 Wave 7: the moat goes external (2026-11-24, closed 2026-11-25)
 
 Owner ask: continue down the satisfaction report's "not started / partial" list in
 wave order; Wave 7 rows as capacity allows, C7.1 first (it is also the pipeline
@@ -660,6 +677,24 @@ author-gated by the spec's own rules.
 | W7-C7.5 | orchestrator | `paa thread` | **done** | landed eea1b4f (merged 2e8fa7e onto wave-7f); W7-IMPL-06 report; `src/paa/thread/`: `record.py` (ThreadRecord/Segment, durable JSON under PAA_HOME/threads, append-only invariants enforced by the methods), `journal.py` (four new event types — THREAD_CREATED, THREAD_SEGMENT_STARTED carrying packet_sha256, THREAD_SEGMENT_ENDED, THREAD_HARNESS_SWAPPED; replay folds without requeue, the boot sweep taught), `handoff.py` (content-addressed HandoffPacket: mandate + gathered memory + ledger tail + git summary — "context intact" is a checkable fact), `harness.py` (registry + fake-alpha/fake-beta), `engine.py`; `paa thread new\|run\|swap\|show\|list`; the swap acceptance: start on fake-alpha, swap to fake-beta mid-task — same thread id and mandate, the second packet carries the first segment's effects, the packet-hash chain intact, the ledger ordered and unbroken; 99 tests + ledger 161 green with the new vocabulary; **demo artifact delivered** (`paa-thread-demo/`: the live swap — new/run/swap/show/ledger through the real CLI, both handoff packets, the ledger chain ordered with `chain integrity: ok`) |
 | W7-C7.6 | orchestrator | ACP v1 | **done** | landed e4290c4 (merged fa626aa onto wave-7f); W7-IMPL-07 report + ADR-0053; `src/paa/acp/` on the shared framing kit (one framing codebase, three fronts — MCP server, MCP client, ACP): `protocol.py` (initialize with pinned version, session/new, session/prompt, streaming session/update, session/cancel, fs/read_text_file, JSON-RPC error envelopes), `server.py` (T1 stdio front: the editor spawns PAA; prompts drive the chat service; cancel wired to the loop's real cancellation — a stop, not an ACK), `client.py` (T2 front: external ACP agent behind a SandboxSession, its permission asks mediated through the deterministic tool policy — the recorder-proxy pattern applied to ACP; unattended ask = recorded refusal), `fs.py` (scoped by the coder protected-path rules); `paa acp serve` / `paa acp client --`; 90 tests incl. the streaming acceptance over real subprocess pipes and the cancel acceptance (ACKed, chunks actually stop, session stays usable, children reaped); **demo artifact delivered** (`paa-acp-demo/`: the wire transcript of a live initialize → session/new → streaming turn → mid-flight cancel → usable-after-cancel → EOF session, 13 frames) |
 | W7-CLOSE | orchestrator | integrate C7.4/C7.5/C7.6, full gate, deliverables | **done** | wave-7f integration: evals/thread/acp each on its own branch over the H-1 fix (0662027), merged in sequence (a0d666f, 2e8fa7e, fa626aa — the cli/main.py registration union resolved by hand, the recovery table row kept on thread's shifted lines, repo-map re-anchored); 42 drifted `cli/main.py` citations re-anchored onto the union (d366655, docs lock green); full gate 5,242 collected = **5,237 passed / 4 skipped / 1 xfailed / 0 failures** with every environment gate open; mypy 221 files / 0 issues; ruff clean; conventions 34; demo artifacts regenerated for all six rows (`paa-observe-demo-bundle.json`, `paa-attest-demo-bundle/`, `paa-record-demo/`, `paa-eval-demo/`, `paa-thread-demo/`, `paa-acp-demo/`); deliverables regenerated as `paa-wave7-complete.*` + the 6th-edition report |
+
+### Active campaign: W8-DEEPEN — SPEC 2 Wave 8: the looping OS (2026-11-26)
+
+Owner ask: "start wave 7 and setup CI". Wave 7 is closed and pushed (ebbb439),
+so the next movable wave per the SPEC 2 wave map (`docs/plans/2026-11-21-next-spec-2.md` §2)
+is **Wave 8 — deepen: the looping OS**; that is what opened. The CI half was
+literal and urgent: the gate had been red on **every push since C4.4's TUI
+landed** (all 24 recorded runs failed) — `textual` sat in no CI install shape.
+
+| Task ID | Agent | Assignment | Status | Evidence / notes |
+|---|---|---|---|---|
+| W8-CI | orchestrator | repair the CI gate — red on every push since the chat TUI (C4.4) landed | **done** | root cause, one dependency in the wrong place: `textual` (the `[tui]` extra) was in NO install shape. `gate (dev)`/`gate (all)` ran `mypy src` without it → 19 `Any`-subclass/no-any-return artefacts in 3 files (`tui/chat/widgets.py`, `screens.py`, `app.py`; measured identical in the dev and minimal CI jobs and reproduced locally: `Found 19 errors in 3 files (checked 221 source files)`); `status (--check)` died at `pytest --collect-only` importing `tests/tui/test_chat_app.py` (a collection ERROR, worse than a skip — it aborts the suite). Fix: (1) `paa[tui]` added to `dev` and `tui` to `all` (`pyproject.toml`, the same documented argument as api/s3/attest — the documented dev install must be able to run what the CLI advertises); (2) `tests/tui/conftest.py` — `pytest.importorskip("textual", reason="needs the tui extra")`, the `tests/api` pattern, so the minimal shape SKIPS the directory instead of erroring; (3) the minimal shape's mypy exclude widened to `src/paa/(api|tui)` with both measurements written into the step (`mypy src --exclude src/paa/(api|tui)` → Success, 202 files — measured, on a textual-less install); (4) README status block regenerated for the shape the status job pins: 221 files / 91,230 lines / **5,203 collected** (`scripts/status.py --write`, `--check` green); (5) the stale extras lists updated in `ci.yml`'s header/status comments and `status.py`'s docstring. Local verification: ruff 0; `mypy src` 221 files 0 issues; full suite `pytest tests/ -o addopts="--strict-markers --strict-config" -q` → **4,958 passed / 245 env-gated skipped / 1 xfailed / 0 failures** (no service containers this session — by-design skips; CI's gate job runs postgres+seaweedfs+rustfs and is the authority there); minimal simulation (textual uninstalled): collection exits 0 with tests/tui skipped, mypy-with-exclude Success 202 files, mypy-without-exclude reproduces the 19/3 measurement |
+| W8-C8.1 | orchestrator | self-improvement loop, guarded: reflection → patch proposal → deterministic validation → human gate → commit, as a pipeline; every improvement an attested change (C7.2) | not started | the wave's flagship; wires the existing analysis-only `improvement/` primitives (reflection, meta, optimizer, distillation — all tested); the honesty line stays: prototypical few-shot classification ≠ gradient meta-learning (ADR-0017) |
+| W8-C8.2 | orchestrator | hierarchy and delegation: `ctx.sub_run` composition with budget halving and recursion guard — manager loops delegating to worker loops | not started | needs the C6 registry (present since W6) |
+| W8-C8.3 | orchestrator | coder re-scoped as the preliminary loop — the fallback coding loop when no external harness is attached; kept deliberately small; external harnesses arrive via `paa record`/`paa thread` instead | **done** | the re-scope is machine-readable where selection vocabulary lives: `coder.tool-loop`'s declaration re-scoped (`pipelines/slots.py::_coder_declaration` — description + docstring carry the position, surfaced by `paa pipeline inspect coder.tool-loop`); `CODING_FALLBACK_PIPELINE = "coder.tool-loop"` exported beside `DEFAULT_PIPELINE` in `pipelines/registry.py` (the registry is the one place that answers "which pipelines exist"; C8.4's chat extension surface and C8.5's Loop Console are the consuming rows); 4 pins in `tests/pipelines/test_registry.py::TestTheCodingFallback` — the fallback is registered, explicitly selectable, NOT the task default (two defaults, two meanings), and the declaration carries the position. Docs: `AGENTS.md` coder section, `docs/modules/coder.md` (Position paragraph), `docs/coder-agent.md` (Position in the OS section). Gates: focused `tests/pipelines` + `tests/conventions` 208 passed (docs lock green — no re-anchoring needed: the in-scope `AGENTS.md` citations stop at line 217, the coder-section insert starts at 342); ruff 0; mypy 221 files 0 issues; full suite as in W8-CI (the 4 new tests are in the 5,203 collected / 4,958 passed) |
+| W8-C8.4 | orchestrator | extension surface for chat: Claw-Hub/OpenClaw discovery → install → activate through the 5-gate installer, personal skills dir, MCP tools as chat capabilities, ACP as a chat transport | not started | closes gap #8 partially (pipeline package kind); consumes `CODING_FALLBACK_PIPELINE` |
+| W8-C8.5 | orchestrator | Loop Console: TUI extension of `paa chat` for loop management — registry panel (trust, tier, version), install/activate/fork, conformance run, evidence-tier badges | not started | builds on the C4.4 kit |
+| W8-C8.6 | orchestrator | `pipeline` package kind + local/git distribution (P5-lite): enable the kind in `package.py`; local dirs + pinned git URLs through the gates; signed `.paapkg` behind the same gates | not started | the pipeline spec's gating rule respected; hosted marketplace stays parked |
 
 ### Archived campaign: T-VERIFY (2026-11-24, complete)
 

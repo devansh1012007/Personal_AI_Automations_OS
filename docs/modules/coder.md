@@ -17,6 +17,17 @@ runnable: build a real `Runtime`, let the model see the runtime's ledger through
 `coder.runtime_tools`, and gate every call through the permission policy
 (`cli/coder.py` module docstring).
 
+**Position (SPEC 2 C8.3, Wave 8):** the coder is the *preliminary* loop — the
+fallback coding loop a run reaches for when **no external harness is attached**,
+kept deliberately small per the owner's direction ("not overkill, just enough to
+add features to the OS"). External coding harnesses arrive via `paa record`
+(the flight recorder mediating their tool calls) and `paa thread` (the control
+plane that swaps harnesses mid-task) — never by growing this loop. The position
+is machine-readable in the pipeline registry:
+`CODING_FALLBACK_PIPELINE = "coder.tool-loop"` (`pipelines/registry.py`),
+pinned by `tests/pipelines/test_registry.py::TestTheCodingFallback` and
+surfaced by `paa pipeline inspect coder.tool-loop`.
+
 The loop is think → act → observe under permissions & hooks:
 1. Hook PRE_TOOL_USE (may modify args or block).
 2. Permission check (deny authoritative).

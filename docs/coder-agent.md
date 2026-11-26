@@ -11,6 +11,21 @@ Everything below is composition, not new machinery. A real
 `coder/permissions.py`. There is no hidden policy: the CLI flags map one-to-one
 onto `ToolPermissionPolicy` arguments.
 
+## Position in the OS (SPEC 2 C8.3)
+
+The coder is the **preliminary** loop: the fallback coding loop a run reaches
+for when **no external harness is attached**. It stays deliberately small —
+per the owner's direction, "not overkill, just enough to add features to the
+OS" — because the coding harnesses the evidence moat is built on are
+*external*: they arrive via `paa record` (the flight recorder mediating their
+tool calls) and `paa thread` (the control plane that swaps harnesses
+mid-task), and this loop is what remains when none is attached. The position
+lives where selection vocabulary lives: the pipeline registry's
+`CODING_FALLBACK_PIPELINE = "coder.tool-loop"`, the
+`coder.tool-loop` declaration's own description (`paa pipeline inspect`
+surfaces it), and the pins in
+`tests/pipelines/test_registry.py::TestTheCodingFallback`.
+
 ## The four new pieces
 
 | File | What it is |

@@ -33,6 +33,7 @@ import pytest
 from paa.config import PolicySettings
 from paa.ledger.mandate import Scope, explicit_mandate
 from paa.pipelines.registry import (
+    CODING_FALLBACK_PIPELINE,
     DEFAULT_PIPELINE,
     LocalManifestError,
     PipelineRegistry,
@@ -314,6 +315,46 @@ class TestSelection:
     def test_empty_scope_grants_nothing(self, tmp_path: Path) -> None:
         with pytest.raises(PipelineSelectionError, match="empty"):
             select("builtin.chat", registry=self._registry(tmp_path), allowed=[])
+
+
+class TestTheCodingFallback:
+    """C8.3 — the coder's re-scope, pinned where selection vocabulary lives.
+
+    The coder loop is *the preliminary coding loop*: the in-process
+    fallback a run reaches for when it needs code changed and no external
+    harness is attached. External harnesses arrive via ``paa record`` /
+    ``paa thread`` instead. These pins hold the position to the registry
+    (the one place that answers "which pipelines exist"), so a rename or
+    a silent de-scope of the fallback is a red test, not a docs drift.
+    """
+
+    def test_the_fallback_is_the_coder_tool_loop(self, tmp_path: Path) -> None:
+        registry = PipelineRegistry.default(home=tmp_path)
+        row = registry.get(CODING_FALLBACK_PIPELINE)
+        assert row is not None, "the coding fallback must stay registered"
+        assert row.name == "coder.tool-loop"
+
+    def test_the_fallback_selects_explicitly(self, tmp_path: Path) -> None:
+        row = select(
+            CODING_FALLBACK_PIPELINE, registry=PipelineRegistry.default(home=tmp_path)
+        )
+        assert row.name == CODING_FALLBACK_PIPELINE
+
+    def test_the_fallback_is_not_the_task_default(self) -> None:
+        # Two different defaults with two different meanings: the task
+        # default runs when *nothing* is named; the coding fallback is
+        # what a coding-flavoured surface reaches for. Collapsing them
+        # would make every unnamed run a coding run.
+        assert CODING_FALLBACK_PIPELINE != DEFAULT_PIPELINE
+
+    def test_the_declaration_carries_the_position(self, tmp_path: Path) -> None:
+        registry = PipelineRegistry.default(home=tmp_path)
+        row = registry.get(CODING_FALLBACK_PIPELINE)
+        assert row is not None
+        description = row.declaration.description.lower()
+        assert "fallback" in description
+        assert "external harness" in description
+        assert "paa record" in description and "paa thread" in description
 
 
 class TestTheMandateScope:

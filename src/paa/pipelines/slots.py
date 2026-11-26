@@ -271,16 +271,34 @@ def _chat_declaration() -> PipelineDeclaration:
 
 
 def _coder_declaration() -> PipelineDeclaration:
-    """``coder.tool-loop``: the step/token knobs, tool allowlist by host.
+    """``coder.tool-loop``: the preliminary coding loop, re-scoped (C8.3).
 
-    The tool names an overlay may narrow are the coder loop's standard
-    set; the host's per-run tool wiring is the superset an overlay trims.
+    Position, per SPEC 2 Wave 8: this is **the fallback coding loop when
+    no external harness is attached** — deliberately small, per the
+    owner's direction ("not overkill, just enough to add features to the
+    OS"). It is not a competitor to the coding harnesses the moat is
+    built on: an external harness (Claude Code, Codex, Cursor, …) enters
+    through :mod:`paa.recorder` (``paa record`` — the flight recorder
+    mediating its tool calls) or :mod:`paa.thread` (``paa thread`` — the
+    control plane that swaps harnesses mid-task), never by growing this
+    loop. The declaration is where that position is machine-readable:
+    ``paa pipeline inspect coder.tool-loop`` is the selection surface.
+
+    The knobs themselves are unchanged by the re-scope: the step/token
+    knobs, tool allowlist by host. The tool names an overlay may narrow
+    are the coder loop's standard set; the host's per-run tool wiring is
+    the superset an overlay trims.
     """
     return PipelineDeclaration(
         name="coder.tool-loop",
         version="4.1.0",
         requires_runtime=">=4.1,<5",
-        description="the window-driven coder tool loop: think, gated tool calls, budget",
+        description=(
+            "the preliminary coding loop: the in-process fallback when no "
+            "external harness is attached — deliberately small; external "
+            "harnesses arrive via paa record / paa thread, not by growing "
+            "this loop"
+        ),
         capabilities={
             "think": {"roles": ["worker"]},
             "use_skill": [

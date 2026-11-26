@@ -39,6 +39,7 @@ from paa.pipelines.slots import (
 )
 
 __all__ = [
+    "CODING_FALLBACK_PIPELINE",
     "DEFAULT_PIPELINE",
     "LocalManifestError",
     "PipelineRegistry",
@@ -49,6 +50,18 @@ __all__ = [
 
 #: What a run gets when nothing and no mandate names a pipeline.
 DEFAULT_PIPELINE = "builtin.plan-execute-critique"
+
+#: What a run that needs code changed falls back to when **no external
+#: coding harness is attached** (SPEC 2 Wave 8, C8.3 — the coder's
+#: re-scope). External harnesses arrive via ``paa record`` and
+#: ``paa thread``; this loop is the deliberately-small in-process
+#: fallback — "just enough to add features to the OS" — not a
+#: competitor to the harnesses the evidence moat is built on. It is
+#: named here, beside :data:`DEFAULT_PIPELINE`, because the registry is
+#: the one place selection vocabulary lives; the rows that consume it
+#: (the chat extension surface, C8.4; the Loop Console, C8.5) select it
+#: explicitly when they need a coding loop and none is attached.
+CODING_FALLBACK_PIPELINE = "coder.tool-loop"
 
 #: The manifest's closed section set and the declarable capability
 #: names — ADR-0052's parse contract, the same constants the throwaway
