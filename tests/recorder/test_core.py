@@ -139,6 +139,14 @@ class TestTheDoneWhen:
         self, tmp_path: Path, home: Path
     ) -> None:
         """The C7.3 acceptance line, played back by the scripted harness."""
+        # The done-when ends at a VERIFYING bundle, and the attested bundle
+        # needs real Ed25519: the paa[attest] extra. A minimal install has
+        # the HMAC fallback but no asymmetric backend, and the honest result
+        # there is a labelled skip, not a bundle that cannot verify — the
+        # same line tests/attest/conftest.py holds for its directory.
+        pytest.importorskip(
+            "cryptography", reason="the verifying bundle needs the attest extra"
+        )
         workspace = tmp_path / "ws"
         workspace.mkdir()
         (workspace / "existing.txt").write_text("before\n", encoding="utf-8")
@@ -220,6 +228,11 @@ class TestTheDoneWhen:
         self, tmp_path: Path, home: Path
     ) -> None:
         """No proxy, no mediation — and the record says so by omission."""
+        # Same extra as the cooperating test above: the T1 floor is still an
+        # ATTESTED bundle, only a thinner one.
+        pytest.importorskip(
+            "cryptography", reason="the verifying bundle needs the attest extra"
+        )
         workspace = tmp_path / "ws"
         workspace.mkdir()
         core = RecorderCore(SubprocessSandbox(), home=home)

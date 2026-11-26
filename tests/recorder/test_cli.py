@@ -41,6 +41,14 @@ class TestRecordRun:
         self, tmp_path: Path
     ) -> None:
         """``paa record run -- <cmd>``: record, observe bundle, attested bundle."""
+        # The full set includes the ATTESTED bundle, and that needs real
+        # Ed25519 (the paa[attest] extra): on a minimal install the run
+        # records and observes but cannot attest, so the artifact set is
+        # honestly incomplete — skip rather than count a bundle that cannot
+        # exist there.
+        pytest.importorskip(
+            "cryptography", reason="the attested bundle needs the attest extra"
+        )
         ws = tmp_path / "ws"
         ws.mkdir()
         harness = (

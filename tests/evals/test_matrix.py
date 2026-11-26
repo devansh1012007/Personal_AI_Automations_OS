@@ -16,6 +16,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from paa.evals.harnesses import known_adapters
 from paa.evals.runner import EvalRunner
 from paa.evals.scoring import CheckStatus
@@ -34,6 +36,13 @@ class TestTheAcceptanceMatrix:
     async def test_two_harnesses_five_tasks_one_report(
         self, home: Path, ledger: LedgerStore
     ) -> None:
+        # The recorded-fake harness is scored on its bundles VERIFYING, and
+        # verification needs real Ed25519 (the paa[attest] extra); on a
+        # minimal install its rows would honestly fail rather than pass, so
+        # the matrix skips there — the same line tests/attest holds.
+        pytest.importorskip(
+            "cryptography", reason="the verifying bundles need the attest extra"
+        )
         tasks = load_tasks(task_set_root())
         adapters = known_adapters()[:2]
         assert len(tasks) == 5 and len(adapters) == 2

@@ -324,9 +324,17 @@ TYPE_CHECKING_NOTES: dict[str, str] = {
 #: ``_require_psycopg()``, and ``paa.storage.queue.redis_backend`` imports
 #: redis inside ``_redis_asyncio()`` — all three import cleanly with the
 #: extra blocked. Only the kuzu backend raises at import time, because it
-#: needs the driver to build its store.
+#: needs the driver to build its store. The four ``paa.tui.chat`` modules
+#: import Textual at module scope (the ``[tui]`` extra) — measured by the
+#: fresh-interpreter probes on a textual-less install, and by ``mypy src``
+#: reporting 19 ``Any``-subclass artefacts in those files before the extra
+#: joined ``dev``.
 OPTIONAL_EXTRA_MODULES: dict[str, frozenset[str]] = {
     "paa.storage.graph.kuzu_backend": frozenset({"kuzu"}),
+    "paa.tui.chat.app": frozenset({"textual"}),
+    "paa.tui.chat.screens": frozenset({"textual"}),
+    "paa.tui.chat.theme": frozenset({"textual"}),
+    "paa.tui.chat.widgets": frozenset({"textual"}),
 }
 
 #: How long one module may take to import before the check calls it hung.
@@ -1387,12 +1395,22 @@ def test_the_classified_cycle_is_still_a_cycle(tmp_path: Path) -> None:
     cycles = sorted(name for name, klass in TYPE_CHECKING_CLASSES.items() if klass == "A")
     assert cycles, "no block is classified A, so the cycle proof would prove nothing"
 
+    proven: list[str] = []
+    deferred: list[str] = []
     for module in cycles:
         root = tmp_path / module.replace(".", "_")
         root.mkdir()
         target = _shadow_package(root, module)
 
         control = _probe(module, extra_path=root, cwd=root)
+        if not control.ok and _is_optional_extra_failure(control):
+            # The control import needs an extra this install lacks — the
+            # tui module's Textual, on a minimal install — so its cycle
+            # proof cannot run here; the dev and all shapes carry the
+            # extra and run it. Deferred by name, not skipped silently:
+            # the test still proves every cycle this install can reach.
+            deferred.append(module)
+            continue
         assert control.ok, (
             f"the copy of the package does not import {module}, so converting the "
             f"block below would prove nothing: {control.describe()}"
@@ -1410,6 +1428,13 @@ def test_the_classified_cycle_is_still_a_cycle(tmp_path: Path) -> None:
         assert any(marker in converted.error_message for marker in _CYCLE_MARKERS), (
             f"{module} is classified A, but converting its block fails for another "
             f"reason: {converted.describe()}"
+        )
+        proven.append(module)
+
+    if not proven:
+        pytest.skip(
+            "every A-classified module needs an extra this install lacks, so "
+            f"no cycle could be proven here; deferred: {deferred}"
         )
 
 

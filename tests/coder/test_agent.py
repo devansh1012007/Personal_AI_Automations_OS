@@ -10,6 +10,7 @@ the only seam that is doubled, and it is doubled exactly the way
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -194,12 +195,29 @@ class TestAgentTurn:
         assert result.denied_calls == 1
 
 
+# Typer renders ``--help`` through Rich, and what Rich writes depends on the
+# environment it renders into: with colour enabled a styled word can carry
+# its escape sequences inside the word, and in a narrow options cell Rich
+# folds a long flag across lines. Both are rendering facts, not content
+# facts, and these assertions are about content — so they read the help with
+# the escape sequences stripped and the line breaks removed, which restores
+# any word Rich split. Measured on a GitHub ubuntu-26.04 runner (the minimal
+# gate shape): ``'--max-steps' in result.output`` is False there and True on
+# every terminal-less host, for the same command.
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _plain(output: str) -> str:
+    """Rendered CLI output as content: no escape sequences, no line breaks."""
+    return _ANSI.sub("", output).replace("\r", "").replace("\n", "")
+
+
 class TestCli:
     def test_command_is_registered(self) -> None:
         result = CliRunner().invoke(app, ["agent", "--help"])
 
         assert result.exit_code == 0
-        assert "--max-steps" in result.output
+        assert "--max-steps" in _plain(result.output)
 
     def test_unknown_mode_is_rejected_before_building_anything(self) -> None:
         result = CliRunner().invoke(app, ["agent", "hi", "--mode", "yolo"])
@@ -238,8 +256,9 @@ class TestCli:
         result = CliRunner().invoke(app, ["agent", "--help"])
 
         assert result.exit_code == 0
-        assert "--continue" in result.output
-        assert "--modality" in result.output
+        plain = _plain(result.output)
+        assert "--continue" in plain
+        assert "--modality" in plain
 
 
 class TestLatestSession:

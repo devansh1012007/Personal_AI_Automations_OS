@@ -752,18 +752,71 @@ class _Stub:
         }
 
 
+def _gnu_timeout() -> str:
+    """The path of a GNU coreutils ``timeout``, found by banner.
+
+    ``shutil.which("timeout")`` returns the FIRST ``timeout`` on PATH, and
+    on a GitHub ubuntu-26.04 runner that first hit does not answer the
+    script's version banner — the whole suite fails the gate with
+    ``'timeout' on PATH is not GNU coreutils'`` — while the same image
+    carries a real GNU coreutils ``timeout`` further down. The stub PATH is
+    meant to provision GNU coreutils' ``timeout`` (the thing the script
+    requires), so it is found deliberately: walk the PATH in order, then
+    the conventional locations, and take the first whose ``--version``
+    banner says GNU coreutils. The failure mode names every candidate it
+    saw, so a host where nothing qualifies is a readable fact rather than
+    a mystery.
+    """
+    candidates: list[str] = []
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if directory:
+            candidates.append(os.path.join(directory, "timeout"))
+    candidates += ("/usr/bin/timeout", "/bin/timeout")
+    seen: set[str] = set()
+    banners: list[str] = []
+    for candidate in candidates:
+        if candidate in seen or not os.path.isfile(candidate):
+            continue
+        seen.add(candidate)
+        if not os.access(candidate, os.X_OK):
+            continue
+        try:
+            probe = subprocess.run(
+                [candidate, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        first = (probe.stdout or probe.stderr).strip().splitlines()
+        banners.append(f"{candidate} -> {first[0] if first else '(no output)'}")
+        if "GNU coreutils" in probe.stdout:
+            return candidate
+    raise AssertionError(
+        "no GNU coreutils timeout found for the stub PATH; the candidates "
+        "seen were: " + "; ".join(banners)
+    )
+
+
 def _tool_path(root: Path, *, without: str = "") -> str:
     """A PATH holding the tools the script needs, minus one of them.
 
     The tools are symlinks into the real PATH, so the stub PATH is a real
     PATH with one program removed rather than a hand-made miniature of one.
+    ``timeout`` is the one exception: it is resolved by banner (see
+    :func:`_gnu_timeout`), because the first ``timeout`` on a PATH is not
+    always GNU's and the script refuses anything else.
     """
     directory = root / "tools"
     directory.mkdir(parents=True, exist_ok=True)
     for name in _TOOLS:
         if name == without:
             continue
-        found = shutil.which(name)
+        # `timeout` is resolved lazily — a test that EXCLUDES it must not
+        # need one to exist — and by banner, not by first PATH hit.
+        found = _gnu_timeout() if name == "timeout" else shutil.which(name)
         assert found is not None, f"{name} is not on PATH, and the test needs it"
         link = directory / name
         if not link.exists():
