@@ -120,9 +120,28 @@ class TestTheHappyPath:
         assert bundle_id in last_subject
 
         # 3. The improvement inherited the evidence chain: the bundle
-        #    verifies offline through the existing C7.2 verify path.
+        #    verifies offline through the existing C7.2 verify path. On a
+        #    host with real Ed25519 that is the full green verdict. On a
+        #    fallback-only host the cycle still commits (the operator's
+        #    --insecure-fallback-signing decision), and verify says the
+        #    honest thing: integrity checks pass, the signature check
+        #    refuses the symmetric fallback ("never trusted by default",
+        #    format.py::verify_attestation_signature) — the label is the
+        #    warning, not a silent pass.
+        from paa.attest.format import signing_is_secure
+
         verification = verify_bundle(bundle_dir)
-        assert verification.ok, [c.detail for c in verification.checks]
+        if signing_is_secure():
+            assert verification.ok, [c.detail for c in verification.checks]
+        else:
+            signature_check = next(
+                c for c in verification.checks if c.name == "signature"
+            )
+            assert not signature_check.ok
+            assert "hmac-dev-fallback" in signature_check.detail
+            assert all(
+                c.ok for c in verification.checks if c.name != "signature"
+            ), [c.detail for c in verification.checks]
         assert verification.approvals == 1
         assert verification.evidence_count >= 1
 

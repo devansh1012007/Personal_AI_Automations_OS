@@ -20,6 +20,7 @@ one-driver-two-doors claim, asserted rather than asserted-by-reading.
 
 from __future__ import annotations
 
+import re
 import sys
 import uuid
 from pathlib import Path
@@ -36,6 +37,20 @@ runner = CliRunner()
 # spelled so no test ever depends on this repository's own toolchain.
 _GREEN = [sys.executable, "-c", "raise SystemExit(0)"]
 _RED = [sys.executable, "-c", "raise SystemExit(2)"]
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _plain(output: str) -> str:
+    """Rendered CLI output as content: no escape sequences, no line breaks.
+
+    The W8-CI2 measurement on the runner: Rich's styled help wraps long
+    option names across lines there (``--gate`` split mid-token), intact on
+    every terminal-less host — the assertions are about content, so they
+    read the help the way the coder suite's ``--max-steps`` assertions
+    learned to (``tests/coder/test_agent.py``).
+    """
+    return _ANSI.sub("", output).replace("\r", "").replace("\n", "")
 
 
 @pytest.fixture(autouse=True)
@@ -128,8 +143,8 @@ class TestTheHelpAndTheDoor:
         result = runner.invoke(app, ["improve", "--help"])
         assert result.exit_code == 0
         assert "guarded self-improvement cycle" in result.stdout
-        assert "--gate" in result.stdout
-        assert "--repo" in result.stdout
+        assert "--gate" in _plain(result.stdout)
+        assert "--repo" in _plain(result.stdout)
 
     def test_a_missing_repo_refuses_at_the_door(self) -> None:
         result = runner.invoke(
@@ -322,5 +337,5 @@ class TestTheRegistryDoor:
         """
         result = runner.invoke(app, ["pipeline", "run", "--help"])
         assert result.exit_code == 0
-        assert "--gate" in result.stdout  # the improve-only option IS named
-        assert "insecure" not in result.stdout  # the fallback flag is NOT
+        assert "--gate" in _plain(result.stdout)  # the improve-only option IS named
+        assert "insecure" not in _plain(result.stdout)  # the fallback flag is NOT
