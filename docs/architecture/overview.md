@@ -158,7 +158,7 @@ Orchestrator phases (`src/paa/agents/orchestrator.py:401`):
    `max_step_retries`).
 6. `_commit` — `MUTATION_COMMITTED` (terminal).
 
-`src/paa/pipelines/builtin.py:602`–`808`.
+`src/paa/pipelines/builtin.py:656`–`862`.
 
 ## Delegation safety
 

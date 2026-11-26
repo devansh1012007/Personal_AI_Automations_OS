@@ -84,7 +84,7 @@ flowchart TD
 | Component | Responsibility | Entry point | Key dependencies | Consumers | State / side effects |
 |---|---|---|---|---|---|
 | `Runtime` (`runtime.py:168`) | Composition root; builds and closes the whole runtime; drives tasks | `Runtime.build()` (`runtime.py:353`) | `Database`, `LedgerStore`, agents, model router, storage substrates, recovery engine | CLI, API, daemon, coder agent | Opens DB; creates directories; runs boot recovery |
-| `ChiefOrchestrator` (`src/paa/agents/orchestrator.py:158`) | Host of the task lifecycle: submission, backpressure, recovery, gates, delegation; the strategy is the built-in pipeline (`src/paa/pipelines/builtin.py:539`) | `ChiefOrchestrator.run()` (`src/paa/agents/orchestrator.py:401`) | `LedgerStore`, all agents, queue, backpressure, recovery | `Runtime`, API (`/tasks`), daemon dispatch loop | Writes ledger events; enqueues tasks |
+| `ChiefOrchestrator` (`src/paa/agents/orchestrator.py:158`) | Host of the task lifecycle: submission, backpressure, recovery, gates, delegation; the strategy is the built-in pipeline (`src/paa/pipelines/builtin.py:593`) | `ChiefOrchestrator.run()` (`src/paa/agents/orchestrator.py:401`) | `LedgerStore`, all agents, queue, backpressure, recovery | `Runtime`, API (`/tasks`), daemon dispatch loop | Writes ledger events; enqueues tasks |
 | `LedgerStore` (`ledger/store.py:108`) | Append-only event log; idempotency, state_version, hash chain, head projection | `LedgerStore.append()` (`ledger/store.py:116`) | `Database` | Orchestrator, recovery, replay, API (`/ledger/{id}`), CLI (`paa ledger`) | Appends rows to `system_state_ledger`; updates `system_state_correlation_head` |
 | `Database` (`storage/relational/database.py:110`) | Async SQLite access layer; single writer + read pool; WAL | `Database.connect()` (`storage/relational/database.py:168`) | `aiosqlite`, `sqlite3` | Nearly every storage-writing/reading module | Creates/mutates `paa.db`; applies schema on connect |
 | `StrategicPlanner` (`agents/reasoning.py:62`) | Compiles a goal + context into ordered execution steps | `StrategicPlanner.handle()` (`reasoning.py:78`) | `ModelLike` (model adapter); `MODALITY_PROFILES` | Orchestrator (`_plan`) | Emits no events directly; returns plan dict |
@@ -212,12 +212,12 @@ paa agent "prompt" (cli/coder.py:44)
 
 - **Ledger before side effect:** Every pipeline stage writes its event (via
   the host's `emit`) before calling the agent or doing the work
-  (`src/paa/pipelines/builtin.py:602`–`786`).
+  (`src/paa/pipelines/builtin.py:656`–`840`).
 - **No model in control path:** `PolicyRiskAgent` has no provider dependency
   (`policy.py:7`); routing/gating are pure Python.
 - **Orchestrator mediates all delegation:** Agents call `self.delegate()` which
   routes through `ChiefOrchestrator.mediate_delegation` (`agents/base.py:373`,
-  `src/paa/pipelines/builtin.py:803`); the `DelegationGraph` enforces depth/cycle/node
+  `src/paa/pipelines/builtin.py:857`); the `DelegationGraph` enforces depth/cycle/node
   bounds (`delegation.py:87`).
 - **Storage substrates degrade, never raise:** `_try_vector/_try_graph/_try_queue`
   catch all exceptions and return `None` with a warning (`runtime.py:519`).

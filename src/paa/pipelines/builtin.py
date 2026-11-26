@@ -66,6 +66,7 @@ __all__ = [
     "BuiltinPlanExecuteCritique",
     "PipelineHost",
     "StageAgents",
+    "SubRunExecutor",
     "risk_score_of",
 ]
 
@@ -74,7 +75,11 @@ log = structlog.get_logger(__name__)
 #: What the built-in pipeline asks for. ``think``/``use_skill``/``recall``/
 #: ``remember``/``sub_run`` are absent on purpose: its agents own their models,
 #: its memory writes are the agents' own, and it never composes — every ask
-#: here is one the facade grants and the stages exercise.
+#: here is one the facade grants and the stages exercise. The manager
+#: (``builtin.manager``, C8.2) mints its facade with a *different* grant set
+#: — ``sub_run`` and a host-provided executor — through the same class's
+#: ``capabilities``/``sub_runs`` parameters, so composition reuses this door
+#: instead of growing a second one.
 _BUILTIN_CAPABILITIES = frozenset(
     {
         Capability.CALL_AGENT,
@@ -165,6 +170,25 @@ class PipelineHost(Protocol):
     ) -> GateQuestion | None: ...
 
 
+class SubRunExecutor(Protocol):
+    """What a host provides to execute one composed child run (C8.2, layer 4).
+
+    The composition engine lives in :mod:`paa.pipelines.compose` — the
+    budget halving, the recursion guard, the grants-from-the-child's-own-
+    declaration, the call-journal rows — and this protocol is the seam it
+    rides on: the facade types its ``sub_runs`` parameter against it, the
+    same way ``PipelineHost`` types the host services, so the pipeline
+    package's dependency stays one-way (builtin does not import compose;
+    compose imports builtin). A host that mints a facade granting
+    ``SUB_RUN`` provides the executor; every other facade leaves it unset
+    and ``sub_run`` refuses with the grant error, which is the discipline.
+    """
+
+    async def run_child(self, name: str, task_input: Mapping[str, Any]) -> PipelineResult:
+        """Run one named pipeline to a terminal result (the composer's contract)."""
+        ...
+
+
 @dataclass(slots=True)
 class StageAgents:
     """The built-in's stage slots: who plays each stage.
@@ -204,12 +228,28 @@ class BuiltinPipelineFacade:
     """
 
     def __init__(
-        self, host: PipelineHost, stages: StageAgents, agent_ctx: AgentContext
+        self,
+        host: PipelineHost,
+        stages: StageAgents,
+        agent_ctx: AgentContext,
+        *,
+        capabilities: frozenset[Capability] | None = None,
+        sub_runs: SubRunExecutor | None = None,
     ) -> None:
         self._host = host
         self._stages = stages
         self._agent_ctx = agent_ctx
-        self._grants = CapabilitySet.mint(_BUILTIN_CAPABILITIES)
+        # The default ask is the built-in's five; a composing run (the
+        # manager, C8.2) passes its own set — ``sub_run`` plus whatever
+        # else its declaration asked for — because the grant set is the
+        # pipeline's declaration, never the host's generosity.
+        self._grants = CapabilitySet.mint(
+            capabilities if capabilities is not None else _BUILTIN_CAPABILITIES
+        )
+        # The layer-4 executor: present exactly when the host minted a
+        # composing facade. Absent, sub_run refuses by grant first (the
+        # default path) — the door and the key are separate disciplines.
+        self._sub_runs = sub_runs
         # Seeded from the run's correlation id (not a fresh uuid4, which
         # would make every minted facade — including the shim's — a different
         # "run"): a re-run of the same lineage replays the same values, which
@@ -479,9 +519,23 @@ class BuiltinPipelineFacade:
         )
 
     async def sub_run(self, name: str, task_input: Mapping[str, Any]) -> PipelineResult:
-        """The built-in does not compose — composition is layer 4, later phases."""
+        """Run another pipeline — composition, layer 4 (C8.2).
+
+        The built-in plan-execute-critique pipeline never composes (it is
+        a worker), so the facade it runs on carries no ``SUB_RUN`` grant
+        and this method refuses. The manager's facade — minted by the
+        composition driver with ``sub_run`` granted and the host's
+        executor wired in — delegates: the executor (see
+        :mod:`paa.pipelines.compose`) resolves the child in the registry,
+        halves the budget, guards the recursion, journals the call, runs
+        the child to completion, and returns its result. A child's own
+        failure comes back as the child's failed result; the composition
+        contract's errors (guards, budgets, replay halts) raise.
+        """
         self._grants.require(Capability.SUB_RUN)
-        raise CapabilityNotGrantedError(Capability.SUB_RUN.value)  # pragma: no cover
+        if self._sub_runs is None:
+            raise CapabilityNotGrantedError(Capability.SUB_RUN.value)  # pragma: no cover
+        return await self._sub_runs.run_child(name, task_input)
 
     async def now(self) -> datetime:
         """Recorded time — journalled when the journal lands (ADR-0050)."""

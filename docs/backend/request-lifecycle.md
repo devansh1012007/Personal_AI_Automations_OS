@@ -26,51 +26,51 @@ modality profile (`_context_for`, `src/paa/agents/orchestrator.py:464`).
 
 ## Phase 2 — Hydrate context
 
-`_hydrate()` (`src/paa/pipelines/builtin.py:602`):
+`_hydrate()` (`src/paa/pipelines/builtin.py:656`):
 - If a context packet already exists, skip.
-- Emits `CONTEXT_HYDRATION_REQUESTED` (`src/paa/pipelines/builtin.py:631`).
+- Emits `CONTEXT_HYDRATION_REQUESTED` (`src/paa/pipelines/builtin.py:685`).
 - Sends `CONTEXT_REQUEST` to the planner context builder
   (`context_agents.py:377`).
 - If the result is `HARD_STOP_ESCALATE_TO_USER` (insufficient density), emits
-  `AWAITING_HUMAN_ATTESTATION` and returns (`src/paa/pipelines/builtin.py:659`).
-- Otherwise emits `CONTEXT_HYDRATED` with the packet (`src/paa/pipelines/builtin.py:670`).
+  `AWAITING_HUMAN_ATTESTATION` and returns (`src/paa/pipelines/builtin.py:713`).
+- Otherwise emits `CONTEXT_HYDRATED` with the packet (`src/paa/pipelines/builtin.py:724`).
 
 Every emit re-projects (`project()`) so the next phase reads current state.
 
 ## Phase 3 — Plan
 
-`_plan()` (`src/paa/pipelines/builtin.py:678`):
+`_plan()` (`src/paa/pipelines/builtin.py:732`):
 - If steps already exist or no planner, skip.
 - SIMPLE modality bypasses the model: emits `PLAN_COMPILED` with a single
   step (`execution_steps: [{action: goal, agent: worker}]`) and
-  `bypassed_planner: true` (`src/paa/pipelines/builtin.py:315`).
+  `bypassed_planner: true` (`src/paa/pipelines/builtin.py:355`).
 - Otherwise sends `PLAN_PROPOSAL` to the strategic planner
   (`reasoning.py:78`). The planner returns `execution_steps` (and
   `step_requirements`); each step may carry passthrough keys (`command`,
   `required_permissions`, `path`, `risk_profile`, `always_human_gate`) which
   are preserved by `_normalise` (`reasoning.py:155`).
 - Validates `len(steps) <= profile.max_plan_nodes()`; raises
-  `RecursionGuardError` if exceeded (`src/paa/pipelines/builtin.py:308`).
-- Emits `PLAN_COMPILED` (`src/paa/pipelines/builtin.py:324`).
+  `RecursionGuardError` if exceeded (`src/paa/pipelines/builtin.py:348`).
+- Emits `PLAN_COMPILED` (`src/paa/pipelines/builtin.py:364`).
 
 ## Phase 4 — Policy check
 
-`_check_policy()` (`src/paa/pipelines/builtin.py:331`):
+`_check_policy()` (`src/paa/pipelines/builtin.py:371`):
 - If a policy decision already exists or no policy agent, skip.
 - Sends `POLICY_CHECK` to `PolicyRiskAgent` (`policy.py:139`).
 - On blocked verdict (`STATUS_BLOCKED`) or `result.ok == False`:
   - anti-goal match → `SECURITY_VIOLATION`; else `POLICY_BLOCKED`
-    (`src/paa/pipelines/builtin.py:378`).
+    (`src/paa/pipelines/builtin.py:418`).
   - Returns; phase becomes `BLOCKED` (terminal).
 - On `requires_human_gate`: emits `AWAITING_HUMAN_ATTESTATION`; phase parks
   (`src/paa/agents/orchestrator.py:583`). Never auto-clears across restart
   (`ledger/replay.py:62`).
-- Otherwise emits `POLICY_CLEARED` with `risk_score` (`src/paa/pipelines/builtin.py:443`);
+- Otherwise emits `POLICY_CLEARED` with `risk_score` (`src/paa/pipelines/builtin.py:483`);
   phase becomes `EXECUTING`.
 
 ## Phase 5 — Execute steps
 
-`_execute_steps()` (`src/paa/pipelines/builtin.py:712`). For each step not already in
+`_execute_steps()` (`src/paa/pipelines/builtin.py:766`). For each step not already in
 `completed_steps` (resume support):
 
 ```
@@ -93,11 +93,11 @@ else (budget exhausted):
 
 `EXECUTION_COMPLETED` fires **per step**, not per task, and is not terminal
 (`ADR-0010`). After each step, the orchestrator re-projects
-(`src/paa/pipelines/builtin.py:777`).
+(`src/paa/pipelines/builtin.py:831`).
 
 ## Phase 6 — Commit
 
-`_commit()` (`src/paa/pipelines/builtin.py:454`) emits `MUTATION_COMMITTED`
+`_commit()` (`src/paa/pipelines/builtin.py:494`) emits `MUTATION_COMMITTED`
 {steps_completed, tokens_consumed}; phase becomes `COMMITTED` (terminal).
 
 ## Alternative and failure paths

@@ -192,7 +192,7 @@ rename) with in-memory rollback journal (`validation/patch.py:693`).
 
 ### Commit
 On `CRITIQUE_CONCLUDED` verdict `PASS`, orchestrator emits `EXECUTION_COMPLETED`;
-after all steps, `MUTATION_COMMITTED` (`src/paa/pipelines/builtin.py:454`). The worker never
+after all steps, `MUTATION_COMMITTED` (`src/paa/pipelines/builtin.py:494`). The worker never
 applies its own patch — the host validates and commits (`reasoning.py` docstring,
 RFC §14.3).
 

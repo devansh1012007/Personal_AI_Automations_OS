@@ -9,17 +9,17 @@ Traces a task parked on `AWAITING_HUMAN_ATTESTATION` and later cleared via
 
 Two gate points in the built-in pipeline's `run()`:
 
-1. **Context hydration** (`src/paa/pipelines/builtin.py:602`): if the planner context packet's
+1. **Context hydration** (`src/paa/pipelines/builtin.py:656`): if the planner context packet's
    `routing_directive` is `HARD_STOP_ESCALATE_TO_USER` (density < 0.40), emit
    `AWAITING_HUMAN_ATTESTATION` with `{reason: "insufficient context density",
    vacant_slots: [...]}` and return (`:527`).
 
-2. **Policy check** (`src/paa/pipelines/builtin.py:331`): if `PolicyRiskAgent` returns
+2. **Policy check** (`src/paa/pipelines/builtin.py:371`): if `PolicyRiskAgent` returns
    `requires_human_gate` (e.g. SUPERVISED mode + mutating step, risk ≥ 0.5 in
    ASK, `always_gate_risk_profile ≥ 0.90`, `policy.py:318`), emit
-   `AWAITING_HUMAN_ATTESTATION` with `{reason, ...}` and return (`src/paa/pipelines/builtin.py:439`).
+   `AWAITING_HUMAN_ATTESTATION` with `{reason, ...}` and return (`src/paa/pipelines/builtin.py:479`).
 
-3. **Post-execution** (`src/paa/pipelines/builtin.py:582`): after `_execute_steps`, if
+3. **Post-execution** (`src/paa/pipelines/builtin.py:636`): after `_execute_steps`, if
    `state.phase is AWAITING_HUMAN`, return (`:423`).
 
 The `TaskProjection.phase` becomes `AWAITING_HUMAN`; `is_resumable` is
@@ -30,7 +30,7 @@ The `TaskProjection.phase` becomes `AWAITING_HUMAN`; `is_resumable` is
 
 | Event | Payload | File |
 |---|---|---|
-| `AWAITING_HUMAN_ATTESTATION` | `{reason, vacant_slots?}` | `src/paa/pipelines/builtin.py:662` / `:664` |
+| `AWAITING_HUMAN_ATTESTATION` | `{reason, vacant_slots?}` | `src/paa/pipelines/builtin.py:716` / `:718` |
 | `HUMAN_GATE_CLEARED` | `{resume_phase, note}` | `src/paa/agents/orchestrator.py:773` |
 | `HUMAN_GATE_REJECTED` | `{resume_phase, note}` | `src/paa/agents/orchestrator.py:773` |
 
@@ -110,7 +110,7 @@ sequenceDiagram
 
 | Condition | Behavior | Source |
 |---|---|---|
-| Gate cleared on non-parked task | `PaaError` "task is not awaiting human attestation" → API 409 | `src/paa/pipelines/builtin.py:390`, `api/app.py:136` |
+| Gate cleared on non-parked task | `PaaError` "task is not awaiting human attestation" → API 409 | `src/paa/pipelines/builtin.py:430`, `api/app.py:136` |
 | Recovery encounters AWAITING_HUMAN | `PARKED_HUMAN`; left across restart | `recovery.py:1105` |
 | Automated path tries to clear | Not possible — no internal caller | `src/paa/agents/orchestrator.py:722` |
 

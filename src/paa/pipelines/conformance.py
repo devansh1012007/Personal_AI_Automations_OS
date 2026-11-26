@@ -57,6 +57,7 @@ __all__ = [
     "coder_conformance",
     "every_builtin_conformance",
     "improve_conformance",
+    "manager_conformance",
     "observe_conformance",
     "render_reports",
 ]
@@ -1466,6 +1467,345 @@ async def improve_conformance(ledger: LedgerStore, tmp_path: Path) -> Conformanc
 
 
 # ---------------------------------------------------------------------------
+# builtin.manager — the composition manager, pipeline #5 (C8.2)
+# ---------------------------------------------------------------------------
+
+
+async def manager_conformance(ledger: LedgerStore) -> ConformanceReport:
+    """The six checks over ``builtin.manager``, in the composition vocabulary.
+
+    What the vocabulary can promise for real, checked for real against
+    scripted workers (the registered builtins stand in as delegation
+    targets; the runner is the host's act of trusting one, so a scripted
+    runner exercises exactly the composition contract): the delegation
+    call sequence, the divergence halt on a changed decomposition, the
+    D-6 refusal around an interrupted delegation, the mid-child cancel,
+    the ``max_sub_runs`` rule, and the hash-attested delegation inputs.
+    """
+    from paa.core.errors import BudgetExceededError
+    from paa.ledger.events import canonical_json
+    from paa.pipelines.base import (
+        OutcomeUnknownError,
+        PipelineDivergedError,
+        PipelineResult,
+        PipelineStatus,
+        PipelineTask,
+        RunLimits,
+    )
+    from paa.pipelines.compose import ChildRun, ManagerPipeline, run_composition
+    from paa.pipelines.registry import PipelineRegistry
+
+    registry = PipelineRegistry(local_dir=None)
+
+    class _Worker:
+        """A scripted worker: counts executions, returns a fixed result."""
+
+        def __init__(self, summary: str, *, slow: bool = False) -> None:
+            self._summary = summary
+            self._slow = slow
+            self.executions = 0
+
+        async def __call__(self, run: ChildRun) -> PipelineResult:
+            self.executions += 1
+            if self._slow:
+                await asyncio.sleep(0.05)
+            return PipelineResult(
+                status=PipelineStatus.COMPLETED,
+                summary=self._summary,
+                metrics={"worker": run.name},
+            )
+
+    def plan() -> list[dict[str, Any]]:
+        return [
+            {"pipeline": "builtin.chat", "goal": "greet the operator"},
+            {"pipeline": "coder.tool-loop", "goal": "close the failing test"},
+        ]
+
+    def workers(*, slow_chat: bool = False) -> dict[str, _Worker]:
+        return {
+            "builtin.chat": _Worker("chat done", slow=slow_chat),
+            "coder.tool-loop": _Worker("coder done"),
+        }
+
+    async def drive(
+        run_id: uuid.UUID,
+        request: dict[str, Any],
+        runners: dict[str, _Worker],
+        *,
+        limits: RunLimits | None = None,
+        replay: ReplayView | None = None,
+    ) -> Any:
+        task = PipelineTask(
+            correlation_id=run_id, session_id=None, goal="conform", request=request
+        )
+        _, result = await run_composition(
+            ledger, task, runners=runners, registry=registry, limits=limits, replay=replay
+        )
+        return result
+
+    def shape(records: list[Any]) -> list[tuple[Any, ...]]:
+        return [(r.seq, r.method, r.fingerprint, r.outcome) for r in records]
+
+    # -- 1. double-run call-sequence equality -----------------------------
+    run_a, run_b = uuid.uuid4(), uuid.uuid4()
+    result_a = await drive(run_a, {"delegations": plan()}, runners=workers())
+    result_b = await drive(run_b, {"delegations": plan()}, runners=workers())
+    fold_a = await read_call_journal(ledger, run_a)
+    fold_b = await read_call_journal(ledger, run_b)
+    if (
+        shape(fold_a) == shape(fold_b)
+        and len(fold_a) == 2
+        and result_a.status is PipelineStatus.COMPLETED
+        and result_b.status is PipelineStatus.COMPLETED
+        and result_a.metrics.get("delegations") == 2
+    ):
+        double_run = ConformanceCheck.passed(
+            CHECK_NAMES[0],
+            "two fresh composition runs over the same two-delegation plan "
+            "folded to the same 2-call sequence (sub_run x2, COMPLETED)",
+        )
+    else:
+        double_run = ConformanceCheck.failed(
+            CHECK_NAMES[0],
+            f"sequences differ: {shape(fold_a)} vs {shape(fold_b)} "
+            f"status={result_a.status.value}/{result_b.status.value}",
+        )
+
+    # -- 2. divergence halt ------------------------------------------------
+    fresh = workers()
+    halted = False
+    diverged_row = False
+    wrong_exc: str | None = None
+    changed = [
+        {"pipeline": "builtin.chat", "goal": "changed mid-replay"},
+        {"pipeline": "coder.tool-loop", "goal": "close the failing test"},
+    ]
+    try:
+        await drive(
+            run_a,
+            {"delegations": changed},
+            runners=fresh,
+            replay=await ReplayView.load(ledger, run_a),
+        )
+    except PipelineDivergedError:
+        halted = True
+        rows = await ledger.read_correlation(run_a)
+        diverged_row = any(
+            e.event_type.value == "PIPELINE_RUN_DIVERGED" for e in rows
+        )
+    except Exception as exc:  # a halt of the wrong kind is a finding
+        wrong_exc = f"{type(exc).__name__}: {exc}"
+    untouched = all(w.executions == 0 for w in fresh.values())
+    if halted and diverged_row and untouched:
+        divergence = ConformanceCheck.passed(
+            CHECK_NAMES[1],
+            "a re-run whose first delegation changed diverged the replay before "
+            "any worker executed; the run halted with PIPELINE_RUN_DIVERGED",
+        )
+    else:
+        divergence = ConformanceCheck.failed(
+            CHECK_NAMES[1],
+            f"halted={halted} diverged_row={diverged_row} "
+            f"untouched={untouched} wrong_exc={wrong_exc}",
+        )
+
+    # -- 3. unknown-outcome never auto-repeats ------------------------------
+    # The manager's own vocabulary journals a mutating call (``sub_run``),
+    # so D-6 is checkable here for real: the crash prefix below is exactly
+    # the row set a killed process leaves — run_started plus the first
+    # delegation's PROPOSED row, no outcome — written through the journal's
+    # own front door, not a hand-forged shape.
+    run_u = uuid.uuid4()
+    goal_u = "interrupted delegation"
+    journal_u = CallJournal(ledger, run_u)
+    await journal_u.run_started(
+        ManagerPipeline.name, ManagerPipeline.version, run_kind="composition"
+    )
+    await journal_u.call_proposed(
+        1, "sub_run", {"pipeline": "builtin.chat", "task_input": {"goal": goal_u}}
+    )
+    refused_u = False
+    wrong_exc_u: str | None = None
+    workers_u = workers()
+    try:
+        await drive(
+            run_u,
+            {"delegations": [{"pipeline": "builtin.chat", "goal": goal_u}]},
+            runners=workers_u,
+            replay=await ReplayView.load(ledger, run_u),
+        )
+    except OutcomeUnknownError:
+        refused_u = True
+    except Exception as exc:
+        wrong_exc_u = f"{type(exc).__name__}: {exc}"
+    untouched_u = all(w.executions == 0 for w in workers_u.values())
+    rows_u = await ledger.read_correlation(run_u)
+    failed_row_u = any(e.event_type is EventType.PIPELINE_RUN_FAILED for e in rows_u)
+    if refused_u and untouched_u and failed_row_u:
+        unknown = ConformanceCheck.passed(
+            CHECK_NAMES[2],
+            "a crash that left the first sub_run PROPOSED refused the re-run "
+            "with OutcomeUnknownError before any worker executed — sub_run can "
+            "mutate, so it is never auto-repeated (D-6)",
+        )
+    else:
+        unknown = ConformanceCheck.failed(
+            CHECK_NAMES[2],
+            f"refused={refused_u} untouched={untouched_u} "
+            f"failed_row={failed_row_u} wrong_exc={wrong_exc_u}",
+        )
+
+    # -- 4. cancel within grace ---------------------------------------------
+    run_c = uuid.uuid4()
+    slow = workers(slow_chat=True)
+    task_c = asyncio.create_task(drive(run_c, {"delegations": plan()}, runners=slow))
+    await asyncio.sleep(0.02)
+    task_c.cancel()
+    cancelled_cleanly = False
+    try:
+        await task_c
+    except asyncio.CancelledError:
+        cancelled_cleanly = True
+    fold_c = await read_call_journal(ledger, run_c)
+    rows_c = await ledger.read_correlation(run_c)
+    failed_seqs: set[int] = set()
+    for e in rows_c:
+        seq = e.payload.get("seq")
+        if (
+            e.event_type is EventType.PIPELINE_CALL_FAILED
+            and e.payload.get("reason") == "cancelled"
+            and isinstance(seq, int)
+            and not isinstance(seq, bool)
+        ):
+            failed_seqs.add(seq)
+    dangling_c = [r.seq for r in fold_c if r.outcome is CallOutcome.PROPOSED]
+    no_run_completed_c = not any(
+        e.event_type is EventType.PIPELINE_RUN_COMPLETED for e in rows_c
+    )
+    if cancelled_cleanly and failed_seqs and not dangling_c and no_run_completed_c:
+        cancel = ConformanceCheck.passed(
+            CHECK_NAMES[3],
+            f"the cancel landed inside the slow child; seq(s) {sorted(failed_seqs)} "
+            "closed as PIPELINE_CALL_FAILED(reason='cancelled') with no dangling "
+            "PROPOSED and no PIPELINE_RUN_COMPLETED",
+        )
+    else:
+        cancel = ConformanceCheck.failed(
+            CHECK_NAMES[3],
+            f"cancelled_cleanly={cancelled_cleanly} failed={sorted(failed_seqs)} "
+            f"dangling={dangling_c} run_completed={not no_run_completed_c}",
+        )
+
+    # -- 5. budget exhaustion ------------------------------------------------
+    run_e = uuid.uuid4()
+    workers_e = workers()
+    budget_kind: str | None = None
+    wrong_exc_e: str | None = None
+    try:
+        await drive(
+            run_e,
+            {"delegations": plan()},
+            runners=workers_e,
+            limits=RunLimits(
+                max_tokens=1000, max_wall_s=60, max_calls=100, max_sub_runs=1
+            ),
+        )
+    except BudgetExceededError as exc:
+        budget_kind = exc.budget_kind
+    except Exception as exc:
+        wrong_exc_e = f"{type(exc).__name__}: {exc}"
+    fold_e = await read_call_journal(ledger, run_e)
+    rows_e = await ledger.read_correlation(run_e)
+    first_completed = any(
+        r.seq == 1 and r.outcome is CallOutcome.COMPLETED for r in fold_e
+    )
+    dangling_e = [r.seq for r in fold_e if r.outcome is CallOutcome.PROPOSED]
+    second_never_proposed = not any(
+        e.event_type is EventType.PIPELINE_CALL_PROPOSED and e.payload.get("seq") == 2
+        for e in rows_e
+    )
+    if (
+        budget_kind == "sub_run"
+        and first_completed
+        and not dangling_e
+        and second_never_proposed
+        and workers_e["builtin.chat"].executions == 1
+        and workers_e["coder.tool-loop"].executions == 0
+    ):
+        budget = ConformanceCheck.passed(
+            CHECK_NAMES[4],
+            "max_sub_runs=1: the first delegation completed and ran, the "
+            "second was refused by BudgetExceededError(sub_run) before its "
+            "PROPOSED row and never executed — by rule, not by crash",
+        )
+    else:
+        budget = ConformanceCheck.failed(
+            CHECK_NAMES[4],
+            f"budget_kind={budget_kind} first_completed={first_completed} "
+            f"dangling={dangling_e} second_proposed={not second_never_proposed} "
+            f"first_ran={workers_e['builtin.chat'].executions} "
+            f"second_ran={workers_e['coder.tool-loop'].executions} "
+            f"wrong_exc={wrong_exc_e}",
+        )
+
+    # -- 6. no secrets in the journal ----------------------------------------
+    # The composition vocabulary's promise: delegation *inputs* are attested
+    # by hash, never stored as text — the PROPOSED row carries the params'
+    # canonical-JSON SHA-256 and a shape-only preview. Child results ride
+    # the COMPLETED row by value (that is what replay serves), so the
+    # seeded marker rides the input side, where the promise lives.
+    secret = _marker()
+    run_s = uuid.uuid4()
+    goal_s = f"summarize {secret}"
+    await drive(
+        run_s,
+        {"delegations": [{"pipeline": "builtin.chat", "goal": goal_s}]},
+        runners=workers(),
+    )
+    texts = await _payload_texts(ledger, run_s)
+    leaked = [t for t in texts if secret in t]
+    rows_s = await ledger.read_correlation(run_s)
+    proposed_s = [
+        e for e in rows_s if e.event_type is EventType.PIPELINE_CALL_PROPOSED
+    ]
+    expected_sha = hashlib.sha256(
+        canonical_json(
+            {"pipeline": "builtin.chat", "task_input": {"goal": goal_s}}
+        ).encode("utf-8")
+    ).hexdigest()
+    goal_hash = hashlib.sha256(goal_s.encode("utf-8")).hexdigest()[:8]
+    attested = [e.payload.get("params_sha256") for e in proposed_s]
+    shape_text = str([e.payload.get("params_shape") for e in proposed_s])
+    if not leaked and attested == [expected_sha] and goal_hash in shape_text:
+        secrets = ConformanceCheck.passed(
+            CHECK_NAMES[5],
+            "the seeded delegation-goal marker appears in no payload text; the "
+            "PROPOSED row attests the params by params_sha256 and renders the "
+            "goal only as its length+hash prefix",
+        )
+    else:
+        secrets = ConformanceCheck.failed(
+            CHECK_NAMES[5],
+            f"leaked={len(leaked)} attested={attested} "
+            f"expected={expected_sha} shape_has_hash={goal_hash in shape_text}",
+        )
+
+    return ConformanceReport(
+        pipeline=ManagerPipeline.name,
+        checks=_checks(
+            **{
+                CHECK_NAMES[0]: double_run,
+                CHECK_NAMES[1]: divergence,
+                CHECK_NAMES[2]: unknown,
+                CHECK_NAMES[3]: cancel,
+                CHECK_NAMES[4]: budget,
+                CHECK_NAMES[5]: secrets,
+            }
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
 # The CI entry
 # ---------------------------------------------------------------------------
 
@@ -1486,6 +1826,7 @@ async def every_builtin_conformance(
         await chat_conformance(tmp_path),
         await coder_conformance(ledger, tmp_path),
         await observe_conformance(ledger, tmp_path),
+        await manager_conformance(ledger),
         await improve_conformance(ledger, tmp_path),
     ]
     covered = {report.pipeline for report in reports}

@@ -41,7 +41,7 @@ is durable before any work (`orchestrator.py` docstring).
 
 ### 3. Hydrate — build context packet
 
-`_hydrate()` (`src/paa/pipelines/builtin.py:602`):
+`_hydrate()` (`src/paa/pipelines/builtin.py:656`):
 1. Skip if `context_packet` already present (resume).
 2. Emit `CONTEXT_HYDRATION_REQUESTED`.
 3. `PlannerContextBuilder.run(message, ctx)` (`context_agents.py:377`):
@@ -52,15 +52,15 @@ is durable before any work (`orchestrator.py` docstring).
    - `_graph_neighbours()` — bounded traversal by `graph_hops`.
    - `BoundedContextGatherer.compile()` packs within `token_ceiling` (1500).
 4. If `routing_directive == HARD_STOP_ESCALATE_TO_USER` → emit
-   `AWAITING_HUMAN_ATTESTATION` (parks; `src/paa/pipelines/builtin.py:659`), return.
-5. Emit `CONTEXT_HYDRATED` with `context_packet` (`src/paa/pipelines/builtin.py:670`).
+   `AWAITING_HUMAN_ATTESTATION` (parks; `src/paa/pipelines/builtin.py:713`), return.
+5. Emit `CONTEXT_HYDRATED` with `context_packet` (`src/paa/pipelines/builtin.py:724`).
 
 ### 4. Plan — compile execution steps
 
-`_plan()` (`src/paa/pipelines/builtin.py:678`):
+`_plan()` (`src/paa/pipelines/builtin.py:732`):
 1. Skip if `plan_steps` already present (resume).
 2. SIMPLE: emit `PLAN_COMPILED` with one step (`{action: goal, agent: worker}`,
-   `bypassed_planner: true`) (`src/paa/pipelines/builtin.py:315`).
+   `bypassed_planner: true`) (`src/paa/pipelines/builtin.py:355`).
 3. Else `StrategicPlanner.run(message, ctx)` (`reasoning.py:78`):
    - Model `complete_structured` with `_PLAN_SCHEMA` (requires `execution_steps`)
      (`reasoning.py:95`); one retry on failure (`:93`); deterministic fallback
@@ -68,12 +68,12 @@ is durable before any work (`orchestrator.py` docstring).
    - `_normalise()` preserves passthrough keys (`command`, `required_permissions`,
      `path`, `risk_profile`, ...) — security requirement (`:155`).
    - Validate `len(steps) <= max_plan_nodes()`; else `RecursionGuardError`
-     (`src/paa/pipelines/builtin.py:308`).
-4. Emit `PLAN_COMPILED` with `execution_steps` + `step_requirements` (`src/paa/pipelines/builtin.py:324`).
+     (`src/paa/pipelines/builtin.py:348`).
+4. Emit `PLAN_COMPILED` with `execution_steps` + `step_requirements` (`src/paa/pipelines/builtin.py:364`).
 
 ### 5. Policy — deterministic risk gate
 
-`_check_policy()` (`src/paa/pipelines/builtin.py:331`):
+`_check_policy()` (`src/paa/pipelines/builtin.py:371`):
 1. Skip if `policy_decision` already present (resume).
 2. `PolicyRiskAgent.run(message, ctx)` (`policy.py:139`):
    - Permissions check (`:174`), LOCKDOWN network (`:194`), irreversible ops
@@ -81,13 +81,13 @@ is durable before any work (`orchestrator.py` docstring).
      anti-goals (cosine ≥ 0.82 or phrase match, `:262`).
    - Risk score [0,1]; `_needs_gate()` decides human-gate need by mode (`:318`).
 3. Blocked → `POLICY_BLOCKED` (or `SECURITY_VIOLATION` on anti-goal) → phase
-   `BLOCKED` (terminal) (`src/paa/pipelines/builtin.py:378`).
-4. Human gate required → `AWAITING_HUMAN_ATTESTATION` → phase parks (`src/paa/pipelines/builtin.py:439`).
-5. Cleared → `POLICY_CLEARED` + `risk_score` → phase `EXECUTING` (`src/paa/pipelines/builtin.py:443`).
+   `BLOCKED` (terminal) (`src/paa/pipelines/builtin.py:418`).
+4. Human gate required → `AWAITING_HUMAN_ATTESTATION` → phase parks (`src/paa/pipelines/builtin.py:479`).
+5. Cleared → `POLICY_CLEARED` + `risk_score` → phase `EXECUTING` (`src/paa/pipelines/builtin.py:483`).
 
 ### 6. Execute steps — per step in sandbox
 
-`_execute_steps()` (`src/paa/pipelines/builtin.py:712`). For each step not in
+`_execute_steps()` (`src/paa/pipelines/builtin.py:766`). For each step not in
 `completed_steps`:
 
 ```
@@ -109,11 +109,11 @@ on budget exhausted: raise PaaError → EXECUTION_FAILED (terminal)
 
 `EXECUTION_COMPLETED` fires **per step**, not per task; phase stays `EXECUTING`
 until all steps done (`ledger/replay.py:240`, ADR-0010). Re-project after each step
-(`src/paa/pipelines/builtin.py:777`).
+(`src/paa/pipelines/builtin.py:831`).
 
 ### 7. Commit — terminal
 
-`_commit()` (`src/paa/pipelines/builtin.py:454`): emit `MUTATION_COMMITTED`
+`_commit()` (`src/paa/pipelines/builtin.py:494`): emit `MUTATION_COMMITTED`
 {steps_completed, tokens_consumed}; phase `COMMITTED` (terminal).
 
 ## Sequence diagram

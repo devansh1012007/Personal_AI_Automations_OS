@@ -19,9 +19,9 @@ No tracked files were modified during this audit.
 
 | Capability | Status | Evidence and conclusion |
 |---|---|---|
-| Built-in task lifecycle | **Working** | `src/paa/agents/orchestrator.py:401-462` hosts the run; since P1.2 the strategy is `BuiltinPlanExecuteCritique` (`src/paa/pipelines/builtin.py:539-808`) over the frozen facade — hydrate → plan → policy → execute/critique/retry → commit. |
+| Built-in task lifecycle | **Working** | `src/paa/agents/orchestrator.py:401-462` hosts the run; since P1.2 the strategy is `BuiltinPlanExecuteCritique` (`src/paa/pipelines/builtin.py:593-862`) over the frozen facade — hydrate → plan → policy → execute/critique/retry → commit. |
 | Runtime composition | **Partially supported** | `src/paa/runtime.py:232-345` wires the built-in runtime, but `Runtime.build()` accepts no pipeline registry, pipeline implementation, or arbitrary loop host. |
-| Planner/worker/policy/critic chain | **Working** | `src/paa/pipelines/builtin.py:602-808`; tests in `tests/agents/test_orchestrator.py:64-210` cover ordering, policy blocking, retry, gates, and resumed steps. |
+| Planner/worker/policy/critic chain | **Working** | `src/paa/pipelines/builtin.py:656-862`; tests in `tests/agents/test_orchestrator.py:64-210` cover ordering, policy blocking, retry, gates, and resumed steps. |
 | Deterministic permissions and risk checks | **Working** | `src/paa/agents/policy.py:122-183`; policy is model-independent and covers permissions, lockdown/network, irreversible operations, protected paths, operator rules, and anti-goals. |
 | Worker sandbox and validation | **Working on the built-in path** | `src/paa/runtime.py:660-719` composes `CriticValidatorAdapter`, `DeterministicValidationEngine`, sandbox, and `WorkerCell`. |
 | Append-only ledger | **Working** | `src/paa/ledger/store.py:102-166` performs idempotency, state versioning, hash chaining, event insertion, and head projection atomically. |
@@ -53,8 +53,8 @@ A developer can add tools/skills or build a separate application around the code
 
 At audit time, `ChiefOrchestrator.run()` directly invoked every stage and
 there was no dispatch boundary. P1.2 closed exactly this: the stages moved to
-`BuiltinPlanExecuteCritique` (`src/paa/pipelines/builtin.py:602-808`) behind the
-frozen `CapabilityFacade` (`src/paa/pipelines/builtin.py:331-476`), and the
+`BuiltinPlanExecuteCritique` (`src/paa/pipelines/builtin.py:656-862`) behind the
+frozen `CapabilityFacade` (`src/paa/pipelines/builtin.py:371-516`), and the
 orchestrator became the host (submission, backpressure, recovery, gates,
 failure recording). Replacing the strategy is now a pipeline swap, not a
 source change.

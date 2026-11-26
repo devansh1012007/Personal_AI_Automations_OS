@@ -358,3 +358,97 @@ class TestSetCoercion:
         wrong_type: dict[str, Any] = {"label": 1}
         with pytest.raises(typer.Exit):
             _validate_sets(wrong_type, declared)
+
+
+class TestManagerRun:
+    def test_list_names_the_manager(self) -> None:
+        result = runner.invoke(app, ["pipeline", "list"])
+        assert result.exit_code == 0
+        assert "builtin.manager" in result.stdout
+
+    def test_manager_runs_two_delegations_end_to_end(
+        self, tmp_path: Path
+    ) -> None:
+        """Two different workers, aggregated, journalled, traceable."""
+        import json
+
+        goal = json.dumps(
+            {
+                "delegations": [
+                    {"pipeline": "builtin.chat", "goal": "greet"},
+                    {"pipeline": "coder.tool-loop", "goal": "fix"},
+                ]
+            }
+        )
+        run = runner.invoke(
+            app, ["pipeline", "run", "builtin.manager", "--goal", goal]
+        )
+        assert run.exit_code == 0
+        assert "completed" in run.stdout
+        # The aggregate line and both children are on the surface.
+        assert "2 delegation(s)" in run.stdout
+        assert "builtin.chat" in run.stdout
+        assert "coder.tool-loop" in run.stdout
+        # The lineage id is printed for the trace.
+        correlation = next(
+            line.split("correlation:")[1].strip()
+            for line in run.stdout.splitlines()
+            if line.startswith("correlation:")
+        )
+        trace = runner.invoke(app, ["pipeline", "trace", correlation])
+        assert trace.exit_code == 0
+        assert "PIPELINE_RUN_STARTED" in trace.stdout
+        assert "sub_run" in trace.stdout
+        assert "PIPELINE_RUN_COMPLETED" in trace.stdout
+
+    def test_manager_refuses_malformed_delegations_cleanly(self) -> None:
+        """A non-object goal or a malformed decomposition refuses loudly."""
+        result = runner.invoke(
+            app, ["pipeline", "run", "builtin.manager", "--goal", "not json"]
+        )
+        assert result.exit_code == 1
+        assert "JSON" in result.stdout
+
+        import json as _json
+
+        bad = _json.dumps({"delegations": "not-a-list"})
+        result = runner.invoke(
+            app, ["pipeline", "run", "builtin.manager", "--goal", bad]
+        )
+        assert result.exit_code == 1
+        # The malformed decomposition is a failed composition result —
+        # a named outcome, never a crash.
+        assert "failed" in result.stdout
+        assert "delegations" in result.stdout
+
+    def test_manager_honours_limit_overlays_and_refuses_the_rest(
+        self, tmp_path: Path
+    ) -> None:
+        import json
+
+        goal = json.dumps(
+            {"delegations": [{"pipeline": "builtin.chat", "goal": "greet"}]}
+        )
+        good = tmp_path / "tighten.toml"
+        good.write_text("[limits]\nmax_sub_runs = 1\n", encoding="utf-8")
+        run = runner.invoke(
+            app,
+            [
+                "pipeline", "run", "builtin.manager", "--goal", goal,
+                "--overlay", str(good),
+            ],
+        )
+        assert run.exit_code == 0
+        assert "overlay applied" in run.stdout
+
+        bad = tmp_path / "widen.toml"
+        bad.write_text("[limits]\nmax_tokens = 999999999\n", encoding="utf-8")
+        refused = runner.invoke(
+            app,
+            [
+                "pipeline", "run", "builtin.manager", "--goal", goal,
+                "--overlay", str(bad),
+            ],
+        )
+        assert refused.exit_code == 1
+        assert "above the declared" in refused.stdout

@@ -2,11 +2,12 @@
 
 What these tests pin:
 
-* **the registry's two sources** — the five in-process builtins
-  (trust ``builtin``, runnable; Wave 7 added ``builtin.observe``,
-  Wave 8 ``improve.reflection-loop``) and the local directory's
-  manifests (trust ``local``, listed and inspected but never executed —
-  running an out-of-process pipeline is P3's RPC transport);
+* **the registry's two sources** — the six in-process builtins
+  (trust ``builtin``, runnable; Wave 7 added ``builtin.observe``, Wave 8
+  added ``builtin.manager`` and ``improve.reflection-loop``) and the
+  local directory's manifests (trust ``local``, listed and inspected but
+  never executed — running an out-of-process pipeline is P3's RPC
+  transport);
 * **the manifest contract at load** — an off-contract local manifest
   (unknown section, undeclarable capability, bad ``run.resume``, bad
   ``evidence.declares_tier``, off-contract ``[evidence]`` keys, missing
@@ -90,6 +91,7 @@ class TestTheRegistry:
             "builtin.chat",
             "coder.tool-loop",
             "builtin.observe",
+            "builtin.manager",
             "improve.reflection-loop",
         ]
         assert all(r.trust == "builtin" and r.runnable for r in rows)
