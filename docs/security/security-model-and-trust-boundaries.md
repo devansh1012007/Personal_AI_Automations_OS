@@ -149,7 +149,7 @@ backend.py` `_read_capped`).
 ### 14. Human gates cannot be auto-cleared
 
 `AWAITING_HUMAN_ATTESTATION` parks a task; recovery explicitly never clears it
-(`ledger/replay.py:62`, `recovery.py:1105`). Only an external caller
+(`ledger/replay.py:62`, `recovery.py:1156`). Only an external caller
 (`clear_human_gate`, `src/paa/agents/orchestrator.py:657`) can approve/reject.
 
 ## Trust boundaries

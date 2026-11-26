@@ -25,7 +25,7 @@ the design here:
    analysable before any code runs — the marketplace's five gates
    (`marketplace/installer.py:54`) already work this way for skills: signature,
    content hash, AST scan, permission check, smoke test, with
-   `marketplace/package.py:34`'s `_VALID_KINDS` as the closed kind set a
+   `marketplace/package.py:48`'s `_VALID_KINDS` as the closed kind set a
    `pipeline` kind slots into.
 2. **Tighten only.** [VISION.md](../VISION.md) constraint 2: an extension may
    add restrictions to policy; it may never relax one. An overlay or hook that

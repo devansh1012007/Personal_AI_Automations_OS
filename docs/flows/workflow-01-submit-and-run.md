@@ -34,7 +34,7 @@ is durable before any work (`orchestrator.py` docstring).
 ### 2. Run — project existing state
 
 `ChiefOrchestrator.run(cid)` (`src/paa/agents/orchestrator.py:401`):
-1. `project(ledger, cid)` (`ledger/replay.py:541`) → `TaskProjection`.
+1. `project(ledger, cid)` (`ledger/replay.py:543`) → `TaskProjection`.
 2. If `state.is_terminal`, return immediately (`src/paa/agents/orchestrator.py:401`).
 3. Build `AgentContext` from `MODALITY_PROFILES[state.modality]` (`_context_for`,
    `src/paa/agents/orchestrator.py:464`) — token budget, permission mode, recursion depth.
