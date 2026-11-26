@@ -311,7 +311,7 @@ This sequencing does **not** delete earlier ideas. It prevents a marketplace, al
 | Observability (metrics, tracing, runs, logging) | Tested — golden + behavioural (tests/observability) | 185; OTLP egress bridge not exercised |
 
 <!-- STATUS:BEGIN -->
-**Generated status** (`scripts/status.py`): 234 `src/**/*.py` files, 101,049 physical lines; 5,461 tests collected.
+**Generated status** (`scripts/status.py`): 234 `src/**/*.py` files, 101,050 physical lines; 5,461 tests collected.
 Method: physical lines count blank and comment lines (`Path.read_text` + `splitlines` over `src/**/*.py`); collected = `pytest --collect-only -q -o addopts=""`. Outcome counts are not measured here (host-dependent); run `python -m pytest tests/ -q`.
 <!-- STATUS:END -->
 
