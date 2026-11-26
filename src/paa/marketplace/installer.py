@@ -26,8 +26,12 @@ Only after all five pass is the skill registered.
 from __future__ import annotations
 
 import enum
+import json
+import sys
+import tempfile
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import structlog
@@ -40,6 +44,11 @@ from paa.storage.relational.base import RelationalBackend
 __all__ = ["InstallGate", "InstallOutcome", "InstallReport", "PackageInstaller"]
 
 log = structlog.get_logger(__name__)
+
+#: The smoke test's wall-clock budget. Generous for a cold interpreter start
+#: (the child pays its own boot cost inside the budget) and short enough
+#: that a hung entrypoint cannot stall an install by minutes.
+_SMOKE_TIMEOUT_SECONDS = 20.0
 
 
 class InstallGate(str, enum.Enum):
@@ -180,7 +189,21 @@ class PackageInstaller:
 
     async def _gate_smoke_test(self, package: SkillPackage) -> str | None:
         """Run the package's entrypoint in a sandbox. A crash here is a refusal,
-        but it happens in isolation so it cannot harm the host."""
+        but it happens in isolation so it cannot harm the host.
+
+        The run is the **production shape**, staged: the package's files are
+        written to a throwaway directory (removed whether the gate passes
+        or not, so a refused package leaves zero filesystem trace), the
+        entrypoint is executed under the sandbox with the skill directory
+        mounted read-only — the same mount contract
+        :class:`~paa.skills.adapters.claw_hub.ClawHubAdapter.invoke` runs
+        under — with an empty probe argument file passed in ``argv``, and
+        the pass bar is the skill contract's own: exit 0 and a single JSON
+        object recoverable from stdout. A package that cannot run its own
+        entrypoint under containment is not installed, and one that runs
+        but emits no JSON has already failed the contract its activation
+        would advertise.
+        """
         if self._sandbox is None or not package.manifest.entrypoints:
             return None
         try:
@@ -190,9 +213,38 @@ class PackageInstaller:
         if not healthy:
             log.warning("marketplace.smoke_test_skipped", reason="no healthy sandbox")
             return None
-        # A full staged-dir run is the production path; here we assert the
-        # sandbox accepts the entrypoint shape. Kept conservative: a smoke test
-        # that itself needs host access would defeat its purpose.
+
+        entrypoint = package.manifest.entrypoints[0]
+        if entrypoint not in package.files:
+            return f"declared entrypoint {entrypoint!r} is not in the package"
+
+        with tempfile.TemporaryDirectory(prefix="paa-smoke-") as scratch:
+            stage = Path(scratch) / "skill"
+            stage.mkdir()
+            for name, data in package.files.items():
+                target = stage / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
+            args_file = Path(scratch) / "arguments.json"
+            args_file.write_text(json.dumps({}), encoding="utf-8")
+            from paa.sandbox.base import SandboxSpec
+
+            spec = SandboxSpec(
+                command=(sys.executable, str(stage / entrypoint), "--paa-args", str(args_file)),
+                workspace_path=Path(scratch),
+                read_only_mounts=(stage.resolve(),),
+                timeout_seconds=_SMOKE_TIMEOUT_SECONDS,
+            )
+            try:
+                result = await self._sandbox.run(spec)
+            except Exception as exc:
+                return f"smoke test could not run under the sandbox: {type(exc).__name__}"
+
+        if not result.ok:
+            reason = result.killed_reason or ("timeout" if result.timed_out else "nonzero exit")
+            return f"smoke test failed ({reason})"
+        if _smoke_json_object(result.stdout) is None:
+            return "smoke test produced no JSON object on stdout"
         return None
 
     # -- registration ------------------------------------------------------
@@ -263,3 +315,24 @@ def _is_block(finding: Any) -> bool:
     sev = getattr(finding, "severity", None)
     name = getattr(sev, "value", str(sev)).lower() if sev is not None else ""
     return name in ("block", "critical", "high", "error")
+
+
+def _smoke_json_object(stdout: str) -> dict[str, Any] | None:
+    """The JSON object a smoke run must leave on stdout, or ``None``.
+
+    Same tolerance as the claw-hub adapter's output reader: the whole
+    payload first, then the last non-empty line — a well-behaved skill
+    may print diagnostics before its result line. Anything else is a
+    failed smoke, not a parse error: the gate refuses, never raises.
+    """
+    text = stdout.strip()
+    if not text:
+        return None
+    for candidate in (text, text.splitlines()[-1].strip()):
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None

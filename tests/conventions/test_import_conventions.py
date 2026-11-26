@@ -164,9 +164,13 @@ FAMILY = (
 TYPE_CHECKING_CLASSES: dict[str, str] = {
     "paa.agents.base": "C",
     "paa.agents.orchestrator": "C",
+    "paa.chat.extensions": "E",
+    "paa.chat.service": "C",
+    "paa.cli.acp": "C",
     "paa.cli.attest": "E",
     "paa.cli.chat": "E",
     "paa.cli.observe": "E",
+    "paa.cli.skills": "C",
     "paa.cli.thread": "C",
     "paa.mcp.server": "C",
     "paa.tui.chat.app": "D",
@@ -226,6 +230,16 @@ TYPE_CHECKING_CLASS_KEYS: frozenset[str] = frozenset({"A", "B", "C", "D", "E"})
 #: disagrees with a class can re-run the measurement rather than argue with
 #: the table.
 TYPE_CHECKING_NOTES: dict[str, str] = {
+    "paa.chat.extensions": (
+        "names paa.sandbox.base and paa.validation.ast_scanner for the "
+        "constructor's annotation-only seams, both already on the module's "
+        "import path by other routes: -5.1 ms"
+    ),
+    "paa.chat.service": (
+        "names paa.chat.extensions (the extension surface — marketplace, "
+        "skills, sandbox), which the plain chat product loads nowhere else: "
+        "+45.9 ms"
+    ),
     "paa.cli.attest": (
         "names paa.attest.bundle.Approval for the approval parser's return "
         "annotation; paa.attest.__init__ eagerly re-exports bundle and verify, "
@@ -233,10 +247,19 @@ TYPE_CHECKING_NOTES: dict[str, str] = {
         "paa.attest module is imported at CLI module scope"
     ),
     "paa.cli.chat": "names paa.config.Settings, loaded by every CLI path already: ~0 ms",
+    "paa.cli.acp": (
+        "names paa.chat.extensions (the extension surface) and paa.runtime "
+        "(the runtime boot), same rule as paa.cli.main: the CLI's --help path "
+        "pays nothing: +65.0 ms"
+    ),
     "paa.cli.observe": (
         "names paa.pipelines.base.PipelineResult for the shared driver's return "
         "annotation; pipelines.base is inert types, and the import lives behind "
         "the annotation-only guard so `paa --version` pays nothing"
+    ),
+    "paa.cli.skills": (
+        "names paa.runtime (the runtime boot) beside the extension surface, "
+        "same rule as paa.cli.main: the CLI's --help path pays nothing"
     ),
     "paa.mcp.server": "names paa.runtime (the runtime boot) and asyncio.StreamReader: heavy",
     "paa.tui.chat.app": "names only collections.abc.Callable",

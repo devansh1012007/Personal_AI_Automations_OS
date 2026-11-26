@@ -241,6 +241,12 @@ def _chat_declaration() -> PipelineDeclaration:
             "think": {"roles": ["assistant"]},
             "recall": True,
             "remember": True,
+            # C8.4: the extension surface's door. The loop honours the
+            # ``@use-skill`` directive when the host mints the extended
+            # grant set — an overlay may narrow this to False to forbid
+            # skill calls on a chat pipeline, the same tighten-only rule
+            # every other capability follows.
+            "use_skill": True,
         },
         params={
             "recall_k": ParamSpec(
