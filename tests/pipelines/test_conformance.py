@@ -1,7 +1,8 @@
 """Conformance v0 run for every registered pipeline (C6.6, C7.1).
 
 The G-LOOPS gate line: "conformance green for chat + coder + orchestrator
-built-ins" now also covers the T1 observer adapter (C7.1, pipeline #4).
+built-ins" now also covers the T1 observer adapter (C7.1, pipeline #4) and
+the composition manager (C8.2, pipeline #5).
 Green includes the honest ``n/a`` rows — a check a vocabulary cannot
 express is reported with the reason and a pointer to where the behaviour
 IS pinned, never faked as a pass. The test also pins that the report
@@ -76,7 +77,7 @@ class TestConformanceV0:
     ) -> None:
         reports = await every_builtin_conformance(ledger, tmp_path)
         text = render_reports(reports)
-        assert text.count("GREEN") == 4
+        assert text.count("GREEN") == 5
         assert "double-run-sequence-equality" in text
         assert "n/a" not in text.splitlines()[0]  # verdict lines stay verdicts
         # The n/a rows are visible, not hidden: tie the rendered count to

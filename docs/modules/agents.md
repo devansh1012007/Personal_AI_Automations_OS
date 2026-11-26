@@ -43,18 +43,18 @@ model (`src/paa/agents/orchestrator.py:9`, `policy.py:7`).
 ### `orchestrator.py` — Chief Orchestrator
 `run(cid)` projects the lineage; if terminal, returns immediately
 (`src/paa/agents/orchestrator.py:401`). Phases:
-- `_hydrate` (`src/paa/pipelines/builtin.py:602`) — context builder; parks on
-  `AWAITING_HUMAN_ATTESTATION` if density insufficient (`src/paa/pipelines/builtin.py:662`).
-- `_plan` (`src/paa/pipelines/builtin.py:678`) — planner; SIMPLE bypasses model
-  (`src/paa/pipelines/builtin.py:684`); validates `max_plan_nodes()`
-  (`src/paa/pipelines/builtin.py:308`).
-- `_check_policy` (`src/paa/pipelines/builtin.py:331`) — policy agent; blocked → `POLICY_BLOCKED`/
+- `_hydrate` (`src/paa/pipelines/builtin.py:656`) — context builder; parks on
+  `AWAITING_HUMAN_ATTESTATION` if density insufficient (`src/paa/pipelines/builtin.py:716`).
+- `_plan` (`src/paa/pipelines/builtin.py:732`) — planner; SIMPLE bypasses model
+  (`src/paa/pipelines/builtin.py:738`); validates `max_plan_nodes()`
+  (`src/paa/pipelines/builtin.py:348`).
+- `_check_policy` (`src/paa/pipelines/builtin.py:371`) — policy agent; blocked → `POLICY_BLOCKED`/
   `SECURITY_VIOLATION`; human gate → `AWAITING_HUMAN_ATTESTATION`; else
-  `POLICY_CLEARED` (`src/paa/pipelines/builtin.py:443`).
-- `_execute_steps` (`src/paa/pipelines/builtin.py:712`) — per step: `EXECUTION_STARTED` → worker → critic
+  `POLICY_CLEARED` (`src/paa/pipelines/builtin.py:483`).
+- `_execute_steps` (`src/paa/pipelines/builtin.py:766`) — per step: `EXECUTION_STARTED` → worker → critic
   → `EXECUTION_COMPLETED`/`VALIDATION_FAILED`; retry up to `max_step_retries`
   (default 2, `src/paa/agents/orchestrator.py:183`).
-- `_commit` (`src/paa/pipelines/builtin.py:454`) — `MUTATION_COMMITTED` (terminal).
+- `_commit` (`src/paa/pipelines/builtin.py:494`) — `MUTATION_COMMITTED` (terminal).
 
 `mediate_delegation()` (`src/paa/agents/orchestrator.py:503`) enforces delegation graph bounds. `clear_human_gate()` (`src/paa/agents/orchestrator.py:712`) — only external callers clear gates. `boot()` (`src/paa/agents/orchestrator.py:801`) runs
 recovery.
@@ -106,7 +106,7 @@ from DB (`:234`), anti-goals (cosine ≥0.82 or phrase match, `:262`). Risk scor
 
 | Component | Relationship | Why | Source |
 |---|---|---|---|
-| `ChiefOrchestrator` → all agents | calls `agent.run(message, ctx)` | Drive lifecycle phases | `src/paa/pipelines/builtin.py:647`, `:703`, `:404`, `:738`, `:795` |
+| `ChiefOrchestrator` → all agents | calls `agent.run(message, ctx)` | Drive lifecycle phases | `src/paa/pipelines/builtin.py:701`, `:757`, `:444`, `:792`, `:849` |
 | `Agent` → `DelegationRegistry` | `delegate()` | Orchestrator owns delegation graph | `agents/base.py:373`, `src/paa/agents/orchestrator.py:503` |
 | `Reasoning agents` → `ModelLike` | `complete_structured()` | Model seam | `reasoning.py:95`, `:246`, `:353` |
 | `RouterModelAdapter` | wraps `EscalatingModelRouter` | Bridge `ModelLike` → router | `runtime.py:98` |
@@ -130,8 +130,8 @@ from DB (`:234`), anti-goals (cosine ≥0.82 or phrase match, `:262`). Risk scor
 - Critic deterministic failure → short-circuits, no model call
   (`reasoning.py:226`).
 - Policy block → `POLICY_BLOCKED`/`SECURITY_VIOLATION` event; terminal phase
-  (`src/paa/pipelines/builtin.py:378`).
-- Step exhaustion → `PaaError` → `EXECUTION_FAILED` (`src/paa/pipelines/builtin.py:772`).
+  (`src/paa/pipelines/builtin.py:418`).
+- Step exhaustion → `PaaError` → `EXECUTION_FAILED` (`src/paa/pipelines/builtin.py:826`).
 
 ## Modification impact
 

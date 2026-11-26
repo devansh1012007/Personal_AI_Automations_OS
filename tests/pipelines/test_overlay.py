@@ -239,12 +239,13 @@ class TestWideningIsRejectedByName:
 
 
 class TestDeclarations:
-    def test_all_four_in_process_pipelines_are_declared(self) -> None:
+    def test_all_five_in_process_pipelines_are_declared(self) -> None:
         assert set(BUILTIN_DECLARATIONS) == {
             "builtin.plan-execute-critique",
             "builtin.chat",
             "coder.tool-loop",
             "builtin.observe",
+            "builtin.manager",
         }
 
     def test_declarations_restate_the_classes(self) -> None:
@@ -252,12 +253,14 @@ class TestDeclarations:
         from paa.coder.pipeline import CoderToolLoopPipeline
         from paa.observe.pipeline import ObservePipeline
         from paa.pipelines.builtin import BuiltinPlanExecuteCritique
+        from paa.pipelines.compose import ManagerPipeline
 
         for pipeline, declared in (
             (ChatLoop, CHAT),
             (CoderToolLoopPipeline, CODER),
             (BuiltinPlanExecuteCritique, BUILTIN),
             (ObservePipeline, declaration_for("builtin.observe")),
+            (ManagerPipeline, declaration_for("builtin.manager")),
         ):
             assert declared.name == pipeline.name
             assert declared.version == pipeline.version

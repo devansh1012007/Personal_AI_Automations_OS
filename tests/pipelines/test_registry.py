@@ -2,8 +2,9 @@
 
 What these tests pin:
 
-* **the registry's two sources** — the four in-process builtins
-  (trust ``builtin``, runnable; Wave 7 adds ``builtin.observe``) and the
+* **the registry's two sources** — the five in-process builtins
+  (trust ``builtin``, runnable; Wave 7 adds ``builtin.observe``, Wave 8
+  adds ``builtin.manager``) and the
   local directory's manifests (trust ``local``, listed and inspected
   but never executed — running an out-of-process pipeline is P3's RPC
   transport);
@@ -82,7 +83,7 @@ def _local_home(tmp_path: Path) -> Path:
 
 
 class TestTheRegistry:
-    def test_default_lists_the_four_builtins(self) -> None:
+    def test_default_lists_the_five_builtins(self) -> None:
         registry = PipelineRegistry(local_dir=None)
         rows = registry.list()
         assert [r.name for r in rows] == [
@@ -90,6 +91,7 @@ class TestTheRegistry:
             "builtin.chat",
             "coder.tool-loop",
             "builtin.observe",
+            "builtin.manager",
         ]
         assert all(r.trust == "builtin" and r.runnable for r in rows)
 

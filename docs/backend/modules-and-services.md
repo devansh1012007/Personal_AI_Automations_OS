@@ -120,7 +120,7 @@ boots recovery (`boot`).
 - `run()` drives a submitted task to terminal; returns early if already
   terminal (`src/paa/agents/orchestrator.py:401`).
 - The pipeline's `_execute_steps` retries each step up to `max_step_retries`
-  (default 2) (`src/paa/pipelines/builtin.py:712`).
+  (default 2) (`src/paa/pipelines/builtin.py:766`).
 - Delegation graph enforces depth/cycle/node bounds per correlation
   (`src/paa/agents/orchestrator.py:503`, `delegation.py:87`).
 
@@ -475,7 +475,7 @@ passed>0).
 | Structured output invalid | `router.py:333` | Escalate trigger; `StructuredOutputError` after retries |
 | Policy violation | `policy.py:153` | `STATUS_BLOCKED` verdict → `POLICY_BLOCKED`/`SECURITY_VIOLATION` event |
 | Missing permission | `agents/base.py:333` | `AgentResult.failure` (`PermissionDeniedError`) |
-| Sandbox step failure | `src/paa/pipelines/builtin.py:758` | `VALIDATION_FAILED`; retry up to `max_step_retries` |
+| Sandbox step failure | `src/paa/pipelines/builtin.py:812` | `VALIDATION_FAILED`; retry up to `max_step_retries` |
 | Validation failure | `validation/engine.py:235` | Binary FAIL; critic can only downgrade |
 | Sandbox memory breach | `watchdog.py` | Kill; `killed_reason="memory"` |
 | Queue depth (backpressure) | `backpressure.py:115` | Degrade modality / shed discretionary ingestion (HTTP 429) |

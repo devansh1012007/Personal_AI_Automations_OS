@@ -362,11 +362,50 @@ def _observe_declaration() -> PipelineDeclaration:
     )
 
 
+def _manager_declaration() -> PipelineDeclaration:
+    """``builtin.manager``: the composition manager, layer 4 (C8.2).
+
+    The manager decomposes a task into delegations and runs each on its
+    worker pipeline through ``ctx.sub_run`` — budget halving, recursion
+    guard, journalled child results. The ``sub_run`` ask lists the
+    built-in workers it is intended to delegate to (the ask's detail,
+    the same way ``think``'s roles are); the *enforced* boundaries are
+    the grant, the registry, the mandate's pipeline scope and the
+    host-minted runners, in that order. The limits restate
+    ``ManagerPipeline.limits`` — the spec's own example manifest values
+    (``max_sub_runs = 2`` foremost: a manager may delegate twice, and
+    each delegation halves into the child) — and a drift between the two
+    statements is a bug in this file, pinned by the tests.
+    """
+    return PipelineDeclaration(
+        name="builtin.manager",
+        version="4.1.0",
+        requires_runtime=">=4.1,<5",
+        description=(
+            "the composition manager: decompose a task into delegations and "
+            "run each on its worker pipeline — budget halving, recursion "
+            "guard, journalled child results (layer 4)"
+        ),
+        capabilities={
+            "sub_run": [
+                "builtin.plan-execute-critique",
+                "builtin.chat",
+                "coder.tool-loop",
+                "builtin.observe",
+            ],
+        },
+        limits=RunLimits(
+            max_tokens=200_000, max_wall_s=1800, max_calls=400, max_sub_runs=2
+        ),
+    )
+
+
 BUILTIN_DECLARATIONS: dict[str, PipelineDeclaration] = {
     _builtin_declaration().name: _builtin_declaration(),
     _chat_declaration().name: _chat_declaration(),
     _coder_declaration().name: _coder_declaration(),
     _observe_declaration().name: _observe_declaration(),
+    _manager_declaration().name: _manager_declaration(),
 }
 
 

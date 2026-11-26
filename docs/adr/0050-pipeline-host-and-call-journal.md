@@ -25,7 +25,7 @@ truth, and recovery replays it. Four resumption models were on the table
 | Model | How it resumes | Verdict |
 |---|---|---|
 | R1 restart-from-scratch | Re-run; tell the model what was interrupted | Repeats work; unsafe for effects — read-only pipelines only |
-| R2 host-owned state machine | The task state is the projection of ledger events; a stage guard (`context_packet is not None`, `completed_steps`) decides what is left | What the built-in already is: its stages run five idempotent guards over `project()` output (`src/paa/pipelines/builtin.py:339`, `:604`, `:680`, `:720`) |
+| R2 host-owned state machine | The task state is the projection of ledger events; a stage guard (`context_packet is not None`, `completed_steps`) decides what is left | What the built-in already is: its stages run five idempotent guards over `project()` output (`src/paa/pipelines/builtin.py:379`, `:658`, `:734`, `:774`) |
 | R3 durable replay with a host-side call journal | Re-run the pipeline; the host answers already-completed calls from the record, executes only new ones | What the coder tool loop already has at tool-call granularity: `coder/journal.py:116` mints `PROPOSED`/`COMPLETED`/`FAILED`/`DENIED` rows keyed by `session:call_id:kind` |
 | R4 process snapshot | CRIU / VM snapshot | Not portable, not Windows — rejected |
 
