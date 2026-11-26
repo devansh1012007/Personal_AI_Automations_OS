@@ -77,7 +77,7 @@ DEGRADED/SHEDDING; 11 `StreamName`s; `ORCHESTRATOR_CORE` is control plane.
 | `SignalRepository` → `Database` + `CAS` | signal row + blob | Signal intake | `storage/coldlake/signals.py:114` |
 | `Observability runs` → `Database` | run rows | Execution traces | `runs.py` |
 | `Skills registry` → `Database` | skill rows | Skill catalog | `skills/registry.py:95` |
-| `Marketplace installer` → `Database` | package rows | Package registry | `marketplace/installer.py:75` |
+| `Marketplace installer` → `Database` | package rows | Package registry | `marketplace/installer.py:81` |
 
 ## Runtime behavior
 

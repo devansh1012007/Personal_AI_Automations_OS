@@ -81,9 +81,9 @@ Branches: `POLICY_BLOCKED / SECURITY_VIOLATION` (terminal blocked),
 
 - **ComplexityModality** — `SIMPLE`, `STANDARD`, `COMPLEX`, `MAX`. Bounds graph
   hops, recursion ceiling, token ceiling, memory, CPU, timeout, branch factor via
-  `MODALITY_PROFILES`. `src/paa/core/types.py:475`.
+  `MODALITY_PROFILES`. `src/paa/core/types.py:517`.
 - **ModalityProfile** — Hard resource envelope per modality; nothing in it is
-  advisory. `src/paa/core/types.py:485`.
+  advisory. `src/paa/core/types.py:527`.
 - **Escalation** — Local model first, frontier model on failure (only when
   modality ≥ `escalate_at_or_above` and the permission mode allows it). Every
   escalation writes a `MODEL_ESCALATED` ledger event *before* the frontier call.

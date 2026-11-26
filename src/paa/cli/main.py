@@ -38,6 +38,7 @@ from paa.cli.mcp import app as mcp_app
 from paa.cli.observe import observe as observe_command
 from paa.cli.pipeline import app as pipeline_app
 from paa.cli.record import record_app
+from paa.cli.skills import app as skills_app
 from paa.cli.thread import thread_app
 from paa.core.types import ComplexityModality, EventType, PermissionMode
 from paa.memory.touch import touch_recalled
@@ -931,6 +932,13 @@ app.add_typer(thread_app, name="thread")
 # vocabulary (C7.6): ``serve`` is PAA as the agent behind an editor, and
 # ``client`` is the mediated spawn of an external agent.
 app.add_typer(acp_app, name="acp")
+
+# ``paa skills`` is a group because the chat extension surface (C8.4) has
+# four verbs over one flow: ``install`` drives discover → five-gate
+# install → activate, ``list`` reads the capability catalogue a chat turn
+# sees, ``activate`` re-activates by name, and ``mcp`` exposes a
+# self-hosted MCP server's tools as chat capabilities.
+app.add_typer(skills_app, name="skills")
 
 if __name__ == "__main__":
     app()
