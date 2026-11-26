@@ -1,4 +1,4 @@
-"""The five chat screens and their modals.
+"""The chat screens, their modals, and the Loop Console (C8.5).
 
 Layout grammar (spec §3.2): one header bar, body, two-row footer — no boxes
 in boxes, 1 px rules only, whitespace separates. Every screen is reachable
@@ -24,10 +24,22 @@ from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, VerticalScroll
 from textual.screen import ModalScreen, Screen
-from textual.widgets import DataTable, Footer, Input, ListView, RichLog, Static
+from textual.widgets import (
+    DataTable,
+    Footer,
+    Input,
+    ListItem,
+    ListView,
+    RichLog,
+    Static,
+)
 from textual.widgets.data_table import CellDoesNotExist
 
 from paa.chat.loop import CHAT_CAPABILITIES
+from paa.core.errors import PaaError
+from paa.pipelines.conformance import ConformanceReport, render_reports
+from paa.pipelines.registry import RegisteredPipeline
+from paa.tui.chat.console import PERSONAL_SOURCE_WORD, ConsoleService
 from paa.tui.chat.widgets import (
     ChatHeader,
     MemoryRail,
@@ -36,6 +48,9 @@ from paa.tui.chat.widgets import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from paa.chat.extensions import DiscoveredSkill
     from paa.chat.session import ChatSessionRecord
     from paa.ledger.events import LedgerEvent
     from paa.memory.facts import Fact
@@ -43,9 +58,14 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ChatScreen",
+    "ConformanceModal",
+    "ConsoleInspectModal",
+    "ConsoleScreen",
     "ContextModal",
     "DoctorModal",
     "FactDetailModal",
+    "ForkNameModal",
+    "InstallSourceModal",
     "LedgerScreen",
     "LogDrawer",
     "MemoryScreen",
@@ -499,3 +519,587 @@ class PolicyScreen(Screen[None]):
 
     async def action_refresh(self) -> None:
         await self.refresh_policy()
+
+
+# ---------------------------------------------------------------------------
+# The Loop Console (C8.5, SPEC 2 Wave 8) — a view, not an authority
+# ---------------------------------------------------------------------------
+
+
+def _declaration_text(row: RegisteredPipeline) -> str:
+    """One pipeline's declaration as text — the facts ``paa pipeline inspect`` prints."""
+    d = row.declaration
+    lines = [
+        f"{d.name} {d.version}",
+        f" trust: {row.trust} · source: {row.source}",
+        f" runtime {d.requires_runtime} · runnable: "
+        f"{'yes' if row.runnable else 'no (P3 — listed, inspected, not executed)'}"
+        f" · resume: {d.resume}",
+        f" evidence tier: {d.evidence_tier}",
+    ]
+    if d.description:
+        lines.append(f" {d.description}")
+    if d.capabilities:
+        lines.append("capabilities (the ask):")
+        lines.extend(f"  {key} = {value!r}" for key, value in d.capabilities.items())
+    if d.params:
+        lines.append("params:")
+        for key, spec in d.params.items():
+            low = "" if spec.minimum is None else str(spec.minimum)
+            high = "" if spec.maximum is None else str(spec.maximum)
+            bounds = f"{low}..{high}" if (low or high) else "any"
+            lines.append(f"  {key}: {spec.type} = {spec.default!r} ({bounds})")
+    if d.slots:
+        lines.append("slots:")
+        lines.extend(
+            f"  {slot.name}: {slot.interface} = {slot.default}"
+            for slot in d.slots.values()
+        )
+    lines.append(
+        "limits: "
+        + ", ".join(
+            f"{key}={getattr(d.limits, key)}"
+            for key in ("max_tokens", "max_wall_s", "max_calls", "max_sub_runs")
+        )
+    )
+    return "\n".join(lines)
+
+
+class ConsoleInspectModal(_PaaModal):
+    """One pipeline's declaration — the registry's own row, read out."""
+
+    SCREEN_NAME: Final[str] = "console-inspect"
+
+    def __init__(self, *, body: str) -> None:
+        super().__init__()
+        self._body = body
+
+    def compose(self) -> ComposeResult:
+        yield VerticalScroll(
+            Static(Text("PIPELINE DECLARATION", style="bold"), id="inspect-title"),
+            Static(Text(self._body), id="inspect-body"),
+            id="inspect-scroll",
+        )
+
+
+class ConformanceModal(_PaaModal):
+    """``c`` — the six-check standard's own one-page report, verbatim.
+
+    The page is :func:`~paa.pipelines.conformance.render_reports` over the
+    report the console's run produced — the same renderer the conformance
+    suite asserts on, so the console cannot show a verdict the standard
+    would phrase differently.
+    """
+
+    SCREEN_NAME: Final[str] = "conformance"
+
+    def __init__(self, *, pipeline: str, report: ConformanceReport) -> None:
+        super().__init__()
+        self._pipeline = pipeline
+        self._report = report
+
+    def compose(self) -> ComposeResult:
+        verdict = "GREEN" if self._report.passed else "RED"
+        yield VerticalScroll(
+            Static(
+                Text(f"CONFORMANCE — {self._pipeline}: {verdict}", style="bold"),
+                id="conf-title",
+            ),
+            Static(Text(render_reports([self._report])), id="conf-page"),
+            id="conf-scroll",
+        )
+
+
+class ForkNameModal(_PaaModal):
+    """One Input: the new name for a pipeline's personal fork.
+
+    The callback receives the modal itself, so the screen can keep the
+    modal open and show a named refusal in it when the fork name is
+    taken, empty or shadowing — the operator fixes the name in place
+    rather than starting the flow over.
+    """
+
+    SCREEN_NAME: Final[str] = "fork-name"
+
+    def __init__(
+        self,
+        *,
+        pipeline: str,
+        on_submit: Callable[[ForkNameModal, str], None],
+    ) -> None:
+        super().__init__()
+        self._pipeline = pipeline
+        self._on_submit = on_submit
+
+    @property
+    def pipeline(self) -> str:
+        return self._pipeline
+
+    def compose(self) -> ComposeResult:
+        yield VerticalScroll(
+            Static(Text(f"FORK {self._pipeline}", style="bold"), id="fork-title"),
+            Static(
+                Text(
+                    "a fork is a personal overlay seeded from this pipeline's own "
+                    "declaration — every value restated, any widening edit refused "
+                    "at load. Run it with: paa pipeline run "
+                    f"{self._pipeline} --overlay <path>"
+                ),
+                id="fork-help",
+            ),
+            Input(id="fork-name", placeholder="fork name — a new name for your copy"),
+            id="fork-scroll",
+        )
+
+    def on_mount(self) -> None:
+        self.query_one("#fork-name", Input).focus()
+
+    def note(self, text: str) -> None:
+        """Show a refusal (or a hint) without closing the modal."""
+        self.query_one("#fork-help", Static).update(Text(text))
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "fork-name":
+            event.stop()
+            self._on_submit(self, event.value)
+
+
+class InstallSourceModal(_PaaModal):
+    """The install flow: name a source, pick a skill, Enter installs it.
+
+    Two stages in one modal, because the flow has two operator decisions:
+    the source (a Claw-Hub/OpenClaw-shaped directory, or the word
+    ``personal`` for the personal skills dir), then the skill. The second
+    stage's help line carries the opt-in wording — local skills are
+    unsigned, and Enter is the operator's word the signature gate needs
+    (the same opt-in ``paa skills install --allow-unverified`` asks for).
+    """
+
+    SCREEN_NAME: Final[str] = "install-source"
+
+    def __init__(
+        self,
+        *,
+        on_source: Callable[[InstallSourceModal, str], None],
+        on_install: Callable[[InstallSourceModal, int], None],
+    ) -> None:
+        super().__init__()
+        self._on_source = on_source
+        self._on_install = on_install
+
+    def compose(self) -> ComposeResult:
+        yield VerticalScroll(
+            Static(Text("INSTALL A SKILL", style="bold"), id="install-title"),
+            Static(
+                Text(
+                    "type a source directory (the layout 'claw pull' produces), "
+                    f"or '{PERSONAL_SOURCE_WORD}' for the personal skills dir"
+                ),
+                id="install-help",
+            ),
+            Input(id="install-source", placeholder="source directory — or personal"),
+            ListView(id="install-found"),
+            id="install-scroll",
+        )
+
+    def on_mount(self) -> None:
+        self.query_one("#install-source", Input).focus()
+
+    def note(self, text: str) -> None:
+        """Show a refusal (or a hint) without closing the modal."""
+        self.query_one("#install-help", Static).update(Text(text))
+
+    async def show_results(self, labels: list[str]) -> None:
+        """Fill the found-skills list and hand it the focus."""
+        listing = self.query_one("#install-found", ListView)
+        await listing.clear()
+        for label in labels:
+            await listing.append(_InstallCandidate(label))
+        listing.focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "install-source":
+            event.stop()
+            self._on_source(self, event.value.strip())
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        event.stop()
+        self._on_install(self, event.index)
+
+
+class _InstallCandidate(ListItem):
+    """One discovered skill in the install modal's list.
+
+    A ``ListItem`` subclass so the modal can style its rows without
+    reaching into the item's children, and so a hostile skill
+    description renders as literal text (the label is a rich ``Text``).
+    """
+
+    def __init__(self, label: str) -> None:
+        super().__init__(Static(Text(label)))
+
+
+class ConsoleScreen(Screen[None]):
+    """Ctrl+B — the Loop Console: loops as the registry sees them, driven.
+
+    A view plus a thin dispatcher, per the row's own rule: the panel reads
+    the pipeline registry and the skills/marketplace rows (never a
+    parallel list), and every mutating action calls
+    :class:`~paa.tui.chat.console.ConsoleService`, which drives the C8.4
+    extension surface, the five-gate installer and the conformance
+    runners — the same doors the CLI verbs open. Refusals render as
+    refusals; nothing here retries around a gate.
+    """
+
+    SCREEN_NAME: Final[str] = "console"
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        _BACK_BINDING,
+        Binding("r", "refresh", "refresh", show=False),
+        Binding("i", "inspect", "inspect"),
+        Binding("c", "conformance", "conformance"),
+        Binding("f", "fork", "fork"),
+        Binding("d", "discover", "install"),
+        Binding("a", "activate", "activate"),
+    ]
+
+    def __init__(self) -> None:
+        # Explicit constructor (no **kwargs pass-through), the MemoryScreen
+        # rule: Screen's __init__ takes (name, id, classes) and this screen
+        # is always constructed bare.
+        super().__init__()
+        self._pipeline_rows: dict[str, RegisteredPipeline] = {}
+        self._discovered: list[DiscoveredSkill] = []
+
+    def compose(self) -> ComposeResult:
+        yield Static(
+            Text(
+                "LOOPS — i inspect · c conformance · f fork · d install · "
+                "a activate (extensions)",
+                style="bold",
+            ),
+            id="console-title",
+        )
+        yield DataTable(id="console-pipelines", cursor_type="row", zebra_stripes=True)
+        yield Static(Text("INSTALLED EXTENSIONS"), id="console-skills-title")
+        yield DataTable(id="console-skills", cursor_type="row", zebra_stripes=True)
+        yield Static(Text(""), id="console-forks")
+        yield Static(Text(""), id="console-status")
+        yield Footer()
+
+    async def on_mount(self) -> None:
+        pipelines = self.query_one("#console-pipelines", DataTable)
+        for label, key in (
+            ("pipeline", "pipeline"),
+            ("version", "version"),
+            ("trust", "trust"),
+            ("evidence", "evidence"),
+            ("runnable", "runnable"),
+            ("description", "description"),
+        ):
+            pipelines.add_column(label, key=key)
+        skills = self.query_one("#console-skills", DataTable)
+        for label, key in (
+            ("skill", "skill"),
+            ("version", "version"),
+            ("provider", "provider"),
+            ("signature", "signature"),
+            ("state", "state"),
+        ):
+            skills.add_column(label, key=key)
+        await self.refresh_console()
+        pipelines.focus()
+
+    @property
+    def service(self) -> ConsoleService:
+        """The app's console service (built once, from the wiring)."""
+        return _chat_app(self).console_service
+
+    async def refresh_console(self) -> None:
+        """Pull the real rows from the real registries — never invented ones."""
+        service = self.service
+        pipelines = self.query_one("#console-pipelines", DataTable)
+        pipelines.clear()
+        self._pipeline_rows = {}
+        for row in service.pipeline_rows():
+            pipelines.add_row(
+                Text(row.name),
+                row.version,
+                row.trust,
+                f"[{row.declaration.evidence_tier}]",
+                "yes" if row.runnable else "no (P3)",
+                Text(row.declaration.description),
+                key=row.name,
+            )
+            self._pipeline_rows[row.name] = row
+        skills = self.query_one("#console-skills", DataTable)
+        skills.clear()
+        for skill in await service.skill_rows():
+            skills.add_row(
+                Text(skill.name),
+                skill.version,
+                skill.provider,
+                skill.signature,
+                "live" if skill.active else "staged",
+                key=skill.name,
+            )
+        forks = service.fork_rows()
+        lines = ["PIPELINE FORKS — personal overlays (tighten-only, load-checked)"]
+        if forks:
+            lines.extend(
+                f" {fork.name} ← {fork.source} ({fork.note}) — {fork.path}"
+                for fork in forks
+            )
+        else:
+            lines.append(
+                " none — f on a pipeline seeds one under "
+                "PAA_HOME/pipelines/overlays/"
+            )
+        for name, reason in service.local_manifest_errors().items():
+            lines.append(f" ✗ off-contract local manifest: {name} — {reason}")
+        self.query_one("#console-forks", Static).update(Text("\n".join(lines)))
+
+    def _status(self, text: str, *, ok: bool = True) -> None:
+        """One outcome line — the glyph names the outcome, colour never does."""
+        glyph = "✓" if ok else "✗"
+        self.query_one("#console-status", Static).update(Text(f"{glyph} {text}"))
+
+    def _skills_table_focused(self) -> bool:
+        return self.focused is self.query_one("#console-skills", DataTable)
+
+    def _highlighted_pipeline(self) -> RegisteredPipeline | None:
+        table = self.query_one("#console-pipelines", DataTable)
+        try:
+            row_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
+        except CellDoesNotExist:
+            return None
+        return self._pipeline_rows.get(str(row_key))
+
+    def _highlighted_skill(self) -> str | None:
+        table = self.query_one("#console-skills", DataTable)
+        try:
+            row_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
+        except CellDoesNotExist:
+            return None
+        return str(row_key) or None
+
+    async def action_refresh(self) -> None:
+        await self.refresh_console()
+
+    # -- inspect ---------------------------------------------------------------
+
+    async def action_inspect(self) -> None:
+        row = self._highlighted_pipeline()
+        if row is None:
+            self._status(
+                "select a pipeline first — the table is empty or the cursor is "
+                "off its rows",
+                ok=False,
+            )
+            return
+        _chat_app(self).journal.log("console.inspect", pipeline=row.name)
+        self.app.push_screen(ConsoleInspectModal(body=_declaration_text(row)))
+
+    # -- conformance -------------------------------------------------------------
+
+    async def action_conformance(self) -> None:
+        row = self._highlighted_pipeline()
+        if row is None:
+            self._status("select a pipeline to run conformance for", ok=False)
+            return
+        self._status(
+            f"conformance running for {row.name} — the six checks run on a "
+            "scratch ledger; this session's ledger is not written"
+        )
+        self.run_worker(self._conformance(row.name), exclusive=True)
+
+    async def _conformance(self, pipeline: str) -> None:
+        try:
+            report = await self.service.run_conformance(pipeline)
+        except PaaError as exc:
+            self._status(exc.message, ok=False)
+            return
+        _chat_app(self).journal.log(
+            "console.conformance", pipeline=pipeline, green=report.passed
+        )
+        self.app.push_screen(ConformanceModal(pipeline=pipeline, report=report))
+
+    # -- fork --------------------------------------------------------------------
+
+    async def action_fork(self) -> None:
+        if self._skills_table_focused():
+            await self._fork_highlighted_skill()
+            return
+        row = self._highlighted_pipeline()
+        if row is None:
+            self._status(
+                "select a pipeline to fork — or focus the extensions table to "
+                "fork a skill",
+                ok=False,
+            )
+            return
+        self.app.push_screen(
+            ForkNameModal(pipeline=row.name, on_submit=self._fork_requested)
+        )
+
+    async def _fork_highlighted_skill(self) -> None:
+        name = self._highlighted_skill()
+        if name is None:
+            self._status("select a skill to fork", ok=False)
+            return
+        try:
+            target = self.service.fork_skill(name)
+        except PaaError as exc:
+            self._status(exc.message, ok=False)
+            return
+        _chat_app(self).journal.log("console.fork_skill", skill=name)
+        self._status(
+            f"forked {name} → {target} — the personal skills dir; install it "
+            f"with d → '{PERSONAL_SOURCE_WORD}' (the five gates run again)"
+        )
+
+    def _fork_requested(self, modal: ForkNameModal, name: str) -> None:
+        self.run_worker(self._fork_pipeline(modal, name), exclusive=True)
+
+    async def _fork_pipeline(self, modal: ForkNameModal, name: str) -> None:
+        try:
+            path = self.service.fork_pipeline(modal.pipeline, name)
+        except PaaError as exc:
+            modal.note(exc.message)
+            return
+        modal.dismiss()
+        _chat_app(self).journal.log(
+            "console.fork_pipeline", pipeline=modal.pipeline, fork=name
+        )
+        await self.refresh_console()
+        self._status(
+            f"forked → {path} — a personal overlay seeded from "
+            f"{modal.pipeline}'s declaration; edit it, then run with "
+            f"paa pipeline run {modal.pipeline} --overlay {path}"
+        )
+
+    # -- install / activate ---------------------------------------------------------
+
+    def action_discover(self) -> None:
+        self.app.push_screen(
+            InstallSourceModal(
+                on_source=self._source_requested, on_install=self._install_requested
+            )
+        )
+
+    def _source_requested(self, modal: InstallSourceModal, text: str) -> None:
+        self.run_worker(self._discover(modal, text), exclusive=True)
+
+    async def _discover(self, modal: InstallSourceModal, text: str) -> None:
+        if not text:
+            modal.note(
+                "a source is needed — a directory path, or "
+                f"'{PERSONAL_SOURCE_WORD}'"
+            )
+            return
+        personal = text == PERSONAL_SOURCE_WORD
+        try:
+            discovered = await self.service.discover(
+                None if personal else text, personal=personal
+            )
+        except PaaError as exc:
+            modal.note(exc.message)
+            return
+        if not discovered:
+            where = (
+                "the personal skills dir" if personal else f"{text!r}"
+            )
+            modal.note(f"no skills discovered in {where}")
+            return
+        self._discovered = list(discovered)
+        labels = []
+        for skill in discovered:
+            description = skill.contract.description.strip()
+            first_line = description.splitlines()[0] if description else ""
+            labels.append(
+                f"{skill.contract.skill_name} v{skill.contract.version} — {first_line}"
+            )
+        await modal.show_results(labels)
+        modal.note(
+            "enter installs the highlighted skill through all five gates — "
+            "local skills are unsigned; your Enter is the opt-in the "
+            "signature gate needs"
+        )
+
+    def _install_requested(self, modal: InstallSourceModal, index: int) -> None:
+        self.run_worker(self._install(modal, index), exclusive=True)
+
+    async def _install(self, modal: InstallSourceModal, index: int) -> None:
+        if not self._discovered:
+            return
+        skill = self._discovered[index]
+        try:
+            report = await self.service.install(skill, allow_unverified=True)
+        except PaaError as exc:
+            # The gates' own refusals arrive as reports (below); this is
+            # the flow's own named failure (e.g. PAA_HOME vanished) and
+            # renders in place too, never as a crash out of the console.
+            modal.note(exc.message)
+            return
+        _chat_app(self).journal.log(
+            "console.install",
+            skill=skill.contract.skill_name,
+            installed=report.installed,
+        )
+        modal.dismiss()
+        await self.refresh_console()
+        if report.installed:
+            gates = ", ".join(gate.value for gate in report.install.passed_gates)
+            activation = report.activation
+            pipeline_note = (
+                f" — coding loop: {activation.pipeline}"
+                if activation is not None and activation.pipeline
+                else ""
+            )
+            self._status(
+                f"installed {report.skill_name} through the gates ({gates})"
+                f"{pipeline_note} — EXTENSION_INSTALLED recorded"
+            )
+        else:
+            gate = (
+                report.install.refused_at.value
+                if report.install.refused_at is not None
+                else "unknown"
+            )
+            reason = report.install.reason or "no reason given"
+            self._status(
+                f"refused {report.skill_name} at the {gate} gate: "
+                f"{reason} — nothing landed: no staged bytes, "
+                "no registry row",
+                ok=False,
+            )
+
+    async def action_activate(self) -> None:
+        if not self._skills_table_focused():
+            self._status(
+                "activate acts on the extensions table — focus it (or click a "
+                "skill row) first",
+                ok=False,
+            )
+            return
+        name = self._highlighted_skill()
+        if name is None:
+            self._status("select a skill to activate", ok=False)
+            return
+        self.run_worker(self._activate(name), exclusive=True)
+
+    async def _activate(self, name: str) -> None:
+        try:
+            activation = await self.service.activate(name)
+        except PaaError as exc:
+            self._status(exc.message, ok=False)
+            return
+        _chat_app(self).journal.log("console.activate", skill=name)
+        await self.refresh_console()
+        pipeline_note = (
+            f" — coding loop: {activation.pipeline}" if activation.pipeline else ""
+        )
+        self._status(
+            f"activated {activation.skill_name} v{activation.version} "
+            f"({activation.provider}){pipeline_note} — EXTENSION_ACTIVATED recorded"
+        )

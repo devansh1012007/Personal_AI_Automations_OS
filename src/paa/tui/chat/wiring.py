@@ -48,6 +48,7 @@ from paa.tui.chat.resilience import (
 if TYPE_CHECKING:
     from paa.memory.facts import Fact
     from paa.runtime import Runtime
+    from paa.sandbox.base import Sandbox
     from paa.storage.coldlake.signals import SignalRepository
 
 __all__ = ["ChatWiring"]
@@ -72,6 +73,12 @@ class ChatWiring:
     home: Path | None
     permission_mode: PermissionMode
     resilient: ResilientChatModel
+    #: The runtime's sandbox, carried for the surfaces that execute code:
+    #: the Loop Console's installs ride the five-gate installer, whose
+    #: smoke gate stages and runs the entrypoint under containment
+    #: (C8.5). ``None`` degrades exactly as a runtime without a sandbox
+    #: does — nothing here builds one behind the wiring's back.
+    sandbox: Sandbox | None = None
 
     @classmethod
     def from_runtime(
@@ -117,6 +124,7 @@ class ChatWiring:
             home=runtime.settings.home,
             permission_mode=runtime.settings.policy.mode,
             resilient=resilient,
+            sandbox=runtime.sandbox,
         )
 
     @classmethod
@@ -133,6 +141,7 @@ class ChatWiring:
         model: Any | None = None,
         attempts: int = DEFAULT_ATTEMPTS,
         backoff: tuple[float, ...] = DEFAULT_BACKOFF,
+        sandbox: Sandbox | None = None,
     ) -> ChatWiring:
         """Wire from explicit pieces (tests, or a hand-assembled host)."""
         inner = model if model is not None else build_chat_model(settings)
@@ -156,6 +165,7 @@ class ChatWiring:
             home=home,
             permission_mode=permission_mode,
             resilient=resilient,
+            sandbox=sandbox,
         )
 
     def with_model(self, name: str) -> ChatWiring:
@@ -185,6 +195,7 @@ class ChatWiring:
             home=self.home,
             permission_mode=self.permission_mode,
             resilient=resilient,
+            sandbox=self.sandbox,
         )
 
     # -- read-only substrate views --------------------------------------------

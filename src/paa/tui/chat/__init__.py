@@ -10,11 +10,12 @@ Modules:
 
 * :mod:`paa.tui.chat.render`   — text shaping shared by both surfaces (textual-free)
 * :mod:`paa.tui.chat.wiring`   — the shared :class:`ChatWiring` composition (textual-free)
+* :mod:`paa.tui.chat.console`  — the Loop Console service (textual-free, C8.5)
 * :mod:`paa.tui.chat.theme`    — the semantic palette (Textual theme variables)
 * :mod:`paa.tui.chat.journal`  — structured event log (rotated file + F12 ring)
 * :mod:`paa.tui.chat.errors`   — the error taxonomy and its microcopy
 * :mod:`paa.tui.chat.widgets`  — message stream, memory rail, budget gauge, cards
-* :mod:`paa.tui.chat.screens`  — the five screens and their modals
+* :mod:`paa.tui.chat.screens`  — the chat screens, their modals, and the Loop Console
 * :mod:`paa.tui.chat.app`      — :class:`~paa.tui.chat.app.ChatApp`, the wiring
 * :mod:`paa.tui.chat.plain`    — the ``--plain`` fallback loop
 

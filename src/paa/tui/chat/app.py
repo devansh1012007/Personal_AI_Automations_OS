@@ -63,11 +63,13 @@ from paa.ledger.events import LedgerEvent
 from paa.memory.facts import Fact, FactRepository
 from paa.models.registry import UnknownProviderError
 from paa.pipelines.base import PipelineStatus
+from paa.tui.chat.console import ConsoleService
 from paa.tui.chat.errors import ErrorKind, classify, microcopy
 from paa.tui.chat.journal import Journal, journal_for_home
 from paa.tui.chat.render import sanitize
 from paa.tui.chat.screens import (
     ChatScreen,
+    ConsoleScreen,
     ContextModal,
     DoctorModal,
     FactDetailModal,
@@ -116,6 +118,7 @@ SLASH_COMMANDS: Final[dict[str, str]] = {
     "/memory": "memory dashboard (Ctrl+M)",
     "/ledger": "this session's event chain (Ctrl+L)",
     "/policy": "grants and the denial log (Ctrl+K)",
+    "/console": "the Loop Console — registry, install, fork, conformance (Ctrl+B)",
     "/context": "the assembled context packet, verbatim",
     "/compact": "toggle compact density",
     "/fork": "branch a session from a turn (not yet in this build)",
@@ -145,6 +148,7 @@ def _palette_actions(chat: ChatApp) -> list[tuple[str, str, Callable[[], Any]]]:
         ("memory dashboard", "/memory", chat.show_memory),
         ("ledger — this session's event chain", "/ledger", chat.show_ledger),
         ("policy — grants and denials", "/policy", chat.show_policy),
+        ("loops console — registry, install, fork, conformance", "/console", chat.show_console),
         (
             "new session",
             "/new",
@@ -229,6 +233,11 @@ class ChatApp(App[None]):
         padding: 0 1; color: $foreground;
     }
     #context-json { padding: 0 1; color: $trust; }
+    #console-title { dock: top; padding: 0 1; color: $trust; text-style: bold; }
+    #console-pipelines, #console-skills { height: 1fr; padding: 0 1; }
+    #console-skills-title { padding: 0 1; color: $session; }
+    #console-forks { padding: 0 1; color: $foreground-muted; }
+    #console-status { padding: 0 1; color: $foreground; }
     """
 
     COMMANDS: ClassVar[set[type[Provider] | Callable[[], type[Provider]]]] = {
@@ -240,6 +249,7 @@ class ChatApp(App[None]):
         Binding("ctrl+m", "show_memory", "memory"),
         Binding("ctrl+l", "show_ledger", "ledger"),
         Binding("ctrl+k", "show_policy", "policy"),
+        Binding("ctrl+b", "show_console", "loops console"),
         Binding("ctrl+o", "show_sessions", "sessions"),
         Binding("f12", "log_drawer", "logs"),
         Binding("f2", "toggle_theme", "theme", show=False),
@@ -252,6 +262,7 @@ class ChatApp(App[None]):
         *,
         session_id: uuid.UUID | None = None,
         journal: Journal | None = None,
+        start_on_console: bool = False,
     ) -> None:
         super().__init__()
         self.register_theme(chat_theme())
@@ -264,6 +275,8 @@ class ChatApp(App[None]):
         self._wiring = wiring
         self._session_id = session_id
         self.journal = journal if journal is not None else journal_for_home(wiring.home)
+        self._start_on_console = start_on_console
+        self._console: ConsoleService | None = None
         self._turn_task: asyncio.Task[None] | None = None
         self._last_result: TurnResult | None = None
         self._stream_buf: list[str] = []
@@ -299,6 +312,25 @@ class ChatApp(App[None]):
     @property
     def policy_mode(self) -> str:
         return self._wiring.permission_mode.value
+
+    @property
+    def console_service(self) -> ConsoleService:
+        """The Loop Console's service, built once from the wiring (C8.5).
+
+        A view over the same substrate the chat surface writes through:
+        the registry, the extension surface's ledger and database, the
+        runtime's sandbox for the install gates. Built lazily so a
+        session that never opens the console pays nothing for it.
+        """
+        if self._console is None:
+            self._console = ConsoleService(
+                ledger=self._wiring.ledger,
+                db=self._wiring.db,
+                home=self._wiring.home,
+                permission_mode=self._wiring.permission_mode,
+                sandbox=self._wiring.sandbox,
+            )
+        return self._console
 
     # -- screens ----------------------------------------------------------------
 
@@ -336,6 +368,11 @@ class ChatApp(App[None]):
             model=self._wiring.settings.model,
             policy=self.policy_mode,
         )
+        if self._start_on_console:
+            # ``paa chat --console``: the operator asked for loop management
+            # first — push the console over the chat screen, exactly as the
+            # binding does, and let Esc climb back to the conversation.
+            self._show(ConsoleScreen())
 
     async def on_unmount(self) -> None:
         """Session state autosaves (spec §3.2 crash-safety)."""
@@ -684,6 +721,8 @@ class ChatApp(App[None]):
             self.show_ledger()
         elif command == "/policy":
             self.show_policy()
+        elif command == "/console":
+            self.show_console()
         elif command == "/context":
             await self.show_context()
         elif command == "/compact":
@@ -1044,6 +1083,17 @@ class ChatApp(App[None]):
 
     def show_policy(self) -> None:
         self._show(PolicyScreen())
+
+    def show_console(self) -> None:
+        """Ctrl+B / ``/console`` — the Loop Console (C8.5): loops, driven.
+
+        The console is a screen of this app, not a sibling product: the
+        same wiring, the same ledger, the same journal. Every mutating
+        action it offers rides the surfaces that already decide — the
+        five-gate installer, the pipeline registry — so the console adds
+        a view, never an authority.
+        """
+        self._show(ConsoleScreen())
 
     def show_sessions(self) -> None:
         self._show(SessionsScreen())

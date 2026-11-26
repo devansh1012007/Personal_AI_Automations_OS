@@ -16,6 +16,11 @@ and this module is the seam that picks the front-end:
   substrate's native re-read, so both spellings are aliases of one option.
 * ``--model`` names a registry row for the turn model; ``echo`` (the default)
   is offline and deterministic, so a chat demo needs no network and no key.
+* ``--console`` opens the app on the Loop Console screen (C8.5) — loop
+  management first (registry panel, install/fork through the gates,
+  conformance), with Esc climbing back to the conversation. It is a TUI
+  screen, so it refuses the ``--plain`` combination rather than silently
+  opening a surface the plain loop does not have.
 
 The module-level ``app`` is the standard typer sub-app export, wired into the
 root CLI by the orchestrator (see ``paa.cli.main``).
@@ -111,7 +116,9 @@ def _check_model(settings: Settings) -> None:
         raise typer.Exit(1) from exc
 
 
-async def _run_tui(settings: Settings, session_id: uuid.UUID | None) -> None:
+async def _run_tui(
+    settings: Settings, session_id: uuid.UUID | None, *, start_on_console: bool = False
+) -> None:
     """Build the runtime, wire the chat surface, run the Textual app."""
     from paa.runtime import Runtime
     from paa.tui.chat.app import ChatApp
@@ -121,7 +128,9 @@ async def _run_tui(settings: Settings, session_id: uuid.UUID | None) -> None:
     try:
         wiring = ChatWiring.from_runtime(runtime, settings=settings.chat)
         _redirect_runtime_logs_to_file(wiring.home)
-        chat_app = ChatApp(wiring, session_id=session_id)
+        chat_app = ChatApp(
+            wiring, session_id=session_id, start_on_console=start_on_console
+        )
         await chat_app.run_async()
     finally:
         await runtime.close()
@@ -178,12 +187,27 @@ def chat(
         help="Registry model name backing the turns. Default: PAA_CHAT__MODEL, "
         "which is 'echo' (offline, deterministic).",
     ),
+    open_console: bool = typer.Option(
+        False,
+        "--console",
+        help="Open on the Loop Console screen (C8.5): the pipeline registry "
+        "(trust, tier, version), install/activate/fork through the real "
+        "gates, and the six-check conformance run. Esc returns to the chat.",
+    ),
 ) -> None:
     """Open the chat surface: the TUI by default, or --plain."""
     if ctx.invoked_subcommand is not None:
         # The sub-app has no subcommands today; keep the door honest if one
         # is ever added — the callback must not run its setup for it.
         return
+
+    if open_console and plain:
+        console.print(
+            "[red]--console is a TUI screen of the chat app[/red] — the plain "
+            "loop has no console. Drop --plain, or manage loops with "
+            "[bold]paa skills[/bold] and [bold]paa pipeline[/bold] instead."
+        )
+        raise typer.Exit(2)
 
     parsed_session = _parse_session_id(session)
     settings = _resolved_settings(model)
@@ -204,6 +228,6 @@ def chat(
         raise typer.Exit(1)
 
     try:
-        asyncio.run(_run_tui(settings, parsed_session))
+        asyncio.run(_run_tui(settings, parsed_session, start_on_console=open_console))
     except KeyboardInterrupt:  # pragma: no cover — the TUI handles Ctrl+C itself
         console.print("[dim]left paa chat[/dim]")
