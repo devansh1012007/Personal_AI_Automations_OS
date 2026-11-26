@@ -11,11 +11,11 @@
 # obvious:
 #
 #   * `.[dev]`, not `.`. The `dev` extra resolves `paa[api]`,
-#     `paa[s3]` and `paa[attest]` itself, and without them
-#     `tests/api/conftest.py`, `tests/attest/conftest.py` and
-#     `tests/storage/test_s3_live.py` skip their whole directories at
-#     import ("needs the extra"). A suite that skips is a suite that
-#     says nothing about the thing it was written for, and it says
+#     `paa[s3]`, `paa[attest]` and `paa[tui]` itself, and without them
+#     `tests/api/conftest.py`, `tests/attest/conftest.py`,
+#     `tests/storage/test_s3_live.py` and `tests/tui/conftest.py` skip
+#     their whole directories at import ("needs the extra"). A suite that
+#     skips says nothing about the thing it was written for, and it says
 #     it quietly — which is the quietest way to not test something.
 #
 #   * `python-is-python3`. The sandbox builds its child environment
@@ -98,13 +98,15 @@ jobs:
           # path needs an optional extra at import time.
           #
           # The mypy exclusion is the ONE place where this shape checks
-          # less than the others, and the reason is in the step itself.
+          # less than the others, and the reason is in the step itself:
+          # two module trees whose extras are absent here — `src/paa/api`
+          # (FastAPI) and `src/paa/tui` (Textual).
           - install: minimal
             extras: ""
-            mypy_exclude: "src/paa/api"
+            mypy_exclude: "src/paa/(api|tui)"
           # The documented developer install: the tooling, plus `paa[api]`,
-          # `paa[s3]` and `paa[attest]`. This is the shape the live S3 and
-          # real-Ed25519 attestation suites run in.
+          # `paa[s3]`, `paa[attest]` and `paa[tui]`. This is the shape the
+          # live S3, real-Ed25519 attestation and chat-TUI suites run in.
           - install: dev
             extras: "[dev]"
             mypy_exclude: ""
@@ -412,17 +414,27 @@ jobs:
           # installed and the whole of `src` is checked.
           MYPY_EXCLUDE: ${{ matrix.mypy_exclude }}
         run: |
-          # `src/paa/api/` imports FastAPI at module scope, so without
-          # the `api` extra mypy sees `FastAPI` as `Any` and reports
-          # EIGHT errors that are artefacts of the missing dependency
-          # rather than defects: every route decorator is "untyped", and
-          # one handler returns `Any`. Measured, on a minimal install:
+          # Two module trees are excluded here, both for the same reason:
+          # each imports its extra's framework at module scope, so on the
+          # minimal install mypy sees that framework as `Any` and reports
+          # errors that are artefacts of the missing dependency rather
+          # than defects. Measured, on installs without the extra:
           #
-          #     mypy src                      -> 8 errors in 1 file
-          #     mypy src --exclude src/paa/api -> Success, 135 files
+          #   `src/paa/api` (no `api` extra — FastAPI as `Any`):
+          #     mypy src --exclude src/paa/(api|tui) is the only way this
+          #     shows; historically 8 errors in 1 file (every route
+          #     decorator "untyped", one handler returning `Any`).
           #
-          # The file IS type-checked, in full, by the `dev` and the `all`
-          # jobs, where the dependency is present.
+          #   `src/paa/tui` (no `tui` extra — Textual as `Any`):
+          #     19 errors in 3 files (widgets.py, screens.py, app.py —
+          #     "Class cannot subclass \"Static\" (has type \"Any\")" and
+          #     the `no-any-return`s it causes). Measured on this runner.
+          #
+          #     mypy src                          -> 19 errors in 3 files
+          #     mypy src --exclude src/paa/(api|tui) -> Success, 202 files
+          #
+          # Both trees ARE type-checked, in full, by the `dev` and the
+          # `all` jobs, where their dependencies are present.
           #
           # The list is written out rather than derived, and that is
           # deliberate. A derived list would silently check LESS the day
@@ -448,10 +460,10 @@ jobs:
   #
   #   * The collected count depends on the INSTALL SHAPE. A minimal install
   #     skips whole directories at import (the `dev` extra is what carries
-  #     `paa[api]` and `paa[s3]`), so running --check inside the gate matrix
-  #     would disagree on two of its three shapes. This job pins the
-  #     documented developer shape (`pip install -e ".[dev]"`), and only
-  #     that shape.
+  #     `paa[api]`, `paa[s3]`, `paa[attest]` and `paa[tui]`), so running
+  #     --check inside the gate matrix would disagree on two of its
+  #     three shapes. This job pins the documented developer shape
+  #     (`pip install -e ".[dev]"`), and only that shape.
   #
   #   * It needs NO services. Collecting is not running: tests gated on
   #     Docker, PostgreSQL or S3 still collect and skip at run time, so

@@ -33,10 +33,10 @@ Tests collected
     does, and the current interpreter is used (so a CI venv counts with the
     venv's interpreter, not a system one).
     Install shape: the count requires the documented developer install
-    (``pip install -e ".[dev]"``). The ``dev`` extra carries ``paa[api]`` and
-    ``paa[s3]``; a minimal install collects fewer tests because whole
-    directories skip themselves at import. The CI ``status`` job therefore
-    pins the ``[dev]`` shape.
+    (``pip install -e ".[dev]"``). The ``dev`` extra carries ``paa[api]``,
+    ``paa[s3]``, ``paa[attest]`` and ``paa[tui]``; a minimal install collects
+    fewer tests because whole directories skip themselves at import. The CI
+    ``status`` job therefore pins the ``[dev]`` shape.
     Why this is host-stable: collecting is not running. Tests gated on Docker,
     PostgreSQL or S3 servers still collect; they skip at run time. So Docker /
     server presence does not change the collected count. Outcome counts do

@@ -87,9 +87,17 @@ dev = [
     # to exercise what the CLI advertises, not merely install a verifier that
     # can be tricked by an honestly-labelled symmetric fallback.
     "paa[attest]",
+    # The chat TUI's own extra. Without it tests/tui/ cannot even be
+    # COLLECTED — the modules import `paa.tui.chat.app`, which imports
+    # Textual at module scope — so the documented dev install errors at
+    # collection instead of skipping, and `mypy src` reports 19 Any-subclass
+    # artefacts in src/paa/tui/chat/. The suite skips itself when the extra
+    # is absent ("needs the tui extra", the tests/api pattern); the dev
+    # install carries the extra so the default shape exercises it.
+    "paa[tui]",
 ]
 all = [
-    "paa[vector,graph,embeddings,api,redis,postgres,s3,otel,attest]",
+    "paa[vector,graph,embeddings,api,redis,postgres,s3,otel,attest,tui]",
 ]
 
 [project.scripts]
