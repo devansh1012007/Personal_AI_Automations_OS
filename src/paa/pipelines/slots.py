@@ -362,11 +362,56 @@ def _observe_declaration() -> PipelineDeclaration:
     )
 
 
+def _improve_declaration() -> PipelineDeclaration:
+    """``improve.reflection-loop``: the guarded self-improvement cycle (C8.1).
+
+    SPEC 2 Wave 8's flagship row, stated in manifest vocabulary. The
+    capability ask is the design's own honesty line made
+    machine-readable: **``commit`` and nothing else** — no ``think``, no
+    ``use_skill``, no ``recall`` — because the loop is model-free end to
+    end (reflection is the Weekly Reflection Engine's own analysis over
+    the ledger; validation is gate-command exit codes; the gate is a
+    human's answer). A loop that grew a model-opinionated gate would have
+    to widen this ask, and the determinism rule (SPEC 2 §9: "no gate is
+    ever model-decided") forbids exactly that widening.
+
+    The two declared knobs bound the deterministic halves: the
+    reflection window the engine reads, and the per-command wall budget
+    the validator grants. The honesty line the module docstrings carry
+    rides here too: prototypical few-shot classification ≠ gradient
+    meta-learning (ADR-0017) — this loop is not meta-learning at all.
+    """
+    return PipelineDeclaration(
+        name="improve.reflection-loop",
+        version="4.1.0",
+        requires_runtime=">=4.1,<5",
+        description=(
+            "the guarded self-improvement cycle: reflection over the real "
+            "ledger, a deterministic patch proposal, validation by the "
+            "repository's own gate commands, a human gate, and a commit "
+            "that lands only as an attested change bundle (C7.2) behind "
+            "the host-git integrity gate"
+        ),
+        capabilities={"commit": True},
+        params={
+            "window_days": ParamSpec(
+                type="int", default=7, minimum=1, maximum=366,
+                description="the reflection window the engine analyses, in days",
+            ),
+            "validation_timeout_s": ParamSpec(
+                type="int", default=300, minimum=1, maximum=86400,
+                description="per-command wall budget for the validation gates, in seconds",
+            ),
+        },
+    )
+
+
 BUILTIN_DECLARATIONS: dict[str, PipelineDeclaration] = {
     _builtin_declaration().name: _builtin_declaration(),
     _chat_declaration().name: _chat_declaration(),
     _coder_declaration().name: _coder_declaration(),
     _observe_declaration().name: _observe_declaration(),
+    _improve_declaration().name: _improve_declaration(),
 }
 
 

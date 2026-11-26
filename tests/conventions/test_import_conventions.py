@@ -177,12 +177,14 @@ TYPE_CHECKING_CLASSES: dict[str, str] = {
     "paa.tui.chat.wiring": "C",
     "paa.api.app": "B",
     "paa.cli.eval": "C",
+    "paa.cli.improve": "C",
     "paa.cli.main": "C",
     "paa.coder.agent": "C",
     "paa.coder.model_adapter": "E",
     "paa.coder.runtime_tools": "C",
     "paa.context.budget": "D",
     "paa.daemon": "C",
+    "paa.improve.gate": "E",
     "paa.improvement.reflection": "C",
     "paa.memory.creator": "E",
     "paa.memory.world_model": "D",
@@ -258,6 +260,11 @@ TYPE_CHECKING_NOTES: dict[str, str] = {
         "observe, sandbox, ledger, validation), which no other CLI path loads: "
         "+71.2 ms"
     ),
+    "paa.cli.improve": (
+        "names paa.ledger.store (the storage-backed ledger chain) beside the "
+        "improve gate and pipeline types, which no plain CLI path loads: "
+        "+54.5 ms"
+    ),
     "paa.cli.main": (
         "names paa.runtime: +12.1 ms, and AGENTS.md forbids paa.runtime in a CLI that "
         "prints its version"
@@ -271,6 +278,10 @@ TYPE_CHECKING_NOTES: dict[str, str] = {
     "paa.coder.runtime_tools": "names paa.runtime: +13.4 ms",
     "paa.context.budget": "names only collections.abc.Iterable",
     "paa.daemon": "names paa.runtime: +128.8 ms, the largest price in the tree",
+    "paa.improve.gate": (
+        "names paa.improve.proposal and paa.improve.validation, which "
+        "paa.improve.__init__ imports anyway: ~0 ms"
+    ),
     "paa.improvement.reflection": (
         "names paa.ledger.store, which it does not otherwise import: +7.5 ms"
     ),

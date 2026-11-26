@@ -4,7 +4,7 @@ What the registry is: one place that answers "which pipelines exist,
 what do they ask for, and where do they come from" without running
 anything. Sources, with their trust levels:
 
-* ``builtin`` — the three in-process pipelines the runtime ships
+* ``builtin`` — the in-process pipelines the runtime ships
   (:mod:`paa.pipelines.slots` declarations carry their asks);
 * ``local`` — ``PAA_HOME/pipelines/<name>/pipeline.toml``, the local
   directory of ADR-0052's distribution order. Parsed and validated

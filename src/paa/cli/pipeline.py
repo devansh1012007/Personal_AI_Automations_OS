@@ -258,6 +258,14 @@ def run(
     yes: bool = typer.Option(
         False, "--yes", help="Auto-approve permission prompts (the coder loop)."
     ),
+    gate: list[str] = typer.Option(
+        None,
+        "--gate",
+        help=(
+            "A validation gate command, shell-split (repeatable) — the "
+            "improve loop's deterministic validator."
+        ),
+    ),
 ) -> None:
     """Run one in-process pipeline once. Local manifests refuse (P3)."""
 
@@ -273,6 +281,16 @@ def run(
             f"[red]{row.name} is a local manifest[/red] — listed and inspected, "
             "not executed: running an out-of-process pipeline is the RPC "
             "transport's work (P3)."
+        )
+        raise typer.Exit(1)
+
+    # ``--gate`` is the improve loop's own option, the same way ``--mode``
+    # and ``--yes`` are the coder loop's: named on the shared door, refused
+    # for every pipeline whose validator it is not.
+    if gate and row.name != "improve.reflection-loop":
+        console.print(
+            f"[red]--gate is the improve loop's validation gate list;[/red] "
+            f"{row.name} has no deterministic validation gates"
         )
         raise typer.Exit(1)
 
@@ -304,6 +322,14 @@ def run(
             # else. Its capability ask and slot set are both empty, so an
             # overlay that tries to open either is refused as a widening.
             "builtin.observe": (
+                frozenset(declaration.params),
+                frozenset(),
+                frozenset(),
+            ),
+            # The guarded loop honours its two declared knobs (the
+            # reflection window and the validation wall budget) and
+            # nothing else — its capability ask is commit-only.
+            "improve.reflection-loop": (
                 frozenset(declaration.params),
                 frozenset(),
                 frozenset(),
@@ -343,7 +369,9 @@ def run(
         _run(_run_coder_pipeline(goal, params, mode, yes))
     elif row.name == "builtin.observe":
         _run(_run_observe_pipeline(goal, params))
-    else:  # unreachable while the builtins are the four above
+    elif row.name == "improve.reflection-loop":
+        _run(_run_improve_pipeline(goal, params, gate))
+    else:  # unreachable while the builtins are the five above
         console.print(f"[red]no run path for {row.name!r}[/red]")
         raise typer.Exit(1)
 
@@ -567,6 +595,42 @@ async def _run_observe_pipeline(goal: str, params: dict[str, Any]) -> None:
     colour = "green" if result.status.value == "completed" else "yellow"
     console.print(f"[{colour}]{result.metrics['state']}[/{colour}] {result.summary}")
     console.print(f"[dim]bundle: {result.metrics['bundle_path']}[/dim]")
+    console.print(f"[dim]correlation: {run_id}[/dim]")
+    if result.status.value != "completed":
+        raise typer.Exit(1)
+
+
+async def _run_improve_pipeline(
+    goal: str, params: dict[str, Any], gates: list[str] | None
+) -> None:
+    """One ``improve.reflection-loop`` run through the registry's door.
+
+    The goal is the repository to improve; the knobs come from the
+    declaration's params; the gates come from ``--gate``. This is the
+    same driver ``paa improve`` uses, so both doors journal identically
+    and leave the same artifacts (the observe pattern, restated for the
+    loop whose operator inputs — gate commands, a human approver — do
+    not fit a typed-param runner on their own).
+    """
+    from paa.cli.improve import _split_gates, run_improve_pipeline
+    from paa.core.errors import PaaError
+
+    validators = _split_gates(gates or [])
+    try:
+        run_id, result = await run_improve_pipeline(
+            Path(goal),
+            validators=validators,
+            params=params,
+        )
+    except PaaError as exc:
+        console.print(f"[red]improve refused:[/red] {exc.message}")
+        raise typer.Exit(2) from exc
+
+    colour = "green" if result.status.value == "completed" else "yellow"
+    console.print(f"[{colour}]{result.status.value}[/{colour}] {result.summary}")
+    console.print(f"[dim]stopped: {result.metrics.get('stopped_reason')}[/dim]")
+    if result.metrics.get("bundle_dir"):
+        console.print(f"[dim]bundle: {result.metrics['bundle_dir']}[/dim]")
     console.print(f"[dim]correlation: {run_id}[/dim]")
     if result.status.value != "completed":
         raise typer.Exit(1)
