@@ -173,5 +173,6 @@ the chain root and bundle id reproduce from them) and never executed.
 Residual: a local writer can still swap bundle bytes between `attest pr`'s
 two verification checks or before the `--out` write. Every field remains
 inert-escaped, but the interface doc now names that window and the reviewer's
-final act remains `paa verify` immediately before publishing. Nothing from
-this round was committed or pushed; the `.patch` files remain untracked.
+final act remains `paa verify` immediately before publishing. The C7.2 work
+was committed as f5555b6 and pushed to `origin/main`; the `.patch` files remain
+untracked.
