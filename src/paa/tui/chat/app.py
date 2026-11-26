@@ -144,11 +144,15 @@ def _palette_actions(chat: ChatApp) -> list[tuple[str, str, Callable[[], Any]]]:
     work to :meth:`run_worker` from inside.
     """
     return [
-        ("sessions — list, switch, archive", "/sessions", chat.show_sessions),
-        ("memory dashboard", "/memory", chat.show_memory),
-        ("ledger — this session's event chain", "/ledger", chat.show_ledger),
-        ("policy — grants and denials", "/policy", chat.show_policy),
-        ("loops console — registry, install, fork, conformance", "/console", chat.show_console),
+        ("sessions — list, switch, archive", "/sessions", chat.action_show_sessions),
+        ("memory dashboard", "/memory", chat.action_show_memory),
+        ("ledger — this session's event chain", "/ledger", chat.action_show_ledger),
+        ("policy — grants and denials", "/policy", chat.action_show_policy),
+        (
+            "loops console — registry, install, fork, conformance",
+            "/console",
+            chat.action_show_console,
+        ),
         (
             "new session",
             "/new",
@@ -714,15 +718,15 @@ class ChatApp(App[None]):
         if command == "/new":
             await self.new_session()
         elif command == "/sessions":
-            self.show_sessions()
+            self.action_show_sessions()
         elif command == "/memory":
-            self.show_memory()
+            self.action_show_memory()
         elif command == "/ledger":
-            self.show_ledger()
+            self.action_show_ledger()
         elif command == "/policy":
-            self.show_policy()
+            self.action_show_policy()
         elif command == "/console":
-            self.show_console()
+            self.action_show_console()
         elif command == "/context":
             await self.show_context()
         elif command == "/compact":
@@ -1075,16 +1079,25 @@ class ChatApp(App[None]):
         rail.display = not rail.display
         self.journal.log("ui.rail", visible=rail.display)
 
-    def show_memory(self) -> None:
+    # -- screen actions --------------------------------------------------------
+    #
+    # The five key-bound screens carry the ``action_`` prefix their
+    # bindings resolve through: a binding to "show_memory" needs an
+    # ``action_show_memory`` method, and the bare names C4.4 shipped were
+    # unreachable from the keyboard (the slash commands and the palette
+    # called the methods directly, so only the keys were dead). Renamed
+    # here so Ctrl+M / Ctrl+L / Ctrl+K / Ctrl+O / Ctrl+B all fire.
+
+    def action_show_memory(self) -> None:
         self._show(MemoryScreen())
 
-    def show_ledger(self) -> None:
+    def action_show_ledger(self) -> None:
         self._show(LedgerScreen())
 
-    def show_policy(self) -> None:
+    def action_show_policy(self) -> None:
         self._show(PolicyScreen())
 
-    def show_console(self) -> None:
+    def action_show_console(self) -> None:
         """Ctrl+B / ``/console`` — the Loop Console (C8.5): loops, driven.
 
         The console is a screen of this app, not a sibling product: the
@@ -1095,7 +1108,7 @@ class ChatApp(App[None]):
         """
         self._show(ConsoleScreen())
 
-    def show_sessions(self) -> None:
+    def action_show_sessions(self) -> None:
         self._show(SessionsScreen())
 
     def show_log_drawer(self) -> None:

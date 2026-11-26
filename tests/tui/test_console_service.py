@@ -27,7 +27,6 @@ extension-surface suites (``tests/chat/test_extensions.py``) install.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -48,7 +47,6 @@ from paa.tui.chat.console import (
     ConsoleService,
     render_fork_overlay,
 )
-from paa.validation.ast_scanner import AstSecurityScanner
 
 # -- the fixture skill (the shape tests/chat/test_extensions.py installs) ----
 

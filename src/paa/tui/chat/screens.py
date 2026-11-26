@@ -377,7 +377,7 @@ class MemoryScreen(Screen[None]):
             # No row under the cursor (empty table, header row) — nothing to
             # open, and a keyboard dead-end must not surface as an error.
             return
-        fact = self._facts.get(str(row_key))
+        fact = self._facts.get(row_key.value) if row_key.value else None
         if fact is not None:
             await _chat_app(self).open_fact_detail(fact)
 
@@ -715,6 +715,11 @@ class InstallSourceModal(_PaaModal):
         await listing.clear()
         for label in labels:
             await listing.append(_InstallCandidate(label))
+        if labels:
+            # Highlight the first candidate: a ListView whose index is
+            # ``None`` swallows Enter (nothing highlighted, nothing
+            # selected), and the flow's promise is Enter-installs.
+            listing.index = 0
         listing.focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -873,7 +878,9 @@ class ConsoleScreen(Screen[None]):
             row_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
         except CellDoesNotExist:
             return None
-        return self._pipeline_rows.get(str(row_key))
+        # ``RowKey`` hashes equal to its string but does not ``str()`` to
+        # it (textual 8.x), so the value is read, never stringified.
+        return self._pipeline_rows.get(row_key.value) if row_key.value else None
 
     def _highlighted_skill(self) -> str | None:
         table = self.query_one("#console-skills", DataTable)
@@ -881,7 +888,7 @@ class ConsoleScreen(Screen[None]):
             row_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
         except CellDoesNotExist:
             return None
-        return str(row_key) or None
+        return row_key.value
 
     async def action_refresh(self) -> None:
         await self.refresh_console()
