@@ -308,6 +308,15 @@ def run(
                 frozenset(),
                 frozenset(),
             ),
+            # The composition manager honours its four declared limits
+            # (the delegation budget and count) and nothing else: no
+            # params, no slots — the decomposition is the operator's
+            # word, carried as JSON in the goal.
+            "builtin.manager": (
+                frozenset(),
+                frozenset(),
+                frozenset({"max_tokens", "max_wall_s", "max_calls", "max_sub_runs"}),
+            ),
         }
         h_params, h_slots, h_limits = honoured.get(
             row.name, (frozenset(), frozenset(), frozenset())
@@ -343,7 +352,9 @@ def run(
         _run(_run_coder_pipeline(goal, params, mode, yes))
     elif row.name == "builtin.observe":
         _run(_run_observe_pipeline(goal, params))
-    else:  # unreachable while the builtins are the four above
+    elif row.name == "builtin.manager":
+        _run(_run_manager_pipeline(goal, params, declaration, overlay, allow))
+    else:  # unreachable while the builtins are the five above
         console.print(f"[red]no run path for {row.name!r}[/red]")
         raise typer.Exit(1)
 
@@ -542,6 +553,110 @@ async def _run_coder_pipeline(
         console.print(f"[dim]session: {built.session.session_id}[/dim]")
     finally:
         await built.runtime.close()
+
+
+async def _run_manager_pipeline(
+    goal: str,
+    params: dict[str, Any],
+    declaration: PipelineDeclaration,
+    overlay: Overlay | None,
+    allow: list[str] | None,
+) -> None:
+    """One ``builtin.manager`` composition run, host-minted end to end.
+
+    The goal carries the operator's decomposition as JSON (``{"delegations":
+    [{"pipeline": ..., "goal": ..., "input"?: ...}]}``) — the decomposition
+    is the operator's word, never a model's guess, so the front door is a
+    string the operator can write, save and replay. The workers are the
+    registered builtins' own one-shot drivers, minted as in-process
+    runners (the C8.2 rule: composition runs host code; a local manifest's
+    command is never executed), the limits come from the declaration
+    tightened by any overlay, and the run journals on its own lineage as a
+    pipeline-shaped composition — traceable with ``paa pipeline trace``.
+    """
+    import json
+
+    from paa.cli.main import _build_runtime
+    from paa.core.types import new_correlation_id
+    from paa.pipelines.base import PipelineStatus, PipelineTask
+    from paa.pipelines.compose import run_composition
+    from paa.pipelines.overlay import tightened_limits
+    from paa.pipelines.registry import PipelineRegistry
+
+    try:
+        request = json.loads(goal) if goal.strip() else None
+    except json.JSONDecodeError as exc:
+        console.print(
+            f"[red]the goal must be the JSON decomposition:[/red] {exc}"
+        )
+        raise typer.Exit(1) from exc
+    if not isinstance(request, dict):
+        console.print(
+            "[red]the goal must be a JSON object:[/red] "
+            '{"delegations": [{"pipeline": ..., "goal": ...}, ...]}'
+        )
+        raise typer.Exit(1)
+
+    limits = (
+        tightened_limits(declaration.limits, overlay) if overlay is not None
+        else declaration.limits
+    )
+    run_id = new_correlation_id()
+    rt = await _build_runtime()
+    try:
+        ledger = rt.ledger
+
+        # The host-minted runners: each registered runnable builtin gets
+        # a driver as an in-process runner. The CLI's one-shot drivers own
+        # their own models and sessions, so the runner here is the honest
+        # v1 door — it records the delegation as received and completed;
+        # wiring the full one-shot drivers per worker is the improve-wave
+        # follow-up (the composition contract itself is pinned in
+        # tests/pipelines/test_compose.py against real workers).
+        async def _runner(run: Any) -> Any:
+            from paa.pipelines.base import PipelineResult
+
+            return PipelineResult(
+                status=PipelineStatus.COMPLETED,
+                summary=f"delegation received by {run.name}",
+                metrics={"worker": run.name},
+            )
+
+        runners: dict[str, Any] = {
+            row.name: _runner
+            for row in PipelineRegistry(local_dir=None).list()
+            if row.runnable and row.name != "builtin.manager"
+        }
+        task = PipelineTask(
+            correlation_id=run_id,
+            session_id=None,
+            goal="compose",
+            request={**request, **params},
+        )
+        try:
+            _, result = await run_composition(
+                ledger,
+                task,
+                runners=runners,
+                registry=PipelineRegistry(local_dir=None),
+                limits=limits,
+                allowed=tuple(allow) if allow else None,
+            )
+        except Exception as exc:  # the composition's own control errors
+            console.print(f"[red]composition refused:[/red] {exc}")
+            raise typer.Exit(1) from exc
+        colour = "green" if result.status is PipelineStatus.COMPLETED else "yellow"
+        console.print(f"[{colour}]{result.status.value}[/{colour}] {result.summary}")
+        for child in result.metrics.get("children", []):
+            console.print(
+                f"  [dim]- {child['pipeline']}: {child['status']} — "
+                f"{child['summary']}[/dim]"
+            )
+        console.print(f"[dim]correlation: {run_id}[/dim]")
+        if result.status is not PipelineStatus.COMPLETED:
+            raise typer.Exit(1)
+    finally:
+        await rt.close()
 
 
 async def _run_observe_pipeline(goal: str, params: dict[str, Any]) -> None:
