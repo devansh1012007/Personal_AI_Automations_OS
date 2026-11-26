@@ -33,6 +33,7 @@ import pytest
 
 from paa.acp.protocol import encode_frame
 from paa.acp.server import ACPServer
+from paa.chat.extensions import ChatExtensionSurface
 from paa.chat.loop import ChatModel
 from paa.chat.service import ChatService
 from paa.config import ChatSettings, ContextSettings
@@ -104,7 +105,11 @@ class AcpHarness:
 def acp(tmp_path: Path, db: Database, ledger: LedgerStore) -> Callable[..., AcpHarness]:
     """Build an in-process server harness; the model seam is overridable."""
 
-    def build(*, model: ChatModel | None = None) -> AcpHarness:
+    def build(
+        *,
+        model: ChatModel | None = None,
+        extensions: ChatExtensionSurface | None = None,
+    ) -> AcpHarness:
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         service = ChatService(
@@ -116,6 +121,7 @@ def acp(tmp_path: Path, db: Database, ledger: LedgerStore) -> Callable[..., AcpH
             context_settings=ContextSettings(),
             model=model,
             signals=SignalRepository(db, ContentAddressedStore(tmp_path / "cold")),
+            extensions=extensions,
         )
         return AcpHarness(
             server=ACPServer(chat=service),

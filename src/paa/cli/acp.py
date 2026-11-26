@@ -25,10 +25,14 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import typer
 from rich.console import Console
+
+if TYPE_CHECKING:
+    from paa.chat.extensions import ChatExtensionSurface
+    from paa.runtime import Runtime
 
 console = Console()
 
@@ -86,12 +90,43 @@ def serve() -> None:
     async def _serve() -> None:
         runtime = await Runtime.build()
         try:
-            server = ACPServer(chat=ChatService.from_runtime(runtime))
+            server = ACPServer(
+                chat=ChatService.from_runtime(
+                    runtime, extensions=_extension_surface(runtime)
+                )
+            )
             await server.serve(await _stdin_reader(), _StdoutSink())
         finally:
             await runtime.close()
 
     asyncio.run(_serve())
+
+
+def _extension_surface(runtime: Runtime) -> ChatExtensionSurface | None:
+    """The extension surface the ACP-served chat carries (C8.4).
+
+    An editor's session is a chat session like any other host's, so it
+    sees the same capability catalogue a ``paa chat`` turn would:
+    installed skills and MCP-tool rows, policy-filtered, dispatchable
+    through the ``@use-skill`` convention. The surface is the one
+    ``paa skills`` constructs over the same live runtime — same ledger,
+    same db, same sandbox, same journal — with the one operator decision
+    this front cannot make itself settled conservatively:
+    ``allow_unverified=False``, because the ACP door is a *consumer* of
+    installed capabilities, not an installer — installing through an
+    editor session would be the signature gate's opt-in made by somebody
+    other than the operator, so the front does not offer it. Installs
+    happen through ``paa skills install``; the editor sees what that
+    installed, and nothing more.
+
+    The runtime's own policy still governs every dispatch: a capability
+    the mode would refuse never reaches the prompt, and a directive for
+    one that slipped past a mid-turn mode change is refused at the USA's
+    gate and journalled ``TOOL_CALL_DENIED``.
+    """
+    from paa.cli.skills import _surface
+
+    return _surface(runtime, allow_unverified=False)
 
 
 @app.command("client")

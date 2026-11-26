@@ -166,6 +166,7 @@ TYPE_CHECKING_CLASSES: dict[str, str] = {
     "paa.agents.orchestrator": "C",
     "paa.chat.extensions": "E",
     "paa.chat.service": "C",
+    "paa.cli.acp": "C",
     "paa.cli.attest": "E",
     "paa.cli.chat": "E",
     "paa.cli.observe": "E",
@@ -244,6 +245,11 @@ TYPE_CHECKING_NOTES: dict[str, str] = {
         "paa.attest module is imported at CLI module scope"
     ),
     "paa.cli.chat": "names paa.config.Settings, loaded by every CLI path already: ~0 ms",
+    "paa.cli.acp": (
+        "names paa.chat.extensions (the extension surface) and paa.runtime "
+        "(the runtime boot), same rule as paa.cli.main: the CLI's --help path "
+        "pays nothing: +65.0 ms"
+    ),
     "paa.cli.observe": (
         "names paa.pipelines.base.PipelineResult for the shared driver's return "
         "annotation; pipelines.base is inert types, and the import lives behind "
