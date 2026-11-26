@@ -251,3 +251,157 @@ class TestZeroTraceRefusal:
         result = await h.service.send(sid, "greet Ada")
         assert result.status == "completed"
         assert result.skill_calls == ()
+
+
+# ---------------------------------------------------------------------------
+# MCP tools as chat capabilities (SPEC 2 C8.4, item 2)
+# ---------------------------------------------------------------------------
+
+# A fake stdio MCP server, the shape tests/skills/test_mcp.py uses: it
+# serves one "echo" tool whose arguments and reply ride the normal MCP
+# JSON-RPC framing. Reused here rather than re-invented because the
+# property under test is the *flow* (server tools → registry rows → chat
+# capabilities), not the wire — that suite owns the wire.
+_FAKE_MCP_SERVER = """\
+import json, sys
+
+TOOL = {
+    "name": "echo",
+    "description": "Echo the given message straight back to the caller.",
+    "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}}},
+    "outputSchema": {"type": "object", "properties": {"echoed": {"type": "string"}},
+                     "required": ["echoed"]},
+}
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\\n")
+    sys.stdout.flush()
+
+for raw in sys.stdin:
+    raw = raw.strip()
+    if not raw:
+        continue
+    msg = json.loads(raw)
+    method = msg.get("method")
+    mid = msg.get("id")
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": mid,
+              "result": {"protocolVersion": "2024-11-05", "capabilities": {},
+                         "serverInfo": {"name": "fake", "version": "1"}}})
+    elif method == "tools/list":
+        send({"jsonrpc": "2.0", "id": mid, "result": {"tools": [TOOL]}})
+    elif method == "tools/call":
+        echoed = msg["params"].get("arguments", {}).get("message", "")
+        send({"jsonrpc": "2.0", "id": mid,
+              "result": {"content": [{"type": "text", "text": json.dumps({"echoed": echoed})}],
+                         "structuredContent": {"echoed": echoed},
+                         "isError": False}})
+"""
+
+
+class _McpDirectiveModel:
+    """A scripted model that asks for the MCP tool, then answers.
+
+    Same two-reply shape as :class:`_DirectiveModel`: the second reply only
+    knows the echoed text if the dispatch reached the real server child and
+    the loop fed the outcome back into the next think.
+    """
+
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
+    async def reply(self, prompt: str, *, on_delta: Any) -> ChatReply:
+        self.prompts.append(prompt)
+        if len(self.prompts) == 1:
+            text = '@use-skill echo\n{"message": "from the chat turn"}'
+        else:
+            text = "The tool echoed: from the chat turn"
+        return ChatReply(text=text, tokens_used=1)
+
+
+class TestMcpToolsAsChatCapabilities:
+    """A self-hosted MCP server's tools become capabilities a turn can use.
+
+    MCP servers are not file packages the five gates can hash, so they ride
+    the adapter's own enforcement (sandbox required, ``manifest ∩ mandate ∩
+    policy``) and activate straight into the registry — the surface's own
+    stated rule. From there the turn cannot tell an MCP tool from a
+    Claw-Hub skill: same catalogue, same ``@use-skill`` door, same
+    TOOL_CALL_* journal rows.
+    """
+
+    async def test_server_tools_surface_and_dispatch(
+        self, tmp_path: Path, db: Database, ledger: LedgerStore, chat
+    ) -> None:
+        import sys
+
+        script = tmp_path / "fake_mcp_server.py"
+        script.write_text(_FAKE_MCP_SERVER, encoding="utf-8")
+        surface = ChatExtensionSurface(
+            ledger=ledger,
+            db=db,
+            home=tmp_path / "home",
+            sandbox=SubprocessSandbox(),
+            permission_mode=PermissionMode.ASK,
+        )
+
+        # -- install: the granted tool becomes a registry row + an
+        # EXTENSION_ACTIVATED record, on one shared lineage for the set.
+        activations = await surface.install_mcp_server(
+            [sys.executable, str(script)]
+        )
+        assert [a.skill_name for a in activations] == ["echo"]
+        assert activations[0].source == "mcp_server"
+        assert activations[0].provider == "mcp_server"
+        assert activations[0].pipeline is None  # an MCP tool needs no coding loop
+        events = await ledger.read_correlation(activations[0].lineage)
+        assert [e.event_type for e in events] == [EventType.EXTENSION_ACTIVATED]
+        assert events[0].payload["source"] == "mcp_server"
+        assert events[0].payload["v"] == 1
+
+        # -- the catalogue lists it beside anything else that is live.
+        catalogue = await surface.capability_catalogue()
+        assert [c.skill_name for c in catalogue] == ["echo"]
+        assert render_capability_lines(catalogue) == [
+            "echo v0.1.0 — Echo the given message straight back to the caller."
+        ]
+
+        # -- a chat turn uses it: the directive dispatches through the USA
+        # to a fresh sandboxed MCP session, and the echoed text comes back.
+        model = _McpDirectiveModel()
+        h = chat(model=model, extensions=surface)
+        sid = await h.service.create_session()
+        result = await h.service.send(sid, "echo this")
+
+        assert result.status == "completed"
+        assert result.skill_calls == ("echo",)
+        assert "from the chat turn" in result.reply
+        assert "[capabilities]" in model.prompts[0]
+        assert "echo v0.1.0" in model.prompts[0]
+        assert "[skill results]" in model.prompts[1]
+        assert "from the chat turn" in model.prompts[1]
+
+        # The invocation journalled as tool calls on *both* lineages the
+        # flow owns: the adapter's own per-call record (the same shape
+        # ``paa mcp serve`` gives its mediated calls) and the chat turn's
+        # coder-journal wrapper, whose rows carry the chat session id —
+        # the seam is uniform with a Claw-Hub skill's dispatch.
+        rows = await db.fetch_all(
+            "SELECT event_type, payload FROM system_state_ledger "
+            "WHERE event_type LIKE 'TOOL_CALL%' ORDER BY sequence_id"
+        )
+        kinds = [row["event_type"] for row in rows]
+        assert kinds.count("TOOL_CALL_PROPOSED") == 2  # adapter + chat turn
+        assert kinds.count("TOOL_CALL_COMPLETED") == 2
+        assert "TOOL_CALL_DENIED" not in kinds
+        assert "TOOL_CALL_FAILED" not in kinds
+        turn_rows = [
+            row
+            for row in rows
+            if json.loads(row["payload"])["session_id"] == str(sid)
+        ]
+        assert [row["event_type"] for row in turn_rows] == [
+            "TOOL_CALL_PROPOSED",
+            "TOOL_CALL_COMPLETED",
+        ]
+        assert json.loads(turn_rows[0]["payload"])["tool"] == "echo"
