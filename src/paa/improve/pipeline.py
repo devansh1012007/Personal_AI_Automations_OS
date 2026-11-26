@@ -60,7 +60,12 @@ import structlog
 
 from paa.core.errors import PaaError
 from paa.core.types import ComplexityModality, Permission, PermissionMode
-from paa.improve.gate import Approver, HumanDecision, refuse_all
+from paa.improve.gate import (
+    DECISION_APPROVED,
+    Approver,
+    HumanDecision,
+    refuse_all,
+)
 from paa.improve.proposal import (
     DEFAULT_TARGET_FILE,
     PatchProposal,
@@ -459,6 +464,23 @@ class ImproveFacade:
         from paa.attest.bundle import build_bundle, load_or_generate_key
         from paa.improve.gitcommit import guarded_git_commit, is_git_repository
 
+        # The guard comes before any effect, not after: an unguarded call
+        # must leave the repository byte-identical, or "requires the
+        # recorded human approval" would describe a post-mortem rather
+        # than a gate. A carried *rejection* is the same refusal — the
+        # only decision that opens this door is an approval.
+        if self._pending_approval is None:
+            raise PaaError(
+                "the commit stage requires the recorded human approval; none "
+                "was carried — this is a guarded loop, not a conveyor"
+            )
+        if self._pending_approval.decision != DECISION_APPROVED:
+            raise PaaError(
+                "the carried human decision is "
+                f"{self._pending_approval.decision!r}, not an approval; the "
+                "commit stage refuses to land a change the gate refused"
+            )
+
         written = proposal.apply(self._repo_root)
 
         evidence_dir = self.run_dir / "evidence"
@@ -487,12 +509,6 @@ class ImproveFacade:
                         "evidence_sha256": digest,
                     }
                 )
-
-        if self._pending_approval is None:
-            raise PaaError(
-                "the commit stage requires the recorded human approval; none "
-                "was carried — this is a guarded loop, not a conveyor"
-            )
 
         key = load_or_generate_key(
             self.run_dir / "attest-key.json",

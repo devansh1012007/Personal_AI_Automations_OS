@@ -138,8 +138,9 @@ def terminal_approver(*, who: str) -> Approver:
     calls it, mid-run, exactly when the gate is reached). The prompt shows
     the intent, the rationale, every file with its content digest, and
     each validation command with its exit code — the evidence the
-    decision is being made on. A ``KeyboardInterrupt`` or EOF is a
-    refusal, not an error: a human who walked away did not approve.
+    decision is being made on. A ``KeyboardInterrupt``, an EOF or typer's
+    ``Abort`` (what a closed stdin raises) is a refusal, not an error: a
+    human who walked away did not approve.
     """
     import typer
 
@@ -157,7 +158,7 @@ def terminal_approver(*, who: str) -> Approver:
             typer.echo(f"gate: {' '.join(command.argv)} → {state}")
         try:
             answer = typer.confirm("apply this improvement?", default=False)
-        except (KeyboardInterrupt, EOFError):
+        except (KeyboardInterrupt, EOFError, typer.Abort):
             answer = False
         return HumanDecision(
             decision=DECISION_APPROVED if answer else DECISION_REJECTED,
