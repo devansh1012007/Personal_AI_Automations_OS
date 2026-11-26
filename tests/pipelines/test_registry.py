@@ -2,11 +2,11 @@
 
 What these tests pin:
 
-* **the registry's two sources** — the four in-process builtins
-  (trust ``builtin``, runnable; Wave 7 adds ``builtin.observe``) and the
-  local directory's manifests (trust ``local``, listed and inspected
-  but never executed — running an out-of-process pipeline is P3's RPC
-  transport);
+* **the registry's two sources** — the five in-process builtins
+  (trust ``builtin``, runnable; Wave 7 added ``builtin.observe``,
+  Wave 8 ``improve.reflection-loop``) and the local directory's
+  manifests (trust ``local``, listed and inspected but never executed —
+  running an out-of-process pipeline is P3's RPC transport);
 * **the manifest contract at load** — an off-contract local manifest
   (unknown section, undeclarable capability, bad ``run.resume``, bad
   ``evidence.declares_tier``, off-contract ``[evidence]`` keys, missing
@@ -82,7 +82,7 @@ def _local_home(tmp_path: Path) -> Path:
 
 
 class TestTheRegistry:
-    def test_default_lists_the_four_builtins(self) -> None:
+    def test_default_lists_the_five_builtins(self) -> None:
         registry = PipelineRegistry(local_dir=None)
         rows = registry.list()
         assert [r.name for r in rows] == [
@@ -90,6 +90,7 @@ class TestTheRegistry:
             "builtin.chat",
             "coder.tool-loop",
             "builtin.observe",
+            "improve.reflection-loop",
         ]
         assert all(r.trust == "builtin" and r.runnable for r in rows)
 
@@ -355,6 +356,60 @@ class TestTheCodingFallback:
         assert "fallback" in description
         assert "external harness" in description
         assert "paa record" in description and "paa thread" in description
+
+
+class TestTheGuardedSelfImprovementLoop:
+    """C8.1 — the guarded self-improvement loop, pinned where selection
+    vocabulary lives (the pattern ``TestTheCodingFallback`` set for C8.3).
+
+    The loop must stay *guarded*: every improvement lands as an attested
+    change (C7.2), no gate is ever model-decided, and the refusal paths
+    are first-class. These pins hold that position to the registry — the
+    one place that answers "which pipelines exist" — so a silent
+    de-scoping, a capability widening or a rename is a red test, not a
+    docs drift.
+    """
+
+    def test_the_loop_is_registered_and_runnable(self, tmp_path: Path) -> None:
+        registry = PipelineRegistry.default(home=tmp_path)
+        row = registry.get("improve.reflection-loop")
+        assert row is not None, "the guarded self-improvement loop must stay registered"
+        assert row.runnable
+        assert row.trust == "builtin"
+
+    def test_the_loop_selects_explicitly(self, tmp_path: Path) -> None:
+        row = select(
+            "improve.reflection-loop",
+            registry=PipelineRegistry.default(home=tmp_path),
+        )
+        assert row.name == "improve.reflection-loop"
+
+    def test_the_capability_ask_is_commit_and_nothing_else(self, tmp_path: Path) -> None:
+        """The machine-readable half of "no gate is ever model-decided".
+
+        The loop asks for ``commit`` alone: no ``think``, no
+        ``use_skill`` — a declaration that grew a model-shaped capability
+        would be a loop whose gate could be model-decided, and this pin
+        makes that widening a review conversation instead of a drift.
+        """
+        registry = PipelineRegistry.default(home=tmp_path)
+        row = registry.get("improve.reflection-loop")
+        assert row is not None
+        assert set(row.declaration.capabilities) == {"commit"}
+        assert row.declaration.capabilities["commit"] is True
+
+    def test_the_declaration_carries_the_guards(self, tmp_path: Path) -> None:
+        registry = PipelineRegistry.default(home=tmp_path)
+        row = registry.get("improve.reflection-loop")
+        assert row is not None
+        description = row.declaration.description.lower()
+        assert "reflection" in description
+        assert "human gate" in description
+        assert "attested change bundle" in description
+        # The honesty line, on the selection surface: the declaration
+        # says what the loop is not (no model, no meta-learning).
+        assert row.declaration.resume == "journal"
+        assert row.declaration.evidence_tier == "in-process"
 
 
 class TestTheMandateScope:
