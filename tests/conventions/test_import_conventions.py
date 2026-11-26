@@ -174,6 +174,7 @@ TYPE_CHECKING_CLASSES: dict[str, str] = {
     "paa.cli.thread": "C",
     "paa.mcp.server": "C",
     "paa.tui.chat.app": "D",
+    "paa.tui.chat.console": "C",
     "paa.tui.chat.plain": "C",
     "paa.tui.chat.resilience": "E",
     "paa.tui.chat.screens": "A",
@@ -263,6 +264,12 @@ TYPE_CHECKING_NOTES: dict[str, str] = {
     ),
     "paa.mcp.server": "names paa.runtime (the runtime boot) and asyncio.StreamReader: heavy",
     "paa.tui.chat.app": "names only collections.abc.Callable",
+    "paa.tui.chat.console": (
+        "names paa.chat.extensions (the extension surface — marketplace, "
+        "skills, sandbox) beside the pipelines conformance stack and the "
+        "sandbox, all imported inside the action bodies instead so the TUI's "
+        "module import pays none of it: +223.2 ms"
+    ),
     "paa.tui.chat.plain": "names paa.runtime (heavy) beside stdlib and chat types",
     "paa.tui.chat.resilience": (
         "names paa.chat.loop, which its callers import at runtime anyway: ~0 ms"
