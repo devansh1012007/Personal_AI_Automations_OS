@@ -89,6 +89,7 @@ Module-specific deep dives
 - [modules/sandbox.md](modules/sandbox.md)
 - [modules/validation.md](modules/validation.md)
 - [modules/coder.md](modules/coder.md)
+- [modules/improve.md](modules/improve.md)
 - [modules/skills.md](modules/skills.md)
 - [modules/marketplace.md](modules/marketplace.md)
 - [modules/storage.md](modules/storage.md)

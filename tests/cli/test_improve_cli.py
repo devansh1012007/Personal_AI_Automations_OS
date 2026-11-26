@@ -260,9 +260,11 @@ class TestTheRegistryDoor:
         The observe pattern's claim, asserted: the registry's door journals
         the same lifecycle and stops with the same reason the direct verb
         does, and the goal argument is the repository. The registry door
-        carries no insecure-signing fallback — the commit stage attests
-        with the real backend — so the test needs the same extra the
-        attest suite needs, and skips the same way on a shape without it.
+        carries no insecure-signing fallback by design (see
+        ``docs/modules/improve.md`` — the shared runner never grows a flag
+        that lowers an attestation guarantee), so the commit stage attests
+        with the real backend and the test needs the same extra the attest
+        suite needs, skipping the same way on a shape without it.
         """
         pytest.importorskip(
             "cryptography", reason="the registry door commits via real Ed25519"
@@ -306,3 +308,19 @@ class TestTheRegistryDoor:
         )
         assert result.exit_code == 2
         assert "no validation gate commands" in result.stdout
+
+    def test_the_shared_runner_offers_no_insecure_signing_flag(self) -> None:
+        """Door parity, pinned: the registry door keeps the strict default.
+
+        ``paa improve`` carries ``--insecure-fallback-signing``; the shared
+        ``pipeline run`` surface deliberately does not — a flag whose only
+        effect is to lower an attestation guarantee belongs on the
+        operator's direct door, not on the one surface every pipeline runs
+        through. This pins the help text so the asymmetry cannot drift
+        back into silence (the decision is recorded in
+        ``docs/modules/improve.md``).
+        """
+        result = runner.invoke(app, ["pipeline", "run", "--help"])
+        assert result.exit_code == 0
+        assert "--gate" in result.stdout  # the improve-only option IS named
+        assert "insecure" not in result.stdout  # the fallback flag is NOT
