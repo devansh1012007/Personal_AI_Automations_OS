@@ -76,7 +76,11 @@ class TestConformanceV0:
     ) -> None:
         reports = await every_builtin_conformance(ledger, tmp_path)
         text = render_reports(reports)
-        assert text.count("GREEN") == 4
+        # One verdict line per report: the count is the registered-runnable
+        # count (four until Wave 7 added the observer, five with Wave 8's
+        # guarded self-improvement loop), so a pipeline added without a
+        # GREEN report shows up here as a missing line, not a silent gap.
+        assert text.count("GREEN") == len(reports)
         assert "double-run-sequence-equality" in text
         assert "n/a" not in text.splitlines()[0]  # verdict lines stay verdicts
         # The n/a rows are visible, not hidden: tie the rendered count to
@@ -141,3 +145,27 @@ class TestConformanceV0:
         assert all(statuses[name] == "pass" for name in real), statuses
         assert statuses[CHECK_NAMES[1]] == "n/a", statuses  # resume="none"
         assert statuses[CHECK_NAMES[4]] == "n/a", statuses  # sandbox-owned budgets
+
+    async def test_improve_conformance_passes_six_real_checks(
+        self, ledger: LedgerStore, tmp_path: Path
+    ) -> None:
+        """The guarded loop's six rows are all real — including unknown-outcome.
+
+        ``improve.reflection-loop`` is the first registered pipeline that
+        journals a **mutating** call through the call journal, so the
+        unknown-outcome check — an honest ``n/a`` with a pointer for every
+        other pipeline — must be a genuine green here: a crashed
+        ``improve.commit`` refuses the re-run with -32008 and the
+        repository is untouched. Pin that it stays a real pass and never
+        quietly degrades to an ``n/a`` row.
+        """
+        from paa.pipelines.conformance import improve_conformance
+
+        report = await improve_conformance(ledger, tmp_path)
+        assert report.passed, render_reports([report])
+        statuses = {c.name: c.status for c in report.checks}
+        assert all(status == "pass" for status in statuses.values()), statuses
+        unknown_detail = next(
+            c.detail for c in report.checks if c.name == CHECK_NAMES[2]
+        )
+        assert "-32008" in unknown_detail

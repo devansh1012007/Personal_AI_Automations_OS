@@ -351,7 +351,7 @@ class ImproveFacade:
         }
         served = await self._begin("improve.validate", params)
         if served is not None:
-            return _verdict_from_record(served)
+            return _verdict_from_record(served, self._validators)
         try:
             verdict = await run_validation(
                 proposal,
@@ -374,7 +374,13 @@ class ImproveFacade:
                 "reason": verdict.reason,
                 "commands": [
                     {
-                        "argv": list(command.argv),
+                        # The argv stays out of the record on purpose: a
+                        # gate command is operator-typed text and can carry
+                        # a credential (``--token=…``) the way a prompt can;
+                        # the PROPOSED row already fingerprints the whole
+                        # command list, so a served call's argv is *known
+                        # equal* to the live one and is rebuilt from it.
+                        "command_index": index,
                         "exit_code": command.exit_code,
                         "timed_out": command.timed_out,
                         "stdout_sha256": command.stdout_sha256,
@@ -382,7 +388,7 @@ class ImproveFacade:
                         "stderr_sha256": command.stderr_sha256,
                         "stderr_bytes": command.stderr_bytes,
                     }
-                    for command in verdict.commands
+                    for index, command in enumerate(verdict.commands, start=1)
                 ],
             },
         )
@@ -696,23 +702,36 @@ def _report_from_record(record: Any) -> ReflectionReport:
     )
 
 
-def _verdict_from_record(record: Any) -> ValidationVerdict:
+def _verdict_from_record(
+    record: Any, validators: Sequence[Sequence[str]]
+) -> ValidationVerdict:
     """Rebuild a validation verdict a replay served back.
 
     The per-command stdout/stderr texts are not in the record (digests
-    are); a served verdict answers the pipeline's question — did the
-    gates pass — from the recorded exit codes, which is the whole of
-    the deterministic rule anyway.
+    are), and neither is the argv (the operator's own text — the record
+    carries the command's *index*). The argv is rebuilt from the live
+    validator list the fingerprint already proved identical to the
+    recorded one, so a served verdict answers the pipeline's question —
+    did the gates pass — with the same commands a live one would name.
     """
     payload = _mapping_from_record(record)
     commands: list[CommandOutcome] = []
     for row in payload.get("commands") or []:
         if not isinstance(row, Mapping):
             continue
-        argv = [str(part) for part in (row.get("argv") or [])]
+        index = row.get("command_index")
+        position = (
+            index - 1
+            if isinstance(index, int) and not isinstance(index, bool) and index >= 1
+            else len(commands)
+        )
+        # The live list the fingerprint proved identical to the recorded
+        # one; out of range (a malformed record) degrades to an empty
+        # argv rather than inventing a command.
+        argv = tuple(validators[position]) if 0 <= position < len(validators) else ()
         commands.append(
             CommandOutcome(
-                argv=tuple(argv),
+                argv=argv,
                 exit_code=row.get("exit_code") if isinstance(row.get("exit_code"), int) else None,
                 timed_out=bool(row.get("timed_out")),
                 duration_ms=0.0,
@@ -847,11 +866,15 @@ class ImproveReflectionLoop:
         if not verdict.passed:
             failed = [
                 {
-                    "argv": list(command.argv),
+                    # Index, not argv: the failing command's text is the
+                    # operator's own configuration (it can carry a
+                    # credential), and the evidence file names it in full.
+                    "command_index": index,
                     "exit_code": command.exit_code,
                     "timed_out": command.timed_out,
                 }
-                for command in verdict.failed_commands
+                for index, command in enumerate(verdict.commands, start=1)
+                if not command.green
             ]
             metrics: dict[str, Any] = {
                 "stopped_reason": "validation_failed",

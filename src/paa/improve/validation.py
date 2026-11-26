@@ -290,9 +290,19 @@ async def run_validation(
     proposal.apply(scratch)
     outcomes: list[CommandOutcome] = []
     for argv in commands:
-        if not argv or not all(isinstance(part, str) for part in argv):
+        # A bare string is the one shape that slips through a
+        # parts-are-strings check (iterating a str yields 1-char strs),
+        # and it is exactly the mistake an operator makes typing one
+        # command where a list of argv belongs — refuse it by name.
+        if (
+            isinstance(argv, str)
+            or not isinstance(argv, Sequence)
+            or not argv
+            or not all(isinstance(part, str) for part in argv)
+        ):
             raise PaaError(
-                "every validation command must be a non-empty argv of strings"
+                "every validation command must be a non-empty argv of "
+                "strings (a list of lists, not a flat list)"
             )
         outcomes.append(await _run_command(argv, scratch, timeout_s))
     verdict = ValidationVerdict(

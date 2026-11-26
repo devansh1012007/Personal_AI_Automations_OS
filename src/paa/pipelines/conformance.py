@@ -56,6 +56,7 @@ __all__ = [
     "chat_conformance",
     "coder_conformance",
     "every_builtin_conformance",
+    "improve_conformance",
     "observe_conformance",
     "render_reports",
 ]
@@ -1044,6 +1045,427 @@ async def observe_conformance(ledger: LedgerStore, tmp_path: Path) -> Conformanc
 
 
 # ---------------------------------------------------------------------------
+# improve.reflection-loop — the guarded self-improvement cycle (C8.1)
+# ---------------------------------------------------------------------------
+
+
+async def improve_conformance(ledger: LedgerStore, tmp_path: Path) -> ConformanceReport:
+    """The six checks over ``improve.reflection-loop``, in its own vocabulary.
+
+    This is the first registered pipeline that journals a **mutating**
+    call through the call journal (``improve.commit``), so the
+    unknown-outcome check — an ``n/a`` row with a pointer for every other
+    pipeline — is a real green here: a crashed commit is never
+    auto-repeated, and the repository is left exactly as the crash left
+    it. The other five are real against a fixture git repository with a
+    seeded high-friction ledger, a scripted approver and gate commands
+    that are real subprocesses with real exit codes.
+    """
+    import shutil
+    import sys
+
+    from paa.core.types import EventType, new_correlation_id
+    from paa.improve.gate import Approver, HumanDecision
+    from paa.improve.pipeline import ImproveFacade, ImproveReflectionLoop
+    from paa.ledger.events import LedgerEvent
+    from paa.pipelines.base import PipelineStatus, PipelineTask
+
+    green = [[sys.executable, "-c", "raise SystemExit(0)"]]
+
+    async def _git(root: Path, *args: str) -> str:
+        """One fixture git call — setup, never the machinery under test.
+
+        The coder suite's rule: the tools being tested are never their own
+        fixture. Same discipline as ``gitcommit._run_git`` (absolute
+        executable, literal argv), but plain: this is scaffolding.
+        """
+        git = shutil.which("git")
+        if git is None:
+            raise RuntimeError("conformance needs git on the host")
+        proc = await asyncio.create_subprocess_exec(
+            git,
+            *args,
+            cwd=str(root),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(f"fixture git {args[0]} failed (exit {proc.returncode})")
+        return stdout.decode("utf-8", errors="replace").strip()
+
+    async def fixture_repo(root: Path) -> Path:
+        """A real git repository with identity and a seed playbook."""
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "playbooks.md").write_text("# ops playbooks\n", encoding="utf-8")
+        await _git(root, "init", "-q", "-b", "main")
+        await _git(root, "config", "user.email", "conformance@example.invalid")
+        await _git(root, "config", "user.name", "Conformance")
+        await _git(root, "add", "--", "playbooks.md")
+        await _git(root, "commit", "-q", "-m", "seed")
+        return root.resolve()
+
+    async def reseed(repo: Path, sha: str) -> None:
+        """Restore the fixture to its seed commit (the observe pattern)."""
+        await _git(repo, "reset", "--hard", sha)
+        await _git(repo, "clean", "-fdx")
+
+    # The reflection input: one deploy task with a correction and a
+    # rollback against zero clean commits — friction 4.5, the same seed
+    # the daemon's own tests use. The pipeline journal's own rows are
+    # not in the engine's event set, so the two runs below see the same
+    # friction from the same ledger.
+    seed_cid = new_correlation_id()
+    await ledger.append(
+        LedgerEvent.create(
+            seed_cid,
+            EventType.TASK_REQUESTED,
+            payload={"request": {"goal": "deploy the service"}},
+        )
+    )
+    await ledger.append(LedgerEvent.create(seed_cid, EventType.USER_CORRECTION))
+    await ledger.append(
+        LedgerEvent.create(
+            seed_cid, EventType.STATE_ROLLBACK_TRIGGERED, discriminator="r1"
+        )
+    )
+
+    shared_repo = await fixture_repo(tmp_path / "improve-shared-repo")
+    seed = await _git(shared_repo, "rev-parse", "HEAD")
+    artifact_home = tmp_path / "improve-artifacts"
+    artifact_home.mkdir(exist_ok=True)
+
+    async def approve(
+        proposal: object, verdict: object
+    ) -> HumanDecision:
+        return HumanDecision(
+            decision="approved",
+            approver_kind="human",
+            approver_id="conformance",
+            note="scripted approval",
+        )
+
+    async def drive(
+        run_id: uuid.UUID,
+        *,
+        validators: list[list[str]] | None = None,
+        approver: Approver | None = None,
+        replay: ReplayView | None = None,
+        timeout_s: int | None = None,
+    ) -> Any:
+        journal = CallJournal(ledger, run_id)
+        await journal.run_started(
+            ImproveReflectionLoop.name, ImproveReflectionLoop.version
+        )
+        facade = ImproveFacade(
+            ledger=ledger,
+            repo_root=shared_repo,
+            artifact_home=artifact_home,
+            journal=journal,
+            validators=green if validators is None else validators,
+            approver=approve if approver is None else approver,
+            replay=replay,
+            allow_insecure_signing=True,
+        )
+        # Only pass the timeout when it is asked for: the default (the
+        # facade's own 300) must stay identical between a `drive` run and
+        # a hand-driven facade, or the fingerprints diverge.
+        params: dict[str, Any] = {}
+        if timeout_s is not None:
+            params["validation_timeout_s"] = timeout_s
+        task = PipelineTask(
+            correlation_id=run_id, session_id=None, goal="self-improve", params=params
+        )
+        result = await ImproveReflectionLoop().run(task, facade)
+        await journal.run_completed(result.status.value, metrics=dict(result.metrics))
+        return result
+
+    # -- 1. double-run call-sequence equality -----------------------------
+    # Same ledger, same repo *path* re-seeded to the seed commit between
+    # runs (so the proposal's prior content matches), same validators:
+    # the five journalled calls must fold to the same fingerprints.
+    run_a, run_b = uuid.uuid4(), uuid.uuid4()
+    await drive(run_a)
+    await reseed(shared_repo, seed)
+    await drive(run_b)
+    fold_a = await read_call_journal(ledger, run_a)
+    fold_b = await read_call_journal(ledger, run_b)
+
+    def shape(records: list[Any]) -> list[tuple[Any, ...]]:
+        return [(r.seq, r.method, r.fingerprint, r.outcome) for r in records]
+
+    if shape(fold_a) == shape(fold_b) and len(fold_a) == 5:
+        double_run = ConformanceCheck.passed(
+            CHECK_NAMES[0],
+            "two guarded cycles over the same seeded ledger folded to the "
+            "same 5-call sequence (reflect, propose, validate, gate, commit)",
+        )
+    else:
+        double_run = ConformanceCheck.failed(
+            CHECK_NAMES[0], f"sequences differ: {shape(fold_a)} vs {shape(fold_b)}"
+        )
+
+    # -- 2. divergence halt ------------------------------------------------
+    from paa.pipelines.base import PipelineDivergedError
+
+    diverged_row = False
+    halted = False
+    wrong_exc: str | None = None
+    await reseed(shared_repo, seed)
+    try:
+        # The same lineage replayed with a different validator set: the
+        # validate call's fingerprint changes, and the run must stop there
+        # — the record can no longer speak for this run.
+        await drive(
+            run_a,
+            validators=[[sys.executable, "-c", "raise SystemExit(1)"]],
+            replay=await ReplayView.load(ledger, run_a),
+        )
+    except PipelineDivergedError:
+        halted = True
+        diverged_row = any(
+            e.event_type.value == "PIPELINE_RUN_DIVERGED"
+            for e in await ledger.read_correlation(run_a)
+        )
+    except Exception as exc:  # a halt of the wrong kind is a finding
+        wrong_exc = f"{type(exc).__name__}: {exc}"
+    if halted and diverged_row:
+        divergence = ConformanceCheck.passed(
+            CHECK_NAMES[1],
+            "a re-run with a changed validator set diverged at improve.validate "
+            "and halted with PIPELINE_RUN_DIVERGED; the host never resynced",
+        )
+    else:
+        divergence = ConformanceCheck.failed(
+            CHECK_NAMES[1],
+            f"halted={halted} diverged_row={diverged_row} wrong_exc={wrong_exc}",
+        )
+
+    # -- 3. unknown-outcome never auto-repeats (a real row, at last) ------
+    # improve.commit is a mutating call journalled through CallJournal —
+    # the first registered pipeline with one. Build the crash state the
+    # sweep would find: stages 1-4 really ran, and the commit's PROPOSED
+    # row exists with no outcome. The re-run must refuse with -32008 and
+    # leave the repository exactly as the crash left it.
+    from paa.pipelines.base import OutcomeUnknownError
+
+    crashed = uuid.uuid4()
+    journal_c = CallJournal(ledger, crashed)
+    await journal_c.run_started(ImproveReflectionLoop.name, ImproveReflectionLoop.version)
+    facade_c = ImproveFacade(
+        ledger=ledger,
+        repo_root=shared_repo,
+        artifact_home=artifact_home,
+        journal=journal_c,
+        validators=green,
+        approver=approve,
+        allow_insecure_signing=True,
+    )
+    report_c = await facade_c.reflect(7)
+    proposal_c = await facade_c.propose(report_c.high_friction_domains[0])
+    verdict_c = await facade_c.validate(proposal_c)
+    decision_c = await facade_c.ask_human(proposal_c, verdict_c)
+    facade_c.carry_approval(decision_c)
+    # The crash: the PROPOSED row landed, the effects never did.
+    await journal_c.call_proposed(
+        5,
+        "improve.commit",
+        {"repo_root": str(shared_repo), "proposal_sha256": proposal_c.sha256},
+    )
+    playbook_before = (shared_repo / "playbooks.md").read_text(encoding="utf-8")
+    refused = False
+    wrong_exc = None
+    try:
+        await drive(
+            crashed,
+            replay=await ReplayView.load(ledger, crashed),
+        )
+    except OutcomeUnknownError:
+        refused = True
+    except Exception as exc:  # any other outcome is a finding
+        wrong_exc = f"{type(exc).__name__}: {exc}"
+    rows_c = await read_call_journal(ledger, crashed)
+    commit_rows = [r for r in rows_c if r.method == "improve.commit"]
+    still_proposed = len(commit_rows) == 1 and commit_rows[0].outcome is CallOutcome.PROPOSED
+    nothing_reapplied = (
+        (shared_repo / "playbooks.md").read_text(encoding="utf-8") == playbook_before
+    )
+    if refused and still_proposed and nothing_reapplied:
+        unknown = ConformanceCheck.passed(
+            CHECK_NAMES[2],
+            "a crashed improve.commit (PROPOSED, no outcome) refused the "
+            "re-run with -32008; exactly one PROPOSED row remains and the "
+            "repository is untouched — the pipeline decides, never the host",
+        )
+    else:
+        unknown = ConformanceCheck.failed(
+            CHECK_NAMES[2],
+            f"refused={refused} still_proposed={still_proposed} "
+            f"reapplied={not nothing_reapplied} wrong_exc={wrong_exc}",
+        )
+
+    # -- 4. cancel within grace --------------------------------------------
+    # The honest place a cancel lands in this vocabulary: the human gate.
+    # The approver signals when it is asked, then takes its time — a
+    # human reading the evidence — so the cancel deterministically lands
+    # inside the gate call, never wherever the faster stages happen to be.
+    run_d = uuid.uuid4()
+    journal_d = CallJournal(ledger, run_d)
+    await journal_d.run_started(ImproveReflectionLoop.name, ImproveReflectionLoop.version)
+    asked = asyncio.Event()
+
+    async def slow_approver(proposal: object, verdict: object) -> HumanDecision:
+        asked.set()
+        await asyncio.sleep(30)
+        return HumanDecision(
+            decision="approved", approver_kind="human", approver_id="slow"
+        )
+
+    facade_d = ImproveFacade(
+        ledger=ledger,
+        repo_root=shared_repo,
+        artifact_home=artifact_home,
+        journal=journal_d,
+        validators=green,
+        approver=slow_approver,
+        allow_insecure_signing=True,
+    )
+    task_d = asyncio.create_task(
+        ImproveReflectionLoop().run(
+            PipelineTask(
+                correlation_id=run_d, session_id=None, goal="self-improve", params={}
+            ),
+            facade_d,
+        )
+    )
+    await asyncio.wait_for(asked.wait(), timeout=30)
+    task_d.cancel()
+    cancelled_cleanly = False
+    try:
+        await task_d
+    except asyncio.CancelledError:
+        cancelled_cleanly = True
+    fold_d = await read_call_journal(ledger, run_d)
+    rows_d = await ledger.read_correlation(run_d)
+    failed_seqs: set[int] = set()
+    for e in rows_d:
+        seq = e.payload.get("seq")
+        if (
+            e.event_type is EventType.PIPELINE_CALL_FAILED
+            and e.payload.get("reason") == "cancelled"
+            and isinstance(seq, int)
+            and not isinstance(seq, bool)
+        ):
+            failed_seqs.add(seq)
+    dangling = [r.seq for r in fold_d if r.outcome is CallOutcome.PROPOSED]
+    closed = bool(failed_seqs) and failed_seqs <= {
+        r.seq for r in fold_d if r.outcome is CallOutcome.FAILED
+    }
+    gate_was_asked = any(r.method == "improve.gate" for r in fold_d)
+    no_run_completed = not any(
+        e.event_type is EventType.PIPELINE_RUN_COMPLETED for e in rows_d
+    )
+    if cancelled_cleanly and closed and gate_was_asked and not dangling and no_run_completed:
+        cancel = ConformanceCheck.passed(
+            CHECK_NAMES[3],
+            f"the cancel landed inside the human gate; seq(s) {sorted(failed_seqs)} "
+            "closed as PIPELINE_CALL_FAILED(reason='cancelled') with no dangling "
+            "PROPOSED and no PIPELINE_RUN_COMPLETED",
+        )
+    else:
+        cancel = ConformanceCheck.failed(
+            CHECK_NAMES[3],
+            f"cancelled_cleanly={cancelled_cleanly} failed={sorted(failed_seqs)} "
+            f"gate_was_asked={gate_was_asked} dangling={dangling} "
+            f"run_completed={not no_run_completed}",
+        )
+
+    # -- 5. budget exhaustion ------------------------------------------------
+    # The loop's own budget rule: a gate command past its wall budget is a
+    # resolved red (timed_out), never a hang — the run fails by rule.
+    run_e = uuid.uuid4()
+    result_e = await drive(
+        run_e,
+        validators=[[sys.executable, "-c", "import time; time.sleep(30)"]],
+        timeout_s=1,
+    )
+    fold_e = await read_call_journal(ledger, run_e)
+    timed_out = (
+        len(fold_e) == 3
+        and fold_e[2].method == "improve.validate"
+        and fold_e[2].outcome is CallOutcome.COMPLETED
+    )
+    if (
+        result_e.status is PipelineStatus.FAILED
+        and result_e.metrics.get("stopped_reason") == "validation_failed"
+        and timed_out
+    ):
+        budget = ConformanceCheck.passed(
+            CHECK_NAMES[4],
+            "validation_timeout_s=1 resolved the sleeping gate command as a "
+            "timed-out red; the run failed by rule (validation_failed), "
+            "not by crash or hang",
+        )
+    else:
+        budget = ConformanceCheck.failed(
+            CHECK_NAMES[4],
+            f"status={result_e.status} metrics={result_e.metrics} "
+            f"rows={[(r.method, r.outcome) for r in fold_e]}",
+        )
+
+    # -- 6. no secrets in the journal ---------------------------------------
+    # The marker rides the gate command twice over: in its argv (an
+    # operator can type a credential into a command) and on its stdout.
+    # Neither may reach a payload: the argv is operator text the record
+    # replaces with a command index, the stdout is attested by digest
+    # only. The evidence file carries the stdout in full — the positive
+    # control that the scan is not vacuous.
+    secret = _marker()
+    run_f = uuid.uuid4()
+    result_f = await drive(
+        run_f,
+        validators=[[sys.executable, "-c", f"print('{secret}')"]],
+    )
+    texts = await _payload_texts(ledger, run_f)
+    leaked = [t for t in texts if secret in t]
+    evidence = artifact_home / f"{run_f.hex}" / "evidence" / "validation-01.json"
+    positive_control = evidence.is_file() and secret in evidence.read_text(
+        encoding="utf-8"
+    )
+    if (
+        not leaked
+        and positive_control
+        and result_f.status is PipelineStatus.COMPLETED
+    ):
+        secrets = ConformanceCheck.passed(
+            CHECK_NAMES[5],
+            "the gate command's argv and stdout markers rode the evidence "
+            "file and never appeared as payload text on the lineage "
+            "(argv recorded as an index, stdout attested by digest only)",
+        )
+    else:
+        secrets = ConformanceCheck.failed(
+            CHECK_NAMES[5],
+            f"leaked={len(leaked)} positive_control={positive_control} "
+            f"status={result_f.status}",
+        )
+
+    return ConformanceReport(
+        pipeline=ImproveReflectionLoop.name,
+        checks=_checks(
+            **{
+                CHECK_NAMES[0]: double_run,
+                CHECK_NAMES[1]: divergence,
+                CHECK_NAMES[2]: unknown,
+                CHECK_NAMES[3]: cancel,
+                CHECK_NAMES[4]: budget,
+                CHECK_NAMES[5]: secrets,
+            }
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
 # The CI entry
 # ---------------------------------------------------------------------------
 
@@ -1064,6 +1486,7 @@ async def every_builtin_conformance(
         await chat_conformance(tmp_path),
         await coder_conformance(ledger, tmp_path),
         await observe_conformance(ledger, tmp_path),
+        await improve_conformance(ledger, tmp_path),
     ]
     covered = {report.pipeline for report in reports}
     missing = [
