@@ -611,27 +611,58 @@ class ChatExtensionSurface:
     # -- activation -----------------------------------------------------------
 
     async def activate(self, skill_name: str) -> Activation:
-        """(Re-)activate an installed skill by name.
+        """Activate an installed skill by name — the row, or the staged bytes.
 
-        The contract is read back from the skills registry (the row an
-        install left, pointing at the staged directory) and re-registered
-        — the registry's own re-activation semantics — on a fresh
-        lineage, so a re-activation is a new audit fact, not a dedupe
-        hit against the install's activation.
+        Two honest cases, because the install flow has two landing states:
+        an *activated* install left a registry row (this method
+        re-registers it — a new audit fact on a fresh lineage, not a
+        dedupe hit against the install's activation), and a
+        ``--no-activate`` install left only the staged bytes under
+        ``skills/installed/<name>/<version>/`` — the gates passed, the
+        marketplace row exists, but no chat capability was registered.
+        The second case rebuilds the contract from the staged directory
+        the same way the install's own activation did, so "activate
+        later by name" activates the same bytes the smoke gate ran.
+
+        A name matching neither is the refusal it always was.
         """
         contract = await self._registry.get(skill_name, include_inactive=True)
-        if contract is None:
-            raise SkillContractError(
-                "no installed skill by that name", skill_name=skill_name
+        if contract is not None:
+            working_dir = contract.invocation.working_dir
+            frontmatter = _read_frontmatter(Path(working_dir)) if working_dir else {}
+            return await self._activate_contract(
+                contract,
+                source=_source_of(contract),
+                frontmatter=frontmatter,
+                lineage=uuid.uuid4(),
             )
-        working_dir = contract.invocation.working_dir
-        frontmatter = _read_frontmatter(Path(working_dir)) if working_dir else {}
-        return await self._activate_contract(
-            contract,
-            source=_source_of(contract),
-            frontmatter=frontmatter,
-            lineage=uuid.uuid4(),
+        staged = self._latest_staged(skill_name)
+        if staged is not None:
+            return await self._activate_staged(
+                staged,
+                source=SOURCE_CLAW_HUB,
+                frontmatter=_read_frontmatter(staged),
+                lineage=uuid.uuid4(),
+            )
+        raise SkillContractError(
+            "no installed skill by that name", skill_name=skill_name
         )
+
+    def _latest_staged(self, skill_name: str) -> Path | None:
+        """The newest staged version of a name, or ``None``.
+
+        The staged layout is ``installed/<name>/<version>/``; a name with
+        several versions activates the highest, on the same "newest wins"
+        reading an upgrade path wants. A name directory with no version
+        children is not a skill and reads as absent.
+        """
+        name_root = self.installed_root / skill_name
+        if not name_root.is_dir():
+            return None
+        versions = [child for child in name_root.iterdir() if child.is_dir()]
+        if not versions:
+            return None
+        return max(versions, key=lambda path: path.name)
 
     async def _activate_staged(
         self,
