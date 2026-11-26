@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -90,7 +91,9 @@ __all__ = [
     "DeltaSink",
     "EchoChatModel",
     "ProviderChatModel",
+    "SkillDirective",
     "build_chat_model",
+    "parse_skill_directive",
     "render_chat_prompt",
 ]
 
@@ -98,9 +101,18 @@ log = structlog.get_logger(__name__)
 
 #: What the chat pipeline asks for. Three capabilities, all exercised every
 #: turn; everything else the facade offers is refused by the grant set.
+#: The extension surface (C8.4) adds USE_SKILL to what a host *mints* when
+#: it binds a skill dispatcher — the ask stays honest here (the loop may
+#: call ``use_skill``), the grant stays the host's word.
 CHAT_CAPABILITIES: Final[frozenset[Capability]] = frozenset(
     {Capability.RECALL, Capability.REMEMBER, Capability.THINK}
 )
+
+#: The capability set a host-minted facade carries when the extension
+#: surface is bound (C8.4): the base three plus the skill door.
+CHAT_EXTENSION_CAPABILITIES: Final[frozenset[Capability]] = CHAT_CAPABILITIES | {
+    Capability.USE_SKILL
+}
 
 #: An async sink for reply deltas. ``None`` means "no streaming wanted".
 DeltaSink = Callable[[str], Awaitable[None]]
@@ -110,6 +122,23 @@ DeltaSink = Callable[[str], Awaitable[None]]
 #: overlay's replacement must too. Stated as a plain callable because the
 #: slot's contract is "same inputs, same bundle shape out", not a class.
 ContextProvider = Callable[..., Any]
+
+
+class SkillDispatcher(Protocol):
+    """The skill-dispatch door the extension surface binds (C8.4).
+
+    Run one capability for this turn and return the text the model
+    reads back. The facade supplies the session id — the dispatcher
+    journals the call's ``TOOL_CALL_*`` rows against that session's
+    identity, exactly the way ``paa mcp serve`` journals a mediated
+    tool call. Stated as a protocol rather than a callable alias
+    because the session id is keyword-only: it is context the facade
+    owns, not an argument a model chose.
+    """
+
+    async def __call__(
+        self, name: str, args: Mapping[str, Any], /, *, session_id: uuid.UUID
+    ) -> str: ...
 
 #: Delta size for models without a native token stream. Chunking a finished
 #: reply is a transport presentation, not a claim about the provider: the
@@ -130,9 +159,31 @@ _ECHO_CHARS_PER_TOKEN: Final = 4.0
 _ROLE_USER: Final = "user"
 _ROLE_ASSISTANT: Final = "assistant"
 
+#: The directive marker: a reply whose first line is ``@use-skill <name>``
+#: asks the turn to run that capability before replying. Plain text on
+#: purpose — the chat seam streams text, not structures, so the
+#: convention is as parseable mid-stream as it is whole, and a user can
+#: type it directly (the slash-command of a terminal chat, spelled
+#: without the slash).
+_SKILL_DIRECTIVE_PREFIX: Final = "@use-skill "
+
+#: How many skill calls one turn may make. A bound, not a loop: the
+#: directive exchange is a bounded think→act→observe cycle inside one
+#: turn, and the bound is what keeps a model that keeps emitting
+#: directives from turning a conversation into an unbounded agent run —
+#: that loop exists, it is the coder's, and it has its own budget.
+_MAX_SKILL_CALLS_PER_TURN: Final = 3
+
 #: Characters stripped around recall probe tokens. Punctuation would defeat
 #: the substring match ("Friday?" does not contain "Friday" for LIKE).
 _PROBE_STRIP: Final = ".,!?:;\"'()"
+
+#: A directive's skill name must satisfy the skill contract's own name
+#: pattern (``^[a-z0-9_\-.]+$``, :data:`paa.skills.contracts.SKILL_NAME_PATTERN`)
+#: — restated here as a compiled matcher rather than imported, because the
+#: loop module's import budget is the chat pipeline's, not the skills
+#: package's, and the two patterns drifting apart is what the tests pin.
+_SKILL_NAME_OK: Final = re.compile(r"^[a-z0-9_\-.]+$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +215,8 @@ def render_chat_prompt(
     facts: Sequence[str],
     turns: Sequence[str],
     message: str,
+    capabilities: Sequence[str] = (),
+    skill_results: Sequence[str] = (),
 ) -> str:
     """The deterministic prompt render every chat model receives.
 
@@ -172,16 +225,70 @@ def render_chat_prompt(
     user's new message. Pure function of its arguments — no clock, no
     randomness — which is what keeps a replayed turn's prompt byte-identical
     to the recorded one.
+
+    ``capabilities`` (C8.4) renders the extension surface's catalogue:
+    one line per live skill, plus the one-line ``@use-skill`` convention
+    that requests one. ``skill_results`` carries what earlier directive
+    rounds of this same turn already ran, so the model that asked sees
+    the answers without asking twice. Both default empty — a chat host
+    that binds no extension surface renders exactly the prompt it
+    always did, byte for byte.
     """
     persona_section = persona.strip() or "(none)"
     facts_section = "\n".join(f"- {fact}" for fact in facts) if facts else "(none)"
     history_section = "\n".join(turns) if turns else "(none)"
-    return (
-        f"[persona]\n{persona_section}\n"
-        f"\n[facts]\n{facts_section}\n"
-        f"\n[history]\n{history_section}\n"
-        f"\n[message]\n{message}"
-    )
+    sections = [
+        f"[persona]\n{persona_section}",
+        f"\n[facts]\n{facts_section}",
+        f"\n[history]\n{history_section}",
+    ]
+    if capabilities:
+        listed = "\n".join(f"- {line}" for line in capabilities)
+        sections.append(
+            f"\n[capabilities]\n{listed}\n"
+            "To use one, reply with '@use-skill <name>' as your first line "
+            "and a JSON object of arguments as the rest."
+        )
+    if skill_results:
+        results = "\n".join(f"- {line}" for line in skill_results)
+        sections.append(f"\n[skill results]\n{results}")
+    sections.append(f"\n[message]\n{message}")
+    return "\n".join(sections)
+
+
+@dataclass(frozen=True, slots=True)
+class SkillDirective:
+    """One parsed ``@use-skill`` request: the capability and its arguments."""
+
+    name: str
+    arguments: dict[str, Any]
+
+
+def parse_skill_directive(text: str) -> SkillDirective | None:
+    """Parse the ``@use-skill`` convention out of a reply, or ``None``.
+
+    The convention: the reply's first line is ``@use-skill <name>``
+    and everything after it is one JSON object of arguments. Anything
+    else — a directive not on the first line, a name the contract
+    pattern would refuse, a body that is not a JSON *object* — is not a
+    directive, and the reply stands as plain text: the model just
+    replied, and a chat turn must not fail because a reply looked
+    almost like a command. Pure function; ``None`` is total over input.
+    """
+    stripped = text.lstrip("\ufeff")
+    if not stripped.startswith(_SKILL_DIRECTIVE_PREFIX):
+        return None
+    first_line, _, body = stripped.partition("\n")
+    name = first_line[len(_SKILL_DIRECTIVE_PREFIX) :].strip()
+    if not name or " " in name or not _SKILL_NAME_OK.match(name):
+        return None
+    try:
+        parsed = json.loads(body.strip() or "{}")
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return SkillDirective(name=name, arguments=parsed)
 
 
 def _parse_sections(prompt: str) -> dict[str, list[str]]:
@@ -314,6 +421,8 @@ class ChatTurnFacade:
         signals: SignalRepository | None = None,
         context_settings: ContextSettings | None = None,
         context_provider: ContextProvider | None = None,
+        skill_dispatcher: SkillDispatcher | None = None,
+        capabilities: Sequence[str] = (),
     ) -> None:
         self._session_id = session_id
         self._turn_id = turn_id
@@ -328,7 +437,18 @@ class ChatTurnFacade:
         self._context_provider = (
             context_provider if context_provider is not None else build_context_bundle
         )
-        self._grants = CapabilitySet.mint(CHAT_CAPABILITIES, run_id=session_id)
+        # The extension surface's door (C8.4). A bound dispatcher widens
+        # the grant set by exactly one capability — USE_SKILL — and the
+        # catalogue lines ride the prompt. The dispatcher is the host's
+        # grant: the facade never reaches a registry, a sandbox or a
+        # journal on this path except through it.
+        self._skill_dispatcher = skill_dispatcher
+        self._capabilities: tuple[str, ...] = tuple(capabilities)
+        self._grants = CapabilitySet.mint(
+            CHAT_EXTENSION_CAPABILITIES if skill_dispatcher is not None
+            else CHAT_CAPABILITIES,
+            run_id=session_id,
+        )
         # One budget line: the operator's chat override, else the context
         # engine's planner ceiling — resolved once, at mint time.
         self._ceiling = settings.token_budget or (
@@ -397,6 +517,21 @@ class ChatTurnFacade:
     @property
     def streaming(self) -> bool:
         return self._settings.streaming
+
+    @property
+    def capabilities(self) -> tuple[str, ...]:
+        """The rendered capability lines this turn's prompt carries (C8.4)."""
+        return self._capabilities
+
+    @property
+    def skill_dispatch_granted(self) -> bool:
+        """Whether the host bound the skill door for this turn.
+
+        The loop asks before honouring an ``@use-skill`` directive: a
+        reply that *looks* like a directive under a host that granted no
+        skill door is just a reply, and the turn treats it as one.
+        """
+        return self._skill_dispatcher is not None
 
     @property
     def writes(self) -> tuple[dict[str, Any], ...]:
@@ -721,8 +856,20 @@ class ChatTurnFacade:
         raise CapabilityNotGrantedError(Capability.CALL_AGENT.value)  # pragma: no cover
 
     async def use_skill(self, name: str, args: Mapping[str, Any]) -> str:
+        """Run one capability through the extension surface's door.
+
+        Live only when the host bound a dispatcher — the grant set
+        refuses first otherwise (ADR-0051's only door, unchanged). The
+        dispatcher is the whole policy/sandbox/journal path: the USA's
+        permission check fires before any sandbox boots, the adapter
+        runs under containment, and the coder journal records the call's
+        ``TOOL_CALL_*`` rows. A refusal propagates as the error it is;
+        the turn's own failure handling journals it on the session.
+        """
         self._grants.require(Capability.USE_SKILL)
-        raise CapabilityNotGrantedError(Capability.USE_SKILL.value)  # pragma: no cover
+        if self._skill_dispatcher is None:  # pragma: no cover - grants refused first
+            raise CapabilityNotGrantedError(Capability.USE_SKILL.value)
+        return await self._skill_dispatcher(name, args, session_id=self._session_id)
 
     async def gate(self, role: AgentRole, payload: Mapping[str, Any]) -> TaskProjection:
         self._grants.require(Capability.GATE)
@@ -803,7 +950,12 @@ class ChatLoop:
     version = "4.1.0"
     requires_runtime = ">=4.1,<5"
     required_permissions: frozenset[Permission] = frozenset()
-    capabilities = CHAT_CAPABILITIES
+    # The ask includes USE_SKILL (C8.4): the loop honours the
+    # ``@use-skill`` directive when the host mints the extended grant
+    # set. The ask is the ceiling an overlay narrows; the grant is the
+    # host's word, and a host that binds no extension surface mints the
+    # base three and the loop never calls the door.
+    capabilities = CHAT_EXTENSION_CAPABILITIES
     limits = RunLimits()
 
     def __init__(self, journal: ChatSessionJournal) -> None:
@@ -865,6 +1017,7 @@ class ChatLoop:
                 facts=[p.statement for p in bundle.provenance],
                 turns=bundle.turns,
                 message=text,
+                capabilities=facade.capabilities,
             )
 
             completion = await facade.think(
@@ -874,6 +1027,39 @@ class ChatLoop:
             )
             reply = str(completion.get("text", ""))
             tokens_used = int(completion.get("tokens_used", 0))
+
+            # The extension surface's bounded think→act→observe rounds
+            # (C8.4): a reply that opens with the ``@use-skill``
+            # directive runs that capability and the model thinks again
+            # with the result. Bounded by _MAX_SKILL_CALLS_PER_TURN; a
+            # host that granted no skill door never enters (the reply
+            # stands as plain text, the turn is exactly what it always
+            # was); the skill's own TOOL_CALL_* rows ride their own
+            # lineages through the coder journal, so this session's
+            # event vocabulary is unchanged by the rounds.
+            skill_calls: list[str] = []
+            while (
+                facade.skill_dispatch_granted
+                and len(skill_calls) < _MAX_SKILL_CALLS_PER_TURN
+                and (directive := parse_skill_directive(reply)) is not None
+            ):
+                skill_calls.append(directive.name)
+                result_text = await facade.use_skill(directive.name, directive.arguments)
+                prompt = render_chat_prompt(
+                    persona=packed_persona,
+                    facts=[p.statement for p in bundle.provenance],
+                    turns=bundle.turns,
+                    message=text,
+                    capabilities=facade.capabilities,
+                    skill_results=(result_text,),
+                )
+                completion = await facade.think(
+                    prompt,
+                    budget=facade.tokens_budget,
+                    on_delta=sink,
+                )
+                reply = str(completion.get("text", ""))
+                tokens_used += int(completion.get("tokens_used", 0))
 
             await facade.remember({"kind": _ROLE_USER, "text": text, "turn_id": turn_id})
             if reply:
@@ -910,6 +1096,7 @@ class ChatLoop:
                     "tokens_consumed": tokens_used,
                     "bundle_tokens": bundle.packet.allocated_tokens,
                     "token_ceiling": bundle.token_ceiling,
+                    "skill_calls": tuple(skill_calls),
                 },
                 artifacts=[
                     PipelineArtifact(kind="chat_reply", sha256=text_sha256(reply))

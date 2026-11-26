@@ -21,6 +21,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import structlog
 
@@ -29,6 +30,7 @@ from paa.chat.loop import (
     ChatModel,
     ChatTurnFacade,
     ContextProvider,
+    SkillDispatcher,
     build_chat_model,
 )
 from paa.chat.session import (
@@ -49,6 +51,9 @@ from paa.pipelines.base import PipelineResult, PipelineStatus, PipelineTask
 from paa.runtime import Runtime
 from paa.storage.coldlake.signals import SignalRepository
 from paa.storage.relational.base import RelationalBackend
+
+if TYPE_CHECKING:
+    from paa.chat.extensions import ChatExtensionSurface
 
 __all__ = ["ChatService", "DeltaSink", "TurnResult"]
 
@@ -77,6 +82,10 @@ class TurnResult:
     tokens_consumed: int
     bundle_tokens: int
     token_ceiling: int
+    skill_calls: tuple[str, ...] = ()
+    """The capabilities this turn ran through the extension surface
+    (C8.4), in call order — the tool-call audit lives on the TOOL_CALL_*
+    lineages; this is the caller-facing summary of what the turn used."""
 
 
 class ChatService:
@@ -94,6 +103,7 @@ class ChatService:
         model: ChatModel | None = None,
         signals: SignalRepository | None = None,
         context_provider: ContextProvider | None = None,
+        extensions: ChatExtensionSurface | None = None,
     ) -> None:
         self._ledger = ledger
         self._db = db
@@ -113,6 +123,9 @@ class ChatService:
         # this stays "the host may resolve an overlay's ref and hand the
         # result here", nothing more.
         self._context_provider = context_provider
+        # The extension surface (C8.4): ``None`` keeps the turn exactly
+        # what it always was — no capability section, no skill door.
+        self._extensions = extensions
 
     @classmethod
     def from_runtime(
@@ -121,6 +134,7 @@ class ChatService:
         *,
         settings: ChatSettings | None = None,
         context_provider: ContextProvider | None = None,
+        extensions: ChatExtensionSurface | None = None,
     ) -> ChatService:
         """Wire a chat host off a built runtime.
 
@@ -134,6 +148,12 @@ class ChatService:
         factory accepts a replacement rather than resolving one itself, so
         a one-shot pipeline runner can apply an overlay's ref before the
         service exists. ``None`` keeps the shipped compiler.
+
+        ``extensions`` is the host-built extension surface (C8.4): the
+        surface owns operator decisions the service cannot make itself
+        (the ``allow_unverified`` opt-in, the scanner, the harness flag),
+        so the CLI constructs it from its flags and hands it here.
+        ``None`` serves the plain chat product — no catalogue, no door.
         """
         signals: SignalRepository | None = None
         try:
@@ -157,6 +177,7 @@ class ChatService:
             context_settings=runtime.settings.context,
             signals=signals,
             context_provider=context_provider,
+            extensions=extensions,
         )
 
     # -- sessions -------------------------------------------------------------
@@ -240,6 +261,20 @@ class ChatService:
 
         turn_id = str(uuid.uuid4())
         journal = ChatSessionJournal(self._ledger, session_id)
+        # The extension surface's per-turn grants (C8.4): the catalogue is
+        # snapshotted here, before the turn runs, so a skill installed
+        # mid-turn by another surface cannot change what this turn's
+        # model was told exists — and the dispatcher is the surface's
+        # own policy/sandbox/journal door, never a raw registry handle.
+        skill_dispatcher: SkillDispatcher | None = None
+        capability_lines: tuple[str, ...] = ()
+        if self._extensions is not None:
+            skill_dispatcher = self._extensions.dispatch_skill_text
+            from paa.chat.extensions import render_capability_lines
+
+            capability_lines = tuple(
+                render_capability_lines(await self._extensions.capability_catalogue())
+            )
         facade = ChatTurnFacade(
             session_id=session_id,
             turn_id=turn_id,
@@ -254,6 +289,8 @@ class ChatService:
             signals=self._signals,
             context_settings=self._context_settings,
             context_provider=self._context_provider,
+            skill_dispatcher=skill_dispatcher,
+            capabilities=capability_lines,
         )
         task = PipelineTask(
             correlation_id=session_id,
@@ -285,4 +322,5 @@ class ChatService:
             tokens_consumed=int(metrics.get("tokens_consumed", 0)),
             bundle_tokens=int(metrics.get("bundle_tokens", 0)),
             token_ceiling=int(metrics.get("token_ceiling", 0)),
+            skill_calls=tuple(metrics.get("skill_calls", ())),
         )

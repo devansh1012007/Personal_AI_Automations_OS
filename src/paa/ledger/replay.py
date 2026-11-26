@@ -514,6 +514,9 @@ _NO_PHASE_CHANGE = frozenset(
         EventType.THREAD_SEGMENT_STARTED,
         EventType.THREAD_SEGMENT_ENDED,
         EventType.THREAD_HARNESS_SWAPPED,
+        EventType.EXTENSION_INSTALLED,
+        EventType.EXTENSION_REFUSED,
+        EventType.EXTENSION_ACTIVATED,
     }
 )
 

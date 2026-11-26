@@ -188,6 +188,27 @@ class RecoveryOutcome(str, enum.Enum):
     show`` — stated, not silently swept.
     """
 
+    SKIPPED_EXTENSION_LINEAGE = "SKIPPED_EXTENSION_LINEAGE"
+    """An extension-surface-only lineage: the install record, not a task.
+
+    W8 (C8.4, the N2.3 exemption's fourth mirror) — a lineage carrying
+    only the chat extension surface's audit events
+    (``EXTENSION_INSTALLED`` / ``EXTENSION_REFUSED`` /
+    ``EXTENSION_ACTIVATED``) projects to the initial phase and is never
+    terminal, because all three types are ``_NO_PHASE_CHANGE``. The
+    extension surface journals one install action per fresh lineage;
+    without the exemption the boot sweep would read every recorded
+    install as resumable task work and re-queue it on every boot,
+    forever — an install is re-driven by the operator running the
+    installer again, never by re-queuing it as a task. The sweep writes
+    nothing here: an install has no interrupted call to close (the
+    gates are atomic — the marketplace row and the staged files land
+    only after all five pass, and a refusal leaves zero trace), and the
+    skill invocations an activation serves journal their own
+    ``TOOL_CALL_*`` lineages that the coder-lineage path already
+    closes.
+    """
+
 
 class InterruptionState(str, enum.Enum):
     """What an interrupted tool call did before the crash.
@@ -413,6 +434,24 @@ _THREAD_EVENT_TYPES = frozenset(
 #: Symmetric with the coder/chat/pipeline neutral rule: a stale recovery
 #: audit row must not flip a thread lineage back to "task work".
 _THREAD_NEUTRAL_TYPES = frozenset({EventType.RECOVERY_REPLAY_COMPLETED})
+
+#: W8 (C8.4) — the chat extension surface's audit vocabulary: the
+#: install/refuse/activate record of a skill or MCP-tool capability that
+#: went through the five-gate installer. A lineage of only these is an
+#: operator action's record, never task work (see
+#: :attr:`RecoveryOutcome.SKIPPED_EXTENSION_LINEAGE`).
+_EXTENSION_EVENT_TYPES = frozenset(
+    {
+        EventType.EXTENSION_INSTALLED,
+        EventType.EXTENSION_REFUSED,
+        EventType.EXTENSION_ACTIVATED,
+    }
+)
+
+#: Symmetric with the coder/chat/pipeline/thread neutral rule: a stale
+#: recovery audit row must not flip an extension lineage back to "task
+#: work".
+_EXTENSION_NEUTRAL_TYPES = frozenset({EventType.RECOVERY_REPLAY_COMPLETED})
 
 #: The call-row kinds the interrupted-call scan reads (proposal + its
 #: two outcomes), for :func:`find_interrupted_pipeline_calls`.
@@ -711,6 +750,19 @@ def _is_thread_only_lineage(events: list[LedgerEvent]) -> bool:
     """
     kinds = {e.event_type for e in events} - _THREAD_NEUTRAL_TYPES
     return bool(kinds) and kinds <= _THREAD_EVENT_TYPES
+
+
+def _is_extension_only_lineage(events: list[LedgerEvent]) -> bool:
+    """Whether a lineage is extension-surface audit, never task work.
+
+    Same shape as the coder/chat/pipeline/thread determinations,
+    deliberately. An install's lineage carries its gates and its
+    activation; a lineage mixing these rows with ``TASK_*`` rows is a
+    task lineage the ordinary path recovers, and the phase-inert
+    EXTENSION rows disturb nothing there.
+    """
+    kinds = {e.event_type for e in events} - _EXTENSION_NEUTRAL_TYPES
+    return bool(kinds) and kinds <= _EXTENSION_EVENT_TYPES
 
 
 def find_interrupted_pipeline_calls(events: list[LedgerEvent]) -> list[LedgerEvent]:
@@ -1090,6 +1142,22 @@ class RecoveryEngine:
             return CorrelationRecovery(
                 cid,
                 RecoveryOutcome.SKIPPED_THREAD_LINEAGE,
+                projection.phase,
+                interrupted=interrupted,
+            )
+
+        if _is_extension_only_lineage(events):
+            # Chat extension-surface audit only (W8, C8.4): never task
+            # work. An install is re-driven by the operator running the
+            # installer again, never by re-queuing it as a task; the
+            # gates are atomic so there is no half-install to reconcile,
+            # and a skill's invocations journal their own TOOL_CALL_*
+            # lineages the coder path above already closes. No workspace
+            # reconcile, no requeue, no sweep audit event.
+            log.info("recovery.skipped_extension_lineage", correlation_id=str(cid))
+            return CorrelationRecovery(
+                cid,
+                RecoveryOutcome.SKIPPED_EXTENSION_LINEAGE,
                 projection.phase,
                 interrupted=interrupted,
             )

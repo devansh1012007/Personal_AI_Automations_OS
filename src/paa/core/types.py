@@ -332,6 +332,48 @@ class EventType(str, enum.Enum):
     PIPELINE_CALL_COMPLETED = "PIPELINE_CALL_COMPLETED"
     PIPELINE_CALL_FAILED = "PIPELINE_CALL_FAILED"
 
+    # -- chat extension surface (W8 C8.4, ADR-0046 pattern) -----------------
+    # Extension events are the audit record of the chat extension surface:
+    # a skill discovered from a Claw-Hub/OpenClaw-shaped source or the
+    # personal skills dir, installed through the five-gate installer,
+    # activated into the skills registry as a chat capability (SPEC 2
+    # Wave 8, C8.4). They are *informational*, never lifecycle: all three
+    # map to `_NO_PHASE_CHANGE` in ledger/replay.py and none enters
+    # TERMINAL_EVENTS. An install is an operator action, not a task —
+    # it moves no phase, closes nothing, and must not let the boot sweep
+    # requeue an extension lineage as task work (ledger/recovery.py's
+    # extension-only-lineage exemption is the sweep's half of this rule).
+    #
+    # One install action is one fresh lineage (the journal mints the
+    # correlation id), so each install's rows project independently and
+    # `read_correlation(<lineage>)` is the whole install's story. The
+    # skill *invocations* an activated capability serves do not ride this
+    # lineage: they are tool calls, journalled as TOOL_CALL_* on their
+    # own per-call lineages through the coder journal — the same shape
+    # the MCP server gives its mediated tool calls.
+    #
+    # ADR-0008 idempotency: attempt=0 and the discriminators
+    # `install:<package>:<version>` / `refused:<package>:<gate>` /
+    # `activate:<skill>:<version>`, so a redelivered append dedupes under
+    # the standard key while an install and its activation stay distinct
+    # rows (and a re-activation after a deactivate is a new lineage's
+    # row, not a dedupe hit).
+    #
+    # Every payload carries `v` (schema version, currently 1). Payload
+    # discipline (ADR-0046): identifiers are closed-vocabulary or uuids;
+    # the refusal reason is bounded and ledger-safe (a redacted
+    # classification, never a raw exception); no payload carries the
+    # exact key `fact_id` (the coder/chat/pipeline rule — the tier fold
+    # must ignore an extension row). EXTENSION_ACTIVATED carries
+    # `pipeline` — the coding loop the activation selected through the
+    # pipeline registry when the skill declares it needs one
+    # (CODING_FALLBACK_PIPELINE when no external harness is attached) —
+    # which is what makes "the fallback was selected here" a checkable
+    # fact rather than a docstring claim.
+    EXTENSION_INSTALLED = "EXTENSION_INSTALLED"
+    EXTENSION_REFUSED = "EXTENSION_REFUSED"
+    EXTENSION_ACTIVATED = "EXTENSION_ACTIVATED"
+
     # -- thread control plane (W7 C7.5, ADR-0046 pattern) -------------------
     # Thread events are the audit record of the local-first control plane:
     # one coding thread across harnesses, journalled under the thread id
