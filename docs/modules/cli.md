@@ -7,7 +7,7 @@
 - **Main responsibility:** The `paa` Typer command line — the primary human entry point; every command except `serve` is one-shot (build Runtime, do one thing, print, close).
 - **Architectural layer:** Edge
 - **Entrypoints:** `cli/main.py:app` (Typer), `cli/coder.py:register_agent` (`paa agent`), `cli/chat.py:app` (`paa chat`), `cli/mcp.py:app` (`paa mcp`)
-- **Public interfaces:** `app` (`cli/main.py:50`), `register_agent` (`cli/coder.py:54`), `observe` (`cli/observe.py:147`), `record_app` (`cli/record.py:36`)
+- **Public interfaces:** `app` (`cli/main.py:52`), `register_agent` (`cli/coder.py:54`), `observe` (`cli/observe.py:147`), `record_app` (`cli/record.py:36`)
 - **Other modules that depend on it:** `runtime.py` (all commands build `Runtime`), `coder/agent.py` (`paa agent`)
 
 ## Purpose and responsibilities
@@ -38,14 +38,14 @@ the command is inherently long-running):
 
 | Command | Home | Behavior |
 |---|---|---|
-| `paa memory <sub>` | `memory_app` (`cli/main.py:700`) | `facts`/`search`/`signals`/`drain`/`world-model` reads over the memory subsystem |
+| `paa memory <sub>` | `memory_app` (`cli/main.py:702`) | `facts`/`search`/`signals`/`drain`/`world-model` reads over the memory subsystem |
 | `paa observe -- <cmd>` | `cli/observe.py:147` | The T1 observer: run one CLI in a workspace, leave a `paa-observe-bundle/1` with the manifest diff, git changes and transcript (SPEC 2 W7) |
 | `paa record run -- <cmd>` | `cli/record.py:83` | The flight recorder (SPEC 2 W7 C7.3): the harness under a real SandboxSession, tool calls through the MCP policy proxy, the attested bundle at close |
 | `paa record verify <run-dir>` | `cli/record.py:264` | The flight record's own verifier: schema, sequence, every chain link, summary, torn tail, finalised |
 | `paa chat` | `cli/chat.py:160` | The chat surface (SPEC 2 §3.1 C4.4): Textual TUI, or `--plain` for terminals without the `[tui]` extra; `--session`/`--resume` name a lineage; `--model` overrides `PAA_CHAT__MODEL` |
 | `paa mcp serve` | `cli/mcp.py:120` | The stdio MCP server (SPEC 2 §3.1 C4.5): JSON-RPC 2.0 over stdin/stdout, spawned by the MCP client; see [`interfaces/mcp-server.md`](../interfaces/mcp-server.md) |
 
-All one-shot commands use `_build_runtime(run_recovery=False)` (`cli/main.py:110`) —
+All one-shot commands use `_build_runtime(run_recovery=False)` (`cli/main.py:112`) —
 recovery is opt-in per command (an operator decision, `coder/agent.py:134`);
 `serve` also does not run recovery at build (daemon does it at start, `daemon.py:91`).
 
@@ -57,17 +57,17 @@ under `--yes`, else `prompt_yes` (blocks on `input`; EOF → deny)
 
 ## Runtime behavior
 
-- `submit` default `run=True` (`cli/main.py:131`).
+- `submit` default `run=True` (`cli/main.py:133`).
 - `serve` binds loopback only; `api_host` validator enforced at `Settings`
   construction (`config.py:901`).
-- Every command closes the `Runtime` in `finally` (`cli/main.py:165`, `:181`, etc.).
+- Every command closes the `Runtime` in `finally` (`cli/main.py:167`, `:181`, etc.).
 
 ## Failure behavior
 
-- Invalid correlation id → `typer.Exit(1)` (`cli/main.py:555`).
-- Task not awaiting gate → `PaaError` → printed red, exit 1 (`cli/main.py:278-279`).
+- Invalid correlation id → `typer.Exit(1)` (`cli/main.py:557`).
+- Task not awaiting gate → `PaaError` → printed red, exit 1 (`cli/main.py:280-279`).
 - `paa agent` `PaaError` → `[red]error:[/red]`, exit 1 (`cli/coder.py:253`).
-- Unknown mode → printed red, exit 1 (`cli/main.py:525`, `cli/coder.py:108`).
+- Unknown mode → printed red, exit 1 (`cli/main.py:527`, `cli/coder.py:108`).
 
 ## Modification impact
 

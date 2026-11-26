@@ -10,19 +10,19 @@ the CLI and API are both thin edges over the same `Runtime` object
 
 | Entry point | File | What it does |
 |---|---|---|
-| `paa submit "goal"` | `src/paa/cli/main.py:131` | Builds a `Runtime`, submits a task, optionally runs it to completion, then closes |
-| `paa run <id>` | `src/paa/cli/main.py:175` | Drives an already-submitted task to a terminal state |
-| `paa status <id>` | `src/paa/cli/main.py:191` | Shows the replayed projection of a task |
-| `paa ledger <id>` | `src/paa/cli/main.py:217` | Walks a task's event chain (explainability) |
-| `paa gate <id> --approve/--reject` | `src/paa/cli/main.py:263` | Clears a task parked on a human gate |
-| `paa recover` | `src/paa/cli/main.py:290` | Runs the post-crash boot sweep |
-| `paa doctor` | `src/paa/cli/main.py:308` | Reports which backends/sandbox are actually live, plus the chat model, MCP token env and TUI extra |
-| `paa serve [host] [port]` | `src/paa/cli/main.py:474` | Starts FastAPI API + background daemon over one shared runtime |
+| `paa submit "goal"` | `cli/main.py:133` | Builds a `Runtime`, submits a task, optionally runs it to completion, then closes |
+| `paa run <id>` | `cli/main.py:177` | Drives an already-submitted task to a terminal state |
+| `paa status <id>` | `cli/main.py:193` | Shows the replayed projection of a task |
+| `paa ledger <id>` | `cli/main.py:219` | Walks a task's event chain (explainability) |
+| `paa gate <id> --approve/--reject` | `cli/main.py:265` | Clears a task parked on a human gate |
+| `paa recover` | `cli/main.py:292` | Runs the post-crash boot sweep |
+| `paa doctor` | `cli/main.py:310` | Reports which backends/sandbox are actually live, plus the chat model, MCP token env and TUI extra |
+| `paa serve [host] [port]` | `cli/main.py:476` | Starts FastAPI API + background daemon over one shared runtime |
 | `paa agent "prompt"` | `src/paa/cli/coder.py:44` | Tool-using coder loop over the runtime |
-| `paa memory <subcommand>` | `src/paa/cli/main.py:700` | Facts/search/signals/drain/world-model reads over the memory subsystem |
+| `paa memory <subcommand>` | `cli/main.py:702` | Facts/search/signals/drain/world-model reads over the memory subsystem |
 | `paa chat` | `src/paa/cli/chat.py:160` | The chat surface — Textual TUI, or `--plain` (SPEC 2 W4) |
 | `paa mcp serve` | `src/paa/cli/mcp.py:120` | Stdio MCP server exposing memory + chat as tools (SPEC 2 W4) |
-| `paa tui` | `src/paa/cli/main.py:537` | Interactive dashboard |
+| `paa tui` | `cli/main.py:539` | Interactive dashboard |
 | `Runtime.build()` | `src/paa/runtime.py:353` | Programmatic composition root (used by all edges) |
 
 ## Backend module responsibilities
@@ -54,9 +54,9 @@ There is no HTTP "business" API surface beyond ingestion. The backend is driven
 by:
 
 1. **CLI one-shot commands** — each builds a `Runtime` (`Runtime.build()`),
-   performs one operation, prints, and closes (`cli/main.py:110`).
+   performs one operation, prints, and closes (`cli/main.py:112`).
 2. **`paa serve`** — builds one `Runtime`, starts a `Daemon` and a FastAPI app
-   over it (`cli/main.py:474`). The API delegates to the same `Runtime`.
+   over it (`cli/main.py:476`). The API delegates to the same `Runtime`.
 3. **Programmatic `Runtime`** — `async with await Runtime.build() as rt:
    cid = await rt.submit(...); outcome = await rt.run(cid)`
    (`runtime.py:144`).

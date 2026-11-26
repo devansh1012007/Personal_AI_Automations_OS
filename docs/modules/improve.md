@@ -6,7 +6,7 @@
 - **Path:** `src/paa/improve/`
 - **Main responsibility:** The guarded self-improvement cycle (SPEC 2 Wave 8, row C8.1): reflection over the real ledger → a deterministic patch proposal → deterministic validation → a human gate → a commit that lands only as an attested change bundle (C7.2).
 - **Architectural layer:** Control / edge
-- **Entrypoints:** `run_improve_pipeline()` (`cli/improve.py:57`); the `improve` verb registered at `cli/main.py:918`; `paa pipeline run improve.reflection-loop`
+- **Entrypoints:** `run_improve_pipeline()` (`cli/improve.py:57`); the `improve` verb registered at `cli/main.py:928`; `paa pipeline run improve.reflection-loop`
 - **Public interfaces:** `ImproveFacade`, `ImproveReflectionLoop` (`pipeline.py`); `PatchProposal`, `FileChange`, `proposal_from_report` (`proposal.py`); `run_validation`, `ValidationVerdict`, `CommandOutcome` (`validation.py`); `Approver`, `HumanDecision`, `refuse_all`, `terminal_approver` (`gate.py`); `guarded_git_commit`, `is_git_repository` (`gitcommit.py`)
 - **Other modules that depend on it:** `cli/improve.py`, `cli/pipeline.py` (the registry door), `pipelines/conformance.py` (the six-check runner)
 

@@ -251,7 +251,7 @@ Provider `api_key_env` tuples are defined per row in `registry.py:_SPECS`
 2. Optionally `cp .env.example .env` and set provider keys.
 3. `.venv/bin/python -m pytest tests/ -q` (`AGENTS.md:11`).
 4. `paa doctor` to confirm which backends are actually live, plus the chat
-   model resolution, the MCP token env and the TUI extra (`cli/main.py:308`).
+   model resolution, the MCP token env and the TUI extra (`cli/main.py:310`).
 
 ## Deployment vs development
 

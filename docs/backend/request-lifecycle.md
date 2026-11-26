@@ -8,8 +8,8 @@ outcome through the backend. It reflects the actual execution order in
 
 | Trigger | File | Function |
 |---|---|---|
-| `paa submit "goal"` | `cli/main.py:131` | `submit` → `Runtime.submit()` |
-| `paa run <id>` | `cli/main.py:175` | `run` → `Runtime.run()` |
+| `paa submit "goal"` | `cli/main.py:133` | `submit` → `Runtime.submit()` |
+| `paa run <id>` | `cli/main.py:177` | `run` → `Runtime.run()` |
 | API `POST /tasks` (`?run=true`) | `api/app.py:107` | `submit_task` → `Runtime.submit()` then `Runtime.run()` |
 | API `POST /tasks` (`?run=false`) | `api/app.py:107` | Submit + queue only; daemon drains later |
 | Daemon dispatch loop | `daemon.py:137` | `_claim_and_run()` → `Runtime.run(cid)` |
