@@ -65,7 +65,7 @@ under `--yes`, else `prompt_yes` (blocks on `input`; EOF → deny)
 ## Failure behavior
 
 - Invalid correlation id → `typer.Exit(1)` (`cli/main.py:557`).
-- Task not awaiting gate → `PaaError` → printed red, exit 1 (`cli/main.py:280-279`).
+- Task not awaiting gate → `PaaError` → printed red, exit 1 (`cli/main.py:282-284`).
 - `paa agent` `PaaError` → `[red]error:[/red]`, exit 1 (`cli/coder.py:253`).
 - Unknown mode → printed red, exit 1 (`cli/main.py:527`, `cli/coder.py:108`).
 

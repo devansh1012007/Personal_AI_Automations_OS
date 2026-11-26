@@ -83,7 +83,7 @@ def _local_home(tmp_path: Path) -> Path:
 
 
 class TestTheRegistry:
-    def test_default_lists_the_five_builtins(self) -> None:
+    def test_default_lists_the_six_builtins(self) -> None:
         registry = PipelineRegistry(local_dir=None)
         rows = registry.list()
         assert [r.name for r in rows] == [
@@ -97,7 +97,7 @@ class TestTheRegistry:
         assert all(r.trust == "builtin" and r.runnable for r in rows)
 
     def test_observe_declares_its_two_special_facts(self) -> None:
-        """Pipeline #4 differs from the other three in exactly two rows.
+        """Pipeline #4 differs from the other five in exactly two rows.
 
         ``resume = "none"`` (the spec §6 rule for external-harness
         adapters) and ``evidence_tier = "T1"`` (the honesty tier) are
