@@ -34,6 +34,7 @@ from paa.cli.attest import verify as verify_command
 from paa.cli.chat import app as chat_app
 from paa.cli.coder import register_agent
 from paa.cli.eval import eval_app
+from paa.cli.improve import improve as improve_command
 from paa.cli.mcp import app as mcp_app
 from paa.cli.observe import observe as observe_command
 from paa.cli.pipeline import app as pipeline_app
@@ -907,6 +908,14 @@ app.add_typer(pipeline_app, name="pipeline")
 # ``paa observe -- pytest -q``, so the command is registered directly
 # rather than nested behind a one-command sub-app.
 app.command(name="observe")(observe_command)
+
+# ``paa improve`` likewise (C8.1): the guarded self-improvement loop's
+# front door is a single command — the cycle has one verb, and its
+# evidence surfaces are the artifacts it leaves (``paa improve --json``
+# and the attested bundle ``paa verify`` checks). The registry's own
+# door, ``paa pipeline run improve.reflection-loop``, drives the same
+# shared driver.
+app.command(name="improve")(improve_command)
 
 # ``paa verify`` likewise: the spec's own front door (H3.1) is a verb a
 # reviewer types on a clean machine, not a subcommand of the producer's
