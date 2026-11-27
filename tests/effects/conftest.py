@@ -6,6 +6,11 @@ blob store is a fake, because the content-addressed stores it stands in
 for are already covered by their own suites and the contract needed here
 is exactly the two-method :class:`~paa.ledger.events.BlobStoreLike`
 shape.
+
+The ``compensates`` readers at the bottom are shared by the behaviour
+and chaos suites because they are the double-compensation oracle: the
+chaos drill counts settled rows across *every* lineage, and that count
+must be re-derivable by whichever test asks.
 """
 
 from __future__ import annotations
@@ -14,10 +19,12 @@ import hashlib
 import types
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from paa.core.types import EventType
 from paa.effects.files import capture_prior
 from paa.effects.spec import EffectKind, EffectSpec
 from paa.ledger.store import LedgerStore
@@ -136,3 +143,38 @@ def builder(
     ledger: LedgerStore, blob_store: FakeBlobStore, workspace: Path
 ) -> ScopeBuilder:
     return ScopeBuilder(ledger=ledger, blobs=blob_store, workspace=workspace)
+
+
+#: The oldest timestamp a whole-store scan can name (the registry's own
+#: epoch constant, restated here so the tests share one spelling).
+EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+async def compensates_refs(ledger: LedgerStore, lineage: uuid.UUID) -> list[str]:
+    """Every ``compensates`` reference recorded on one lineage, in order."""
+    refs: list[str] = []
+    for event in await ledger.read_correlation(lineage):
+        if event.event_type is not EventType.PIPELINE_CALL_COMPLETED:
+            continue
+        ref = event.payload.get("compensates")
+        if isinstance(ref, str):
+            refs.append(ref)
+    return refs
+
+
+async def all_compensates_refs(ledger: LedgerStore) -> list[str]:
+    """Every ``compensates`` reference in the whole ledger (all lineages).
+
+    The double-compensation oracle: counted over every row, not per run,
+    so a test that re-runs a rollback can assert *exactly once* across
+    all of them at once.
+    """
+    rows = await ledger.events_since(
+        EPOCH, event_types=(EventType.PIPELINE_CALL_COMPLETED,), limit=10_000
+    )
+    refs: list[str] = []
+    for event in rows:
+        ref = event.payload.get("compensates")
+        if isinstance(ref, str):
+            refs.append(ref)
+    return refs

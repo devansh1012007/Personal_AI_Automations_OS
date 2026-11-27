@@ -20,7 +20,6 @@ What is pinned is the contract the CLI maps and the ADR states:
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -38,39 +37,7 @@ from paa.effects.rollback import (
 from paa.ledger.store import LedgerStore
 from paa.pipelines.journal import CallJournal
 
-from .conftest import FakeBlobStore, ScopeBuilder
-
-_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
-
-
-async def _refs(ledger: LedgerStore, lineage: uuid.UUID) -> list[str]:
-    """Every ``compensates`` reference recorded on one lineage, in order."""
-    refs: list[str] = []
-    for event in await ledger.read_correlation(lineage):
-        if event.event_type is not EventType.PIPELINE_CALL_COMPLETED:
-            continue
-        ref = event.payload.get("compensates")
-        if isinstance(ref, str):
-            refs.append(ref)
-    return refs
-
-
-async def _all_compensates_refs(ledger: LedgerStore) -> list[str]:
-    """Every ``compensates`` reference in the whole ledger (all lineages).
-
-    The double-compensation oracle: counted over every row, not per run,
-    so a test that re-runs a rollback can assert *exactly once* across
-    all of them at once.
-    """
-    rows = await ledger.events_since(
-        _EPOCH, event_types=(EventType.PIPELINE_CALL_COMPLETED,), limit=10_000
-    )
-    refs: list[str] = []
-    for event in rows:
-        ref = event.payload.get("compensates")
-        if isinstance(ref, str):
-            refs.append(ref)
-    return refs
+from .conftest import FakeBlobStore, ScopeBuilder, all_compensates_refs, compensates_refs
 
 
 class TestTheHappyPath:
@@ -110,7 +77,7 @@ class TestTheHappyPath:
         rows = await ledger.read_correlation(lineage)
         started = [r for r in rows if r.event_type is EventType.PIPELINE_RUN_STARTED]
         assert started[0].payload["run_kind"] == "rollback"
-        assert sorted(await _refs(ledger, lineage)) == sorted(
+        assert sorted(await compensates_refs(ledger, lineage)) == sorted(
             [a.effect_id, b.effect_id, b2.effect_id]
         )
 
@@ -191,7 +158,7 @@ class TestPartialFailureAndResume:
         assert (workspace / "out/b.txt").read_bytes() == b"b-zero"
 
         # Each effect settled exactly once across both runs.
-        assert sorted(await _all_compensates_refs(ledger)) == sorted(
+        assert sorted(await all_compensates_refs(ledger)) == sorted(
             [a.effect_id, b.effect_id, c.effect_id]
         )
 
@@ -229,7 +196,7 @@ class TestTheDoubleRollback:
             "failed": 0,
         }
         # No new references: exactly one settled row per effect, ever.
-        assert sorted(await _all_compensates_refs(ledger)) == sorted(
+        assert sorted(await all_compensates_refs(ledger)) == sorted(
             [a.effect_id, b.effect_id]
         )
         # The workspace is untouched by the second run.
@@ -284,7 +251,7 @@ class TestIrreversibleReporting:
         )
         assert report.exit_code == 1
         assert report.irreversible == 2
-        assert await _all_compensates_refs(ledger) == []
+        assert await all_compensates_refs(ledger) == []
 
 
 class TestRefusalsAndEmptyScopes:
