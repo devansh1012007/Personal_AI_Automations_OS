@@ -17,6 +17,12 @@ The C6.5 / P4-lite surface over :mod:`paa.pipelines.registry`:
   builtin's runs are recorded in the task vocabulary — the
   pipeline-vocabulary integration is the RPC transport's work, and the
   trace says which vocabulary it is reading, not a generic "events").
+* ``new`` — the authoring door (P7, W9-C9.5): scaffold the four files
+  a new pipeline starts from — manifest, entrypoint, README, test
+  skeleton — into ``PAA_HOME/pipelines/<name>/`` (or ``--path``),
+  proven through the closed parser before success is reported
+  (:mod:`paa.pipelines.scaffold`); refusals name their reason, and the
+  install door (``cli/main.py``) is what makes the result runnable.
 """
 
 from __future__ import annotations
@@ -810,3 +816,67 @@ def trace(
             await rt.close()
 
     _run(_do())
+
+
+# ---------------------------------------------------------------------------
+# new — the authoring door (P7, W9-C9.5)
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def new(
+    name: str = typer.Argument(
+        ..., help="The pipeline's name; it becomes the directory's name."
+    ),
+    path: Path | None = typer.Option(
+        None,
+        "--path",
+        help="The parent directory to scaffold under (default: "
+        "PAA_HOME/pipelines, the registry's local dir — `paa pipeline "
+        "list` sees the row the moment it lands).",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Overwrite the scaffold's own four files when the target "
+        "exists — never anything else, and never another pipeline's "
+        "manifest.",
+    ),
+) -> None:
+    """Scaffold a new pipeline: manifest, entrypoint, README, test skeleton.
+
+    The zero-infrastructure start: the four files land under
+    ``PAA_HOME/pipelines/<name>/`` where the registry reads them, so the
+    next command can be ``paa pipeline list``. Running what you wrote is
+    the install door's — ``paa pipeline install <dir>
+    --allow-unverified`` drives the gates, the six-check conformance
+    standard and the capability review, and stages the bytes runnable.
+    Exit codes: 0 created, 1 refused (the reason is named), 2 usage.
+    """
+    from paa.config import get_settings
+    from paa.pipelines.scaffold import ScaffoldError, scaffold_pipeline
+
+    parent = path if path is not None else get_settings().home / "pipelines"
+    try:
+        report = scaffold_pipeline(name, parent, force=force)
+    except ScaffoldError as exc:
+        console.print(f"[red]scaffold refused:[/red] {exc.message}")
+        raise typer.Exit(1) from exc
+
+    console.print(f"[green]scaffolded[/green] {report.name} -> {report.directory}")
+    for filename in report.files:
+        console.print(f"  {filename}")
+    console.print("next steps:")
+    console.print(
+        f"  1. edit {report.directory / 'pipeline.py'} — fill in the marked sections"
+    )
+    console.print(
+        f"  2. run {report.directory / 'test_pipeline.py'} with pytest — keep it green"
+    )
+    console.print(
+        f"  3. `paa pipeline list` — the registry reads {report.name} (trust: local)"
+    )
+    console.print(
+        f"  4. `paa pipeline install {report.directory} --allow-unverified` — "
+        "gates, conformance, review; then it is runnable"
+    )
