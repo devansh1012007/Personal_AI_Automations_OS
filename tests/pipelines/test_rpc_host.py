@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import sys
 import uuid
 from datetime import datetime
@@ -77,6 +78,15 @@ _SDK_ROOT = Path(paa_pipeline.__file__).resolve().parents[1]
 #: refuses a child that answers anything else.
 _CHILD_NAME = "fixture.rpc"
 _CHILD_VERSION = "1.0.0"
+
+#: The P3.4 language proof's child: the repository's own example, driven
+#: like any other child. POSIX shell, no SDK, no imports — see the honest
+#: header in the script itself for the fixed-shape boundary it states.
+_SHELL_PROOF = (
+    Path(__file__).resolve().parents[2] / "examples" / "shell-pipeline" / "pipeline.sh"
+)
+_SHELL_NAME = "shell.demo"
+_SHELL_VERSION = "0.1.0"
 
 #: One script, three modes: the run's ``params`` pick the behaviour, the
 #: way a real pipeline's typed params would. ``happy`` is the full
@@ -452,3 +462,80 @@ class TestDeterminism:
             (r.seq, r.method, r.fingerprint) for r in second_records
         ]
         assert [r.result for r in first_records] == [r.result for r in second_records]
+
+
+class TestShellLanguageProof:
+    """P3.4: the protocol doc alone, spoken by POSIX shell with no SDK.
+
+    The spec's own done-when for the language proof — "a 100-line
+    TypeScript or shell pipeline with no PAA SDK, only the protocol doc" —
+    read strictly: the child under test is the repository's example
+    script, not a fixture written beside the test, so what is pinned is
+    the artifact an author would actually copy. The skip guard is the
+    spec's own "(skipped where the runtime is absent)": a Windows host
+    with no bash cannot run the proof, and pretending otherwise would be
+    the quietest way not to test it.
+    """
+
+    def _declaration(self) -> PipelineDeclaration:
+        return PipelineDeclaration(
+            name=_SHELL_NAME,
+            version=_SHELL_VERSION,
+            requires_runtime=">=4.1,<5",
+            description="the P3.4 shell language proof",
+            trust="installed",
+            resume="journal",
+            evidence_tier="unrated",
+        )
+
+    @pytest.mark.skipif(shutil.which("bash") is None, reason="no bash to drive")
+    async def test_the_shell_child_completes_the_whole_conversation(
+        self, tmp_path: Path, ledger: LedgerStore
+    ) -> None:
+        bash = shutil.which("bash")
+        assert bash is not None  # the skipif guard owns the None case
+        run_id = uuid.uuid4()
+        facade = _DeterministicFacade()
+        host = RpcPipelineHost(
+            sandbox=SubprocessSandbox(),
+            journal=CallJournal(ledger, run_id),
+            facade=facade,
+            grants=CapabilitySet(run_id, (Capability.THINK,)),
+            declaration=self._declaration(),
+            command=(bash, str(_SHELL_PROOF)),
+            workspace=tmp_path,
+        )
+        journal = host.journal
+        await journal.run_started(_SHELL_NAME, _SHELL_VERSION, run_kind="rpc")
+        result = await host.run("say it in shell")
+        await journal.run_completed(result.status.value, metrics=dict(result.metrics))
+
+        # The final result folds under the shared bounds like any child's:
+        # the summary carries both halves the shell extracted itself — the
+        # recorded clock it was served, and the think answer it received.
+        assert result.status is PipelineStatus.COMPLETED
+        assert result.summary == "now=2026-01-01T12:00:00 think=yes"
+        assert result.metrics == {"ctx_calls": 2}
+        assert result.artifacts == [PipelineArtifact(kind="shell-demo")]
+        assert host.child_name == _SHELL_NAME
+        assert host.child_version == _SHELL_VERSION
+
+        captured = host.child_stderr
+        assert captured is not None
+        assert "protocol doc alone" in captured
+
+        records = await read_call_journal(ledger, host.journal.run_id)
+        assert [(r.seq, r.method) for r in records] == [(1, "now"), (2, "think")]
+        assert all(r.outcome is CallOutcome.COMPLETED for r in records)
+        # The determinism aid's served clock, and the think result — both
+        # extracted by sed from the fixed shapes, both landed intact.
+        assert records[0].result == "2026-01-01T12:00:00"
+        assert records[1].result == {
+            "answer": "consider: what shall we do?",
+            "role": "worker",
+        }
+        # The think fingerprint is the same digest the SDK child's think
+        # produces: transport-independent identity, shell or SDK.
+        assert records[1].fingerprint == fingerprint(
+            "think", {"prompt": "what shall we do?", "role": "worker"}
+        )
