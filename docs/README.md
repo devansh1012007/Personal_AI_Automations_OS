@@ -54,7 +54,7 @@ Primary entry points:
 * `paa record verify <run-dir>` — the flight record's own chain: schema, sequence, every link (`src/paa/cli/record.py:264`)
 * `paa attest build` / `paa verify` — the attested change bundle and its offline verifier (H3.1): mandate, diff, commands, tests, approvals, hash chain, Ed25519 signature (`src/paa/cli/attest.py:88`)
 * `paa chat` — the chat surface: TUI, or `--plain` (`src/paa/cli/chat.py:160`)
-* `paa mcp serve` — the stdio MCP server (`src/paa/cli/mcp.py:120`)
+* `paa mcp serve` — the stdio MCP server (`src/paa/cli/mcp.py:137`)
 * `paa agent "prompt"` — tool-using coder loop (`src/paa/cli/coder.py:58`)
 
 The composition root is `Runtime.build()` (`src/paa/runtime.py:353`).

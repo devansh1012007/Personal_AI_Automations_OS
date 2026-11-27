@@ -6,7 +6,7 @@ over stdin/stdout. It is designed to be *spawned by* an MCP client (Claude
 Code, Codex, Cursor, OpenCode) rather than listened-with — there is no socket,
 no bind address, and nothing for the loopback rule to widen. The server lives
 in `src/paa/mcp/` (`server.py`, `protocol.py`); the command entry is
-`src/paa/cli/mcp.py:120`.
+`src/paa/cli/mcp.py:137`.
 
 Every tool call is policy-checked (`manifest ∩ mandate ∩ policy`) and
 journaled before it executes; refusals are ledger events too. This is the

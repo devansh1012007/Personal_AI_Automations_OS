@@ -95,13 +95,13 @@ layouts and the package flow share; off-contract manifests are named in
 `local_errors`, never silently dropped.
 
 ### `pipelines/conformance.py` — the six-check standard
-`CHECK_NAMES` (`pipelines/conformance.py:76`): double-run call-sequence
+`CHECK_NAMES` (`pipelines/conformance.py:77`): double-run call-sequence
 equality, divergence halt, unknown-outcome never auto-repeats, cancel within
 grace, budget exhaustion, no secrets in journal. Each vocabulary instantiates
 the checks in its own terms and may mark a check `n/a` with a pointer to
 where the property is pinned — a masked green is the thing the standard
-exists to stop. `every_builtin_conformance` (`:2205`) is the CI entry.
-`installed_conformance` (`:1897`) drives the six checks through the sandboxed
+exists to stop. `every_builtin_conformance` (`:2557`) is the CI entry.
+`installed_conformance` (`:2249`) drives the six checks through the sandboxed
 adapter against an installed package's own bytes; its no-secrets row states
 the honest split — the goal rides the args file and the PROPOSED fingerprint,
 never a host-written payload text, while the child's own answer rides the

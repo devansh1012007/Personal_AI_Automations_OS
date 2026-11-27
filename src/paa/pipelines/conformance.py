@@ -68,6 +68,7 @@ __all__ = [
     "improve_conformance",
     "installed_conformance",
     "manager_conformance",
+    "mcp_host_conformance",
     "observe_conformance",
     "render_reports",
 ]
@@ -1816,6 +1817,357 @@ async def manager_conformance(ledger: LedgerStore) -> ConformanceReport:
 
 
 # ---------------------------------------------------------------------------
+# builtin.mcp-host — the externally-driven session, pipeline #7 (W9-C9.4)
+# ---------------------------------------------------------------------------
+
+
+async def mcp_host_conformance(tmp_path: Path) -> ConformanceReport:
+    """The six checks over ``builtin.mcp-host``, in the server's vocabulary.
+
+    Driven the way ``tests/mcp_server`` drives the server: in-process,
+    over the server's own framing (a fed ``StreamReader`` playing the
+    external harness, an in-memory sink collecting its replies), on a
+    throwaway offline stack — the echo chat model, so the one tool call
+    that thinks (``chat_send``) is byte-stable. The honesty limits are
+    the adapter's own: a session whose client is a foreign mind cannot
+    promise the client's behaviour (the wrapper's sequence is the
+    promise, and it is one call), and an adapter declaring
+    ``resume = "none"`` has no replay to diverge. What the vocabulary
+    *can* promise for real — the deterministic session call, the
+    classified death of a broken transport, the between-frames cancel,
+    the canary rule over the operator's harness label — is checked for
+    real against the unchanged server.
+    """
+    from datetime import UTC, datetime
+
+    from paa.chat.service import ChatService
+    from paa.coder.journal import args_sha256_of
+    from paa.config import ChatSettings, ContextSettings
+    from paa.core.types import PermissionMode
+    from paa.mcp.host import McpHostPipeline, run_mcp_host_session
+    from paa.mcp.protocol import PROTOCOL_VERSION, encode_frame
+    from paa.mcp.server import MCPServer
+    from paa.memory.creator import MemoryCreator
+    from paa.storage.coldlake.cas import ContentAddressedStore
+    from paa.storage.coldlake.signals import SignalRepository
+    from paa.storage.relational.database import Database
+
+    db = Database(tmp_path / "mcp-host.db")
+    await db.connect()
+    session_ledger = LedgerStore(db)
+    signals = SignalRepository(db, ContentAddressedStore(tmp_path / "mcp-cold"))
+
+    def _server() -> MCPServer:
+        creator = MemoryCreator(db)
+        chat_settings = ChatSettings()  # the offline echo model
+        return MCPServer(
+            chat=ChatService(
+                ledger=session_ledger,
+                db=db,
+                creator=creator,
+                settings=chat_settings,
+                permission_mode=PermissionMode.ASK,
+                context_settings=ContextSettings(),
+                signals=signals,
+            ),
+            ledger=session_ledger,
+            db=db,
+            creator=creator,
+            signals=signals,
+            chat_settings=chat_settings,
+        )
+
+    def _client(*messages: dict[str, Any]) -> Any:
+        reader = asyncio.StreamReader()
+        for message in messages:
+            reader.feed_data(encode_frame(message))
+        reader.feed_eof()
+        return reader
+
+    def _initialize(id_: int = 0) -> dict[str, Any]:
+        return {
+            "jsonrpc": "2.0",
+            "id": id_,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "conformance-harness", "version": "0"},
+            },
+        }
+
+    class _Recorder:
+        def __init__(self) -> None:
+            self.frames = 0
+
+        def write(self, data: bytes) -> None:
+            self.frames += 1
+
+        async def drain(self) -> None:
+            return None
+
+    class _Exploding(_Recorder):
+        def write(self, data: bytes) -> None:
+            raise RuntimeError("broken pipe")
+
+    class _Evented(_Recorder):
+        def __init__(self) -> None:
+            super().__init__()
+            self.answered = asyncio.Event()
+
+        def write(self, data: bytes) -> None:
+            super().write(data)
+            self.answered.set()
+
+    async def drive(
+        frames: Any, sink: _Recorder | None = None, *, harness: str = "conformance"
+    ) -> Any:
+        return await run_mcp_host_session(
+            _server(),
+            session_ledger,
+            reader=frames,
+            sink=sink if sink is not None else _Recorder(),
+            harness=harness,
+        )
+
+    async def last_run_id() -> uuid.UUID:
+        events = await session_ledger.events_since(
+            datetime(1970, 1, 1, tzinfo=UTC),
+            event_types=[EventType.PIPELINE_RUN_STARTED],
+            descending=True,
+            limit=1,
+        )
+        assert events
+        return events[0].correlation_id
+
+    try:
+        # -- 1. double-run call-sequence equality -------------------------
+        # The same scripted harness session, twice: the wrapper's own
+        # sequence — one mcp.session call, proposed and resolved — must
+        # fold identically. The client's behaviour is not the wrapper's
+        # to promise; its identity (the catalogue + label) is.
+        scripted = _client(
+            _initialize(),
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "sessions_list", "arguments": {}},
+            },
+        )
+        run_a, result_a = await drive(scripted)
+        run_b, result_b = await drive(
+            _client(
+                _initialize(),
+                {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {"name": "sessions_list", "arguments": {}},
+                },
+            )
+        )
+        fold_a = await read_call_journal(session_ledger, run_a)
+        fold_b = await read_call_journal(session_ledger, run_b)
+        shape_a = [(r.seq, r.method, r.fingerprint, r.outcome) for r in fold_a]
+        shape_b = [(r.seq, r.method, r.fingerprint, r.outcome) for r in fold_b]
+        if (
+            shape_a == shape_b
+            and len(fold_a) == 1
+            and result_a.metrics["requests_answered"]
+            == result_b.metrics["requests_answered"]
+            == 3
+        ):
+            double_run = ConformanceCheck.passed(
+                CHECK_NAMES[0],
+                "two scripted sessions of the same harness folded to the "
+                "same 1-call sequence and answered the same 3 requests — "
+                "the wrapper's sequence is the promise, not the foreign "
+                "client's behaviour",
+            )
+        else:
+            double_run = ConformanceCheck.failed(
+                CHECK_NAMES[0], f"{shape_a} vs {shape_b}"
+            )
+
+        # -- 2. divergence halt ---------------------------------------------
+        divergence = ConformanceCheck.na(
+            CHECK_NAMES[1],
+            "the adapter declares resume='none' (spec §6): an MCP session "
+            "is not journalled for replay — each turn is its own "
+            "request/response — so there is no replay to diverge, and the "
+            "pipeline-lineage sweep exemption means a crashed session is "
+            "never re-queued as task work (the halt-on-divergence property "
+            "itself is pinned on coder.tool-loop, tests/pipelines/"
+            "test_replay.py)",
+        )
+
+        # -- 3. unknown outcome never auto-repeats --------------------------
+        # The mcp-host reading of D-6: a session whose transport died
+        # mid-serve is a *resolved* session call with a named state —
+        # exactly one PROPOSED-then-FAILED row pair and a FAILED run, the
+        # fault named by type only — never an open PROPOSED the host might
+        # be tempted to re-drive.
+        broken = _client(_initialize())
+        died = False
+        try:
+            await drive(broken, _Exploding())
+        except RuntimeError:
+            died = True
+        died_id = await last_run_id()
+        died_rows = await read_call_journal(session_ledger, died_id)
+        died_events = await session_ledger.read_correlation(died_id)
+        run_failed_rows = [
+            e for e in died_events if e.event_type is EventType.PIPELINE_RUN_FAILED
+        ]
+        if (
+            died
+            and len(died_rows) == 1
+            and died_rows[0].outcome is CallOutcome.FAILED
+            and died_rows[0].error == "session did not resolve (RuntimeError)"
+            and len(run_failed_rows) == 1
+            and run_failed_rows[0].payload["reason"] == "RuntimeError"
+        ):
+            unknown = ConformanceCheck.passed(
+                CHECK_NAMES[2],
+                "a session whose transport died mid-serve resolved to one "
+                "FAILED mcp.session call and one FAILED run naming the "
+                "fault's type — classified, never re-driven",
+            )
+        else:
+            unknown = ConformanceCheck.failed(
+                CHECK_NAMES[2],
+                f"died={died} rows={[(r.outcome, r.error) for r in died_rows]} "
+                f"run_failed={len(run_failed_rows)}",
+            )
+
+        # -- 4. cancel within grace ------------------------------------------
+        # The real cancel this vocabulary has: the session task killed
+        # between frames. Both rows close FAILED('cancelled') before the
+        # CancelledError propagates — nothing half-closed.
+        parked = asyncio.StreamReader()
+        parked.feed_data(encode_frame(_initialize()))  # answered, then parked
+        evented = _Evented()
+        cancel_task = asyncio.create_task(drive(parked, evented, harness="cancel-me"))
+        await evented.answered.wait()
+        cancel_task.cancel()
+        cancelled = False
+        try:
+            await cancel_task
+        except asyncio.CancelledError:
+            cancelled = True
+        cancel_id = await last_run_id()
+        cancel_rows = await read_call_journal(session_ledger, cancel_id)
+        coherently_closed = (
+            len(cancel_rows) == 1
+            and cancel_rows[0].outcome is CallOutcome.FAILED
+            and cancel_rows[0].error == "cancelled"
+        )
+        cancel_events = await session_ledger.read_correlation(cancel_id)
+        run_cancelled = any(
+            e.event_type is EventType.PIPELINE_RUN_FAILED
+            and e.payload["reason"] == "cancelled"
+            for e in cancel_events
+        )
+        if cancelled and coherently_closed and run_cancelled:
+            cancel = ConformanceCheck.passed(
+                CHECK_NAMES[3],
+                "the cancel landed between frames and the session closed "
+                "FAILED('cancelled') at both the call and the run before "
+                "the CancelledError propagated — nothing half-closed",
+            )
+        else:
+            cancel = ConformanceCheck.failed(
+                CHECK_NAMES[3],
+                f"cancelled={cancelled} rows={[(r.outcome, r.error) for r in cancel_rows]} "
+                f"run_cancelled={run_cancelled}",
+            )
+
+        # -- 5. budget exhaustion ---------------------------------------------
+        budget = ConformanceCheck.na(
+            CHECK_NAMES[4],
+            "the session is externally paced and the adapter ships "
+            "unbounded RunLimits — nothing at this layer to exhaust; the "
+            "limits that do bind are the server's own per-call "
+            "disciplines (the LOCKDOWN policy ceiling, the search and "
+            "list caps), pinned in tests/mcp_server",
+        )
+
+        # -- 6. no secrets in journal -----------------------------------------
+        secret = _marker()
+        secret_id: uuid.UUID | None = None
+        try:
+            secret_id, _ = await drive(
+                _client(
+                    _initialize(),
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "chat_send",
+                            "arguments": {"message": f"conformance probe {secret}"},
+                        },
+                    },
+                )
+            )
+        except Exception as exc:  # the chat turn failing is a RED row, not a crash
+            secrets = ConformanceCheck.failed(CHECK_NAMES[5], f"probe failed: {exc}")
+        else:
+            assert secret_id is not None
+            texts = await _payload_texts(session_ledger, secret_id)
+            leaked = [t for t in texts if secret in t]
+            # The positive control: the marked input really crossed the
+            # session — the server's per-call PROPOSED row attests the
+            # very arguments that carried it, by their canonical SHA-256.
+            tool_rows = await session_ledger.events_since(
+                datetime(1970, 1, 1, tzinfo=UTC),
+                event_types=[EventType.TOOL_CALL_PROPOSED],
+                descending=True,
+                limit=1,
+            )
+            expected_sha = args_sha256_of(
+                {"message": f"conformance probe {secret}"}
+            )
+            positive_control = bool(tool_rows) and (
+                tool_rows[0].payload["args_sha256"] == expected_sha
+            )
+            if not leaked and positive_control:
+                secrets = ConformanceCheck.passed(
+                    CHECK_NAMES[5],
+                    "the chat_send marker rode the server's own per-call "
+                    "lineage (attested by args_sha256) and never appeared "
+                    "in a payload the session wrapper wrote",
+                )
+            else:
+                secrets = ConformanceCheck.failed(
+                    CHECK_NAMES[5],
+                    f"leaked={bool(leaked)} positive_control={positive_control}",
+                )
+
+        return ConformanceReport(
+            pipeline=McpHostPipeline.name,
+            checks=_checks(
+                **{
+                    CHECK_NAMES[0]: double_run,
+                    CHECK_NAMES[1]: divergence,
+                    CHECK_NAMES[2]: unknown,
+                    CHECK_NAMES[3]: cancel,
+                    CHECK_NAMES[4]: budget,
+                    CHECK_NAMES[5]: secrets,
+                }
+            ),
+        )
+    finally:
+        with contextlib.suppress(Exception):  # closing never masks the report
+            await db.close()
+
+
+# ---------------------------------------------------------------------------
 # installed pipeline packages — the sandboxed adapter's own vocabulary (C8.6)
 # ---------------------------------------------------------------------------
 
@@ -2220,6 +2572,7 @@ async def every_builtin_conformance(
         await observe_conformance(ledger, tmp_path),
         await manager_conformance(ledger),
         await improve_conformance(ledger, tmp_path),
+        await mcp_host_conformance(tmp_path),
     ]
     covered = {report.pipeline for report in reports}
     missing = [

@@ -21,7 +21,7 @@ the CLI and API are both thin edges over the same `Runtime` object
 | `paa agent "prompt"` | `src/paa/cli/coder.py:44` | Tool-using coder loop over the runtime |
 | `paa memory <subcommand>` | `cli/main.py:702` | Facts/search/signals/drain/world-model reads over the memory subsystem |
 | `paa chat` | `src/paa/cli/chat.py:160` | The chat surface — Textual TUI, or `--plain` (SPEC 2 W4) |
-| `paa mcp serve` | `src/paa/cli/mcp.py:120` | Stdio MCP server exposing memory + chat as tools (SPEC 2 W4) |
+| `paa mcp serve` | `src/paa/cli/mcp.py:137` | Stdio MCP server exposing memory + chat as tools (SPEC 2 W4) |
 | `paa tui` | `cli/main.py:539` | Interactive dashboard |
 | `Runtime.build()` | `src/paa/runtime.py:353` | Programmatic composition root (used by all edges) |
 

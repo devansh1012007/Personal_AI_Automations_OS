@@ -1,8 +1,9 @@
 """Conformance v0 run for every registered pipeline (C6.6, C7.1).
 
 The G-LOOPS gate line: "conformance green for chat + coder + orchestrator
-built-ins" now also covers the T1 observer adapter (C7.1, pipeline #4) and
-the composition manager (C8.2, pipeline #5).
+built-ins" now also covers the T1 observer adapter (C7.1, pipeline #4),
+the composition manager (C8.2, pipeline #5) and the externally-driven
+MCP session (W9-C9.4, pipeline #7 — P6's last adapter).
 Green includes the honest ``n/a`` rows — a check a vocabulary cannot
 express is reported with the reason and a pointer to where the behaviour
 IS pinned, never faked as a pass. The test also pins that the report
@@ -79,11 +80,11 @@ class TestConformanceV0:
         text = render_reports(reports)
         # One verdict line per report: the count is the registered-runnable
         # count (four until Wave 7 added the observer, six with Wave 8's
-        # manager and guarded self-improvement loop), so a pipeline added
-        # without a GREEN report shows up here as a missing line, not a
-        # silent gap.
+        # manager and guarded self-improvement loop, seven with Wave 9's
+        # mcp-host adapter), so a pipeline added without a GREEN report
+        # shows up here as a missing line, not a silent gap.
         assert text.count("GREEN") == len(reports)
-        assert len(reports) == 6
+        assert len(reports) == 7
         assert "double-run-sequence-equality" in text
         assert "n/a" not in text.splitlines()[0]  # verdict lines stay verdicts
         # The n/a rows are visible, not hidden: tie the rendered count to
@@ -148,6 +149,31 @@ class TestConformanceV0:
         assert all(statuses[name] == "pass" for name in real), statuses
         assert statuses[CHECK_NAMES[1]] == "n/a", statuses  # resume="none"
         assert statuses[CHECK_NAMES[4]] == "n/a", statuses  # sandbox-owned budgets
+
+    async def test_mcp_host_conformance_passes_real_checks(
+        self, tmp_path: Path
+    ) -> None:
+        """The externally-driven session's real rows are real, over the wire.
+
+        Four checks pass against the unchanged server driven in-process
+        over its own framing: the deterministic session call, the
+        classified transport death, the between-frames cancel, the
+        no-secrets scan with the server's own attestation as the
+        positive control. The two honest ``n/a`` rows are pinned so a
+        future fake pass fails this test: no replay exists to diverge
+        (``resume="none"``, by declaration), and no budget exists at the
+        session layer to exhaust (the binding disciplines are the
+        server's per-call policy gate and caps).
+        """
+        from paa.pipelines.conformance import mcp_host_conformance
+
+        report = await mcp_host_conformance(tmp_path)
+        assert report.passed, render_reports([report])
+        statuses = {c.name: c.status for c in report.checks}
+        real = (CHECK_NAMES[0], CHECK_NAMES[2], CHECK_NAMES[3], CHECK_NAMES[5])
+        assert all(statuses[name] == "pass" for name in real), statuses
+        assert statuses[CHECK_NAMES[1]] == "n/a", statuses  # resume="none"
+        assert statuses[CHECK_NAMES[4]] == "n/a", statuses  # server-owned disciplines
 
     async def test_improve_conformance_passes_six_real_checks(
         self, ledger: LedgerStore, tmp_path: Path

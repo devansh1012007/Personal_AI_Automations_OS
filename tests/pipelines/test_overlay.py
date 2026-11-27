@@ -239,7 +239,7 @@ class TestWideningIsRejectedByName:
 
 
 class TestDeclarations:
-    def test_all_six_in_process_pipelines_are_declared(self) -> None:
+    def test_all_seven_in_process_pipelines_are_declared(self) -> None:
         # The registered-builtin set is pinned so a slot added without a
         # declaration (or a declaration without a slot) is a red test, not
         # a registry that quietly disagrees with the overlay loader.
@@ -250,12 +250,14 @@ class TestDeclarations:
             "builtin.observe",
             "builtin.manager",
             "improve.reflection-loop",
+            "builtin.mcp-host",
         }
 
     def test_declarations_restate_the_classes(self) -> None:
         from paa.chat.loop import ChatLoop
         from paa.coder.pipeline import CoderToolLoopPipeline
         from paa.improve.pipeline import ImproveReflectionLoop
+        from paa.mcp.host import McpHostPipeline
         from paa.observe.pipeline import ObservePipeline
         from paa.pipelines.builtin import BuiltinPlanExecuteCritique
         from paa.pipelines.compose import ManagerPipeline
@@ -267,6 +269,7 @@ class TestDeclarations:
             (ObservePipeline, declaration_for("builtin.observe")),
             (ManagerPipeline, declaration_for("builtin.manager")),
             (ImproveReflectionLoop, declaration_for("improve.reflection-loop")),
+            (McpHostPipeline, declaration_for("builtin.mcp-host")),
         ):
             assert declared.name == pipeline.name
             assert declared.version == pipeline.version

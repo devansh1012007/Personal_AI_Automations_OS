@@ -335,6 +335,110 @@ class TestRun:
         assert "not a UUID" in result.stdout
 
 
+class TestMcpHostRun:
+    """The externally-driven MCP session through the registry's door (W9-C9.4).
+
+    The door serves on the process's stdin/stdout — the same pipes
+    ``paa mcp serve`` serves — so the reader and sink are patched to the
+    in-process loopback shape ``tests/mcp_server`` proved, and the run is
+    proven as a command: exit codes, the trace, the overlay refusal.
+    """
+
+    def test_list_and_inspect_name_the_adapter(self) -> None:
+        result = runner.invoke(app, ["pipeline", "list"])
+        assert result.exit_code == 0
+        assert "builtin.mcp-host" in result.stdout
+        inspect = runner.invoke(app, ["pipeline", "inspect", "builtin.mcp-host"])
+        assert inspect.exit_code == 0
+        assert "builtin.mcp-host" in inspect.stdout
+        assert "T2" in inspect.stdout
+        assert "none" in inspect.stdout
+
+    def test_the_session_runs_over_the_pipeline_door_and_is_traced(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio
+        import json
+
+        from paa.cli import mcp as mcp_cli
+        from paa.mcp.protocol import PROTOCOL_VERSION, encode_frame
+
+        frames: list[bytes] = []
+
+        class _Sink:
+            def write(self, data: bytes) -> None:
+                frames.append(data)
+
+            async def drain(self) -> None:
+                return None
+
+        async def _fed_reader() -> Any:
+            reader = asyncio.StreamReader()
+            reader.feed_data(
+                encode_frame(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 0,
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": PROTOCOL_VERSION,
+                            "capabilities": {},
+                            "clientInfo": {"name": "cli-door-test", "version": "0"},
+                        },
+                    }
+                )
+            )
+            reader.feed_eof()
+            return reader
+
+        monkeypatch.setattr(mcp_cli, "_stdin_reader", _fed_reader)
+        monkeypatch.setattr(mcp_cli, "_StdoutSink", _Sink)
+        run = runner.invoke(
+            app, ["pipeline", "run", "builtin.mcp-host", "--goal", "cli-door-test"]
+        )
+        assert run.exit_code == 0
+        assert "completed" in run.stdout
+        assert "correlation:" in run.stdout
+
+        # The wire went to the sink: one handshake reply, nothing on stdout.
+        assert len(frames) == 1
+        reply = json.loads(frames[0].decode("utf-8"))
+        assert reply["result"]["protocolVersion"] == PROTOCOL_VERSION
+
+        correlation = next(
+            line.split("correlation:")[1].strip()
+            for line in run.stdout.splitlines()
+            if line.startswith("correlation:")
+        )
+        trace = runner.invoke(app, ["pipeline", "trace", correlation])
+        assert trace.exit_code == 0
+        assert "PIPELINE_RUN_STARTED" in trace.stdout
+        assert "mcp.session" in trace.stdout
+        assert "PIPELINE_CALL_COMPLETED" in trace.stdout
+        assert "PIPELINE_RUN_COMPLETED" in trace.stdout
+
+    def test_any_overlay_refuses_as_unhonourable(self, tmp_path: Path) -> None:
+        """The session is externally paced: nothing an overlay tightens is enforced.
+
+        The declaration's limits are unbounded because the facade cannot
+        enforce a wall clock or a call count over a foreign client, so a
+        validated-but-unhonourable overlay is refused loudly rather than
+        announced and dropped.
+        """
+        overlay = tmp_path / "tighten.toml"
+        overlay.write_text("[limits]\nmax_calls = 10\n", encoding="utf-8")
+        run = runner.invoke(
+            app,
+            [
+                "pipeline", "run", "builtin.mcp-host", "--goal", "x",
+                "--overlay", str(overlay),
+            ],
+        )
+        assert run.exit_code == 1
+        assert "cannot honour" in run.stdout
+        assert "correlation:" not in run.stdout
+
+
 class TestSetCoercion:
     def test_declared_bool_and_str_params_are_coerced(self) -> None:
         import dataclasses

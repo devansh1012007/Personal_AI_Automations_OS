@@ -2,12 +2,12 @@
 
 What these tests pin:
 
-* **the registry's two sources** — the six in-process builtins
+* **the registry's two sources** — the seven in-process builtins
   (trust ``builtin``, runnable; Wave 7 added ``builtin.observe``, Wave 8
-  added ``builtin.manager`` and ``improve.reflection-loop``) and the
-  local directory's manifests (trust ``local``, listed and inspected but
-  never executed — running an out-of-process pipeline is P3's RPC
-  transport);
+  added ``builtin.manager`` and ``improve.reflection-loop``, Wave 9
+  added ``builtin.mcp-host``) and the local directory's manifests
+  (trust ``local``, listed and inspected but never executed — running
+  an out-of-process pipeline is P3's RPC transport);
 * **the manifest contract at load** — an off-contract local manifest
   (unknown section, undeclarable capability, bad ``run.resume``, bad
   ``evidence.declares_tier``, off-contract ``[evidence]`` keys, missing
@@ -83,7 +83,7 @@ def _local_home(tmp_path: Path) -> Path:
 
 
 class TestTheRegistry:
-    def test_default_lists_the_six_builtins(self) -> None:
+    def test_default_lists_the_seven_builtins(self) -> None:
         registry = PipelineRegistry(local_dir=None)
         rows = registry.list()
         assert [r.name for r in rows] == [
@@ -93,25 +93,41 @@ class TestTheRegistry:
             "builtin.observe",
             "builtin.manager",
             "improve.reflection-loop",
+            "builtin.mcp-host",
         ]
         assert all(r.trust == "builtin" and r.runnable for r in rows)
 
-    def test_observe_declares_its_two_special_facts(self) -> None:
-        """Pipeline #4 differs from the other five in exactly two rows.
+    def test_the_two_external_harness_adapters_declare_their_facts(self) -> None:
+        """Pipelines #4 and #7 differ from the in-process five in the same
+        two rows.
 
         ``resume = "none"`` (the spec §6 rule for external-harness
-        adapters) and ``evidence_tier = "T1"`` (the honesty tier) are
-        the declaration's own statements, so a reader never has to infer
-        recoverability from a pipeline's name.
+        adapters — the host refuses to mark such a run recoverable) and
+        a declared honesty tier (``T1`` observed for the observer, ``T2``
+        mediated for the mcp session) are the declarations' own
+        statements, so a reader never has to infer recoverability from a
+        pipeline's name.
         """
         registry = PipelineRegistry(local_dir=None)
-        row = registry.get("builtin.observe")
-        assert row is not None
-        assert row.declaration.resume == "none"
-        assert row.declaration.evidence_tier == "T1"
-        assert row.declaration.capabilities == {}
+        observe = registry.get("builtin.observe")
+        mcp_host = registry.get("builtin.mcp-host")
+        assert observe is not None and mcp_host is not None
+        assert observe.declaration.resume == "none"
+        assert observe.declaration.evidence_tier == "T1"
+        assert observe.declaration.capabilities == {}
+        assert mcp_host.declaration.resume == "none"
+        assert mcp_host.declaration.evidence_tier == "T2"
+        # The session's ask restates the six tools' own capability sets
+        # (the chat turn's full set; sessions_list asks for nothing).
+        assert mcp_host.declaration.capabilities == {
+            "think": {"roles": ["assistant"]},
+            "recall": True,
+            "remember": True,
+        }
         others = [
-            r.declaration for r in registry.list() if r.name != "builtin.observe"
+            r.declaration
+            for r in registry.list()
+            if r.name not in ("builtin.observe", "builtin.mcp-host")
         ]
         assert all(d.resume == "journal" for d in others)
         assert all(d.evidence_tier == "in-process" for d in others)
@@ -518,6 +534,81 @@ class TestTheGuardedSelfImprovementLoop:
         # says what the loop is not (no model, no meta-learning).
         assert row.declaration.resume == "journal"
         assert row.declaration.evidence_tier == "in-process"
+
+
+class TestTheMcpHostAdapter:
+    """W9-C9.4 — P6's last adapter, pinned where selection vocabulary lives
+    (the pattern ``TestTheCodingFallback`` set for C8.3 and
+    ``TestTheGuardedSelfImprovementLoop`` for C8.1).
+
+    The externally-driven MCP session must stay *a registration over the
+    unchanged server*: the six tools' policy gate and journaling live in
+    ``src/paa/mcp/server.py`` and are not re-expressed anywhere else; the
+    declaration is the machine-readable ask, the tier and the
+    resume stance. A silent de-scoping, a capability widening or a rename
+    is a red test here, not a docs drift.
+    """
+
+    def test_the_session_pipeline_is_registered_and_runnable(self) -> None:
+        registry = PipelineRegistry(local_dir=None)
+        row = registry.get("builtin.mcp-host")
+        assert row is not None, "the mcp-host adapter must stay registered"
+        assert row.runnable
+        assert row.trust == "builtin"
+
+    def test_the_session_selects_explicitly(self) -> None:
+        row = select("builtin.mcp-host", registry=PipelineRegistry(local_dir=None))
+        assert row.name == "builtin.mcp-host"
+
+    def test_the_ask_restates_the_six_tools_policy_classes(self) -> None:
+        """The declaration's ask is the TOOL_MANIFEST union, restated.
+
+        The union is derived from the manifest in
+        :mod:`paa.mcp.host` (``MCP_HOST_CAPABILITIES``); the declaration
+        restates it in the manifest's own vocabulary so an overlay may
+        narrow it. A tool whose manifest row grows a capability widens
+        the union — this pin turns that widening into a red test here
+        until the declaration follows, the same drift lock
+        ``test_declarations_restate_the_classes`` applies to identity.
+        """
+        from paa.mcp.host import MCP_HOST_CAPABILITIES
+        from paa.pipelines.base import Capability
+
+        registry = PipelineRegistry(local_dir=None)
+        row = registry.get("builtin.mcp-host")
+        assert row is not None
+        declared = row.declaration.capabilities
+        assert set(declared) == {"think", "recall", "remember"}
+        expected = {
+            "think": {"roles": ["assistant"]},
+            "recall": True,
+            "remember": True,
+        }
+        assert declared == expected
+        # And the class-level ask is the manifest union itself.
+        assert frozenset(
+            {Capability.THINK, Capability.RECALL, Capability.REMEMBER}
+        ) == MCP_HOST_CAPABILITIES
+
+    def test_the_declaration_carries_the_position(self) -> None:
+        registry = PipelineRegistry(local_dir=None)
+        row = registry.get("builtin.mcp-host")
+        assert row is not None
+        description = row.declaration.description.lower()
+        assert "externally-driven mcp session" in description
+        assert "six" in description and "tools" in description
+        assert "t2" in description
+        assert "not replayable" in description
+        # Honest limits: the session is externally paced, so the facade
+        # declares nothing it cannot enforce.
+        limits = row.declaration.limits
+        assert limits.max_tokens is None
+        assert limits.max_wall_s is None
+        assert limits.max_calls is None
+        assert limits.max_sub_runs is None
+        # No params, no slots: the session has no knobs this door honours.
+        assert row.declaration.params == {}
+        assert row.declaration.slots == {}
 
 
 class TestTheMandateScope:

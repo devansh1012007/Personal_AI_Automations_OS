@@ -172,6 +172,7 @@ TYPE_CHECKING_CLASSES: dict[str, str] = {
     "paa.cli.observe": "E",
     "paa.cli.skills": "C",
     "paa.cli.thread": "C",
+    "paa.mcp.host": "E",
     "paa.mcp.server": "C",
     "paa.tui.chat.app": "D",
     "paa.tui.chat.console": "C",
@@ -268,6 +269,12 @@ TYPE_CHECKING_NOTES: dict[str, str] = {
     "paa.cli.skills": (
         "names paa.runtime (the runtime boot) beside the extension surface, "
         "same rule as paa.cli.main: the CLI's --help path pays nothing"
+    ),
+    "paa.mcp.host": (
+        "names asyncio.StreamReader and paa.ledger.store.LedgerStore for the "
+        "session wrapper's annotation-only seams, both already on the module's "
+        "runtime import path (pipelines.journal and mcp.server import the "
+        "store at module scope): ~0 ms"
     ),
     "paa.mcp.server": "names paa.runtime (the runtime boot) and asyncio.StreamReader: heavy",
     "paa.tui.chat.app": "names only collections.abc.Callable",

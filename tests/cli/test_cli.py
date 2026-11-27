@@ -675,3 +675,95 @@ def _extract_cid(text: str) -> str:
         if "correlation:" in line:
             return line.split("correlation:")[1].strip().split()[-1]
     raise AssertionError(f"no correlation id in output:\n{text}")
+
+
+class TestMcpServePipeline:
+    """``paa mcp serve`` journals the session as a ``builtin.mcp-host`` run (W9-C9.4).
+
+    The command's own door: the same shared driver ``paa pipeline run
+    builtin.mcp-host`` uses, so an attach from Claude Code/Codex/Cursor
+    leaves the pipeline-shaped rows on the ledger even though the
+    operator never typed a pipeline command. The reader and sink are
+    patched to the in-process loopback shape ``tests/mcp_server`` proved
+    (the real door reads a spawn pipe this runner cannot provide);
+    everything else — the runtime, the server, the journal — is real.
+    """
+
+    def test_a_served_session_leaves_the_pipeline_rows(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio
+        from datetime import UTC, datetime
+
+        from paa.cli import mcp as mcp_cli
+        from paa.mcp.protocol import PROTOCOL_VERSION, encode_frame
+
+        frames: list[bytes] = []
+
+        class _Sink:
+            def write(self, data: bytes) -> None:
+                frames.append(data)
+
+            async def drain(self) -> None:
+                return None
+
+        async def _fed_reader() -> object:
+            reader = asyncio.StreamReader()
+            reader.feed_data(
+                encode_frame(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 0,
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": PROTOCOL_VERSION,
+                            "capabilities": {},
+                            "clientInfo": {"name": "serve-door-test", "version": "0"},
+                        },
+                    }
+                )
+            )
+            reader.feed_eof()
+            return reader
+
+        monkeypatch.setattr(mcp_cli, "_stdin_reader", _fed_reader)
+        monkeypatch.setattr(mcp_cli, "_StdoutSink", _Sink)
+        result = runner.invoke(app, ["mcp", "serve"])
+        assert result.exit_code == 0
+        # Stdout discipline held: the wire went to the sink alone.
+        assert len(frames) == 1
+
+        from paa.core.types import EventType
+        from paa.ledger.store import LedgerStore
+        from paa.storage.relational.database import Database
+
+        async def kinds() -> list[str]:
+            from paa.config import get_settings
+
+            db = Database(get_settings().storage.sqlite_path)
+            await db.connect()
+            try:
+                store = LedgerStore(db)
+                events = await store.events_since(
+                    datetime(1970, 1, 1, tzinfo=UTC),
+                    event_types=[EventType.PIPELINE_RUN_STARTED],
+                    limit=50,
+                )
+                started = [
+                    e for e in events if e.payload.get("pipeline") == "builtin.mcp-host"
+                ]
+                assert started, "no builtin.mcp-host run row was written"
+                return [
+                    e.event_type.value
+                    for e in await store.read_correlation(started[0].correlation_id)
+                ]
+            finally:
+                await db.close()
+
+        got = asyncio.run(kinds())
+        assert got == [
+            "PIPELINE_RUN_STARTED",
+            "PIPELINE_CALL_PROPOSED",
+            "PIPELINE_CALL_COMPLETED",
+            "PIPELINE_RUN_COMPLETED",
+        ]

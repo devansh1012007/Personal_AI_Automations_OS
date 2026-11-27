@@ -138,6 +138,12 @@ async def _run_improve(ledger: LedgerStore, scratch: Path) -> ConformanceReport:
     return await improve_conformance(ledger, scratch)
 
 
+async def _run_mcp_host(ledger: LedgerStore, scratch: Path) -> ConformanceReport:
+    from paa.pipelines.conformance import mcp_host_conformance
+
+    return await mcp_host_conformance(scratch)
+
+
 #: The registered in-process pipelines this console can run conformance
 #: for, mapped onto the runners :mod:`paa.pipelines.conformance` already
 #: defines (the same set ``every_builtin_conformance`` drives, held in one
@@ -153,6 +159,7 @@ _CONFORMANCE_RUNNERS: Final[
     "builtin.observe": _run_observe,
     "builtin.manager": _run_manager,
     "improve.reflection-loop": _run_improve,
+    "builtin.mcp-host": _run_mcp_host,
 }
 
 
