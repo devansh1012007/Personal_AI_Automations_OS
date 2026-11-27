@@ -24,7 +24,7 @@ Three rules the module holds at all costs:
 
 1. **The journal is the pipeline's memory, and it is ledger-before-effect.**
    Every capability call is PROPOSED before the effect and COMPLETED/FAILED
-   after (`CallJournal`, `pipelines/journal.py:187`); a crash between them
+   after (`CallJournal`, `pipelines/journal.py:201`); a crash between them
    leaves the unknown outcome the D-6 rule refuses to auto-repeat
    (`OutcomeUnknownError`, `pipelines/base.py:179`).
 2. **Replay never re-executes what it can serve, and never resyncs what
@@ -65,10 +65,10 @@ budgets (`halve_budget`, `:233`) under a composition host whose grants never
 exceed the parent's; `ManagerPipeline` (`:565`) is the delegating built-in.
 
 ### `pipelines/journal.py` — the call journal
-`CallJournal` (`pipelines/journal.py:187`) writes the `PIPELINE_RUN_*` /
-`PIPELINE_CALL_*` rows on one run lineage; `fingerprint` (`:135`) is the
+`CallJournal` (`pipelines/journal.py:201`) writes the `PIPELINE_RUN_*` /
+`PIPELINE_CALL_*` rows on one run lineage; `fingerprint` (`:149`) is the
 SHA-256 over `{method, params}` that makes a call's identity; the fold
-(`fold_call_journal`, `:452`; `read_call_journal`, `:544`) is what recovery
+(`fold_call_journal`, `:494`; `read_call_journal`, `:586`) is what recovery
 and `paa pipeline trace` read. Params ride the PROPOSED row as fingerprint +
 shape + digest — never as raw text.
 
