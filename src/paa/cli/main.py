@@ -900,13 +900,14 @@ def world_model(
 
 
 # ---------------------------------------------------------------------------
-# The pipeline package install door (C8.6, SPEC 2 Wave 8) — a self-contained
-# additive block: everything the door needs is defined or imported here, so
-# the block moves as one unit at merge time. The flow itself lives in
-# ``paa.pipelines.packages``; this is only its terminal surface, shaped after
-# ``paa skills install`` (the same unsigned opt-in, the same exit-code
-# contract) with the two things a pipeline package adds: the pinned git ref
-# and the capability review a human answers at a prompt.
+# The pipeline package install door (C8.6, SPEC 2 Wave 8; the hub half is
+# W9 C9.1) — a self-contained additive block: everything the door needs is
+# defined or imported here, so the block moves as one unit at merge time.
+# The flow itself lives in ``paa.pipelines.packages``; this is only its
+# terminal surface, shaped after ``paa skills install`` (the same unsigned
+# opt-in, the same exit-code contract) with the three things a pipeline
+# package adds: the pinned git ref, the hub a hub: source is read from, and
+# the capability review a human answers at a prompt.
 # ---------------------------------------------------------------------------
 
 
@@ -916,7 +917,8 @@ def pipeline_install(
         ...,
         help=(
             "A pipeline package source: a local directory, git+<scheme>://… "
-            "at a pinned --ref (a commit SHA or a tag), or a signed .paapkg."
+            "at a pinned --ref (a commit SHA or a tag), a signed .paapkg, or "
+            "hub:<name>[@<version>] read from the --hub directory or URL."
         ),
     ),
     ref: str | None = typer.Option(
@@ -926,12 +928,23 @@ def pipeline_install(
         "moving branch is refused — the bytes would change under the gates "
         "that cleared them.",
     ),
+    hub: str | None = typer.Option(
+        None,
+        "--hub",
+        help="The hub a hub:<name> source is read from: a directory in the "
+        "LocalDirectoryRegistry format (what `paa pipeline publish` writes) "
+        "or an http(s):// URL. The hub is untrusted — what it serves rides "
+        "the same gates as every other source, and its index entry's "
+        "publisher signature is checked before them.",
+    ),
     allow_unverified: bool = typer.Option(
         False,
         "--allow-unverified",
         help="A local directory or a git worktree is unsigned; this opt-in "
-        "is what the signature gate needs. The other four gates, the "
-        "conformance run and the capability review still run.",
+        "is what the signature gate needs. For a hub source it also waives "
+        "the pre-gates check of the index entry's publisher signature. The "
+        "other four gates, the conformance run and the capability review "
+        "still run.",
     ),
 ) -> None:
     """Install a pipeline package: gates, conformance, review, then stage.
@@ -939,9 +952,9 @@ def pipeline_install(
     The flow runs unmodified from the runtime: the five gates, the
     six-check conformance standard driven against the gated bytes, and
     the capability review — a prompt a human answers, refusal by
-    default, never model-decided. The hosted marketplace stays parked:
-    there is no publish verb, and the only remotes this door talks to
-    are git URLs the operator names at a ref the operator pins.
+    default, never model-decided. A hub source (hub:<name>[@<version>]
+    with --hub) is read through the registry client and trusted the
+    same way: not at all, until every stage has passed.
     """
     from paa.core.errors import PaaError
     from paa.pipelines.packages import (
@@ -957,6 +970,7 @@ def pipeline_install(
             report = await install_pipeline_package(
                 source,
                 ref=ref,
+                hub=hub,
                 ledger=runtime.ledger,
                 db=runtime.db,
                 home=runtime.settings.home,
@@ -990,6 +1004,106 @@ def pipeline_install(
         console.print(
             f"[red]refused[/red] {report.package_name} at the "
             f"{report.stage or 'unknown'} stage: {report.reason}"
+        )
+        raise typer.Exit(1)
+
+    _run(_do())
+
+
+@pipeline_app.command("publish")
+def pipeline_publish(
+    source: str = typer.Argument(
+        ...,
+        help=(
+            "The pipeline to publish: a directory carrying a pipeline.toml, "
+            "or the name of an installed pipeline — its staged bytes are "
+            "re-packaged, minus the local review artifact."
+        ),
+    ),
+    version: str | None = typer.Option(
+        None,
+        "--version",
+        help="Which staged version of an installed pipeline to publish; the "
+        "newest when omitted. A directory's version is its pipeline.toml's "
+        "own — this option refuses on a directory source.",
+    ),
+    hub: str | None = typer.Option(
+        None,
+        "--hub",
+        help="The hub directory to publish into (the LocalDirectoryRegistry "
+        "format an install reads back). Publishing to a remote URL is "
+        "refused — an upload protocol is its own row.",
+    ),
+    key: str | None = typer.Option(
+        None,
+        "--key",
+        help="The publisher key file (JSON with private_b64/public_b64). "
+        "Default: PAA_HOME/keys/publisher.json, generated on first use — "
+        "the private half never leaves PAA_HOME.",
+    ),
+    allow_unverified: bool = typer.Option(
+        False,
+        "--allow-unverified",
+        help="Publish unsigned instead of refusing. The install side's "
+        "escape hatch, mirrored: a hub entry without a publisher "
+        "signature installs only under the same opt-in.",
+    ),
+) -> None:
+    """Publish a pipeline package to a hub: build, sign, write the index.
+
+    The package is a pipeline-kind .paapkg built from the source's own
+    declaration (the same closed contract the install flow parses
+    under), signed with the operator's publisher key; the declaration's
+    compatibility range is checked against the running version before
+    anything is written, and a refusal leaves the hub exactly as it
+    was. Exit codes: 0 published; 1 refused with the reason named;
+    2 usage.
+    """
+    from paa.core.errors import PaaError
+    from paa.pipelines.publish import publish_pipeline_package
+
+    if hub is None:
+        # Usage, not refusal: the verb was invoked without its
+        # destination, and a refusal reason is for bytes the flow judged.
+        console.print(
+            "[red]usage:[/red] a publish needs --hub <dir> — the "
+            "LocalDirectoryRegistry format an install reads back"
+        )
+        raise typer.Exit(2)
+
+    async def _do() -> None:
+        try:
+            report = await publish_pipeline_package(
+                source,
+                hub=hub,
+                key=key,
+                version=version,
+                allow_unverified=allow_unverified,
+            )
+        except PaaError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1) from exc
+
+        if report.published:
+            signed = "signed" if report.signed else "unsigned (--allow-unverified)"
+            console.print(
+                f"[green]published[/green] {report.package_name} "
+                f"v{report.version} to {report.hub} ({signed})"
+            )
+            if report.key_generated:
+                console.print(
+                    "  a new publisher identity was generated; the private "
+                    "key stays under PAA_HOME and is never published"
+                )
+            console.print(
+                f"  {report.package_path} — install it elsewhere with "
+                f"`paa pipeline install hub:{report.package_name}"
+                f"@{report.version} --hub {report.hub}`"
+            )
+            return
+        which = f" v{report.version}" if report.version else ""
+        console.print(
+            f"[red]refused[/red] {report.package_name}{which}: {report.reason}"
         )
         raise typer.Exit(1)
 
