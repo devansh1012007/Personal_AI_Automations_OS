@@ -98,6 +98,7 @@ Module-specific deep dives
 - [modules/cli.md](modules/cli.md)
 - [modules/console.md](modules/console.md)
 - [modules/pipelines.md](modules/pipelines.md)
+- [modules/effects.md](modules/effects.md) — the effect registry v1 (ADR-0054): effects as ledger rows on `PIPELINE_CALL_COMPLETED`, the reader-derived index, and `paa rollback` as new authorized work — compensation as data, irreversible effects reported, never "fixed".
 
 Data and storage
 - [data/data-models-and-relationships.md](data/data-models-and-relationships.md)
