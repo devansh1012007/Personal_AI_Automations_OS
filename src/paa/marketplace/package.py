@@ -112,6 +112,18 @@ class PackageManifest:
     content_hash: str = ""
     publisher_key: str = ""
     signature: str = ""
+    #: The compatibility floor (C9.1): the range of runtime versions this
+    #: package declares itself installable under (e.g. ``">=4.1,<5"``),
+    #: carried from the pipeline declaration's ``requires_runtime`` by the
+    #: publish flow and checked against the running version at install,
+    #: before any gate runs. Empty on archives built before the field
+    #: existed — an absent floor excludes nothing.
+    requires_paa: str = ""
+    #: The protocol version the package speaks (``paa-pipeline/1``). The
+    #: declaration contract already refuses any other value at parse; the
+    #: manifest carries it so a hub's index can state it without opening
+    #: the archive.
+    protocol: str = ""
 
     def __post_init__(self) -> None:
         """The manifest's own invariants, checked where the type lives.
@@ -137,6 +149,8 @@ class PackageManifest:
             "content_hash",
             "publisher_key",
             "signature",
+            "requires_paa",
+            "protocol",
         ):
             if not isinstance(getattr(self, name), str):
                 raise PackageError(f"package manifest field {name!r} is not a string")
@@ -161,7 +175,11 @@ class PackageManifest:
 
         The signature field is excluded (it cannot sign itself), but the content
         hash IS included — so a valid signature binds the publisher to this exact
-        payload, not just to this metadata.
+        payload, not just to this metadata. The compatibility fields
+        (``requires_paa``, ``protocol``) are signed with the rest: a hub's
+        index entry may restate them, but the signed manifest is the copy an
+        install refuses against, so a hub cannot widen a package's
+        compatibility claim and have it survive verification.
         """
         payload = {
             "package_name": self.package_name,
@@ -174,6 +192,8 @@ class PackageManifest:
             "entrypoints": sorted(self.entrypoints),
             "license": self.license,
             "content_hash": self.content_hash,
+            "requires_paa": self.requires_paa,
+            "protocol": self.protocol,
         }
         return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 

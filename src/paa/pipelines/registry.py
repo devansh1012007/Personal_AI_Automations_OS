@@ -94,9 +94,17 @@ _MANIFEST_CAPABILITY_KEYS = frozenset(
 _RESUME_VALUES = frozenset({"journal", "none"})
 _PARAM_TYPES = frozenset({"int", "bool", "str"})
 _EVIDENCE_TIERS = frozenset({"T1", "T2", "T3"})
-_PIPELINE_PROTOCOL = "paa-pipeline/1"
 _LIMIT_KEYS = ("max_tokens", "max_wall_s", "max_calls", "max_sub_runs")
 _DEFAULT_PREFIXES = ("agent:", "builtin:", "skill:", "out:")
+
+#: The wire protocol version a ``pipeline.toml`` declares (and the only
+#: value the closed contract accepts). Public since C9.1: a published
+#: package's manifest and hub index entry carry the same token, so the
+#: marketplace states in one place what a package speaks — the value is
+#: frozen per the three-users rule (in-process facade + sandboxed runner
+#: + the RPC transport to come), and renaming it is a protocol event,
+#: not a tidy-up.
+PIPELINE_PROTOCOL = "paa-pipeline/1"
 
 
 def _parse_runtime_range(text: str) -> tuple[tuple[str, tuple[int, ...]], ...]:
@@ -279,9 +287,9 @@ def declaration_from_manifest(path: Path) -> PipelineDeclaration:
         identity[key] = value
 
     protocol = pipeline.get("protocol")
-    if protocol != _PIPELINE_PROTOCOL:
+    if protocol != PIPELINE_PROTOCOL:
         raise LocalManifestError(
-            f"[pipeline].protocol must be {_PIPELINE_PROTOCOL!r}, got {protocol!r}",
+            f"[pipeline].protocol must be {PIPELINE_PROTOCOL!r}, got {protocol!r}",
             manifest=str(path),
         )
     try:

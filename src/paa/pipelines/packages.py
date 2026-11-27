@@ -73,6 +73,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from paa import __version__
 from paa.core.errors import PaaError
 from paa.core.types import EventType, PermissionMode
 from paa.improve.gate import (
@@ -83,7 +84,11 @@ from paa.improve.gate import (
 from paa.ledger.events import LedgerEvent
 from paa.ledger.store import LedgerStore
 from paa.marketplace.package import PIPELINE_KIND, PackageManifest, SkillPackage
-from paa.pipelines.registry import LocalManifestError, declaration_from_manifest
+from paa.pipelines.registry import (
+    PIPELINE_PROTOCOL,
+    LocalManifestError,
+    declaration_from_manifest,
+)
 from paa.pipelines.sandboxed import PIPELINE_ENTRYPOINT
 from paa.pipelines.slots import PipelineDeclaration
 from paa.storage.relational.base import RelationalBackend
@@ -102,6 +107,7 @@ __all__ = [
     "PipelinePackageError",
     "PipelinePackageInstaller",
     "ReviewApprover",
+    "compatibility_refusal",
     "install_pipeline_package",
     "refuse_review",
     "render_review",
@@ -124,11 +130,12 @@ REVIEW_ARTIFACT_NAME = "capability-review.json"
 
 #: The refusal stages, in flow order. The five gate names are the
 #: installer's own ``InstallGate`` values; ``source``, ``declaration``,
-#: ``capability_review`` and ``conformance`` are the stages this flow
-#: adds around them. Closed vocabulary — it rides the ``stage`` key of
-#: the REFUSED payload.
+#: ``compatibility``, ``capability_review`` and ``conformance`` are the
+#: stages this flow adds around them. Closed vocabulary — it rides the
+#: ``stage`` key of the REFUSED payload.
 STAGE_SOURCE = "source"
 STAGE_DECLARATION = "declaration"
+STAGE_COMPATIBILITY = "compatibility"
 STAGE_CAPABILITY_REVIEW = "capability_review"
 STAGE_CONFORMANCE = "conformance"
 
@@ -738,7 +745,7 @@ class PipelinePackageInstaller:
 
         # -- stage 2: the declaration (the same closed contract) ----------------
         try:
-            declaration = self._read_declaration(resolved.directory)
+            declaration = _read_declaration(resolved.directory)
         except PipelinePackageError as exc:
             return await self._refuse(
                 journal,
@@ -753,7 +760,7 @@ class PipelinePackageInstaller:
         # -- the package manifest: built for a directory/git source (unsigned),
         # -- read from the archive for a .paapkg (the signature covers it)
         if resolved.manifest is None:
-            manifest = self._build_manifest(declaration, resolved.source)
+            manifest = _build_manifest(declaration, resolved.source)
             # An unsigned source: the manifest is this flow's own, so the
             # content hash is computed here, over the bytes as they stand.
             package = SkillPackage.from_directory(resolved.directory, manifest=manifest)
@@ -777,6 +784,24 @@ class PipelinePackageInstaller:
             # mis-attributed to the signature gate. The gates name the
             # gate that actually refused.
             package = SkillPackage(manifest, _read_files(resolved.directory))
+
+        # -- stage 2b: the compatibility floor, pre-gates ------------------------
+        # A package that excludes the running version refuses before any
+        # gate runs — the same cheap failure the declaration itself gets.
+        # Checked on the manifest (the signed copy for a ``.paapkg``/hub
+        # source, this flow's own for a directory/git source, which
+        # carries the declaration's range verbatim).
+        problem = compatibility_refusal(manifest.requires_paa, __version__)
+        if problem is not None:
+            return await self._refuse(
+                journal,
+                package_name=declaration.name,
+                version=declaration.version,
+                source=source_label,
+                stage=STAGE_COMPATIBILITY,
+                reason=problem,
+                lineage=lineage,
+            )
 
         # -- stage 3: the five gates, unmodified in their order -----------------
         report = await self._installer.install(package, mode=mode)
@@ -968,49 +993,10 @@ class PipelinePackageInstaller:
 
     # -- the declaration ---------------------------------------------------------
 
-    def _read_declaration(self, directory: Path) -> PipelineDeclaration:
-        """Parse ``pipeline.toml`` under the SAME closed contract as local
-        manifests — the ADR-0052 rules are the rules; an off-contract
-        declaration (unknown section, undeclarable capability, bad
-        ``run.resume``) is a named refusal before any gate runs."""
-        manifest_path = directory / "pipeline.toml"
-        if not manifest_path.is_file():
-            raise PipelinePackageError(
-                "the package has no pipeline.toml — a pipeline package is its "
-                "declaration plus its entrypoint",
-                stage=STAGE_DECLARATION,
-            )
-        try:
-            declaration = declaration_from_manifest(manifest_path)
-        except LocalManifestError as exc:
-            raise PipelinePackageError(
-                f"the declaration is off contract: {exc.message}",
-                stage=STAGE_DECLARATION,
-            ) from exc
-        entrypoint = directory / PIPELINE_ENTRYPOINT
-        if not entrypoint.is_file():
-            raise PipelinePackageError(
-                f"the package has no {PIPELINE_ENTRYPOINT} entrypoint",
-                stage=STAGE_DECLARATION,
-            )
-        return declaration
-
-    def _build_manifest(
-        self, declaration: PipelineDeclaration, source: str
-    ) -> PackageManifest:
-        """The package manifest for an unsigned source, built from the
-        declaration: the kind and the entrypoint this flow pins, the
-        sandbox-run permission the adapter's own execution needs, and
-        the identity fields the installer's gates and registry read."""
-        return PackageManifest(
-            package_name=declaration.name,
-            version=declaration.version,
-            kind=PIPELINE_KIND,
-            publisher=source,
-            description=declaration.description[:500],
-            required_permissions=["PERM_SANDBOX_RUN"],
-            entrypoints=[PIPELINE_ENTRYPOINT],
-        )
+    # (the declaration reader and the manifest builder live at module level
+    # since C9.1: the publish flow reuses the SAME closed contract and the
+    # SAME manifest shape rather than growing a second opinion about
+    # either — see ``_read_declaration`` / ``_build_manifest`` below.)
 
     # -- conformance ---------------------------------------------------------------
 
@@ -1152,6 +1138,162 @@ async def install_pipeline_package(
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+
+#: The compatibility clause shape: one operator and a dotted numeric
+#: bound (``>=4.1``, ``<5``, ``==4.1.0``), the same vocabulary
+#: ``[pipeline].requires_runtime`` parses under. Stated once so the
+#: publish check and the install check cannot drift apart.
+_CLAUSE_SHAPE = re.compile(r"^(>=|<=|==|>|<)\s*(\d+(?:\.\d+)*)$")
+
+#: The largest fragment of a ``requires_paa`` range a refusal reason
+#: quotes. The range may have arrived inside a remote manifest, and a
+#: reason is the project's own words — bounded and quoted, like every
+#: other fragment of remote text a message names.
+_MAX_RANGE_CHARS = 64
+
+
+def _version_tuple(text: str) -> tuple[int, ...] | None:
+    """A dotted numeric version as a tuple, or ``None`` when it is not one.
+
+    ``"4.1.0"`` → ``(4, 1, 0)``. A version with a non-numeric part is not
+    a version this comparison can order — ``None``, not a guess.
+    """
+    parts = text.strip().split(".")
+    if not all(part.isdigit() for part in parts):
+        return None
+    return tuple(int(part) for part in parts)
+
+
+def _leading_version_tuple(text: str) -> tuple[int, ...]:
+    """The leading numeric dot-parts of a version string.
+
+    The running version comes from the project's own ``__version__``
+    (e.g. ``"4.1.0"``); a pre-release suffix on some future version would
+    make the whole string unorderable, and the honest reading is to
+    compare the numeric prefix and ignore the rest.
+    """
+    parts: list[int] = []
+    for part in text.strip().split("."):
+        if not part.isdigit():
+            break
+        parts.append(int(part))
+    return tuple(parts)
+
+
+def _pad(a: tuple[int, ...], b: tuple[int, ...]) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Two tuples padded to a common length with zeroes.
+
+    A declared bound of ``4.1`` means ``4.1.*`` — the reading an operator
+    writes down — so ``==4.1`` matches a running ``4.1.0``. Padding both
+    sides to the longer shape makes every operator see that reading
+    without a special case per operator.
+    """
+    size = max(len(a), len(b))
+    return (a + (0,) * (size - len(a)), b + (0,) * (size - len(b)))
+
+
+def compatibility_refusal(requires_paa: str, running_version: str) -> str | None:
+    """The named refusal when a ``requires_paa`` range excludes the running
+    version — or ``None`` when the range is satisfied (or absent).
+
+    One comparison, used by both ends of the economy: the publish flow
+    refuses to publish a package its own range excludes (the publisher's
+    runtime IS the running version), and the install flow refuses a
+    package whose range excludes the machine it would land on, before
+    any gate runs. An unparseable range is a refusal in itself — a
+    version nobody can compare is a contract nobody can honour (the
+    registry's own rule for ``requires_runtime``, restated here for the
+    field a remote manifest carries).
+
+    The range is bounded and quoted in the reason: it may have arrived
+    inside a remote manifest, and a reason is the project's own words.
+    """
+    text = requires_paa.strip()
+    if not text:
+        return None
+    quoted = repr(text[:_MAX_RANGE_CHARS])
+    running = _leading_version_tuple(running_version)
+    for clause in text.split(","):
+        match = _CLAUSE_SHAPE.match(clause.strip())
+        if match is None:
+            return f"requires_paa {quoted} is not a parseable range"
+        op, bound = match.group(1), _version_tuple(match.group(2))
+        if bound is None:  # unreachable: the shape already demands numerics
+            return f"requires_paa {quoted} is not a parseable range"
+        left, right = _pad(running, bound)
+        if (
+            (op == ">=" and left < right)
+            or (op == "<=" and left > right)
+            or (op == "==" and left != right)
+            or (op == ">" and left <= right)
+            or (op == "<" and left >= right)
+        ):
+            return (
+                f"requires_paa {quoted} excludes the running version "
+                f"{running_version}"
+            )
+    return None
+
+
+def _read_declaration(directory: Path) -> PipelineDeclaration:
+    """Parse ``pipeline.toml`` under the SAME closed contract as local
+    manifests — the ADR-0052 rules are the rules; an off-contract
+    declaration (unknown section, undeclarable capability, bad
+    ``run.resume``) is a named refusal before any gate runs.
+
+    Module-level since C9.1: the publish flow reads a source declaration
+    through this same reader, so a package's declaration parses one way
+    wherever it came from and wherever it is going.
+    """
+    manifest_path = directory / "pipeline.toml"
+    if not manifest_path.is_file():
+        raise PipelinePackageError(
+            "the package has no pipeline.toml — a pipeline package is its "
+            "declaration plus its entrypoint",
+            stage=STAGE_DECLARATION,
+        )
+    try:
+        declaration = declaration_from_manifest(manifest_path)
+    except LocalManifestError as exc:
+        raise PipelinePackageError(
+            f"the declaration is off contract: {exc.message}",
+            stage=STAGE_DECLARATION,
+        ) from exc
+    entrypoint = directory / PIPELINE_ENTRYPOINT
+    if not entrypoint.is_file():
+        raise PipelinePackageError(
+            f"the package has no {PIPELINE_ENTRYPOINT} entrypoint",
+            stage=STAGE_DECLARATION,
+        )
+    return declaration
+
+
+def _build_manifest(
+    declaration: PipelineDeclaration, source: str
+) -> PackageManifest:
+    """The package manifest built from the declaration: the kind and the
+    entrypoint this flow pins, the sandbox-run permission the adapter's
+    own execution needs, the identity fields the installer's gates and
+    registry read, and — since C9.1 — the declaration's compatibility
+    range and protocol, carried into the manifest so the signed copy is
+    the copy an install refuses against.
+
+    Shared by the install flow (a directory/git source, unsigned) and
+    the publish flow (which signs the manifest right after building it,
+    and names the publisher as the role rather than the source).
+    """
+    return PackageManifest(
+        package_name=declaration.name,
+        version=declaration.version,
+        kind=PIPELINE_KIND,
+        publisher=source,
+        description=declaration.description[:500],
+        required_permissions=["PERM_SANDBOX_RUN"],
+        entrypoints=[PIPELINE_ENTRYPOINT],
+        requires_paa=declaration.requires_runtime,
+        protocol=PIPELINE_PROTOCOL,
+    )
 
 
 def _default_home() -> Path:
