@@ -4,15 +4,25 @@ W8 C8.6 (the pipeline spec's P5-lite), proven the way the chat extension
 surface's flow was proven (C8.4): a real sandbox, a real ledger, a real
 database, the production installer — no double for the gates, the
 review seam or the staging. What these tests prove is the *flow* the row
-names: a local directory, a PINNED git URL and a signed ``.paapkg`` all
-pass through the same five gates, the six-check conformance standard and
-a human capability review before one byte is registered; every refusal
-path leaves zero trace, and the hosted marketplace stays untouched
-(``registry_client.py`` is never imported here — that is the parked
-boundary, stated as a test).
+names: a local directory, a PINNED git URL, a signed ``.paapkg`` and
+(since W9 C9.1) a **hub** listing all pass through the same five gates,
+the six-check conformance standard and a human capability review before
+one byte is registered; every refusal path leaves zero trace.
+
+The hosted boundary this file used to pin — ``registry_client.py`` is
+never imported here — was the C8.6 park marker, and C9.1 retired it by
+delivering the row it parked. The boundary that replaces it is the one
+the registry client itself states: **a hub is untrusted, and hub
+installs go through the registry client, but nothing it returns becomes
+runnable until the six stages pass unmodified** — pinned below by the
+hub tests (a hub-served package rides the same stages, and a hostile one
+refuses at the same gates with the same zero trace).
 
 The git sources are local repositories created in ``tmp_path`` — no
-network, deterministic, the brief's own rule.
+network, deterministic, the brief's own rule. The hub sources are local
+directories in the ``LocalDirectoryRegistry`` format written by the real
+publish flow, plus one HTTP-served hub driven through a mocked transport
+(the ``tests/models`` pattern) — still no network.
 """
 
 from __future__ import annotations
@@ -29,10 +39,12 @@ from paa.improve.gate import DECISION_APPROVED, DECISION_REJECTED, HumanDecision
 from paa.ledger.store import LedgerStore
 from paa.marketplace.installer import InstallGate, PackageInstaller
 from paa.marketplace.package import PIPELINE_KIND, PackageManifest, SkillPackage
+from paa.marketplace.registry_client import HttpRegistry
 from paa.marketplace.signing import generate_keypair, sign, signing_is_secure
 from paa.pipelines.packages import (
     REVIEW_ARTIFACT_NAME,
     SOURCE_GIT,
+    SOURCE_HUB,
     SOURCE_LOCAL_DIR,
     SOURCE_PAAPKG,
     CapabilityReview,
@@ -40,6 +52,7 @@ from paa.pipelines.packages import (
     install_pipeline_package,
     render_review,
 )
+from paa.pipelines.publish import PUBLISHER_NAME, publish_pipeline_package
 from paa.pipelines.registry import PipelineRegistry
 from paa.sandbox.subprocess_backend import SubprocessSandbox
 from paa.storage.relational.database import Database
@@ -177,6 +190,64 @@ def _git_repo(root: Path, *, declaration: str = _DECLARATION) -> tuple[Path, str
     _git(repo, "add", ".")
     _git(repo, "commit", "-m", "the fixture package")
     return repo, _git(repo, "rev-parse", "HEAD")
+
+
+async def _publish_fixture(
+    tmp_path: Path,
+    *,
+    hub: Path | None = None,
+    version: str = "1.2.3",
+    declaration: str = _DECLARATION,
+    entrypoint: str = _ENTRYPOINT,
+    unsigned: bool = True,
+) -> tuple[Path, str]:
+    """Publish the fixture package into a hub directory (a fresh one by
+    default, or the one named — the shape the multi-version tests need).
+
+    The hub is written by the real publish flow, so the index is exactly
+    the format an install reads back. The default publish is unsigned —
+    the everywhere-green shape, the same opt-in the local-dir tests use —
+    and the signature-bearing paths are separate tests.
+    """
+    decl = declaration
+    if version != "1.2.3":
+        decl = decl.replace('version = "1.2.3"', f'version = "{version}"')
+    source = _package_dir(tmp_path, declaration=decl, entrypoint=entrypoint)
+    if hub is None:
+        hub = tmp_path / f"hub-{uuid.uuid4().hex[:6]}"
+    report = await publish_pipeline_package(
+        str(source),
+        hub=hub,
+        home=tmp_path / "home",
+        allow_unverified=unsigned,
+    )
+    assert report.published
+    return hub, report.publisher_key
+
+
+def _edit_index(hub: Path, mutate: Any) -> None:
+    """Rewrite a hub's index through ``mutate`` (a hostile hub's edit)."""
+    index = json.loads((hub / "index.json").read_text(encoding="utf-8"))
+    mutate(index)
+    (hub / "index.json").write_text(json.dumps(index, indent=2), encoding="utf-8")
+
+
+def _http_hub(hub: Path, base_url: str) -> HttpRegistry:
+    """An ``HttpRegistry`` whose every request is served out of a local
+    hub directory, through a mocked transport — the ``tests/models``
+    pattern: the seam is the registry's transport, never a socket."""
+    import httpx
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/search":
+            results = json.loads((hub / "index.json").read_text(encoding="utf-8"))
+            return httpx.Response(200, json={"results": results})
+        _, _, rest = request.url.path.partition("/packages/")
+        name, _, version = rest.strip("/").partition("/")
+        data = (hub / f"{name}-{version}.paapkg").read_bytes()
+        return httpx.Response(200, content=data)
+
+    return HttpRegistry(base_url, transport=httpx.MockTransport(responder))
 
 
 class TestLocalDirectorySource:
@@ -495,6 +566,387 @@ class TestRefusalPaths:
         assert not installer.staged_dir("demo.echo", "1.2.3").exists()
         assert await _marketplace_rows(db) == []
         assert PipelineRegistry(local_dir=home / "pipelines").get("demo.echo") is None
+
+    async def test_a_range_that_excludes_the_running_version_refuses_pre_gates(
+        self, tmp_path: Path, db: Database, ledger: LedgerStore
+    ) -> None:
+        # The compatibility floor, checked before any gate runs: the
+        # declaration's own requires_runtime excludes this runtime, and
+        # the manifest built from it carries the same range.
+        from paa import __version__
+
+        source = _package_dir(
+            tmp_path,
+            declaration=_DECLARATION.replace(
+                'requires_runtime = ">=4.1,<5"', 'requires_runtime = ">=99,<100"'
+            ),
+        )
+        home = tmp_path / "home"
+        installer = _installer(ledger, db, home)
+
+        report = await installer.install(str(source))
+
+        assert not report.installed
+        assert report.stage == "compatibility"
+        assert "'>=99,<100'" in (report.reason or "")
+        assert "excludes the running version" in (report.reason or "")
+        assert __version__ in (report.reason or "")
+        assert not installer.staged_dir("demo.echo", "1.2.3").exists()
+        assert await _marketplace_rows(db) == []
+        assert PipelineRegistry(local_dir=home / "pipelines").get("demo.echo") is None
+
+
+class TestHubSource:
+    """The hosted half (C9.1): an untrusted registry read through the
+    same six stages, with the hub's own vouch checked pre-gates."""
+
+    async def test_a_hub_package_installs_through_every_stage(
+        self, tmp_path: Path, db: Database, ledger: LedgerStore
+    ) -> None:
+        hub, _ = await _publish_fixture(tmp_path)
+        home = tmp_path / "home"
+        installer = _installer(ledger, db, home)
+
+        report = await installer.install("hub:demo.echo@1.2.3", hub=str(hub))
+
+        assert report.installed
+        assert report.source == SOURCE_HUB
+        assert report.source_ref == "demo.echo@1.2.3"
+        assert report.gates == tuple(gate.value for gate in InstallGate)
+        assert (installer.staged_dir("demo.echo", "1.2.3") / "pipeline.toml").is_file()
+        row = PipelineRegistry(local_dir=home / "pipelines").get("demo.echo")
+        assert row is not None and row.trust == "installed"
+        # The marketplace row the five gates wrote: the publisher is the
+        # publish flow's own role name, not a path — and the fixture's
+        # unsigned publish rides the same opt-in a local dir does.
+        assert await _marketplace_rows(db) == [
+            {
+                "package_name": "demo.echo",
+                "version": "1.2.3",
+                "kind": PIPELINE_KIND,
+                "publisher": PUBLISHER_NAME,
+                "signature_state": "unverified",
+            }
+        ]
+        assert report.lineage is not None
+        events = await ledger.read_correlation(report.lineage)
+        assert [e.event_type for e in events] == [EventType.PIPELINE_PACKAGE_INSTALLED]
+        assert events[0].payload["source"] == SOURCE_HUB
+
+    async def test_a_signed_hub_package_installs_with_a_trusted_key(
+        self, tmp_path: Path, db: Database, ledger: LedgerStore
+    ) -> None:
+        if not signing_is_secure():
+            pytest.skip("real signing backend not available; dev fallback cannot authenticate")
+
+        hub, public_key = await _publish_fixture(tmp_path, unsigned=False)
+        await PackageInstaller(db).trust_key("fixture-publisher", public_key, "operator")
+        installer = _installer(ledger, db, tmp_path / "home", allow_unverified=False)
+
+        report = await installer.install("hub:demo.echo", hub=str(hub))
+
+        assert report.installed
+        assert report.signature_state == "valid"
+
+    async def test_a_hostile_hub_package_refuses_at_the_same_gates(
+        self, tmp_path: Path, db: Database, ledger: LedgerStore
+    ) -> None:
+        # The pin the replaced park marker promised: hub bytes ride the
+        # six stages UNMODIFIED — an AST-blocked package the hub serves
+        # refuses at the ast_scan gate exactly as a local one does, and
+        # the refusal leaves the same zero trace.
+        hub, _ = await _publish_fixture(
+            tmp_path, entrypoint="import os\nos.system('rm -rf /')\n"
+        )
+        home = tmp_path / "home"
+        installer = _installer(ledger, db, home)
+
+        report = await installer.install("hub:demo.echo", hub=str(hub))
+
+        assert not report.installed
+        assert report.stage == "ast_scan"
+        assert "AST scan" in (report.reason or "")
+        assert not installer.staged_dir("demo.echo", "1.2.3").exists()
+        assert await _marketplace_rows(db) == []
+        assert PipelineRegistry(local_dir=home / "pipelines").get("demo.echo") is None
+        assert report.lineage is not None
+        events = await ledger.read_correlation(report.lineage)
+        assert [e.event_type for e in events] == [EventType.PIPELINE_PACKAGE_REFUSED]
+        assert events[0].payload["source"] == SOURCE_HUB
+
+    async def test_a_signature_under_the_wrong_key_refuses_pre_gates(
+        self, tmp_path: Path, db: Database, ledger: LedgerStore
+    ) -> None:
+        if not signing_is_secure():
+            pytest.skip("real signing backend not available; dev fallback cannot authenticate")
+
+        hub, _ = await _publish_fixture(tmp_path, unsigned=False)
+        other = generate_keypair()
+
+        def swap_key(index: list[dict[str, Any]]) -> None:
+            index[0]["publisher_key"] = other.public_b64
+
+        _edit_index(hub, swap_key)
+        installer = _installer(ledger, db, tmp_path / "home", allow_unverified=False)
+
+        report = await installer.install("hub:demo.echo", hub=str(hub))
+
+        assert not report.installed
+        assert report.stage == "source"
+        assert "does not verify under the hub index's publisher key" in (
+            report.reason or ""
+        )
+        assert not installer.installed_root.exists()
+
+        # The escape hatch is the operator's explicit word, the same flag
+        # the signature gate reads.
+        escaped = _installer(ledger, db, tmp_path / "home2", allow_unverified=True)
+        again = await escaped.install("hub:demo.echo", hub=str(hub))
+        assert again.installed
+
+    async def test_a_served_package_that_differs_from_its_entry_refuses_pre_gates(
+        self, tmp_path: Path, db: Database, ledger: LedgerStore
+    ) -> None:
+        if not signing_is_secure():
+            pytest.skip("real signing backend not available; dev fallback cannot authenticate")
+
+        # A publisher that signs with one key while the manifest restates
+        # another: the entry vouches with the SIGNING key, so the vouch
+        # itself verifies — but the archive's own identity claim disagrees
+        # with the listing, and the install refuses rather than pick which
+        # of the two to believe (the hub serves one thing and lists
+        # another, in the one shape where both are internally consistent).
+        real = generate_keypair()
+        claimed = generate_keypair()
+        files = {
+            "pipeline.toml": _DECLARATION.encode("utf-8"),
+            "pipeline.py": _ENTRYPOINT.encode("utf-8"),
+        }
+        manifest = PackageManifest(
+            package_name="demo.echo",
+            version="1.2.3",
+            kind=PIPELINE_KIND,
+            publisher="fixture",
+            required_permissions=["PERM_SANDBOX_RUN"],
+            entrypoints=["pipeline.py"],
+        )
+        manifest.content_hash = SkillPackage.hash_files(files)
+        manifest.publisher_key = claimed.public_b64  # the restated lie
+        manifest.signature = sign(manifest.signing_bytes(), real.private_b64)
+        hub = tmp_path / "lying-publisher-hub"
+        hub.mkdir()
+        SkillPackage(manifest, files).write(hub / "demo.echo-1.2.3.paapkg")
+        (hub / "index.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "package_name": "demo.echo",
+                        "version": "1.2.3",
+                        "kind": PIPELINE_KIND,
+                        "publisher": "fixture",
+                        "publisher_key": real.public_b64,  # the honest vouch
+                        "signature": manifest.signature,
+                        "requires_paa": ">=4.1,<5",
+                        "protocol": "paa-pipeline/1",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        installer = _installer(ledger, db, tmp_path / "home", allow_unverified=False)
+
+        report = await installer.install("hub:demo.echo", hub=str(hub))
+
+        assert not report.installed
+        assert report.stage == "source"
+        assert "does not match the hub's index entry" in (report.reason or "")
+        assert not installer.installed_root.exists()
+
+    async def test_an_index_entry_without_a_vouch_needs_the_opt_in(
+        self, tmp_path: Path, db: Database, ledger: LedgerStore
+    ) -> None:
+        if not signing_is_secure():
+            pytest.skip("real signing backend not available; dev fallback cannot authenticate")
+
+        hub, _ = await _publish_fixture(tmp_path, unsigned=False)
+
+        def strip_vouch(index: list[dict[str, Any]]) -> None:
+            index[0]["publisher_key"] = ""
+            index[0]["signature"] = ""
+
+        _edit_index(hub, strip_vouch)
+        installer = _installer(ledger, db, tmp_path / "home", allow_unverified=False)
+
+        report = await installer.install("hub:demo.echo", hub=str(hub))
+
+        assert not report.installed
+        assert report.stage == "source"
+        assert "carries no publisher signature" in (report.reason or "")
+        assert not installer.installed_root.exists()
+
+        # The opt-in is the operator's explicit word — the same flag the
+        # signature gate reads — and it installs what the hub did not
+        # vouch for, through every stage after that.
+        escaped = _installer(ledger, db, tmp_path / "home2", allow_unverified=True)
+        again = await escaped.install("hub:demo.echo", hub=str(hub))
+        assert again.installed
+
+    async def test_a_requires_paa_that_excludes_the_running_version_refuses_pre_gates(
+        self, tmp_path: Path, db: Database, ledger: LedgerStore
+    ) -> None:
+        # The signed manifest is the copy the install refuses against:
+        # a hostile index may CLAIM compatibility, the manifest's own
+        # range still excludes this runtime and the refusal names it.
+        from paa import __version__
+
+        files = {
+            "pipeline.toml": _DECLARATION.encode("utf-8"),
+            "pipeline.py": _ENTRYPOINT.encode("utf-8"),
+        }
+        manifest = PackageManifest(
+            package_name="demo.echo",
+            version="1.2.3",
+            kind=PIPELINE_KIND,
+            publisher="fixture",
+            required_permissions=["PERM_SANDBOX_RUN"],
+            entrypoints=["pipeline.py"],
+            requires_paa=">=99,<100",
+            protocol="paa-pipeline/1",
+        )
+        manifest.content_hash = SkillPackage.hash_files(files)
+        hub = tmp_path / "hostile-hub"
+        hub.mkdir()
+        SkillPackage(manifest, files).write(hub / "demo.echo-1.2.3.paapkg")
+        (hub / "index.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "package_name": "demo.echo",
+                        "version": "1.2.3",
+                        "kind": PIPELINE_KIND,
+                        "publisher": "fixture",
+                        "requires_paa": ">=4.1,<5",  # the hub's claim
+                        "protocol": "paa-pipeline/1",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        home = tmp_path / "home"
+        installer = _installer(ledger, db, home)
+
+        report = await installer.install("hub:demo.echo", hub=str(hub))
+
+        assert not report.installed
+        assert report.stage == "compatibility"
+        assert "'>=99,<100'" in (report.reason or "")
+        assert __version__ in (report.reason or "")
+        assert not installer.staged_dir("demo.echo", "1.2.3").exists()
+        assert await _marketplace_rows(db) == []
+
+    async def test_version_omitted_installs_the_newest_satisfiable(
+        self, tmp_path: Path, db: Database, ledger: LedgerStore
+    ) -> None:
+        hub = tmp_path / "hub"
+        await _publish_fixture(tmp_path, hub=hub, version="1.2.3")
+        await _publish_fixture(tmp_path, hub=hub, version="2.0.0")
+
+        # A third entry, newest of all, whose own restated range excludes
+        # this runtime: the index's restatement is the first filter, so
+        # "newest satisfiable" must skip it (fetching it would refuse —
+        # there are no 3.0.0 bytes in this hub at all).
+        def claim_unsatisfiable(index: list[dict[str, Any]]) -> None:
+            index.append({**index[0], "version": "3.0.0", "requires_paa": ">=99,<100"})
+
+        _edit_index(hub, claim_unsatisfiable)
+        installer = _installer(ledger, db, tmp_path / "home")
+
+        report = await installer.install("hub:demo.echo", hub=str(hub))
+
+        assert report.installed
+        assert report.version == "2.0.0"
+        assert report.source_ref == "demo.echo@2.0.0"
+
+    async def test_an_ambiguous_index_refuses_naming_the_candidates(
+        self, tmp_path: Path, db: Database, ledger: LedgerStore
+    ) -> None:
+        hub, _ = await _publish_fixture(tmp_path)
+
+        def duplicate(index: list[dict[str, Any]]) -> None:
+            index.append({**index[0], "signature": "B" + index[0]["signature"][1:]})
+
+        _edit_index(hub, duplicate)
+        installer = _installer(ledger, db, tmp_path / "home")
+
+        report = await installer.install("hub:demo.echo", hub=str(hub))
+
+        assert not report.installed
+        assert report.stage == "source"
+        assert "ambiguous" in (report.reason or "")
+        assert "1.2.3" in (report.reason or "")
+        assert not installer.installed_root.exists()
+
+    async def test_a_hub_with_no_such_package_refuses(
+        self, tmp_path: Path, db: Database, ledger: LedgerStore
+    ) -> None:
+        hub, _ = await _publish_fixture(tmp_path)
+        installer = _installer(ledger, db, tmp_path / "home")
+
+        report = await installer.install("hub:demo.none", hub=str(hub))
+
+        assert not report.installed
+        assert report.stage == "source"
+        assert "holds no package named" in (report.reason or "")
+
+    async def test_a_hub_source_without_a_hub_refuses(
+        self, tmp_path: Path, db: Database, ledger: LedgerStore
+    ) -> None:
+        installer = _installer(ledger, db, tmp_path / "home")
+
+        report = await installer.install("hub:demo.echo")
+
+        assert not report.installed
+        assert report.stage == "source"
+        assert "needs --hub" in (report.reason or "")
+
+    async def test_a_hub_path_that_cannot_be_opened_refuses(
+        self, tmp_path: Path, db: Database, ledger: LedgerStore
+    ) -> None:
+        # A file where a hub directory belongs: the operator's own input,
+        # refused in the project's own words rather than a traceback the
+        # filesystem chose.
+        not_a_dir = tmp_path / "not-a-hub"
+        not_a_dir.write_text("occupied", encoding="utf-8")
+        installer = _installer(ledger, db, tmp_path / "home")
+
+        report = await installer.install("hub:demo.echo", hub=str(not_a_dir))
+
+        assert not report.installed
+        assert report.stage == "source"
+        assert "could not be opened" in (report.reason or "")
+
+    async def test_the_http_hub_form_reads_through_httpregistry(
+        self, tmp_path: Path, db: Database, ledger: LedgerStore,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        hub, _ = await _publish_fixture(tmp_path)
+        import paa.pipelines.packages as packages_module
+
+        # The seam ``registry_for_hub`` documents: the URL form routes
+        # through ``HttpRegistry``, and the transport — not the network —
+        # is what a test replaces.
+        monkeypatch.setattr(
+            packages_module,
+            "registry_for_hub",
+            lambda _hub: _http_hub(hub, "https://hub.test"),
+        )
+        installer = _installer(ledger, db, tmp_path / "home")
+
+        report = await installer.install("hub:demo.echo", hub="https://hub.test")
+
+        assert report.installed
+        assert report.source == SOURCE_HUB
+        assert report.source_ref == "demo.echo@1.2.3"
 
 
 class TestGitSource:
