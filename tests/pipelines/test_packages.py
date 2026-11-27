@@ -12,11 +12,13 @@ one byte is registered; every refusal path leaves zero trace.
 The hosted boundary this file used to pin — ``registry_client.py`` is
 never imported here — was the C8.6 park marker, and C9.1 retired it by
 delivering the row it parked. The boundary that replaces it is the one
-the registry client itself states: **a hub is untrusted, and hub
-installs go through the registry client, but nothing it returns becomes
-runnable until the six stages pass unmodified** — pinned below by the
-hub tests (a hub-served package rides the same stages, and a hostile one
-refuses at the same gates with the same zero trace).
+the registry client itself states: **a hub is untrusted, hub installs
+go through the registry client, nothing it returns becomes runnable
+until every stage passes unmodified, and an install never publishes
+back** — pinned below by the hub tests (a hub-served package rides the
+same stages, a hostile one refuses at the same gates with the same zero
+trace, and a finished install leaves the hub it read byte-identical:
+only the publish flow writes a hub).
 
 The git sources are local repositories created in ``tmp_path`` — no
 network, deterministic, the brief's own rule. The hub sources are local
@@ -233,6 +235,20 @@ def _edit_index(hub: Path, mutate: Any) -> None:
     index = json.loads((hub / "index.json").read_text(encoding="utf-8"))
     mutate(index)
     (hub / "index.json").write_text(json.dumps(index, indent=2), encoding="utf-8")
+
+
+def _hub_snapshot(hub: Path) -> dict[str, bytes]:
+    """Every file under a hub, by relative path and bytes.
+
+    The before/after pair that pins the replaced marker's third truth:
+    an install never publishes back, so the hub it read is byte-identical
+    afterwards — only the publish flow writes a hub.
+    """
+    return {
+        path.relative_to(hub).as_posix(): path.read_bytes()
+        for path in sorted(hub.rglob("*"))
+        if path.is_file()
+    }
 
 
 def _http_hub(hub: Path, base_url: str) -> HttpRegistry:
@@ -601,12 +617,13 @@ class TestRefusalPaths:
 
 class TestHubSource:
     """The hosted half (C9.1): an untrusted registry read through the
-    same six stages, with the hub's own vouch checked pre-gates."""
+    same stages, with the hub's own vouch checked pre-gates."""
 
     async def test_a_hub_package_installs_through_every_stage(
         self, tmp_path: Path, db: Database, ledger: LedgerStore
     ) -> None:
         hub, _ = await _publish_fixture(tmp_path)
+        hub_before = _hub_snapshot(hub)
         home = tmp_path / "home"
         installer = _installer(ledger, db, home)
 
@@ -635,6 +652,9 @@ class TestHubSource:
         events = await ledger.read_correlation(report.lineage)
         assert [e.event_type for e in events] == [EventType.PIPELINE_PACKAGE_INSTALLED]
         assert events[0].payload["source"] == SOURCE_HUB
+        # The marker's third truth: an install never publishes back — the
+        # hub it read is byte-identical after a successful install.
+        assert _hub_snapshot(hub) == hub_before
 
     async def test_a_signed_hub_package_installs_with_a_trusted_key(
         self, tmp_path: Path, db: Database, ledger: LedgerStore
@@ -655,7 +675,7 @@ class TestHubSource:
         self, tmp_path: Path, db: Database, ledger: LedgerStore
     ) -> None:
         # The pin the replaced park marker promised: hub bytes ride the
-        # six stages UNMODIFIED — an AST-blocked package the hub serves
+        # stages UNMODIFIED — an AST-blocked package the hub serves
         # refuses at the ast_scan gate exactly as a local one does, and
         # the refusal leaves the same zero trace.
         hub, _ = await _publish_fixture(

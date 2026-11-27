@@ -661,7 +661,7 @@ def registry_for_hub(hub: str) -> MarketplaceRegistry:
 
     The directory form is the ``LocalDirectoryRegistry`` format the
     publish flow writes; a URL is an ``HttpRegistry``. Both are
-    **untrusted**: whatever comes back is bytes the six stages below
+    **untrusted**: whatever comes back is bytes the seven stages below
     judge, never a trust decision in itself. The selection is a
     module-level function (not buried in the resolver) so a test can
     serve the HTTP form from a mocked transport without a socket — the
@@ -1062,7 +1062,7 @@ class PipelinePackageInstaller:
             # gate that actually refused.
             package = SkillPackage(manifest, _read_files(resolved.directory))
 
-        # -- stage 2b: the compatibility floor, pre-gates ------------------------
+        # -- stage 3: the compatibility floor, pre-gates -------------------------
         # A package that excludes the running version refuses before any
         # gate runs — the same cheap failure the declaration itself gets.
         # Checked on the manifest (the signed copy for a ``.paapkg``/hub
@@ -1080,7 +1080,7 @@ class PipelinePackageInstaller:
                 lineage=lineage,
             )
 
-        # -- stage 3: the five gates, unmodified in their order -----------------
+        # -- stage 4: the five gates, unmodified in their order -----------------
         report = await self._installer.install(package, mode=mode)
         if not report.installed:
             gate = report.refused_at.value if report.refused_at is not None else "unknown"
@@ -1096,7 +1096,7 @@ class PipelinePackageInstaller:
                 signature_state=report.signature_state.value,
             )
 
-        # -- stage 4: conformance, driven against the gated bytes ---------------
+        # -- stage 5: conformance, driven against the gated bytes ---------------
         # No sandbox, no conformance: the pipeline kind's contract is that
         # the bytes RUN sandboxed, and an install that cannot verify that
         # is an install that cannot verify its own loading contract. The
@@ -1146,7 +1146,7 @@ class PipelinePackageInstaller:
                 signature_state=report.signature_state.value,
             )
 
-        # -- stage 5: the capability review (the human gate) --------------------
+        # -- stage 6: the capability review (the human gate) --------------------
         review = CapabilityReview(
             package_name=declaration.name,
             version=declaration.version,
@@ -1184,7 +1184,7 @@ class PipelinePackageInstaller:
                 conformance={check.name: check.status for check in conformance.checks},
             )
 
-        # -- stage 6: stage the gated bytes; the registry row follows the layout
+        # -- stage 7: stage the gated bytes; the registry row follows the layout
         staged = self._stage(package, review, decision)
 
         await journal.installed(
