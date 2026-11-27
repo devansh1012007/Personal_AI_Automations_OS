@@ -8,7 +8,7 @@
 - **Architectural layer:** Core / orchestration vocabulary
 - **Entrypoints:** `PipelineRegistry.default()` and `select()` (`pipelines/registry.py:427`, `pipelines/registry.py:550`); `declaration_from_manifest()` (`pipelines/registry.py:240`); `SandboxedPipelineRunner` (`pipelines/sandboxed.py:136`); `install_pipeline_package()` (`pipelines/packages.py:1383`); `publish_pipeline_package()` (`pipelines/publish.py:309`); the CLI doors `paa pipeline …` (`cli/pipeline.py:68`), `paa pipeline install` (`cli/main.py:914`) and `paa pipeline publish` (`cli/main.py:1013`)
 - **Public interfaces:** `PipelineDeclaration`, `ParamSpec`, `SlotDeclaration`, `declaration_for` (`slots.py`); `Capability`, `CapabilitySet`, `compute_grants`, `Pipeline`, `CapabilityFacade`, `PipelineResult`, `RunLimits`, `PipelineTask` (`base.py`); `BuiltinPipelineFacade` (`builtin.py`); `SubRunComposer`, `ManagerPipeline`, `run_composition` (`compose.py`); `CallJournal`, `fingerprint`, `read_call_journal` (`journal.py`); `ReplayView`, `ReplayAction` (`replay.py`); `Overlay`, `load_overlay`, `tightened_limits` (`overlay.py`); `PipelineRegistry`, `RegisteredPipeline`, `LocalManifestError` (`registry.py`); `ConformanceCheck`, `ConformanceReport`, `CHECK_NAMES`, `installed_conformance`, `every_builtin_conformance` (`conformance.py`); `SandboxedPipelineRunner`, `PIPELINE_ENTRYPOINT`, `ENTRYPOINT_METHOD` (`sandboxed.py`); `PipelinePackageInstaller`, `CapabilityReview`, `ReviewApprover`, `render_review`, `terminal_review_approver`, `refuse_review`, `install_pipeline_package`, `compatibility_refusal`, `registry_for_hub` (`packages.py`); `PublishReport`, `PipelinePublishError`, `load_or_generate_publisher_key`, `publish_pipeline_package` (`publish.py`)
-- **Other modules that depend on it:** `agents/orchestrator.py`, `chat/` (loop, service, extensions), `coder/pipeline.py`, `improve/pipeline.py`, `observe/pipeline.py`, `mcp/` (protocol, server), `tui/chat/`, and the CLI (`cli/pipeline.py`, `cli/main.py`, `cli/improve.py`, `cli/observe.py`)
+- **Other modules that depend on it:** `agents/orchestrator.py`, `chat/` (loop, service, extensions), `coder/pipeline.py`, `improve/pipeline.py`, `observe/pipeline.py`, `mcp/` (protocol, server, host), `tui/chat/`, and the CLI (`cli/pipeline.py`, `cli/main.py`, `cli/improve.py`, `cli/observe.py`)
 
 ## Purpose and responsibilities
 
@@ -41,11 +41,19 @@ Three rules the module holds at all costs:
 
 ### `pipelines/slots.py` — the declaration and the builtins' asks
 `PipelineDeclaration` (`pipelines/slots.py:86`) is the closed vocabulary;
-the six in-process builtins declare through it — plan-execute-critique
+the seven in-process builtins declare through it — plan-execute-critique
 (`:196`), chat (`:233`), coder (`:279`), observe (`:328`), improve (`:371`,
-the C8.1 ask: `commit` and nothing else) and manager (`:415`). Slot refs
-declare the interface they satisfy (`CONTEXT_PROVIDER_INTERFACE`, `:149`) and
-a bad ref is refused at load, not at call time.
+the C8.1 ask: `commit` and nothing else) and manager (`:415`). The seventh
+is P6's last adapter: `builtin.mcp-host` (`:453`, W9-C9.4) — the
+externally-driven MCP session, whose declaration states the two facts that
+separate every external-harness adapter from the in-process six:
+`resume = "none"` (spec §6 — the host refuses to mark such a run
+recoverable) and `evidence_tier = "T2"`, the mediated-calls tier, with the
+capability ask restating the six tools' own `TOOL_MANIFEST` union (derived
+in `mcp/host.py`, so it cannot drift); the session's own shape is
+documented in [`interfaces/mcp-server.md`](../interfaces/mcp-server.md).
+Slot refs declare the interface they satisfy (`CONTEXT_PROVIDER_INTERFACE`,
+`:149`) and a bad ref is refused at load, not at call time.
 
 ### `pipelines/base.py` — capabilities, grants, the pipeline and facade protocols
 The `Capability` enum (`pipelines/base.py:82`) is the closed ask vocabulary;
@@ -100,12 +108,21 @@ equality, divergence halt, unknown-outcome never auto-repeats, cancel within
 grace, budget exhaustion, no secrets in journal. Each vocabulary instantiates
 the checks in its own terms and may mark a check `n/a` with a pointer to
 where the property is pinned — a masked green is the thing the standard
-exists to stop. `every_builtin_conformance` (`:2206`) is the CI entry.
-`installed_conformance` (`:1898`) drives the six checks through the sandboxed
+exists to stop. `every_builtin_conformance` (`:2557`) is the CI entry.
+`installed_conformance` (`:2249`) drives the six checks through the sandboxed
 adapter against an installed package's own bytes; its no-secrets row states
 the honest split — the goal rides the args file and the PROPOSED fingerprint,
 never a host-written payload text, while the child's own answer rides the
-recorded result ADR-0050 serves back.
+recorded result ADR-0050 serves back. The external-harness adapters
+instantiate the same six in their own vocabulary: `observe_conformance`
+drives the bundle writer, and `mcp_host_conformance` (`:1824`, W9-C9.4)
+drives the UNCHANGED MCP server in-process over its own framing — four
+checks real (the deterministic `mcp.session` call, the classified transport
+death, the between-frames cancel, the no-secrets scan with the server's own
+`args_sha256` as the positive control), two honest `n/a` (no replay exists
+to diverge — `resume="none"` by declaration — and no budget exists at the
+session layer to exhaust; the binding disciplines are the server's per-call
+policy gate and caps).
 
 ### `pipelines/sandboxed.py` — the loading contract, pinned
 **Installed code is never imported into this process.** The gates clear

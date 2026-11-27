@@ -100,7 +100,19 @@ async def _stdin_reader() -> asyncio.StreamReader:
 
 
 async def _serve(token_env: str | None, mcp_settings: MCPSettings) -> None:
-    """Build the runtime, open the stdio pipes, serve until EOF."""
+    """Build the runtime, open the stdio pipes, serve until EOF.
+
+    The session is journalled as a ``builtin.mcp-host`` pipeline run
+    (W9-C9.4): :func:`paa.mcp.host.run_mcp_host_session` opens
+    ``PIPELINE_RUN_STARTED`` (``run_kind="mcp-host"``, ``resume="none"``,
+    ``evidence_tier="T2"``) on a fresh lineage before the first frame is
+    read and closes it at EOF — the same shared driver ``paa pipeline
+    run builtin.mcp-host`` uses, so both doors journal identically. The
+    server itself is untouched by the wrapper: its per-call policy gate,
+    its tool-call lineages and its chat journaling are exactly what they
+    were. Nothing may print here — stdout is the wire, before and after.
+    """
+    from paa.mcp.host import run_mcp_host_session
     from paa.mcp.server import MCPServer
     from paa.runtime import Runtime
 
@@ -111,7 +123,12 @@ async def _serve(token_env: str | None, mcp_settings: MCPSettings) -> None:
             mcp_settings=mcp_settings,
             expected_token=await _resolve_token(token_env),
         )
-        await server.serve(await _stdin_reader(), _StdoutSink())
+        await run_mcp_host_session(
+            server,
+            runtime.ledger,
+            reader=await _stdin_reader(),
+            sink=_StdoutSink(),
+        )
     finally:
         await runtime.close()
 

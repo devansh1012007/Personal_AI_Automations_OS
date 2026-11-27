@@ -343,6 +343,16 @@ def run(
                 frozenset(),
                 frozenset({"max_tokens", "max_wall_s", "max_calls", "max_sub_runs"}),
             ),
+            # The externally-driven session honours nothing an overlay
+            # could tighten: no params, no slots, and no limits the
+            # facade can enforce — the session is externally paced, and
+            # the disciplines that bind are the server's own per-call
+            # policy gate and tool caps.
+            "builtin.mcp-host": (
+                frozenset(),
+                frozenset(),
+                frozenset(),
+            ),
         }
         h_params, h_slots, h_limits = honoured.get(
             row.name, (frozenset(), frozenset(), frozenset())
@@ -382,7 +392,9 @@ def run(
         _run(_run_manager_pipeline(goal, params, declaration, overlay, allow))
     elif row.name == "improve.reflection-loop":
         _run(_run_improve_pipeline(goal, params, gate))
-    else:  # unreachable while the builtins are the six above
+    elif row.name == "builtin.mcp-host":
+        _run(_run_mcp_host_pipeline(goal))
+    else:  # unreachable while the builtins are the seven above
         console.print(f"[red]no run path for {row.name!r}[/red]")
         raise typer.Exit(1)
 
@@ -749,6 +761,43 @@ async def _run_improve_pipeline(
     console.print(f"[dim]correlation: {run_id}[/dim]")
     if result.status.value != "completed":
         raise typer.Exit(1)
+
+
+async def _run_mcp_host_pipeline(goal: str) -> None:
+    """One ``builtin.mcp-host`` session through the registry's own door.
+
+    The goal is the operator's label for the harness they are about to
+    attach (it rides the session row's params, fingerprint-attested and
+    shape-previewed, and nothing else); the session itself serves on
+    this process's stdin/stdout — the same pipes ``paa mcp serve``
+    serves, driven through the same shared driver, so both doors
+    journal identically. The token resolves exactly as ``paa mcp
+    serve`` resolves it (``--token-env``'s env-then-dotenv rule; the
+    name is configured, never the value). Summary lines print only
+    after EOF — while the session lives, stdout is the wire.
+    """
+    from paa.cli.main import _build_runtime
+    from paa.cli.mcp import _resolve_token, _stdin_reader, _StdoutSink
+    from paa.mcp.host import run_mcp_host_session
+    from paa.mcp.server import MCPServer
+
+    rt = await _build_runtime()
+    try:
+        server = await MCPServer.from_runtime(
+            rt, expected_token=await _resolve_token(None)
+        )
+        run_id, result = await run_mcp_host_session(
+            server,
+            rt.ledger,
+            reader=await _stdin_reader(),
+            sink=_StdoutSink(),
+            harness=goal,
+        )
+        colour = "green" if result.status.value == "completed" else "yellow"
+        console.print(f"[{colour}]{result.status.value}[/{colour}] {result.summary}")
+        console.print(f"[dim]correlation: {run_id}[/dim]")
+    finally:
+        await rt.close()
 
 
 # ---------------------------------------------------------------------------

@@ -450,6 +450,54 @@ def _manager_declaration() -> PipelineDeclaration:
     )
 
 
+def _mcp_host_declaration() -> PipelineDeclaration:
+    """``builtin.mcp-host``: the externally-driven MCP session (W9-C9.4).
+
+    P6's last adapter, pipeline #7: when an external harness drives PAA
+    through ``paa mcp serve``, that session **is** a pipeline run — it
+    gets a lineage and ``PIPELINE_RUN_*`` rows through the accounting
+    wrapper in :mod:`paa.mcp.host`, which serves the six policy-checked
+    tools of :mod:`paa.mcp.server` UNCHANGED. The two declared facts
+    follow the spec §6 row for ``mcp-host``: ``resume = "none"`` (an
+    MCP session is not journalled for replay — each turn is its own
+    request/response — and the host refuses to mark such a run
+    recoverable), and the tier is the honest one for an adapter whose
+    evidence is the operator's transcript: **T2 for the mediated tool
+    calls only** — every call the harness makes crosses the server's
+    per-call policy gate and is journalled, while the session's outer
+    shape is whatever the harness did and PAA does not control it.
+
+    The capability ask restates the union of the six tools' own
+    ``TOOL_MANIFEST`` rows (``think``/``recall``/``remember``, the chat
+    turn's full set — ``sessions_list`` asks for nothing), pinned
+    against the manifest by test so a tool whose row grows a capability
+    widens this ask as a review conversation, not a drift. The limits
+    are unbounded because the session is externally paced: the
+    disciplines that actually bind are the server's own per-call policy
+    gate and tool caps, and declaring numbers here would be a ceiling
+    nothing enforces. No params, no slots — the session has no knobs
+    this facade can honour.
+    """
+    return PipelineDeclaration(
+        name="builtin.mcp-host",
+        version="4.1.0",
+        requires_runtime=">=4.1,<5",
+        description=(
+            "the externally-driven MCP session: serve the six "
+            "policy-checked tools to an external harness over stdio and "
+            "journal the session boundary (T2 for the mediated tool calls "
+            "only; resume='none' — an MCP session is not replayable)"
+        ),
+        capabilities={
+            "think": {"roles": ["assistant"]},
+            "recall": True,
+            "remember": True,
+        },
+        resume="none",
+        evidence_tier="T2",
+    )
+
+
 BUILTIN_DECLARATIONS: dict[str, PipelineDeclaration] = {
     _builtin_declaration().name: _builtin_declaration(),
     _chat_declaration().name: _chat_declaration(),
@@ -457,6 +505,7 @@ BUILTIN_DECLARATIONS: dict[str, PipelineDeclaration] = {
     _observe_declaration().name: _observe_declaration(),
     _manager_declaration().name: _manager_declaration(),
     _improve_declaration().name: _improve_declaration(),
+    _mcp_host_declaration().name: _mcp_host_declaration(),
 }
 
 
