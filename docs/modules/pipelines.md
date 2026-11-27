@@ -26,7 +26,7 @@ Three rules the module holds at all costs:
    Every capability call is PROPOSED before the effect and COMPLETED/FAILED
    after (`CallJournal`, `pipelines/journal.py:187`); a crash between them
    leaves the unknown outcome the D-6 rule refuses to auto-repeat
-   (`OutcomeUnknownError`, `pipelines/base.py:179`).
+   (`OutcomeUnknownError`, `pipelines/base.py:197`).
 2. **Replay never re-executes what it can serve, and never resyncs what
    diverged** (ADR-0050). `ReplayView` (`pipelines/replay.py:120`) reads the
    record; a changed call halts the run with `PIPELINE_RUN_DIVERGED`, and the
@@ -49,7 +49,7 @@ a bad ref is refused at load, not at call time.
 
 ### `pipelines/base.py` — capabilities, grants, the pipeline and facade protocols
 The `Capability` enum (`pipelines/base.py:82`) is the closed ask vocabulary;
-`CapabilitySet`/`CapabilityToken` (`:210`, `:196`) are what a facade hands a
+`CapabilitySet`/`CapabilityToken` (`:228`, `:214`) are what a facade hands a
 pipeline; `Pipeline` (`:370`) and `CapabilityFacade` (`:398`) are the two
 sides of every execution. `PipelineStatus` (`:284`) is the closed terminal
 vocabulary (`completed`/`failed`/`needs_human`).

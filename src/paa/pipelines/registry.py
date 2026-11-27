@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from paa.pipelines.base import PipelineError, RunLimits
+from paa.pipelines.base import PIPELINE_PROTOCOL, PipelineError, RunLimits
 from paa.pipelines.slots import (
     BUILTIN_DECLARATIONS,
     ParamSpec,
@@ -94,7 +94,6 @@ _MANIFEST_CAPABILITY_KEYS = frozenset(
 _RESUME_VALUES = frozenset({"journal", "none"})
 _PARAM_TYPES = frozenset({"int", "bool", "str"})
 _EVIDENCE_TIERS = frozenset({"T1", "T2", "T3"})
-_PIPELINE_PROTOCOL = "paa-pipeline/1"
 _LIMIT_KEYS = ("max_tokens", "max_wall_s", "max_calls", "max_sub_runs")
 _DEFAULT_PREFIXES = ("agent:", "builtin:", "skill:", "out:")
 
@@ -279,9 +278,9 @@ def declaration_from_manifest(path: Path) -> PipelineDeclaration:
         identity[key] = value
 
     protocol = pipeline.get("protocol")
-    if protocol != _PIPELINE_PROTOCOL:
+    if protocol != PIPELINE_PROTOCOL:
         raise LocalManifestError(
-            f"[pipeline].protocol must be {_PIPELINE_PROTOCOL!r}, got {protocol!r}",
+            f"[pipeline].protocol must be {PIPELINE_PROTOCOL!r}, got {protocol!r}",
             manifest=str(path),
         )
     try:
