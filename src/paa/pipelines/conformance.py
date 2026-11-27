@@ -35,9 +35,10 @@ import contextlib
 import hashlib
 import json
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from paa.core.errors import SandboxError
 from paa.core.types import EventType
@@ -2242,3 +2243,91 @@ async def every_builtin_conformance(
             )
         )
     return reports
+
+
+# ---------------------------------------------------------------------------
+# The named conformance door (one map, every caller)
+# ---------------------------------------------------------------------------
+
+
+async def _named_builtin(ledger: LedgerStore, scratch: Path) -> ConformanceReport:
+    return await builtin_conformance(ledger)
+
+
+async def _named_chat(ledger: LedgerStore, scratch: Path) -> ConformanceReport:
+    return await chat_conformance(scratch)
+
+
+async def _named_coder(ledger: LedgerStore, scratch: Path) -> ConformanceReport:
+    return await coder_conformance(ledger, scratch)
+
+
+async def _named_observe(ledger: LedgerStore, scratch: Path) -> ConformanceReport:
+    return await observe_conformance(ledger, scratch)
+
+
+async def _named_manager(ledger: LedgerStore, scratch: Path) -> ConformanceReport:
+    return await manager_conformance(ledger)
+
+
+async def _named_improve(ledger: LedgerStore, scratch: Path) -> ConformanceReport:
+    return await improve_conformance(ledger, scratch)
+
+
+#: The registered in-process pipelines a named conformance run can drive,
+#: mapped onto the runners above. This is THE map — the Loop Console
+#: (``paa.tui.chat.console``) and the CLI door (``paa pipeline test``)
+#: both resolve a pipeline name through it, so a pipeline added to the
+#: registry without a runner reads RED everywhere, never missing. The
+#: runnable-set lock is applied by the console's own pin test and by
+#: :func:`every_builtin_conformance`'s gap rows alike.
+NAMED_CONFORMANCE_RUNNERS: Final[
+    dict[str, Callable[[LedgerStore, Path], Awaitable[ConformanceReport]]]
+] = {
+    "builtin.plan-execute-critique": _named_builtin,
+    "builtin.chat": _named_chat,
+    "coder.tool-loop": _named_coder,
+    "builtin.observe": _named_observe,
+    "builtin.manager": _named_manager,
+    "improve.reflection-loop": _named_improve,
+}
+
+
+def no_runner_report(pipeline: str) -> ConformanceReport:
+    """The RED report a pipeline without a conformance runner earns.
+
+    Same wording, same six failed checks, as the gap row
+    :func:`every_builtin_conformance` appends for a builtin nobody wrote
+    a runner for — the standard's own honesty rule, applied to every
+    name a caller can select.
+    """
+    return ConformanceReport(
+        pipeline=pipeline,
+        checks=tuple(
+            ConformanceCheck.failed(
+                check, "no conformance runner registered for this pipeline"
+            )
+            for check in CHECK_NAMES
+        ),
+    )
+
+
+async def run_named_conformance(
+    pipeline_name: str,
+    *,
+    ledger: LedgerStore,
+    scratch: Path,
+) -> ConformanceReport:
+    """Run the six-check standard for one named pipeline.
+
+    A name the registry does not know raises (the caller names the
+    registered set in the message); a registered name without a runner
+    earns :func:`no_runner_report` — RED, never missing. The ``ledger``
+    and ``scratch`` are the caller's: the CLI door and the console both
+    hand over a throwaway database so the runner's diagnostic rows never
+    touch the operator's ledger (each pins that by test).
+    """
+    runner = NAMED_CONFORMANCE_RUNNERS.get(pipeline_name)
+    if runner is None:
+        return no_runner_report(pipeline_name)
+    return await runner(ledger, scratch)

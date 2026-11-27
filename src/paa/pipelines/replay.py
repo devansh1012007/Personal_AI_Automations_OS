@@ -220,6 +220,13 @@ class ReplayedCallFailedError(PipelineError):
     rather than re-attempting an effect whose record already says "no".
     """
 
+    #: The wire rendering of "the recorded failure stands" — the first
+    #: free slot after the frozen spec table's ``-32001..-32008`` run and
+    #: the platform codes already taken (-32009 MCP auth, -32012 manifest,
+    #: -32013 selection, -32014 sandboxed, -32015 the RPC transport), per
+    #: the in-tree convention for platform errors the spec table predates.
+    wire_code = -32010
+
 
 class ToolSequenceDivergedError(PipelineError):
     """The re-run's tool calls do not follow the recorded transcript's order.

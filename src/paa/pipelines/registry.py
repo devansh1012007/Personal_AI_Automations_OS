@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from paa.pipelines.base import PipelineError, RunLimits
+from paa.pipelines.base import PIPELINE_PROTOCOL, PipelineError, RunLimits
 from paa.pipelines.slots import (
     BUILTIN_DECLARATIONS,
     ParamSpec,

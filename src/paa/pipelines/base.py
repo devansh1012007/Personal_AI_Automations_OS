@@ -54,6 +54,7 @@ from paa.ledger.replay import TaskProjection
 
 __all__ = [
     "FACADE_RUNTIME_VERSION",
+    "PIPELINE_PROTOCOL",
     "Capability",
     "CapabilityNotGrantedError",
     "CapabilitySet",
@@ -77,6 +78,23 @@ __all__ = [
 #: ``requires_runtime`` range is checked against this (and, per ADR-0052, is
 #: the facade's version, never the product's).
 FACADE_RUNTIME_VERSION = "4.1"
+
+#: The wire protocol version every RPC transport speaks: ``paa-pipeline/1``
+#: (the pipeline spec §5). **Frozen at major 1** by ADR-0055 under the
+#: spec's own three-users rule — the in-process facade, the C8.6 sandboxed
+#: runner and the RPC host all speak it, which is the population the spec
+#: demanded before a freeze. The rule from here on is **additive-only
+#: within the major**: new methods, new optional params and new result
+#: fields may be added; nothing that exists at 1 may be renamed, removed,
+#: or made mandatory. A breaking change is a v2, and a v2 needs its own
+#: ADR plus a host that negotiates the major at
+#: ``pipeline.initialize`` exactly the way this one refuses a declared
+#: range that excludes :data:`FACADE_RUNTIME_VERSION`. This constant is the
+#: single source: the manifest parser checks it, the RPC host sends it,
+#: and the ``paa_pipeline`` child SDK pins the same string by test (it
+#: cannot import it, because importing ``paa`` is the one thing a child
+#: SDK must not do).
+PIPELINE_PROTOCOL = "paa-pipeline/1"
 
 
 class Capability(str, Enum):

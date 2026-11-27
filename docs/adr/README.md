@@ -70,8 +70,9 @@ The records fall into four classes:
 | [0052](0052-manifest-slots-overlays-tighten-only.md) | Pipeline manifests declare, slots compose, and overlays only ever tighten | Direction |
 | [0053](0053-acp-v1-minimal.md) | ACP v1 minimal — server + mediated client on the shared framing kit | Direction |
 | [0054](0054-effect-registry-v1.md) | Effect registry v1 — effects as ledger rows, compensation as new authorized work | **Correctness** |
+| [0055](0055-paa-pipeline-1-frozen.md) | `paa-pipeline/1` frozen — one wire, three users, additive-only within the major | Correctness |
 **Which of these records have a body.** The files on disk are 0008, 0010, 0015,
-0019–0026, 0028–0035, 0036–0047 and 0050–0054. The other rows are **index-only**: the decision was taken
+0019–0026, 0028–0035, 0036–0047 and 0050–0055. The other rows are **index-only**: the decision was taken
 and is recorded — in `README.md`'s account of the RFC's departures, and, for 0001–0014,
 0016 and 0018, in the source's own `SPEC DEVIATION (docs/adr/NNNN)` citation — but the
 record itself is still to be written, which the ROADMAP's cross-cutting *Docs* item

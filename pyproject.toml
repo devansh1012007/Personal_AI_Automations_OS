@@ -104,7 +104,13 @@ all = [
 paa = "paa.cli.main:app"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/paa"]
+# Two top-level packages, one wheel — deliberately not two distributions:
+# the child SDK is versioned and frozen with the protocol it re-states
+# (`paa-pipeline/1`, ADR-0055), so a `paa_pipeline` release that drifted
+# from its host's wire would be a split-brain the protocol exists to
+# prevent. The SDK imports nothing from `paa` (see its package docstring);
+# the coupling is protocol-only and ships in the same artefact.
+packages = ["src/paa", "src/paa_pipeline"]
 
 # ---------------------------------------------------------------------------
 [tool.pytest.ini_options]

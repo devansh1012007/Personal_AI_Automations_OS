@@ -10,6 +10,7 @@ selection and overlays arrive with C6.4/C6.5 in the same wave.
 
 from paa.pipelines.base import (
     FACADE_RUNTIME_VERSION,
+    PIPELINE_PROTOCOL,
     Capability,
     CapabilityNotGrantedError,
     CapabilitySet,
@@ -42,6 +43,7 @@ from paa.pipelines.journal import (
 __all__ = [
     "FACADE_RUNTIME_VERSION",
     "PIPELINE_JOURNAL_EVENT_TYPES",
+    "PIPELINE_PROTOCOL",
     "CallJournal",
     "CallOutcome",
     "CallRecord",

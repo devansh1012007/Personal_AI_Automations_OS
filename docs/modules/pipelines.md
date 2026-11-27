@@ -26,7 +26,7 @@ Three rules the module holds at all costs:
    Every capability call is PROPOSED before the effect and COMPLETED/FAILED
    after (`CallJournal`, `pipelines/journal.py:201`); a crash between them
    leaves the unknown outcome the D-6 rule refuses to auto-repeat
-   (`OutcomeUnknownError`, `pipelines/base.py:179`).
+   (`OutcomeUnknownError`, `pipelines/base.py:197`).
 2. **Replay never re-executes what it can serve, and never resyncs what
    diverged** (ADR-0050). `ReplayView` (`pipelines/replay.py:120`) reads the
    record; a changed call halts the run with `PIPELINE_RUN_DIVERGED`, and the
@@ -49,7 +49,7 @@ a bad ref is refused at load, not at call time.
 
 ### `pipelines/base.py` — capabilities, grants, the pipeline and facade protocols
 The `Capability` enum (`pipelines/base.py:82`) is the closed ask vocabulary;
-`CapabilitySet`/`CapabilityToken` (`:210`, `:196`) are what a facade hands a
+`CapabilitySet`/`CapabilityToken` (`:228`, `:214`) are what a facade hands a
 pipeline; `Pipeline` (`:370`) and `CapabilityFacade` (`:398`) are the two
 sides of every execution. `PipelineStatus` (`:284`) is the closed terminal
 vocabulary (`completed`/`failed`/`needs_human`).
@@ -87,7 +87,7 @@ capabilities and limits; a widening attempt is refused at load
 `PipelineRegistry` (`pipelines/registry.py:402`) merges three sources:
 builtins (trust `builtin`), the operator's flat `PAA_HOME/pipelines/<name>/`
 manifests (trust `local`, listed but not runnable — running an
-out-of-process declaration is P3's RPC transport), and the installer's
+out-of-process declaration is the RPC transport's, `pipelines/rpc_host.py`), and the installer's
 `installed/<name>/<version>/` stagings (trust `installed`, **runnable** —
 `_scan_installed`, `pipelines/registry.py:472`). Staging *is* registration.
 `declaration_from_manifest` (`:240`) is the one closed parser all three
@@ -95,13 +95,13 @@ layouts and the package flow share; off-contract manifests are named in
 `local_errors`, never silently dropped.
 
 ### `pipelines/conformance.py` — the six-check standard
-`CHECK_NAMES` (`pipelines/conformance.py:76`): double-run call-sequence
+`CHECK_NAMES` (`pipelines/conformance.py:77`): double-run call-sequence
 equality, divergence halt, unknown-outcome never auto-repeats, cancel within
 grace, budget exhaustion, no secrets in journal. Each vocabulary instantiates
 the checks in its own terms and may mark a check `n/a` with a pointer to
 where the property is pinned — a masked green is the thing the standard
-exists to stop. `every_builtin_conformance` (`:2205`) is the CI entry.
-`installed_conformance` (`:1897`) drives the six checks through the sandboxed
+exists to stop. `every_builtin_conformance` (`:2206`) is the CI entry.
+`installed_conformance` (`:1898`) drives the six checks through the sandboxed
 adapter against an installed package's own bytes; its no-secrets row states
 the honest split — the goal rides the args file and the PROPOSED fingerprint,
 never a host-written payload text, while the child's own answer rides the
@@ -113,10 +113,60 @@ recorded result ADR-0050 serves back.
 `--paa-args` JSON-in / JSON-on-stdout contract (`PIPELINE_ENTRYPOINT`,
 `pipelines/sandboxed.py:74`; `ENTRYPOINT_METHOD`, `:80`).
 `SandboxedPipelineRunner` (`:136`) drives one run per journal: replay check,
-PROPOSED, sandboxed execution (`_execute`, `:255`), classified outcome. The
-honest gap — an installed pipeline cannot call `ctx.think` in v1, because a
-subprocess holds no facade tokens — is the P3 RPC transport's work, exactly
+PROPOSED, sandboxed execution (`_execute`, `:255`), classified outcome.
+The honest gap — an installed pipeline cannot call `ctx.think` in v1, because a
+subprocess holds no facade tokens — is the RPC transport's territory
+(`pipelines/rpc_host.py`, which carries tokens out-of-band), exactly
 where the spec's P5 placed executable package loading.
+
+### `pipelines/rpc_host.py` — the streaming step protocol (C9.3, P3)
+`RpcPipelineHost` (`pipelines/rpc_host.py:394`) is the third transport: a
+child process speaking **`paa-pipeline/1`** — NDJSON JSON-RPC 2.0 over the
+child's stdin/stdout on the shared framing kit (`paa/mcp/protocol.py`, the
+same kit ACP rides), the capability **token** delivered out-of-band via an
+environment variable, stderr drained continuously into the run transcript.
+The host side owns the rules the protocol demands: the declared
+version-range check at `pipeline.initialize` (a range excluding the facade
+version is refused, named), budget enforcement (`-32001` — counters move
+*after* the token check, so an ungranted call never consumes budget), the
+token check (`-32006` — the host never issues tokens for ungranted
+capabilities), divergence on resume (`-32004` — a call sequence that stops
+matching the journal halts the run, mirroring the in-process facade), and
+cancel's grace-then-process-tree-kill. The protocol version itself is
+`PIPELINE_PROTOCOL` (`pipelines/base.py:97`), **frozen at `paa-pipeline/1`**
+by ADR-0055 under the spec's own three-users rule — the in-process facade,
+the C8.6 sandboxed runner, and this RPC host all speak it; additive-only
+within the major from here.
+
+The child side ships as a **second package**: `paa_pipeline`
+(`src/paa_pipeline/`, ~480 lines) — an async client, a `ctx` object
+exposing the facade method names as journaled calls carrying `{seq,
+token}`, and determinism helpers. It imports **nothing** from `paa`: the
+child side of a wire protocol must stay dependency-light, and the SDK pins
+the same `paa-pipeline/1` string independently (held equal by test — it
+cannot import the constant, so the test is the weld).
+
+**The language proof (P3.4):** `examples/shell-pipeline/pipeline.sh`
+(115 lines of POSIX shell, no SDK) speaks the protocol from the doc alone —
+fixed-shape JSON via printf/awk (the header comment states the honest
+boundary: the protocol's fixed shapes, not general JSON), initialize →
+run → one ctx call → final result. A test drives it through the RPC host
+(skip-if-no-bash) — proof the protocol is a protocol, not a Python API.
+
+### `pipelines/conformance.py` — the `paa pipeline test` door
+The named-conformance map `NAMED_CONFORMANCE_RUNNERS`
+(`pipelines/conformance.py:2284`) is THE contract every caller resolves a
+pipeline name through — the Loop Console and the CLI door both; a pipeline
+registered without a runner earns `no_runner_report`
+(`:2296`) — RED, never missing. `run_named_conformance` (`:2315`) drives
+one name on a caller-provided throwaway ledger; `paa pipeline test
+<name|all>` renders the standard's own `render_reports` and exits 0/1.
+The door drives the in-process runners; the sandboxed and RPC transports
+are exercised by their own suites — stated in the help, not implied.
+
+### `pipelines/packages.py` — the install flow (C8.6, the P5-lite)
+One install action, one fresh lineage, six stages
+(`PipelinePackageInstaller.install`, `pipelines/packages.py:678`):
 
 ### `pipelines/packages.py` — the install flow (C8.6's P5-lite, C9.1's hub)
 One install action, one fresh lineage, seven stages
@@ -273,10 +323,11 @@ order bought:
 
 ## Known gaps
 
-- An installed pipeline cannot call facade capabilities (`ctx.think` et al.)
-  in v1 — the sandboxed adapter has no token path; that is P3's RPC
-  transport, stated in the review artifact so no human approves a silent
-  no-op.
+- An installed pipeline cannot call facade capabilities (`ctx.think` et
+  al.) through the sandboxed adapter in v1 — it has no token path. The RPC
+  host (`pipelines/rpc_host.py`) is the token-carrying transport; wiring
+  the installed-package runner onto it is the follow-on, stated in the
+  review artifact so no human approves a silent no-op.
 - The registry keeps one version per installed name (the last scan wins);
   there is no multi-version pinning surface yet.
 - `paa pipeline run` drives the in-process builtins; running an *installed*
