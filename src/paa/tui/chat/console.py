@@ -101,80 +101,27 @@ PERSONAL_SOURCE_WORD = "personal"
 # The conformance runner map (name → runner, normalized to one signature)
 # ---------------------------------------------------------------------------
 
-
-async def _run_builtin(ledger: LedgerStore, scratch: Path) -> ConformanceReport:
-    from paa.pipelines.conformance import builtin_conformance
-
-    return await builtin_conformance(ledger)
-
-
-async def _run_chat(ledger: LedgerStore, scratch: Path) -> ConformanceReport:
-    from paa.pipelines.conformance import chat_conformance
-
-    return await chat_conformance(scratch)
-
-
-async def _run_coder(ledger: LedgerStore, scratch: Path) -> ConformanceReport:
-    from paa.pipelines.conformance import coder_conformance
-
-    return await coder_conformance(ledger, scratch)
-
-
-async def _run_observe(ledger: LedgerStore, scratch: Path) -> ConformanceReport:
-    from paa.pipelines.conformance import observe_conformance
-
-    return await observe_conformance(ledger, scratch)
-
-
-async def _run_manager(ledger: LedgerStore, scratch: Path) -> ConformanceReport:
-    from paa.pipelines.conformance import manager_conformance
-
-    return await manager_conformance(ledger)
-
-
-async def _run_improve(ledger: LedgerStore, scratch: Path) -> ConformanceReport:
-    from paa.pipelines.conformance import improve_conformance
-
-    return await improve_conformance(ledger, scratch)
-
-
-#: The registered in-process pipelines this console can run conformance
-#: for, mapped onto the runners :mod:`paa.pipelines.conformance` already
-#: defines (the same set ``every_builtin_conformance`` drives, held in one
-#: place here so a pipeline added without a runner reads RED, not missing).
-#: A test pins the map against the registry's runnable set, the same lock
-#: the CI entry applies to itself.
+#: The registered in-process pipelines a conformance run can drive. The
+#: map lives with the runners —
+#: :data:`paa.pipelines.conformance.NAMED_CONFORMANCE_RUNNERS`, the one
+#: place every caller resolves a pipeline name through (the CLI door
+#: ``paa pipeline test`` is the other) — so a pipeline added without a
+#: runner reads RED everywhere, never missing. This alias populates
+#: lazily: a module-scope import of the conformance stack would add the
+#: measured +223.2 ms to the console's own import cost (the
+#: classification's own number), so the first touch loads it.
 _CONFORMANCE_RUNNERS: Final[
     dict[str, Callable[[LedgerStore, Path], Awaitable[ConformanceReport]]]
-] = {
-    "builtin.plan-execute-critique": _run_builtin,
-    "builtin.chat": _run_chat,
-    "coder.tool-loop": _run_coder,
-    "builtin.observe": _run_observe,
-    "builtin.manager": _run_manager,
-    "improve.reflection-loop": _run_improve,
-}
+] = dict()  # populated by _load_conformance_runners() on first touch
 
 
-def _no_runner_report(pipeline: str) -> ConformanceReport:
-    """The RED report a pipeline without a conformance runner earns.
+def _load_conformance_runners() -> None:
+    """Move the canonical map into the alias, once."""
+    if _CONFORMANCE_RUNNERS:
+        return
+    from paa.pipelines.conformance import NAMED_CONFORMANCE_RUNNERS
 
-    Same wording, same six failed checks, as the gap row
-    :func:`~paa.pipelines.conformance.every_builtin_conformance` appends
-    for a builtin nobody wrote a runner for — the standard's own honesty
-    rule, applied to every name this console can select.
-    """
-    from paa.pipelines.conformance import CHECK_NAMES, ConformanceCheck, ConformanceReport
-
-    return ConformanceReport(
-        pipeline=pipeline,
-        checks=tuple(
-            ConformanceCheck.failed(
-                check, "no conformance runner registered for this pipeline"
-            )
-            for check in CHECK_NAMES
-        ),
-    )
+    _CONFORMANCE_RUNNERS.update(NAMED_CONFORMANCE_RUNNERS)
 
 
 # ---------------------------------------------------------------------------
@@ -624,13 +571,17 @@ class ConsoleService:
             raise PaaError(
                 f"no registered pipeline named {pipeline_name!r}; registered: {known}"
             )
-        runner = _CONFORMANCE_RUNNERS.get(pipeline_name)
-        if runner is None:
-            return _no_runner_report(pipeline_name)
+        from paa.pipelines.conformance import run_named_conformance
+
+        async def _runner(ledger: LedgerStore, scratch: Path) -> ConformanceReport:
+            return await run_named_conformance(
+                pipeline_name, ledger=ledger, scratch=scratch
+            )
+
         if scratch_dir is not None:
-            return await self._run_named_conformance(runner, scratch_dir)
+            return await self._run_named_conformance(_runner, scratch_dir)
         with tempfile.TemporaryDirectory(prefix="paa-conformance-") as scratch:
-            return await self._run_named_conformance(runner, Path(scratch))
+            return await self._run_named_conformance(_runner, Path(scratch))
 
     async def _run_named_conformance(
         self,

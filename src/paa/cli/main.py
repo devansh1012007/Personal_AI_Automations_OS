@@ -996,6 +996,86 @@ def pipeline_install(
     _run(_do())
 
 
+# ---------------------------------------------------------------------------
+# ``paa pipeline test`` — the conformance door (SPEC 2 pipeline platform
+# P3.5): the six-check standard, driven against a named registered
+# pipeline on a throwaway ledger, rendered with the standard's own
+# renderer. The boundary is stated in the help: this door drives the
+# IN-PROCESS runners; the sandboxed package runner and the RPC host are
+# exercised by their own suites (tests/pipelines), not re-driven here.
+# ---------------------------------------------------------------------------
+
+
+@pipeline_app.command("test")
+def pipeline_test(
+    pipeline: str = typer.Argument(
+        ...,
+        help=(
+            "A registered pipeline name (see `paa pipeline list`), or 'all' "
+            "for every runnable in-process pipeline."
+        ),
+    ),
+) -> None:
+    """Run the six-check conformance standard for one pipeline.
+
+    The checks run on a throwaway ledger — the operator's ledger is
+    never written. A registered pipeline without a conformance runner
+    reads RED, never missing. This door drives the in-process runners;
+    the sandboxed and RPC transports are exercised by their own suites.
+    """
+    import tempfile
+    from pathlib import Path
+
+    async def _do() -> None:
+        from paa.ledger.store import LedgerStore
+        from paa.pipelines.conformance import (
+            every_builtin_conformance,
+            render_reports,
+            run_named_conformance,
+        )
+        from paa.pipelines.registry import PipelineRegistry
+        from paa.storage.relational.database import Database
+
+        if pipeline == "all":
+            with tempfile.TemporaryDirectory(prefix="paa-conformance-") as scratch:
+                db = Database(Path(scratch) / "conformance.db")
+                await db.connect()
+                try:
+                    reports = await every_builtin_conformance(
+                        LedgerStore(db), Path(scratch)
+                    )
+                finally:
+                    await db.close()
+        else:
+            registry = PipelineRegistry.default()
+            if registry.get(pipeline) is None:
+                known = ", ".join(
+                    sorted(row.name for row in registry.list())
+                ) or "(none)"
+                console.print(
+                    f"[red]no registered pipeline named {pipeline!r}; "
+                    f"registered: {known}[/red]"
+                )
+                raise typer.Exit(1)
+            with tempfile.TemporaryDirectory(prefix="paa-conformance-") as scratch:
+                db = Database(Path(scratch) / "conformance.db")
+                await db.connect()
+                try:
+                    report = await run_named_conformance(
+                        pipeline, ledger=LedgerStore(db), scratch=Path(scratch)
+                    )
+                finally:
+                    await db.close()
+                reports = [report]
+
+        console.print(render_reports(reports))
+        if all(report.passed for report in reports):
+            raise typer.Exit(0)
+        raise typer.Exit(1)
+
+    _run(_do())
+
+
 app.add_typer(memory_app, name="memory")
 
 app.add_typer(chat_app, name="chat")

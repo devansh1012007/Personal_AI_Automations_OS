@@ -19,15 +19,15 @@ console can only ever be a thinner or thicker view of the same rules the
 CLI verbs enforce:
 
 - **The registry panel** reads `PipelineRegistry` (`src/paa/pipelines/registry.py:394`) — rows come from `registry.list()`, never a parallel hand-maintained list, so the panel cannot disagree with `paa pipeline list`. Installed extensions merge their two sources of truth: the marketplace package row (the five-gate record) and the skills-registry row (what a chat turn can dispatch) in `skill_rows` (`src/paa/tui/chat/console.py:389`).
-- **Install / activate** drive the C8.4 `ChatExtensionSurface` (`src/paa/chat/extensions.py:400`) whole — discovery through the Claw-Hub adapter, install through ALL five gates (the smoke gate really stages and runs the entrypoint under the sandbox), activation against the staged bytes. The surface is built per action (`src/paa/tui/chat/console.py:471`) with the operator's own opt-in for unsigned local skills, so what runs is exactly what `paa skills` runs.
+- **Install / activate** drive the C8.4 `ChatExtensionSurface` (`src/paa/chat/extensions.py:400`) whole — discovery through the Claw-Hub adapter, install through ALL five gates (the smoke gate really stages and runs the entrypoint under the sandbox), activation against the staged bytes. The surface is built per action (`src/paa/tui/chat/console.py:429`) with the operator's own opt-in for unsigned local skills, so what runs is exactly what `paa skills` runs.
 - **Fork** is pinned to the two mechanisms the kit already offers, one per kind of loop (see below).
-- **The conformance run** drives the six-check runner for the chosen pipeline on a throwaway ledger (`src/paa/tui/chat/console.py:610`); the page rendered is the standard's own `render_reports` output (`src/paa/pipelines/conformance.py:126`), so the console cannot show a verdict the standard would phrase differently.
+- **The conformance run** drives the six-check runner for the chosen pipeline on a throwaway ledger (`src/paa/tui/chat/console.py:557`); the page rendered is the standard's own `render_reports` output (`src/paa/pipelines/conformance.py:127`), so the console cannot show a verdict the standard would phrase differently.
 
 ## Internal implementation
 
 ### `console.py` — the service
 
-`ConsoleService` (`src/paa/tui/chat/console.py:339`) is constructed from the pieces the chat wiring already holds (ledger, relational backend, `PAA_HOME`, permission mode, and the runtime's sandbox — carried by `ChatWiring.sandbox`, `src/paa/tui/chat/wiring.py:81`). It owns no state beyond those references:
+`ConsoleService` (`src/paa/tui/chat/console.py:286`) is constructed from the pieces the chat wiring already holds (ledger, relational backend, `PAA_HOME`, permission mode, and the runtime's sandbox — carried by `ChatWiring.sandbox`, `src/paa/tui/chat/wiring.py:81`). It owns no state beyond those references:
 
 - `pipeline_rows()` / `fork_rows()` — the registry's own rows, plus the personal forks with their load verdicts (`ok`, `invalid (reason)`, `source no longer registered`).
 - `discover()` / `install()` / `activate()` — pass-throughs to the extension surface; a gate's refusal is returned as a refusal and rendered as one, never retried around.

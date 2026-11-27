@@ -384,7 +384,9 @@ class TestRunnerMapLock:
     """The console's runner map covers the registry's runnable set."""
 
     def test_every_runnable_builtin_has_a_runner(self) -> None:
-        from paa.tui.chat.console import _CONFORMANCE_RUNNERS
+        import paa.tui.chat.console as console
+
+        console._load_conformance_runners()
 
         runnable = {
             row.name
@@ -392,7 +394,12 @@ class TestRunnerMapLock:
             if row.runnable
         }
         assert runnable  # vacuous otherwise
-        assert set(_CONFORMANCE_RUNNERS) == runnable
+        assert set(console._CONFORMANCE_RUNNERS) == runnable
+        # The alias IS the canonical map — one contract, one place
+        # (``paa pipeline test`` resolves through the same door).
+        from paa.pipelines.conformance import NAMED_CONFORMANCE_RUNNERS
+
+        assert console._CONFORMANCE_RUNNERS == NAMED_CONFORMANCE_RUNNERS
 
 
 class TestInstallAndActivate:
