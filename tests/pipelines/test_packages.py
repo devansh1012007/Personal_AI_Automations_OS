@@ -22,12 +22,15 @@ The git sources are local repositories created in ``tmp_path`` — no
 network, deterministic, the brief's own rule. The hub sources are local
 directories in the ``LocalDirectoryRegistry`` format written by the real
 publish flow, plus one HTTP-served hub driven through a mocked transport
-(the ``tests/models`` pattern) — still no network.
+(the ``tests/models`` pattern) — still no network. And the loop economy
+the row names — install → fork → publish → clean-home install → run —
+is pinned end-to-end on that stack, every hop through the real gates.
 """
 
 from __future__ import annotations
 
 import json
+import shutil
 import uuid
 from pathlib import Path
 from typing import Any
@@ -1187,6 +1190,101 @@ class TestTheRunDoor:
 
         assert result.status is PipelineStatus.COMPLETED
         assert result.summary == "echo: hello from the run door"
+
+
+class TestTheLoopEconomy:
+    """The P5-full round trip the operator's order lifted: install → fork
+    → publish → clean-home install → run, every hop through the real
+    gates. The fork is the C8.5 pattern — the staged bytes copied to a
+    personal location and changed — so what comes back around the loop
+    is provably the fork, not the original echoing."""
+
+    async def test_install_fork_publish_clean_install_run(
+        self, tmp_path: Path, db: Database, ledger: LedgerStore
+    ) -> None:
+        if not signing_is_secure():
+            pytest.skip(
+                "real signing backend not available; the economy's signatures must be real"
+            )
+
+        # Hop 1 — install from a local directory (unsigned, the opt-in a
+        # local source has always needed).
+        source = _package_dir(tmp_path)
+        author_home = tmp_path / "author-home"
+        author = _installer(ledger, db, author_home)
+        report = await author.install(str(source))
+        assert report.installed
+
+        # Hop 2 — fork: the gated staged bytes copied to a personal
+        # location, then changed — a new identity, a new version, and a
+        # different voice. The review artifact stays behind: it is this
+        # machine's record of the ORIGINAL, not the fork's payload.
+        staged = author.staged_dir("demo.echo", "1.2.3")
+        fork = tmp_path / "personal" / "demo.fork"
+        fork.parent.mkdir(parents=True)
+        shutil.copytree(staged, fork)
+        (fork / REVIEW_ARTIFACT_NAME).unlink()
+        (fork / "pipeline.toml").write_text(
+            _DECLARATION.replace('name = "demo.echo"', 'name = "demo.fork"').replace(
+                'version = "1.2.3"', 'version = "2.0.0"'
+            ),
+            encoding="utf-8",
+        )
+        (fork / "pipeline.py").write_text(
+            _ENTRYPOINT.replace('"echo: " + goal', '"fork-echo: " + goal'),
+            encoding="utf-8",
+        )
+
+        # Hop 3 — publish the fork to a hub, signed with the author's
+        # publisher key (generated on first use, under the author's home).
+        hub = tmp_path / "hub"
+        published = await publish_pipeline_package(
+            str(fork), hub=hub, home=author_home
+        )
+        assert published.published
+        assert published.signed
+        assert (hub / "demo.fork-2.0.0.paapkg").is_file()
+
+        # Hop 4 — install the fork on a CLEAN home, from that hub, with
+        # NO opt-in: the entry's vouch verifies pre-gates, and the
+        # signature gate passes under the publisher key the consumer
+        # chose to trust — every gate green, none waived.
+        await PackageInstaller(db).trust_key(
+            "loop-author", published.publisher_key, "operator"
+        )
+        consumer_home = tmp_path / "consumer-home"
+        consumer = _installer(ledger, db, consumer_home, allow_unverified=False)
+        report = await consumer.install("hub:demo.fork", hub=str(hub))
+
+        assert report.installed
+        assert report.source == SOURCE_HUB
+        assert report.version == "2.0.0"
+        assert report.source_ref == "demo.fork@2.0.0"
+        assert report.gates == tuple(gate.value for gate in InstallGate)
+        assert report.signature_state == "valid"
+
+        # Hop 5 — run what came back: the fork's staged bytes through the
+        # shared sandboxed runner, answering in the fork's own voice.
+        from paa.pipelines.base import PipelineStatus
+        from paa.pipelines.journal import CallJournal
+        from paa.pipelines.sandboxed import SandboxedPipelineRunner
+
+        run_id = uuid.uuid4()
+        journal = CallJournal(ledger, run_id)
+        await journal.run_started("demo.fork", "2.0.0", run_kind="installed")
+        runner = SandboxedPipelineRunner(
+            sandbox=SubprocessSandbox(),
+            journal=journal,
+            staged=report.staged,
+            declaration=PipelineRegistry(
+                local_dir=consumer_home / "pipelines"
+            ).get("demo.fork").declaration,
+        )
+        result = await runner.run("hello around the loop")
+        await journal.run_completed(result.status.value, metrics=dict(result.metrics))
+
+        assert result.status is PipelineStatus.COMPLETED
+        assert result.summary == "fork-echo: hello around the loop"
 
 
 class TestTheOneCallDoor:
