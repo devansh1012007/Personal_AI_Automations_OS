@@ -123,7 +123,7 @@ responsibility and the files it contains. All paths are repository-relative.
 | `paa gate` | `cli/main.py:265` | `gate` |
 | `paa agent` | `src/paa/cli/coder.py:54` | `register_agent` → `agent` |
 | `paa tui` | `cli/main.py:539` | `tui` |
-| `paa memory` | `cli/main.py:702` | `memory_app`: facts/search/signals/drain/world-model |
+| `paa memory` | `cli/main.py:797` | `memory_app`: facts/search/signals/drain/world-model |
 | `paa observe` | `src/paa/cli/observe.py:147` | `observe`: run a CLI under observation, leave a T1 bundle (SPEC 2 W7) |
 | `paa chat` | `src/paa/cli/chat.py:160` | the chat surface — TUI, or `--plain` (SPEC 2 W4) |
 | `paa mcp serve` | `src/paa/cli/mcp.py:120` | stdio MCP server (SPEC 2 W4) |

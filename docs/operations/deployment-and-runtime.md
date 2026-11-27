@@ -44,7 +44,7 @@ Programmatic: `Runtime.build()` (`src/paa/runtime.py:353`):
 
 CLI one-shot commands build a `Runtime`, do one thing, print, and close
 (`cli/main.py:112`). `paa serve` builds one `Runtime`, starts the `Daemon` and
-FastAPI app over it (`cli/main.py:492`).
+FastAPI app over it (`cli/main.py:588`).
 
 ## Daemon loops
 

@@ -21,6 +21,7 @@ import asyncio
 import json
 import uuid
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import typer
@@ -255,6 +256,101 @@ def ledger(correlation_id: str = typer.Argument(...)) -> None:
             colour = "green" if ok else "red"
             detail = "ok" if ok else str(problems)
             console.print(f"chain integrity: [{colour}]{detail}[/{colour}]")
+        finally:
+            await rt.close()
+
+    _run(_do())
+
+
+@app.command()
+def rollback(
+    scope: str = typer.Argument(
+        ..., help="The lineage whose effects to compensate (a task or run id)."
+    ),
+    workspace: Path | None = typer.Option(
+        None,
+        "--workspace",
+        "-w",
+        help="The workspace root file effects are jailed to (required when the "
+        "scope has compensable file effects).",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print the report as JSON."),
+) -> None:
+    """Compensate a scope's effects — new authorized actions, not an undo.
+
+    Walks the scope's effect rows newest-first and settles each one as a
+    fresh, journalled action on its own lineage; effects already settled
+    are skipped, so a re-run after a crash completes the remainder without
+    double-compensating. Irreversible effects are reported, not "fixed".
+
+    Exit 0: at least one effect compensated this run (irreversible
+    effects may be reported alongside). Exit 1: nothing to roll back —
+    unknown scope, no effects, nothing compensable, all already
+    compensated, or every attempt failed. Exit 2: the rollback cannot
+    run honestly as asked (a scope that is not an id, or compensable
+    file effects without --workspace).
+    """
+
+    async def _do() -> None:
+        from paa.effects.rollback import RollbackRefused, rollback_scope
+        from paa.storage.coldlake import get_blob_store
+
+        try:
+            resolved = uuid.UUID(scope)
+        except ValueError:
+            console.print(
+                f"[red]usage: {scope!r} is not a task or lineage id (a uuid)[/red]"
+            )
+            raise typer.Exit(2) from None
+
+        rt = await _build_runtime()
+        try:
+            if not await rt.ledger.read_correlation(resolved):
+                console.print(f"[red]no such task or lineage: {scope}[/red]")
+                raise typer.Exit(1)
+            try:
+                report = await rollback_scope(
+                    rt.ledger,
+                    resolved,
+                    workspace_root=workspace,
+                    blob_store=get_blob_store(rt.settings.storage),
+                )
+            except RollbackRefused as exc:
+                # The named refusal (missing --workspace, an unresolvable
+                # blob) is a usage error: the operator can act on it.
+                console.print(f"[red]rollback refused:[/red] {exc}")
+                raise typer.Exit(2) from exc
+            if as_json:
+                console.print_json(json.dumps(report.to_json()))
+            else:
+                table = Table("effect", "kind", "status", "owner call", "detail")
+                for entry in report.entries:
+                    colour = {
+                        "compensated": "green",
+                        "already_compensated": "dim",
+                        "irreversible": "yellow",
+                        "failed": "red",
+                    }.get(entry.status)
+                    status = (
+                        f"[{colour}]{entry.status}[/{colour}]" if colour else entry.status
+                    )
+                    table.add_row(
+                        entry.effect_id[:12],
+                        entry.kind,
+                        status,
+                        entry.owner_call,
+                        entry.detail,
+                    )
+                if report.entries:
+                    console.print(table)
+                console.print(
+                    f"{report.newly_compensated} compensated, "
+                    f"{report.already_compensated} already, "
+                    f"{report.irreversible} irreversible, "
+                    f"{report.failed} failed — rollback lineage "
+                    f"{report.rollback_lineage}"
+                )
+            raise typer.Exit(report.exit_code)
         finally:
             await rt.close()
 

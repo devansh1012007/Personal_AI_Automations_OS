@@ -182,7 +182,7 @@ When a required provider disappears, becomes unhealthy, changes contract, or los
 
 These graphs connect through stable IDs and ledger events, but they are not interchangeable. See the [Temporal and spatial composability addendum in VISION](docs/VISION.md#appendix-temporal-and-spatial-composability-for-paa) for the proposed object model, lifecycle invariants, event candidates, and validation scenarios.
 
-**Implementation status:** This is a proposed architectural direction, not a claim that the dependency resolver, effect registry, universal harness protocol, or hot replacement system is already implemented. The first step is to prove the smallest lifecycle and provider contracts against real integrations before generalising them.
+**Implementation status:** The dependency resolver, universal harness protocol, and hot replacement system remain proposed, not implemented. The effect registry is implemented at v1 ([ADR-0054](docs/adr/0054-effect-registry-v1.md)): effect specs are ledger rows riding `PIPELINE_CALL_COMPLETED`, and `paa rollback` settles a scope's effects as new, separately authorized, journalled actions — compensation as data, never a callable, never a model judgment. The v1 boundary is named: workspace file effects are compensable (digest-verified restore or remove); external effects default to the irreversible marker and are reported, not "fixed".
 
 ## Front-half / back-half boundary
 

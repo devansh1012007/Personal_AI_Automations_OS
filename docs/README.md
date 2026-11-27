@@ -37,7 +37,7 @@ Major subsystems:
 | Marketplace | `src/paa/marketplace/` | Signed packages, five-gate installer, registry clients |
 | Observability | `src/paa/observability/` | Logging, metrics, tracing, execution runs |
 | Daemon | `src/paa/daemon.py` | Dispatch, ingestion, maintenance loops |
-| CLI | `src/paa/cli/main.py` | `paa submit/run/status/ledger/recover/doctor/serve/agent/mode/tui/memory/chat/mcp/pipeline/observe/attest/verify` |
+| CLI | `src/paa/cli/main.py` | `paa submit/run/status/ledger/recover/doctor/serve/agent/mode/tui/memory/chat/mcp/pipeline/observe/attest/verify/rollback` |
 | API | `src/paa/api/` | FastAPI ingestion edge (loopback only, port 8787) |
 | TUI | `src/paa/tui/` | Interactive dashboard |
 
@@ -48,7 +48,7 @@ Primary entry points:
 * `paa doctor` — report live backends/sandbox plus the chat model, MCP token env and TUI extra (`cli/main.py:310`)
 * `paa recover` — post-crash boot sweep (`cli/main.py:292`)
 * `paa ledger <id>` — walk a task's event chain (`cli/main.py:219`)
-* `paa memory <subcommand>` — facts/search/signals/drain/world-model (`cli/main.py:702`)
+* `paa memory <subcommand>` — facts/search/signals/drain/world-model (`cli/main.py:797`)
 * `paa observe -- <cmd>` — run any CLI under observation, leave the T1 evidence bundle (`src/paa/cli/observe.py:147`)
 * `paa record run -- <cmd>` — the flight recorder: the harness under the evidence boundary, tool calls through the MCP policy proxy, the attested bundle at close (`src/paa/cli/record.py:83`)
 * `paa record verify <run-dir>` — the flight record's own chain: schema, sequence, every link (`src/paa/cli/record.py:264`)
@@ -98,6 +98,7 @@ Module-specific deep dives
 - [modules/cli.md](modules/cli.md)
 - [modules/console.md](modules/console.md)
 - [modules/pipelines.md](modules/pipelines.md)
+- [modules/effects.md](modules/effects.md) — the effect registry v1 (ADR-0054): effects as ledger rows on `PIPELINE_CALL_COMPLETED`, the reader-derived index, and `paa rollback` as new authorized work — compensation as data, irreversible effects reported, never "fixed".
 
 Data and storage
 - [data/data-models-and-relationships.md](data/data-models-and-relationships.md)

@@ -36,6 +36,19 @@ house replay rule — and is what recovery, replay and ``paa pipeline
 trace`` read. It resolves blobbed results through the blob store when
 one is supplied, so a replayed run serves the same value the original
 call returned, from inline or from the lake alike.
+
+ADR-0054 adds one door, deliberately on the *existing* vocabulary rather
+than a new ``EventType``: ``call_completed`` accepts an optional
+:class:`~paa.effects.spec.EffectSpec` (and, for the rollback service, a
+``compensates`` effect-id reference). A mutating call that produced a
+workspace file effect attaches it — the effect record rides the
+COMPLETED row's payload as a versioned ``effect`` field, so effect rows
+*are* ledger rows and the effect registry stays a reader, never a
+second store. No new event type means no new ceremony: the v=1 goldens,
+the ADR-0008 discriminator scheme, the replay-total property and the
+boot-sweep exemptions all keep holding unchanged, and a rollback
+lineage — written through this same journal — inherits the pipeline
+lineage's sweep exemption for free.
 """
 
 from __future__ import annotations
@@ -50,6 +63,7 @@ from typing import Any
 
 from paa.core.errors import PaaError
 from paa.core.types import EventType
+from paa.effects.spec import EffectSpec
 from paa.ledger.events import (
     BlobStoreLike,
     LedgerEvent,
@@ -350,7 +364,13 @@ class CallJournal:
         )
 
     async def call_completed(
-        self, seq: int, method: str, result: Any
+        self,
+        seq: int,
+        method: str,
+        result: Any,
+        *,
+        effect: EffectSpec | None = None,
+        compensates: str | None = None,
     ) -> LedgerEvent:
         """Append PIPELINE_CALL_COMPLETED with the servable result.
 
@@ -360,7 +380,25 @@ class CallJournal:
         be canonically serialised raises before anything is appended —
         an unrecordable result is a result the journal cannot serve back,
         and pretending otherwise would make replay a lie.
+
+        ADR-0054's effect door: ``effect`` attaches the call's
+        :class:`~paa.effects.spec.EffectSpec` to this row (a versioned
+        ``effect`` field; absent on rows written before the door existed
+        or by call sites with no effect to declare), and ``compensates``
+        names the effect id a compensation row settles — the reference
+        the rollback service's idempotency derivation reads back. The
+        spec's owner must be *this* call: an effect ridden by the wrong
+        row would misattribute ownership, so a mismatch raises before
+        anything is appended (the abort rule, same as a non-monotonic
+        seq).
         """
+        if effect is not None and (
+            effect.owner.lineage != str(self._run_id) or effect.owner.seq != seq
+        ):
+            raise ValueError(
+                "the effect's owner must be the call it rides "
+                f"(owner {effect.owner}, call {self._run_id}/call:{seq})"
+            )
         result_json = canonical_json(result)
         payload: dict[str, Any] = {
             "v": 1,
@@ -370,6 +408,10 @@ class CallJournal:
             "result_sha256": hashlib.sha256(result_json.encode("utf-8")).hexdigest(),
             "result_json": result_json,
         }
+        if effect is not None:
+            payload["effect"] = effect.to_payload()
+        if compensates is not None:
+            payload["compensates"] = compensates
         return await self._append(
             EventType.PIPELINE_CALL_COMPLETED, payload, f"call:{seq}:COMPLETED"
         )
