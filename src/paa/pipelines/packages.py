@@ -1,25 +1,38 @@
-"""The `pipeline` package kind — local/git/file sources through the gates.
+"""The `pipeline` package kind — local/git/hub/file sources through the gates.
 
 SPEC 2 Wave 8, row C8.6 — the pipeline spec's **P5-lite**: the local
 directory first, then the pinned git URL, then the ``pipeline`` kind in
-a ``.paapkg``, all through the existing five-gate installer. The row
-the spec gates on ("do not start the hosted economy without a real
-outside author") is respected: **the hosted marketplace stays parked** —
-:mod:`paa.marketplace.registry_client` is untouched, there is no
-publishing verb, and the only remotes this flow will talk to are git
-URLs the operator names at a ref the operator pins.
+a ``.paapkg``, all through the existing five-gate installer. W9 C9.1
+(the operator's order that lifted the spec's own P5 gate) added the
+hosted half: **hub sources** — ``hub:<name>[@<version>] --hub
+<dir-or-url>`` — read through the registry client (a directory in the
+``LocalDirectoryRegistry`` format, or an ``HttpRegistry`` URL), and the
+publish verb that writes that format lives in
+:mod:`paa.pipelines.publish`. The hub is untrusted exactly like every
+other source: nothing it returns becomes runnable until the gates
+below have passed, and a hub-sourced refusal leaves the same zero
+trace a local one does.
 
 The flow, one install action, one fresh lineage::
 
     source     (a local directory, a ``git+<scheme>://`` URL at a PINNED
-     |         ref — a commit SHA or a tag, never a moving branch — or
-     |         a signed ``.paapkg`` file; each resolves to the package's
-     |         bytes on local disk, and an unpinned or moving git ref is
-     |         a refusal before anything else runs)
+     |         ref — a commit SHA or a tag, never a moving branch — a
+     |         hub listing read through an untrusted registry client,
+     |         or a signed ``.paapkg`` file; each resolves to the
+     |         package's bytes on local disk, and an unpinned or moving
+     |         git ref is a refusal before anything else runs. A hub
+     |         fetch resolves the version FIRST — newest satisfiable,
+     |         refusing on ambiguity and naming the candidates — and
+     |         checks the served manifest against the index entry's
+     |         publisher signature before any gate is asked to trust it)
      v
     declaration (``pipeline.toml`` parsed by the SAME closed contract
      |         local manifests parse under — ``declaration_from_manifest``;
      |         the entrypoint is ``pipeline.py`` at the package root)
+     v
+    compatibility (the manifest's ``requires_paa`` range against the
+     |         RUNNING version — a package that excludes this runtime
+     |         refuses pre-gates, named)
      v
     the gates  (the five-gate installer, unmodified in its order:
      |         SIGNATURE, CONTENT_HASH, AST_SCAN, PERMISSIONS,
@@ -73,6 +86,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from paa import __version__
 from paa.core.errors import PaaError
 from paa.core.types import EventType, PermissionMode
 from paa.improve.gate import (
@@ -83,7 +97,18 @@ from paa.improve.gate import (
 from paa.ledger.events import LedgerEvent
 from paa.ledger.store import LedgerStore
 from paa.marketplace.package import PIPELINE_KIND, PackageManifest, SkillPackage
-from paa.pipelines.registry import LocalManifestError, declaration_from_manifest
+from paa.marketplace.registry_client import (
+    HttpRegistry,
+    LocalDirectoryRegistry,
+    MarketplaceRegistry,
+    RegistryEntry,
+)
+from paa.marketplace.signing import signing_is_secure, verify
+from paa.pipelines.registry import (
+    PIPELINE_PROTOCOL,
+    LocalManifestError,
+    declaration_from_manifest,
+)
 from paa.pipelines.sandboxed import PIPELINE_ENTRYPOINT
 from paa.pipelines.slots import PipelineDeclaration
 from paa.storage.relational.base import RelationalBackend
@@ -95,6 +120,7 @@ if TYPE_CHECKING:
 __all__ = [
     "REVIEW_ARTIFACT_NAME",
     "SOURCE_GIT",
+    "SOURCE_HUB",
     "SOURCE_LOCAL_DIR",
     "SOURCE_PAAPKG",
     "CapabilityReview",
@@ -102,20 +128,24 @@ __all__ = [
     "PipelinePackageError",
     "PipelinePackageInstaller",
     "ReviewApprover",
+    "compatibility_refusal",
     "install_pipeline_package",
     "refuse_review",
+    "registry_for_hub",
     "render_review",
     "terminal_review_approver",
 ]
 
 log = structlog.get_logger(__name__)
 
-#: The three sources a pipeline package may come from — the P5-lite set.
-#: Closed vocabulary: the value rides the ``source`` key of both event
-#: payloads, where it is a classifier, not free text.
+#: The four sources a pipeline package may come from — the P5-lite set,
+#: plus the hub C9.1 added. Closed vocabulary: the value rides the
+#: ``source`` key of both event payloads, where it is a classifier, not
+#: free text.
 SOURCE_LOCAL_DIR = "local_dir"
 SOURCE_GIT = "git_pinned"
 SOURCE_PAAPKG = "paapkg"
+SOURCE_HUB = "hub"
 
 #: The review artifact's filename inside a staged install: the human's
 #: recorded decision travels with the bytes it cleared, so an auditor
@@ -124,11 +154,12 @@ REVIEW_ARTIFACT_NAME = "capability-review.json"
 
 #: The refusal stages, in flow order. The five gate names are the
 #: installer's own ``InstallGate`` values; ``source``, ``declaration``,
-#: ``capability_review`` and ``conformance`` are the stages this flow
-#: adds around them. Closed vocabulary — it rides the ``stage`` key of
-#: the REFUSED payload.
+#: ``compatibility``, ``capability_review`` and ``conformance`` are the
+#: stages this flow adds around them. Closed vocabulary — it rides the
+#: ``stage`` key of the REFUSED payload.
 STAGE_SOURCE = "source"
 STAGE_DECLARATION = "declaration"
+STAGE_COMPATIBILITY = "compatibility"
 STAGE_CAPABILITY_REVIEW = "capability_review"
 STAGE_CONFORMANCE = "conformance"
 
@@ -140,6 +171,12 @@ STAGE_CONFORMANCE = "conformance"
 _GIT_PREFIX = "git+"
 _URL_SHAPE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://\S+$")
 
+#: The prefix that names a hub source: ``hub:<name>[@<version>]``.
+_HUB_PREFIX = "hub:"
+
+#: The schemes that name a remote hub (anything else is a directory).
+_HTTP_SCHEMES = ("http://", "https://")
+
 #: One host-side git call's wall budget. A clone of a small repository
 #: is seconds; anything past this is a hung helper, and the install
 #: refuses rather than hanging the operator.
@@ -149,6 +186,12 @@ _GIT_TIMEOUT_S = 120.0
 #: budget every journal reason uses, for the same reason: a longer
 #: reason carries risk, not information.
 _MAX_REASON_CHARS = 200
+
+#: Bound on a fragment of hub data a refusal reason quotes — the same
+#: discipline the marketplace's remote-body rules use: the index is
+#: remote, a reason is the project's own words, and a quoted bounded
+#: fragment is the one place the two may meet.
+_MAX_REMOTE_CHARS = 64
 
 #: Bound on the rendered review the CLI shows: the artifact is data, the
 #: terminal is a surface, and an unbounded ask description would bury
@@ -593,7 +636,7 @@ async def _resolve_git_source(
 ) -> _ResolvedSource:
     """The git source as the flow's one source shape.
 
-    A thin adapter so the install flow reads one type across all three
+    A thin adapter so the install flow reads one type across all four
     sources — the resolve step's contract is "bytes on local disk plus
     where they came from", not "a tuple some callers remember the order
     of".
@@ -604,6 +647,223 @@ async def _resolve_git_source(
         manifest=None,
         source=SOURCE_GIT,
         source_ref=sha,
+        scratch=None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# The hub source (C9.1) — an untrusted registry read, gated like any other
+# ---------------------------------------------------------------------------
+
+
+def registry_for_hub(hub: str) -> MarketplaceRegistry:
+    """The registry a hub reference reads through: a directory or a URL.
+
+    The directory form is the ``LocalDirectoryRegistry`` format the
+    publish flow writes; a URL is an ``HttpRegistry``. Both are
+    **untrusted**: whatever comes back is bytes the seven stages below
+    judge, never a trust decision in itself. The selection is a
+    module-level function (not buried in the resolver) so a test can
+    serve the HTTP form from a mocked transport without a socket — the
+    seam is the registry, not the network.
+    """
+    text = hub.strip()
+    if text.startswith(_HTTP_SCHEMES):
+        return HttpRegistry(text)
+    return LocalDirectoryRegistry(text)
+
+
+def _hub_candidates(entries: list[RegistryEntry], name: str) -> list[RegistryEntry]:
+    """The entries that name ``name`` exactly.
+
+    ``search`` matches substrings over name and description, so a query
+    for ``demo`` also answers ``demo.echo``; the install asked for one
+    name, and these are its candidates — the rest were noise.
+    """
+    return [entry for entry in entries if entry.package_name == name]
+
+
+def _sole_entry(matching: list[RegistryEntry], name: str) -> RegistryEntry:
+    """One entry, or a refusal when the index is ambiguous.
+
+    Two index rows that share ``(name, version)`` but disagree on the
+    publisher signature are two different packages wearing one identity
+    — an install cannot pick between them honestly, so it refuses and
+    names the candidates (their versions, bounded and quoted: the index
+    is remote data, a reason is the project's own words).
+    """
+    signatures = {(entry.publisher_key, entry.signature) for entry in matching}
+    if len(signatures) > 1:
+        quoted = ", ".join(repr(e.version[:_MAX_REMOTE_CHARS]) for e in matching[:5])
+        raise PipelinePackageError(
+            f"the hub index is ambiguous about {name!r} — the candidates "
+            f"disagree ({quoted}); name the version explicitly or refuse the hub",
+            stage=STAGE_SOURCE,
+        )
+    return matching[0]
+
+
+async def _resolve_hub_source(
+    source: str, hub: str, scratch: Path, *, allow_unverified: bool
+) -> _ResolvedSource:
+    """The hub source: resolve the version, fetch, and check the entry's
+    vouch — all before any gate is asked to trust a byte.
+
+    The registry is untrusted, so this resolver does for the hub what
+    the git one does for a clone: turns a remote's answer into local
+    bytes plus a named refusal. Version resolution happens FIRST
+    (newest satisfiable; ambiguity refuses and names the candidates),
+    then the fetch, then the pre-gates signature check — the served
+    manifest must be signed by the key the index entry names, with the
+    signature the index entry carries, or the install refuses unless
+    the operator opted into unverified bytes. A hub that carries no
+    vouch at all is the same refusal: the entry did not promise
+    anything, and nothing here will pretend it did.
+    """
+    spec = source[len(_HUB_PREFIX) :]
+    name, sep, version_text = spec.partition("@")
+    if not name or (sep and not version_text.strip()):
+        raise PipelinePackageError(
+            "a hub source is hub:<name>[@<version>] with a --hub <dir-or-url>",
+            stage=STAGE_SOURCE,
+        )
+    version: str | None = version_text.strip() if sep else None
+
+    # A hub path the filesystem refuses to open (a file where a directory
+    # belongs, an unwritable parent) is a named refusal, not a traceback:
+    # the operator named the hub, and the hub's shape is the operator's
+    # own answer to read.
+    try:
+        registry = registry_for_hub(hub)
+    except OSError as exc:
+        raise PipelinePackageError(
+            f"the hub could not be opened ({type(exc).__name__})", stage=STAGE_SOURCE
+        ) from exc
+    try:
+        entries = await registry.search(name)
+    except PaaError as exc:
+        raise PipelinePackageError(
+            f"the hub could not be searched: {exc.message}", stage=STAGE_SOURCE
+        ) from exc
+    candidates = _hub_candidates(entries, name)
+    if not candidates:
+        raise PipelinePackageError(
+            f"the hub holds no package named {name!r}", stage=STAGE_SOURCE
+        )
+
+    if version is not None:
+        matching = [entry for entry in candidates if entry.version == version]
+        if not matching:
+            held = ", ".join(
+                repr(entry.version[:_MAX_REMOTE_CHARS]) for entry in candidates[:5]
+            )
+            raise PipelinePackageError(
+                f"the hub holds no {name!r} version {version[:_MAX_REMOTE_CHARS]!r}; "
+                f"it holds {held}",
+                stage=STAGE_SOURCE,
+            )
+        entry = _sole_entry(matching, name)
+    else:
+        # Newest satisfiable: the index entry's own compatibility
+        # restatement is the first filter (it is the hub's word — the
+        # definitive check runs one stage later, on the signed manifest).
+        satisfiable = [
+            entry
+            for entry in candidates
+            if compatibility_refusal(entry.requires_paa, __version__) is None
+        ]
+        if not satisfiable:
+            ranges = ", ".join(
+                f"{entry.version[:_MAX_REMOTE_CHARS]!r} at "
+                f"{entry.requires_paa[:_MAX_RANGE_CHARS]!r}"
+                for entry in candidates[:5]
+            )
+            raise PipelinePackageError(
+                f"no version of {name!r} in the hub satisfies the running "
+                f"version {__version__} (candidates: {ranges})",
+                stage=STAGE_SOURCE,
+            )
+        orderable = [
+            (parsed, entry)
+            for entry in satisfiable
+            if (parsed := _version_tuple(entry.version)) is not None
+        ]
+        if not orderable:
+            raise PipelinePackageError(
+                f"no version of {name!r} in the hub is orderable", stage=STAGE_SOURCE
+            )
+        newest = max(parsed for parsed, _ in orderable)
+        entry = _sole_entry(
+            [e for _, e in orderable if _version_tuple(e.version) == newest], name
+        )
+
+    try:
+        package = await registry.fetch(name, entry.version)
+    except PaaError as exc:
+        raise PipelinePackageError(
+            f"the hub could not serve the package: {exc.message}", stage=STAGE_SOURCE
+        ) from exc
+    except FileNotFoundError as exc:
+        raise PipelinePackageError(
+            "the hub could not serve the package it had just listed",
+            stage=STAGE_SOURCE,
+        ) from exc
+
+    # The pre-gates vouch check: the hub's entry is a claim about the
+    # bytes, and the claim is tested before any gate is asked to trust
+    # them. Every branch below is overridable by the operator's explicit
+    # opt-in — the same flag, the same meaning, as the signature gate's
+    # own escape hatch.
+    if not allow_unverified:
+        if not signing_is_secure():
+            raise PipelinePackageError(
+                "the signing backend is the insecure dev fallback; the hub "
+                "entry's signature cannot be authenticated",
+                stage=STAGE_SOURCE,
+            )
+        if not entry.publisher_key or not entry.signature:
+            raise PipelinePackageError(
+                "the hub entry carries no publisher signature — the hub did "
+                "not vouch for these bytes",
+                stage=STAGE_SOURCE,
+            )
+        # The vouch is tested first, on its own terms: does the entry's
+        # (key, signature) authenticate the served manifest? A hub that
+        # lists one key and serves bytes signed by another — or that
+        # mangles the signature it lists — fails here, whatever the
+        # archive's own restatement says.
+        if not verify(
+            package.manifest.signing_bytes(), entry.signature, entry.publisher_key
+        ):
+            raise PipelinePackageError(
+                "the package's signature does not verify under the hub "
+                "index's publisher key",
+                stage=STAGE_SOURCE,
+            )
+        # Then the archive's own restatement must agree with the entry.
+        # The manifest's ``publisher_key`` sits OUTSIDE signing_bytes (a
+        # key cannot sign the claim about itself), so a package may
+        # restate one publisher while another key's signature — the
+        # entry's — authenticates its bytes. The vouch held; the
+        # identities disagree; the install refuses rather than pick
+        # which of the two to believe.
+        if (
+            package.manifest.publisher_key != entry.publisher_key
+            or package.manifest.signature != entry.signature
+        ):
+            raise PipelinePackageError(
+                "the served package does not match the hub's index entry",
+                stage=STAGE_SOURCE,
+            )
+
+    directory = scratch / "package"
+    directory.mkdir()
+    _write_files(directory, package.files)
+    return _ResolvedSource(
+        directory=directory,
+        manifest=package.manifest,
+        source=SOURCE_HUB,
+        source_ref=f"{name}@{entry.version}",
         scratch=None,
     )
 
@@ -645,6 +905,10 @@ class PipelinePackageInstaller:
         self._sandbox = sandbox
         self._permission_mode = permission_mode
         self._approver = approver
+        # The opt-in the hub resolver needs before the gates are reached;
+        # the same word the gates' own signature gate reads, kept in one
+        # place so the two can never disagree.
+        self._allow_unverified = allow_unverified
         # The signature gate's own rule, passed through unchanged: an
         # unsigned source installs only on the operator's explicit
         # opt-in, never on a default this flow quietly applies.
@@ -681,6 +945,7 @@ class PipelinePackageInstaller:
         *,
         ref: str | None = None,
         mode: PermissionMode | None = None,
+        hub: str | None = None,
     ) -> PipelineInstallReport:
         """Install one pipeline package from one source, through every stage."""
         import tempfile
@@ -697,6 +962,7 @@ class PipelinePackageInstaller:
                 lineage=lineage,
                 journal=journal,
                 scratch_root=scratch_root,
+                hub=hub,
             )
         finally:
             shutil.rmtree(scratch_root, ignore_errors=True)
@@ -710,19 +976,37 @@ class PipelinePackageInstaller:
         lineage: uuid.UUID,
         journal: _PackageJournal,
         scratch_root: Path,
+        hub: str | None,
     ) -> PipelineInstallReport:
         # -- stage 1: the source resolves to bytes on local disk ----------------
         if source.startswith(_GIT_PREFIX):
             source_label = SOURCE_GIT
+        elif source.startswith(_HUB_PREFIX):
+            source_label = SOURCE_HUB
         elif source.endswith(".paapkg"):
             source_label = SOURCE_PAAPKG
         else:
             source_label = SOURCE_LOCAL_DIR
+        if source_label == SOURCE_HUB and not hub:
+            return await self._refuse(
+                journal,
+                package_name=_best_name(source),
+                version="",
+                source=source_label,
+                stage=STAGE_SOURCE,
+                reason="a hub source needs --hub <dir-or-url>",
+                lineage=lineage,
+            )
         try:
             if source_label == SOURCE_PAAPKG:
                 resolved = await self._resolve_paapkg(source, scratch_root)
             elif source_label == SOURCE_GIT:
                 resolved = await _resolve_git_source(source, ref, scratch_root)
+            elif source_label == SOURCE_HUB:
+                assert hub is not None  # the guard above refused the missing case
+                resolved = await _resolve_hub_source(
+                    source, hub, scratch_root, allow_unverified=self._allow_unverified
+                )
             else:
                 resolved = self._resolve_directory(source)
         except PipelinePackageError as exc:
@@ -738,7 +1022,7 @@ class PipelinePackageInstaller:
 
         # -- stage 2: the declaration (the same closed contract) ----------------
         try:
-            declaration = self._read_declaration(resolved.directory)
+            declaration = _read_declaration(resolved.directory)
         except PipelinePackageError as exc:
             return await self._refuse(
                 journal,
@@ -753,7 +1037,7 @@ class PipelinePackageInstaller:
         # -- the package manifest: built for a directory/git source (unsigned),
         # -- read from the archive for a .paapkg (the signature covers it)
         if resolved.manifest is None:
-            manifest = self._build_manifest(declaration, resolved.source)
+            manifest = _build_manifest(declaration, resolved.source)
             # An unsigned source: the manifest is this flow's own, so the
             # content hash is computed here, over the bytes as they stand.
             package = SkillPackage.from_directory(resolved.directory, manifest=manifest)
@@ -778,7 +1062,25 @@ class PipelinePackageInstaller:
             # gate that actually refused.
             package = SkillPackage(manifest, _read_files(resolved.directory))
 
-        # -- stage 3: the five gates, unmodified in their order -----------------
+        # -- stage 3: the compatibility floor, pre-gates -------------------------
+        # A package that excludes the running version refuses before any
+        # gate runs — the same cheap failure the declaration itself gets.
+        # Checked on the manifest (the signed copy for a ``.paapkg``/hub
+        # source, this flow's own for a directory/git source, which
+        # carries the declaration's range verbatim).
+        problem = compatibility_refusal(manifest.requires_paa, __version__)
+        if problem is not None:
+            return await self._refuse(
+                journal,
+                package_name=declaration.name,
+                version=declaration.version,
+                source=source_label,
+                stage=STAGE_COMPATIBILITY,
+                reason=problem,
+                lineage=lineage,
+            )
+
+        # -- stage 4: the five gates, unmodified in their order -----------------
         report = await self._installer.install(package, mode=mode)
         if not report.installed:
             gate = report.refused_at.value if report.refused_at is not None else "unknown"
@@ -794,7 +1096,7 @@ class PipelinePackageInstaller:
                 signature_state=report.signature_state.value,
             )
 
-        # -- stage 4: conformance, driven against the gated bytes ---------------
+        # -- stage 5: conformance, driven against the gated bytes ---------------
         # No sandbox, no conformance: the pipeline kind's contract is that
         # the bytes RUN sandboxed, and an install that cannot verify that
         # is an install that cannot verify its own loading contract. The
@@ -844,7 +1146,7 @@ class PipelinePackageInstaller:
                 signature_state=report.signature_state.value,
             )
 
-        # -- stage 5: the capability review (the human gate) --------------------
+        # -- stage 6: the capability review (the human gate) --------------------
         review = CapabilityReview(
             package_name=declaration.name,
             version=declaration.version,
@@ -882,7 +1184,7 @@ class PipelinePackageInstaller:
                 conformance={check.name: check.status for check in conformance.checks},
             )
 
-        # -- stage 6: stage the gated bytes; the registry row follows the layout
+        # -- stage 7: stage the gated bytes; the registry row follows the layout
         staged = self._stage(package, review, decision)
 
         await journal.installed(
@@ -968,49 +1270,10 @@ class PipelinePackageInstaller:
 
     # -- the declaration ---------------------------------------------------------
 
-    def _read_declaration(self, directory: Path) -> PipelineDeclaration:
-        """Parse ``pipeline.toml`` under the SAME closed contract as local
-        manifests — the ADR-0052 rules are the rules; an off-contract
-        declaration (unknown section, undeclarable capability, bad
-        ``run.resume``) is a named refusal before any gate runs."""
-        manifest_path = directory / "pipeline.toml"
-        if not manifest_path.is_file():
-            raise PipelinePackageError(
-                "the package has no pipeline.toml — a pipeline package is its "
-                "declaration plus its entrypoint",
-                stage=STAGE_DECLARATION,
-            )
-        try:
-            declaration = declaration_from_manifest(manifest_path)
-        except LocalManifestError as exc:
-            raise PipelinePackageError(
-                f"the declaration is off contract: {exc.message}",
-                stage=STAGE_DECLARATION,
-            ) from exc
-        entrypoint = directory / PIPELINE_ENTRYPOINT
-        if not entrypoint.is_file():
-            raise PipelinePackageError(
-                f"the package has no {PIPELINE_ENTRYPOINT} entrypoint",
-                stage=STAGE_DECLARATION,
-            )
-        return declaration
-
-    def _build_manifest(
-        self, declaration: PipelineDeclaration, source: str
-    ) -> PackageManifest:
-        """The package manifest for an unsigned source, built from the
-        declaration: the kind and the entrypoint this flow pins, the
-        sandbox-run permission the adapter's own execution needs, and
-        the identity fields the installer's gates and registry read."""
-        return PackageManifest(
-            package_name=declaration.name,
-            version=declaration.version,
-            kind=PIPELINE_KIND,
-            publisher=source,
-            description=declaration.description[:500],
-            required_permissions=["PERM_SANDBOX_RUN"],
-            entrypoints=[PIPELINE_ENTRYPOINT],
-        )
+    # (the declaration reader and the manifest builder live at module level
+    # since C9.1: the publish flow reuses the SAME closed contract and the
+    # SAME manifest shape rather than growing a second opinion about
+    # either — see ``_read_declaration`` / ``_build_manifest`` below.)
 
     # -- conformance ---------------------------------------------------------------
 
@@ -1129,6 +1392,7 @@ async def install_pipeline_package(
     allow_unverified: bool = False,
     approver: ReviewApprover | None = None,
     ref: str | None = None,
+    hub: str | None = None,
 ) -> PipelineInstallReport:
     """Install one pipeline package — the one-call form of the flow.
 
@@ -1146,12 +1410,168 @@ async def install_pipeline_package(
         allow_unverified=allow_unverified,
         approver=approver,
     )
-    return await installer.install(source, ref=ref)
+    return await installer.install(source, ref=ref, hub=hub)
 
 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+
+#: The compatibility clause shape: one operator and a dotted numeric
+#: bound (``>=4.1``, ``<5``, ``==4.1.0``), the same vocabulary
+#: ``[pipeline].requires_runtime`` parses under. Stated once so the
+#: publish check and the install check cannot drift apart.
+_CLAUSE_SHAPE = re.compile(r"^(>=|<=|==|>|<)\s*(\d+(?:\.\d+)*)$")
+
+#: The largest fragment of a ``requires_paa`` range a refusal reason
+#: quotes. The range may have arrived inside a remote manifest, and a
+#: reason is the project's own words — bounded and quoted, like every
+#: other fragment of remote text a message names.
+_MAX_RANGE_CHARS = 64
+
+
+def _version_tuple(text: str) -> tuple[int, ...] | None:
+    """A dotted numeric version as a tuple, or ``None`` when it is not one.
+
+    ``"4.1.0"`` → ``(4, 1, 0)``. A version with a non-numeric part is not
+    a version this comparison can order — ``None``, not a guess.
+    """
+    parts = text.strip().split(".")
+    if not all(part.isdigit() for part in parts):
+        return None
+    return tuple(int(part) for part in parts)
+
+
+def _leading_version_tuple(text: str) -> tuple[int, ...]:
+    """The leading numeric dot-parts of a version string.
+
+    The running version comes from the project's own ``__version__``
+    (e.g. ``"4.1.0"``); a pre-release suffix on some future version would
+    make the whole string unorderable, and the honest reading is to
+    compare the numeric prefix and ignore the rest.
+    """
+    parts: list[int] = []
+    for part in text.strip().split("."):
+        if not part.isdigit():
+            break
+        parts.append(int(part))
+    return tuple(parts)
+
+
+def _pad(a: tuple[int, ...], b: tuple[int, ...]) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Two tuples padded to a common length with zeroes.
+
+    A declared bound of ``4.1`` means ``4.1.*`` — the reading an operator
+    writes down — so ``==4.1`` matches a running ``4.1.0``. Padding both
+    sides to the longer shape makes every operator see that reading
+    without a special case per operator.
+    """
+    size = max(len(a), len(b))
+    return (a + (0,) * (size - len(a)), b + (0,) * (size - len(b)))
+
+
+def compatibility_refusal(requires_paa: str, running_version: str) -> str | None:
+    """The named refusal when a ``requires_paa`` range excludes the running
+    version — or ``None`` when the range is satisfied (or absent).
+
+    One comparison, used by both ends of the economy: the publish flow
+    refuses to publish a package its own range excludes (the publisher's
+    runtime IS the running version), and the install flow refuses a
+    package whose range excludes the machine it would land on, before
+    any gate runs. An unparseable range is a refusal in itself — a
+    version nobody can compare is a contract nobody can honour (the
+    registry's own rule for ``requires_runtime``, restated here for the
+    field a remote manifest carries).
+
+    The range is bounded and quoted in the reason: it may have arrived
+    inside a remote manifest, and a reason is the project's own words.
+    """
+    text = requires_paa.strip()
+    if not text:
+        return None
+    quoted = repr(text[:_MAX_RANGE_CHARS])
+    running = _leading_version_tuple(running_version)
+    for clause in text.split(","):
+        match = _CLAUSE_SHAPE.match(clause.strip())
+        if match is None:
+            return f"requires_paa {quoted} is not a parseable range"
+        op, bound = match.group(1), _version_tuple(match.group(2))
+        if bound is None:  # unreachable: the shape already demands numerics
+            return f"requires_paa {quoted} is not a parseable range"
+        left, right = _pad(running, bound)
+        if (
+            (op == ">=" and left < right)
+            or (op == "<=" and left > right)
+            or (op == "==" and left != right)
+            or (op == ">" and left <= right)
+            or (op == "<" and left >= right)
+        ):
+            return (
+                f"requires_paa {quoted} excludes the running version "
+                f"{running_version}"
+            )
+    return None
+
+
+def _read_declaration(directory: Path) -> PipelineDeclaration:
+    """Parse ``pipeline.toml`` under the SAME closed contract as local
+    manifests — the ADR-0052 rules are the rules; an off-contract
+    declaration (unknown section, undeclarable capability, bad
+    ``run.resume``) is a named refusal before any gate runs.
+
+    Module-level since C9.1: the publish flow reads a source declaration
+    through this same reader, so a package's declaration parses one way
+    wherever it came from and wherever it is going.
+    """
+    manifest_path = directory / "pipeline.toml"
+    if not manifest_path.is_file():
+        raise PipelinePackageError(
+            "the package has no pipeline.toml — a pipeline package is its "
+            "declaration plus its entrypoint",
+            stage=STAGE_DECLARATION,
+        )
+    try:
+        declaration = declaration_from_manifest(manifest_path)
+    except LocalManifestError as exc:
+        raise PipelinePackageError(
+            f"the declaration is off contract: {exc.message}",
+            stage=STAGE_DECLARATION,
+        ) from exc
+    entrypoint = directory / PIPELINE_ENTRYPOINT
+    if not entrypoint.is_file():
+        raise PipelinePackageError(
+            f"the package has no {PIPELINE_ENTRYPOINT} entrypoint",
+            stage=STAGE_DECLARATION,
+        )
+    return declaration
+
+
+def _build_manifest(
+    declaration: PipelineDeclaration, source: str
+) -> PackageManifest:
+    """The package manifest built from the declaration: the kind and the
+    entrypoint this flow pins, the sandbox-run permission the adapter's
+    own execution needs, the identity fields the installer's gates and
+    registry read, and — since C9.1 — the declaration's compatibility
+    range and protocol, carried into the manifest so the signed copy is
+    the copy an install refuses against.
+
+    Shared by the install flow (a directory/git source, unsigned) and
+    the publish flow (which signs the manifest right after building it,
+    and names the publisher as the role rather than the source).
+    """
+    return PackageManifest(
+        package_name=declaration.name,
+        version=declaration.version,
+        kind=PIPELINE_KIND,
+        publisher=source,
+        description=declaration.description[:500],
+        required_permissions=["PERM_SANDBOX_RUN"],
+        entrypoints=[PIPELINE_ENTRYPOINT],
+        requires_paa=declaration.requires_runtime,
+        protocol=PIPELINE_PROTOCOL,
+    )
 
 
 def _default_home() -> Path:
@@ -1166,8 +1586,12 @@ def _best_name(source: str) -> str:
 
     A refusal before the ``declaration`` stage still wants a name to
     refuse *by*; the source's own basename is the honest best guess and
-    never a fabrication.
+    never a fabrication. A hub source's basename is the spec the
+    operator typed (``hub:demo.echo@1.2.3``), so the name is taken from
+    the spec — the hub's own words are never in the source string.
     """
+    if source.startswith(_HUB_PREFIX):
+        return source[len(_HUB_PREFIX) :].partition("@")[0] or source
     trimmed = source.rstrip("/")
     if trimmed.endswith(".paapkg"):
         return Path(trimmed).stem

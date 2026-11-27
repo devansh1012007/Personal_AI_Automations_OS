@@ -155,6 +155,17 @@ def _has_identity(entry: dict[Any, Any]) -> bool:
     return all(isinstance(entry.get(key), str) for key in _REQUIRED_ENTRY_KEYS)
 
 
+def _str_field(entry: dict[str, Any], key: str) -> str:
+    """An index entry's optional string field, or ``""`` when absent.
+
+    The index is untrusted on both backends: a field that is present but
+    not a string is dropped rather than stringified — ``str({})`` would
+    turn a hostile mapping into text a caller might echo.
+    """
+    value = entry.get(key)
+    return value if isinstance(value, str) else ""
+
+
 @dataclass(frozen=True, slots=True)
 class _Excerpt:
     """The remote text a refusal is allowed to carry.
@@ -273,7 +284,17 @@ class RegistryError(PaaError):
 
 @dataclass(slots=True)
 class RegistryEntry:
-    """A package's public listing, before download."""
+    """A package's public listing, before download.
+
+    The trust and compatibility fields (``publisher_key``, ``signature``,
+    ``requires_paa``, ``protocol``) are the hub's *restatement* of what the
+    package's signed manifest carries — the index lets a client pick a
+    version and check a signature without opening every archive, but the
+    signed manifest remains the copy an install refuses against. They are
+    empty when the index does not carry them, and a hub that carries a
+    false one is caught by the pre-gates verification the installer runs
+    against the fetched bytes.
+    """
 
     package_name: str
     version: str
@@ -281,6 +302,10 @@ class RegistryEntry:
     publisher: str
     description: str = ""
     price: dict[str, Any] | None = None
+    publisher_key: str = ""
+    signature: str = ""
+    requires_paa: str = ""
+    protocol: str = ""
 
 
 class MarketplaceRegistry(abc.ABC):
@@ -378,6 +403,10 @@ class LocalDirectoryRegistry(MarketplaceRegistry):
                         publisher=entry.get("publisher", "unknown"),
                         description=entry.get("description", ""),
                         price=entry.get("price"),
+                        publisher_key=_str_field(entry, "publisher_key"),
+                        signature=_str_field(entry, "signature"),
+                        requires_paa=_str_field(entry, "requires_paa"),
+                        protocol=_str_field(entry, "protocol"),
                     )
                 )
         return hits[:limit]
@@ -391,6 +420,16 @@ class LocalDirectoryRegistry(MarketplaceRegistry):
         return SkillPackage.load(candidates[-1])
 
     async def publish(self, package: SkillPackage) -> None:
+        """Write the package and its index entry.
+
+        The entry mirrors the manifest's identity *and* its trust and
+        compatibility fields (publisher key, signature, ``requires_paa``,
+        ``protocol``) — the round-trip property C9.1 pins: what publish
+        writes, ``search`` lists and ``fetch`` returns, so a client can
+        pick a version and check a signature without opening the archive.
+        The private half of the publisher's key never reaches this method;
+        there is nothing here that could write it.
+        """
         m = package.manifest
         filename = f"{m.package_name}-{m.version}.paapkg"
         package.write(self._dir / filename)
@@ -409,6 +448,10 @@ class LocalDirectoryRegistry(MarketplaceRegistry):
                 "description": m.description,
                 "price": m.price,
                 "file": filename,
+                "publisher_key": m.publisher_key,
+                "signature": m.signature,
+                "requires_paa": m.requires_paa,
+                "protocol": m.protocol,
             }
         )
         self._save_index(index)
@@ -634,6 +677,17 @@ class HttpRegistry(MarketplaceRegistry):
             self._reject_body(operation=operation, reason="unexpected_shape", remote=remote)
         if price is not None and not isinstance(price, dict):
             self._reject_body(operation=operation, reason="unexpected_shape", remote=remote)
+        # The trust and compatibility restatements: optional, but a present
+        # one that is not a string is a shape error — the same rule the
+        # local registry's ``_str_field`` applies without an error channel.
+        compat: dict[str, str] = {}
+        for field in ("publisher_key", "signature", "requires_paa", "protocol"):
+            value = raw.get(field, "")
+            if not isinstance(value, str):
+                self._reject_body(
+                    operation=operation, reason="unexpected_shape", remote=remote
+                )
+            compat[field] = value
         return RegistryEntry(
             package_name=name,
             version=version,
@@ -641,6 +695,10 @@ class HttpRegistry(MarketplaceRegistry):
             publisher=publisher,
             description=description,
             price=price,
+            publisher_key=compat["publisher_key"],
+            signature=compat["signature"],
+            requires_paa=compat["requires_paa"],
+            protocol=compat["protocol"],
         )
 
     def _entries(self, payload: Any, *, remote: _Remote, operation: str) -> list[RegistryEntry]:

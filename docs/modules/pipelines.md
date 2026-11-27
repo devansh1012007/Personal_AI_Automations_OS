@@ -2,12 +2,12 @@
 
 ## Module identity
 
-- **Name:** pipelines — the pipeline platform: declarations, host, journal, registry, conformance, and (C8.6) distribution
+- **Name:** pipelines — the pipeline platform: declarations, host, journal, registry, conformance, distribution (C8.6) and the hosted economy (C9.1)
 - **Path:** `src/paa/pipelines/`
-- **Main responsibility:** The vocabulary every structured run speaks (SPEC 2's pipeline platform, `docs/plans/2026-11-21-pipeline-platform-spec.md`): a closed declaration contract (ADR-0052), a capability-granting host and facade, a ledger-backed call journal with replay (ADR-0050), a registry of what exists, a six-check conformance standard, and — since C8.6, the spec's P5-lite — the `pipeline` package kind installed from local dirs, pinned git URLs and signed `.paapkg` files through the marketplace's five gates.
+- **Main responsibility:** The vocabulary every structured run speaks (SPEC 2's pipeline platform, `docs/plans/2026-11-21-pipeline-platform-spec.md`): a closed declaration contract (ADR-0052), a capability-granting host and facade, a ledger-backed call journal with replay (ADR-0050), a registry of what exists, a six-check conformance standard, the `pipeline` package kind installed from local dirs, pinned git URLs, signed `.paapkg` files and hub listings through the marketplace's five gates (C8.6) — and, since C9.1 lifted the spec's P5 gate by operator order, the hosted half: a publish flow that builds and signs packages into a hub, and hub-source installs that read them back through the same stages.
 - **Architectural layer:** Core / orchestration vocabulary
-- **Entrypoints:** `PipelineRegistry.default()` and `select()` (`pipelines/registry.py:394`, `pipelines/registry.py:542`); `declaration_from_manifest()` (`pipelines/registry.py:232`); `SandboxedPipelineRunner` (`pipelines/sandboxed.py:136`); `install_pipeline_package()` (`pipelines/packages.py:1120`); the CLI doors `paa pipeline …` (`cli/pipeline.py:68`) and `paa pipeline install` (`cli/main.py:1009`)
-- **Public interfaces:** `PipelineDeclaration`, `ParamSpec`, `SlotDeclaration`, `declaration_for` (`slots.py`); `Capability`, `CapabilitySet`, `compute_grants`, `Pipeline`, `CapabilityFacade`, `PipelineResult`, `RunLimits`, `PipelineTask` (`base.py`); `BuiltinPipelineFacade` (`builtin.py`); `SubRunComposer`, `ManagerPipeline`, `run_composition` (`compose.py`); `CallJournal`, `fingerprint`, `read_call_journal` (`journal.py`); `ReplayView`, `ReplayAction` (`replay.py`); `Overlay`, `load_overlay`, `tightened_limits` (`overlay.py`); `PipelineRegistry`, `RegisteredPipeline`, `LocalManifestError` (`registry.py`); `ConformanceCheck`, `ConformanceReport`, `CHECK_NAMES`, `installed_conformance`, `every_builtin_conformance` (`conformance.py`); `SandboxedPipelineRunner`, `PIPELINE_ENTRYPOINT`, `ENTRYPOINT_METHOD` (`sandboxed.py`); `PipelinePackageInstaller`, `CapabilityReview`, `ReviewApprover`, `render_review`, `terminal_review_approver`, `refuse_review` (`packages.py`)
+- **Entrypoints:** `PipelineRegistry.default()` and `select()` (`pipelines/registry.py:427`, `pipelines/registry.py:550`); `declaration_from_manifest()` (`pipelines/registry.py:240`); `SandboxedPipelineRunner` (`pipelines/sandboxed.py:136`); `install_pipeline_package()` (`pipelines/packages.py:1383`); `publish_pipeline_package()` (`pipelines/publish.py:309`); the CLI doors `paa pipeline …` (`cli/pipeline.py:68`), `paa pipeline install` (`cli/main.py:914`) and `paa pipeline publish` (`cli/main.py:1013`)
+- **Public interfaces:** `PipelineDeclaration`, `ParamSpec`, `SlotDeclaration`, `declaration_for` (`slots.py`); `Capability`, `CapabilitySet`, `compute_grants`, `Pipeline`, `CapabilityFacade`, `PipelineResult`, `RunLimits`, `PipelineTask` (`base.py`); `BuiltinPipelineFacade` (`builtin.py`); `SubRunComposer`, `ManagerPipeline`, `run_composition` (`compose.py`); `CallJournal`, `fingerprint`, `read_call_journal` (`journal.py`); `ReplayView`, `ReplayAction` (`replay.py`); `Overlay`, `load_overlay`, `tightened_limits` (`overlay.py`); `PipelineRegistry`, `RegisteredPipeline`, `LocalManifestError` (`registry.py`); `ConformanceCheck`, `ConformanceReport`, `CHECK_NAMES`, `installed_conformance`, `every_builtin_conformance` (`conformance.py`); `SandboxedPipelineRunner`, `PIPELINE_ENTRYPOINT`, `ENTRYPOINT_METHOD` (`sandboxed.py`); `PipelinePackageInstaller`, `CapabilityReview`, `ReviewApprover`, `render_review`, `terminal_review_approver`, `refuse_review`, `install_pipeline_package`, `compatibility_refusal`, `registry_for_hub` (`packages.py`); `PublishReport`, `PipelinePublishError`, `load_or_generate_publisher_key`, `publish_pipeline_package` (`publish.py`)
 - **Other modules that depend on it:** `agents/orchestrator.py`, `chat/` (loop, service, extensions), `coder/pipeline.py`, `improve/pipeline.py`, `observe/pipeline.py`, `mcp/` (protocol, server), `tui/chat/`, and the CLI (`cli/pipeline.py`, `cli/main.py`, `cli/improve.py`, `cli/observe.py`)
 
 ## Purpose and responsibilities
@@ -32,9 +32,9 @@ Three rules the module holds at all costs:
    record; a changed call halts the run with `PIPELINE_RUN_DIVERGED`, and the
    host never resyncs.
 3. **No gate is ever model-decided** (SPEC 2 §9). Selection is explicit and
-   mandate-scoped (`pipelines/registry.py:542`); overlays tighten only
+   mandate-scoped (`pipelines/registry.py:550`); overlays tighten only
    (`pipelines/overlay.py:352`); and the distribution flow's capability
-   review is a recorded human decision (`pipelines/packages.py:291`), never a
+   review is a recorded human decision (`pipelines/packages.py:334`), never a
    model's.
 
 ## Internal implementation
@@ -84,13 +84,13 @@ capabilities and limits; a widening attempt is refused at load
 (`WideningOverlayError`, `:91`).
 
 ### `pipelines/registry.py` — what exists, and at what trust
-`PipelineRegistry` (`pipelines/registry.py:394`) merges three sources:
+`PipelineRegistry` (`pipelines/registry.py:402`) merges three sources:
 builtins (trust `builtin`), the operator's flat `PAA_HOME/pipelines/<name>/`
 manifests (trust `local`, listed but not runnable — running an
 out-of-process declaration is P3's RPC transport), and the installer's
 `installed/<name>/<version>/` stagings (trust `installed`, **runnable** —
-`_scan_installed`, `pipelines/registry.py:464`). Staging *is* registration.
-`declaration_from_manifest` (`:232`) is the one closed parser all three
+`_scan_installed`, `pipelines/registry.py:472`). Staging *is* registration.
+`declaration_from_manifest` (`:240`) is the one closed parser all three
 layouts and the package flow share; off-contract manifests are named in
 `local_errors`, never silently dropped.
 
@@ -118,34 +118,53 @@ honest gap — an installed pipeline cannot call `ctx.think` in v1, because a
 subprocess holds no facade tokens — is the P3 RPC transport's work, exactly
 where the spec's P5 placed executable package loading.
 
-### `pipelines/packages.py` — the install flow (C8.6, the P5-lite)
-One install action, one fresh lineage, six stages
-(`PipelinePackageInstaller.install`, `pipelines/packages.py:678`):
+### `pipelines/packages.py` — the install flow (C8.6's P5-lite, C9.1's hub)
+One install action, one fresh lineage, seven stages
+(`PipelinePackageInstaller.install`, `pipelines/packages.py:942`):
 
 1. **source** — a local directory, a `git+<scheme>://` URL at a *pinned* ref
    (a commit SHA or a tag; a moving branch is refused after the clone,
-   before any byte is read — `_resolve_git`, `:514`), or a signed `.paapkg`
-   unpacked through the hardened loader. Host-side git runs with literal
-   argv, an allowlisted environment and a wall budget (`_run_git`, `:460`).
+   before any byte is read — `_resolve_git`, `:557`), a signed `.paapkg`
+   unpacked through the hardened loader, or — since C9.1 — a **hub**
+   listing (`hub:<name>[@<version>]` with `--hub <dir-or-url>`;
+   `_resolve_hub_source`, `:706`). Host-side git runs with literal
+   argv, an allowlisted environment and a wall budget (`_run_git`,
+   `:503`). The hub resolves the version FIRST — newest satisfiable,
+   the index entry's own `requires_paa` restatement the first filter,
+   refusing on ambiguity by naming the candidates — then fetches
+   through the registry client (`registry_for_hub`, `:659`: a
+   `LocalDirectoryRegistry` directory or an `HttpRegistry` URL, both
+   untrusted) and checks the entry's vouch before any gate is asked
+   to trust a byte: `verify()` against the entry's `(publisher_key,
+   signature)` first, then the manifest's own restatement — a key
+   cannot sign the claim about itself, so a package may restate one
+   publisher while another key's signature authenticates its bytes,
+   and the install refuses rather than pick which to believe. Every
+   vouch branch is the operator's `--allow-unverified` to override.
 2. **declaration** — `pipeline.toml` parsed by the same closed contract
    (`declaration_from_manifest`), plus the `pipeline.py` entrypoint it pins.
-3. **the five gates** — the marketplace installer, unmodified in its order
+3. **compatibility** — the manifest's `requires_paa` range against the
+   RUNNING version (`compatibility_refusal`, `:1474`; one comparison,
+   shared with the publish flow): a package that excludes this runtime
+   refuses pre-gates, named. The signed manifest is the copy the
+   install refuses against — a hub's index may claim anything.
+4. **the five gates** — the marketplace installer, unmodified in its order
    (signature, content hash, AST scan, permissions, smoke test). An unsigned
    local/git source installs only on the operator's explicit
    `--allow-unverified` opt-in.
-4. **conformance** — the six-check standard against the gated bytes; a RED
+5. **conformance** — the six-check standard against the gated bytes; a RED
    report refuses the install *after* the gates, unregistering their
    marketplace row so the zero-trace rule is the whole flow's.
-5. **capability review** — the C8.1 human-gate pattern: a deterministic
-   `CapabilityReview` artifact (`pipelines/packages.py:203`) listing the
+6. **capability review** — the C8.1 human-gate pattern: a deterministic
+   `CapabilityReview` artifact (`pipelines/packages.py:246`) listing the
    declaration's ask, the conformance verdict and the content hash; a human
    approves or refuses through the `ReviewApprover` seam. An unwired seam
-   refuses (`refuse_review`, `:241`); the rendered review states the v1
+   refuses (`refuse_review`, `:284`); the rendered review states the v1
    limit honestly — the ask is recorded, not minted (`render_review`,
-   `:257`).
-6. **stage** — the gated bytes (and the review artifact,
-   `REVIEW_ARTIFACT_NAME`, `:123`) land under
-   `PAA_HOME/pipelines/installed/<name>/<version>/` (`_stage`, `:1045`),
+   `:300`).
+7. **stage** — the gated bytes (and the review artifact,
+   `REVIEW_ARTIFACT_NAME`, `:153`) land under
+   `PAA_HOME/pipelines/installed/<name>/<version>/` (`_stage`, `:1308`),
    which is what makes the registry row appear.
 
 A refusal at any stage leaves zero trace by construction: no marketplace
@@ -155,27 +174,63 @@ event that says it was tried. The two events (`PIPELINE_PACKAGE_INSTALLED` /
 lineage, carry `v: 1` payloads, and ship with goldens and replay/recovery
 coverage (ADR-0046; `tests/ledger/test_pipeline_package_events.py`).
 
-## The one-call door and the CLI
+## The one-call doors and the CLI
 
-`install_pipeline_package` (`pipelines/packages.py:1120`) is the single
-driver — the CLI's door and the tests' door are the same function, so both
-leave identical rows and identical staging. The terminal surface is
-`paa pipeline install <dir|git-url> [--ref <sha|tag>] [--allow-unverified]`
-(`cli/main.py:1009`): the five gates run, conformance runs, and the capability
-review is a prompt a human answers (`terminal_review_approver`,
-`pipelines/packages.py:291`; a walk-away is a refusal, not an error). Exit
-codes follow the skills door's contract: 0 installed, 1 refused (the stage
-named), 2 usage.
+`install_pipeline_package` (`pipelines/packages.py:1383`) is the single
+install driver — the CLI's door and the tests' door are the same function,
+so both leave identical rows and identical staging. `publish_pipeline_package`
+(`pipelines/publish.py:309`) is the single publish driver, and it touches no
+ledger and no database at all: publishing is a host-side operator action
+(the C7.2 host-git precedent), so a refusal leaves only the report it came
+back on.
 
-## The parked boundary (stated, not implied)
+The terminal surfaces are `paa pipeline install <dir|git-url|.paapkg|hub:name>
+[--ref] [--hub <dir-or-url>] [--allow-unverified]` (`cli/main.py:914`) and
+`paa pipeline publish <dir-or-installed-name> [--version] [--hub <dir>]
+[--key <path>] [--allow-unverified]` (`cli/main.py:1013`). The install door
+runs the five gates, the conformance standard and the capability-review
+prompt (`terminal_review_approver`, `pipelines/packages.py:334`; a walk-away
+is a refusal, not an error). The publish door builds and signs the package,
+writes it through `LocalDirectoryRegistry.publish`, surfaces the first-use
+publisher-key notice, and names the install command for the next hop. Exit
+codes follow the skills door's contract on both verbs: 0 installed/published,
+1 refused (the reason named), 2 usage.
 
-The hosted marketplace stays parked, per the spec's own gating sentence
-("do not start it without a real outside author" —
-`docs/plans/2026-11-21-pipeline-platform-spec.md:426`):
-`marketplace/registry_client.py` is untouched, there is no publish verb, and
-the only remotes the install flow talks to are git URLs the operator names
-at a ref the operator pins. The boundary is pinned by test:
-`tests/pipelines/test_packages.py` never imports the registry client.
+## The hosted economy (C9.1): the loop, end to end
+
+The spec parked the hosted marketplace behind "Do not start it without a
+real author asking" (`docs/plans/2026-11-21-pipeline-platform-spec.md:430`);
+the W9 operator order ("make market place and everything that was
+deferred") lifted the gate — the operator is the author asking. What the
+order bought:
+
+- **Publish** (`pipelines/publish.py`): a directory or an *installed*
+  pipeline's staged bytes (minus the local review artifact) become a
+  `pipeline`-kind `.paapkg` — the declaration parsed by the same closed
+  contract, the manifest built by the same `_build_manifest`
+  (`pipelines/packages.py:1550`), carrying `requires_paa` and `protocol`
+  inside `signing_bytes` so the signed manifest is the copy an install
+  refuses against. Publisher keys live under `PAA_HOME/keys`
+  (`load_or_generate_publisher_key`, `pipelines/publish.py:190`; mode 0600,
+  generated on first use, private half never travels). The compatibility
+  floor is checked against the running version before anything is written;
+  an unsigned publish refuses unless `--allow-unverified` (the install
+  escape hatch's flag and meaning, mirrored); a remote hub URL refuses
+  (there is no upload protocol — its own row).
+- **Hub install**: `hub:<name>[@<version>] --hub <dir-or-url>` rides the
+  seven stages above unmodified; the registry client is the only new
+  dependency, and it is read as untrusted input (version resolution, the
+  vouch check, the fetch, and every refusal are the flow's own words —
+  bounded and quoted where the hub's data is named). The flow never
+  writes a hub back: only the publish door does, so an install cannot
+  turn a read into a redistribution.
+- **The loop economy**, pinned end-to-end by test
+  (`TestTheLoopEconomy`, `tests/pipelines/test_packages.py`): install
+  (local dir) → fork (the C8.5 pattern — staged bytes copied to a personal
+  location and changed) → publish the fork signed → install it on a CLEAN
+  `PAA_HOME` from that hub with no opt-in (the vouch verifies pre-gates,
+  all five gates green, `signature_state` `valid` under the trusted
+  publisher key) → run. What comes back answers in the fork's own voice.
 
 ## Inputs and outputs
 
@@ -184,7 +239,8 @@ at a ref the operator pins. The boundary is pinned by test:
 | `PipelineRegistry.default()` | `PAA_HOME` | registry rows (builtin + local + installed) | none (read at construction) |
 | `declaration_from_manifest(path)` | a `pipeline.toml` | `PipelineDeclaration` | none |
 | `SandboxedPipelineRunner.run(goal)` | staged dir, declaration, journal, sandbox | `PipelineResult` | `PIPELINE_RUN_*`/`CALL_*` rows; one sandboxed child |
-| `install_pipeline_package(source, …)` | local dir / pinned git URL / `.paapkg` | `PipelineInstallReport` | gates' marketplace row (unregistered on later refusal), staged bytes, `PIPELINE_PACKAGE_*` event |
+| `install_pipeline_package(source, …)` | local dir / pinned git URL / `.paapkg` / `hub:<name>` + `--hub` | `PipelineInstallReport` | gates' marketplace row (unregistered on later refusal), staged bytes, `PIPELINE_PACKAGE_*` event |
+| `publish_pipeline_package(source, hub, …)` | a directory or an installed name | `PublishReport` | hub `.paapkg` + index entry (only when every check passed; no ledger events) |
 | `installed_conformance(…)` | staged bytes, declaration, sandbox | `ConformanceReport` | six real runs on their own lineages |
 
 ## Failure behavior
@@ -192,13 +248,25 @@ at a ref the operator pins. The boundary is pinned by test:
 - Off-contract declaration (unknown section, undeclarable capability, bad
   `run.resume`) → `LocalManifestError` / a `declaration`-stage refusal,
   before any gate runs.
+- A `requires_paa` range that excludes the running version (or does not
+  parse) → a `compatibility`-stage refusal pre-gates — on both ends of the
+  economy: the publish flow refuses to write the package, the install flow
+  refuses to stage it.
 - Unpinned or moving git ref, unresolvable ref, non-URL → `source`-stage
   refusal; the clone's words are never logged or raised.
+- A hub that cannot be opened or searched, holds no such package, is
+  ambiguous about `(name, version)`, serves a package whose signature does
+  not verify under the entry's publisher key, or serves bytes whose
+  restatement disagrees with the entry → `source`-stage refusal, the
+  project's own words, bounded where the hub's data is quoted; zero trace.
 - Unsigned source without the opt-in, invalid signature, tampered payload,
   AST-blocked code, ungranted permission, failed smoke → the refusing gate's
   name, zero trace.
 - RED conformance report or a refusing human → refusal *after* the gates,
   with the gates' marketplace row unregistered again.
+- A publish refusal (unreadable key, insecure fallback without the opt-in,
+  off-contract source, unknown installed name, remote hub URL) → the reason
+  on the report, the hub left exactly as it was.
 - Cancelled run → the call row closes `FAILED('cancelled')` before the
   `CancelledError` propagates; exhausted containment clock → a `FAILED` run
   by rule, never a crash.
@@ -215,6 +283,11 @@ at a ref the operator pins. The boundary is pinned by test:
   pipeline goes through the sandboxed adapter's callers (the install flow's
   conformance and any host that mints a journal) — a first-class
   `paa pipeline run <installed>` door is P3-shaped work.
+- Publishing to a remote (`http(s)://`) hub is refused: `HttpRegistry`
+  has a `publish` verb on the wire but no server to talk to, and an upload
+  protocol with authentication is its own row. Key rotation (re-keying a
+  publisher identity and re-signing a catalogue) is likewise deferred;
+  `--key` is the manual seam, not a workflow.
 
 ## Related documents
 
@@ -232,6 +305,9 @@ at a ref the operator pins. The boundary is pinned by test:
 - [`sandbox.md`](sandbox.md) — the containment the smoke gate, the runner and
   the conformance standard execute under
 - The done-when as tests: `tests/pipelines/test_packages.py` (the flow, all
-  refusal paths), `tests/pipelines/test_sandboxed.py`,
+  refusal paths, the hub sources and the loop economy),
+  `tests/pipelines/test_publish.py` (the publish flow),
+  `tests/pipelines/test_sandboxed.py`,
   `tests/pipelines/test_registry.py`, `tests/cli/test_pipeline_install_cli.py`
-  (the door), `tests/ledger/test_pipeline_package_events.py` (the goldens)
+  and `tests/cli/test_pipeline_publish_cli.py` (the doors),
+  `tests/ledger/test_pipeline_package_events.py` (the goldens)
