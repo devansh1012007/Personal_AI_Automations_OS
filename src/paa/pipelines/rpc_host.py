@@ -311,12 +311,15 @@ def _call_reason(exc: Exception) -> str:
 
     A :class:`PipelineError`'s message is the platform's own vocabulary
     (``capability is not granted to this run``) and names the refusing
-    rule, so it rides; anything else is reduced to its type — an
-    arbitrary exception's text can echo the child's own words back into
-    the ledger, and the observe driver's rule (argv and secrets never in
+    rule, so it rides; so does the budget refusal's
+    (:class:`~paa.core.errors.BudgetExceededError`'s message names which
+    budget, built from the host's own constants, never the child's
+    words). Anything else is reduced to its type — an arbitrary
+    exception's text can echo the child's own words back into the
+    ledger, and the observe driver's rule (argv and secrets never in
     a failed-journal reason) applies to a child-supplied prompt too.
     """
-    if isinstance(exc, PipelineError):
+    if isinstance(exc, (PipelineError, BudgetExceededError)):
         return exc.message
     return type(exc).__name__
 
@@ -979,32 +982,32 @@ class RpcPipelineHost:
                     return
                 # EXECUTE: a new call, or a pure call whose interrupted
                 # outcome is safe to resolve by re-execution. Fall through.
-            self._calls_made += 1
-            if (
-                self._limits.max_calls is not None
-                and self._calls_made > self._limits.max_calls
-            ):
-                raise BudgetExceededError(
-                    "max_calls",
-                    float(self._limits.max_calls),
-                    float(self._calls_made - 1),
-                )
-            if spec.method == "sub_run":
-                self._sub_runs_made += 1
-                if (
-                    self._limits.max_sub_runs is not None
-                    and self._sub_runs_made > self._limits.max_sub_runs
-                ):
-                    raise BudgetExceededError(
-                        "max_sub_runs",
-                        float(self._limits.max_sub_runs),
-                        float(self._sub_runs_made - 1),
-                    )
             if spec.journalled:
                 await self._journal.call_proposed(seq, spec.method, journal_params)
             try:
                 if spec.capability is not None:
                     self._require_token(spec.capability, params.get("token"))
+                self._calls_made += 1
+                if (
+                    self._limits.max_calls is not None
+                    and self._calls_made > self._limits.max_calls
+                ):
+                    raise BudgetExceededError(
+                        "max_calls",
+                        float(self._limits.max_calls),
+                        float(self._calls_made - 1),
+                    )
+                if spec.method == "sub_run":
+                    self._sub_runs_made += 1
+                    if (
+                        self._limits.max_sub_runs is not None
+                        and self._sub_runs_made > self._limits.max_sub_runs
+                    ):
+                        raise BudgetExceededError(
+                            "max_sub_runs",
+                            float(self._limits.max_sub_runs),
+                            float(self._sub_runs_made - 1),
+                        )
                 result = await self._execute(spec.method, journal_params)
             except asyncio.CancelledError:
                 if spec.journalled:
