@@ -37,7 +37,7 @@ Major subsystems:
 | Marketplace | `src/paa/marketplace/` | Signed packages, five-gate installer, registry clients |
 | Observability | `src/paa/observability/` | Logging, metrics, tracing, execution runs |
 | Daemon | `src/paa/daemon.py` | Dispatch, ingestion, maintenance loops |
-| CLI | `src/paa/cli/main.py` | `paa submit/run/status/ledger/recover/doctor/serve/agent/mode/tui/memory/chat/mcp/pipeline/observe/attest/verify` |
+| CLI | `src/paa/cli/main.py` | `paa submit/run/status/ledger/recover/doctor/serve/agent/mode/tui/memory/chat/mcp/pipeline/observe/attest/verify/rollback` |
 | API | `src/paa/api/` | FastAPI ingestion edge (loopback only, port 8787) |
 | TUI | `src/paa/tui/` | Interactive dashboard |
 
