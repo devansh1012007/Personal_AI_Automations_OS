@@ -1,16 +1,54 @@
 # MCP server (`paa mcp serve`)
 
-**Status: built (SPEC 2 §3.1 C4.5).** `paa mcp serve` runs PAA's memory and
+**Status: built (SPEC 2 §3.1 C4.5; the pipeline registration is W9-C9.4).**
+`paa mcp serve` runs PAA's memory and
 chat as six MCP tools over stdio: JSON-RPC 2.0, one NDJSON object per line,
 over stdin/stdout. It is designed to be *spawned by* an MCP client (Claude
 Code, Codex, Cursor, OpenCode) rather than listened-with — there is no socket,
 no bind address, and nothing for the loopback rule to widen. The server lives
-in `src/paa/mcp/` (`server.py`, `protocol.py`); the command entry is
+in `src/paa/mcp/` (`server.py`, `protocol.py`, and `host.py` — the session
+wrapper below); the command entry is
 `src/paa/cli/mcp.py:137`.
 
 Every tool call is policy-checked (`manifest ∩ mandate ∩ policy`) and
 journaled before it executes; refusals are ledger events too. This is the
 same boundary every other PAA effect crosses.
+
+## The session is a pipeline run (`builtin.mcp-host`)
+
+Since W9-C9.4 (pipeline-platform spec §6, P6's last adapter), a served
+session **is** a pipeline run on the platform. `paa mcp serve` opens
+`PIPELINE_RUN_STARTED` (`run_kind="mcp-host"`) on a fresh lineage before
+the first frame is read and closes it at EOF, with one `mcp.session` call
+row between — the accounting wrapper `McpHostFacade.serve_session`
+(`src/paa/mcp/host.py:209`) around the UNCHANGED server. The wrapper adds
+only the session-shaped rows: the per-call policy gate, the per-call
+`TOOL_CALL_*` lineages and the chat-session journaling above are exactly
+what they were.
+
+The registration (`src/paa/pipelines/slots.py:453`) declares the two
+facts that make the honesty explicit:
+
+- `resume = "none"` — an MCP session is not journalled for replay (each
+  turn is its own request/response), and the host refuses to mark such a
+  run recoverable.
+- `evidence_tier = "T2"` — **for the mediated tool calls only**: every
+  call the harness makes crosses the server's per-call gate and is
+  journalled, while the session's outer shape is whatever the operator's
+  harness did — PAA observes it, it does not control it.
+
+`paa pipeline run builtin.mcp-host --goal <label>` serves the same session
+through the registry's own door; both doors journal identically through
+the one shared driver (`run_mcp_host_session`,
+`src/paa/mcp/host.py:430`), and the goal is the operator's label for the
+harness they are attaching. `paa pipeline inspect builtin.mcp-host` shows
+the declaration, including the capability ask — the union of the six
+tools' own asks, so what a session's tools may exercise is stated, not
+inferred. The six-check conformance standard runs against the session
+vocabulary too (`mcp_host_conformance`,
+`src/paa/pipelines/conformance.py:1824`). One gap, stated rather than
+implied: the session's run lineage and the per-call tool-call lineages
+are deliberately not correlated in v1.
 
 ## Spawn configuration
 
@@ -180,4 +218,5 @@ any.
 - [`operations/configuration-and-environment.md`](../operations/configuration-and-environment.md) — `PAA_MCP__*` and `PAA_CHAT__*` settings.
 - [`interfaces/integrations-and-communication.md`](integrations-and-communication.md) — the boundary inventory this server extends.
 - [`modules/cli.md`](../modules/cli.md) — the CLI command table.
+- [`modules/pipelines.md`](../modules/pipelines.md) — the platform the `builtin.mcp-host` registration lands on (the declaration, the conformance standard).
 - [`docs/plans/2026-11-21-next-spec-2.md`](../plans/2026-11-21-next-spec-2.md) — §3.3 (the contract this implements) and §3.4 (the gate this smoke satisfies).
