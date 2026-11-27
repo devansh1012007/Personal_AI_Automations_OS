@@ -714,6 +714,38 @@ landed** (all 24 recorded runs failed) — `textual` sat in no CI install shape.
 
 **Wave 8 is closed — all eight rows landed** (W8-CI/CI2/CI3/CI4 + C8.1–C8.6; C8.5 and C8.6 delivered via the checkpoint-restart subagent pattern — the agents' runs were cut off twice by tool deadlines, and the work survived because every green unit was committed to its feature branch the moment it was green).
 
+### Active campaign: W9-MARKETPLACE — the deferred work (2026-11-27, opened)
+
+Owner ask: "make market place and everything that was differed [deferred]". That is an
+explicit operator order, and it lifts the pipeline spec's P5 gating sentence ("do not
+start it without a real author asking") — the operator is the author asking. Scope, per
+the spec's own deferred list (`docs/plans/2026-11-21-next-spec-2.md` §8, the pipeline
+spec's P3/P5/P6/P7, and the Known-left register above): the hosted marketplace
+(P5 full — publish, signed distribution, compatibility checks, the loop economy), the
+Wave 9 cooldown rows that are code (container-default verification + the effect
+registry with ledger-driven rollback), P3 (the RPC step protocol, then freezing
+`paa-pipeline/1`), P6's remaining adapter (`builtin.mcp-host`), P7 (the authoring kit),
+and the multi-user/polish design docs — design-level only, because the spec's own rule
+(no team features before single-user daily use is proven, G1's spirit) is an operator
+gate this sandbox cannot lift. C5.1/G1 real-model S1 stays operator-blocked (no model
+key). The parked-forever-unless-ordered items stay parked; only what the spec defers
+*and* the order names moves.
+
+Delivery pattern this wave: parallel feature worktrees, subagents, and — new this wave
+— every feature branch is PUSHED to the remote the moment it lands green, after the
+first attempt's branches were lost to a full sandbox recycle (the checkpoint-restart
+lesson extended: green units must survive not only agent deadlines but host loss).
+
+| Task ID | Agent | Assignment | Status | Evidence / notes |
+|---|---|---|---|---|
+| W9-C9.1 | subagent (feat/marketplace) | the hosted marketplace: `paa pipeline publish` (build + sign a `pipeline`-kind `.paapkg`, write it to a hub in the `LocalDirectoryRegistry` format, publisher identity pinned), hub-source install through the same six stages, manifest compatibility checks (`requires_paa`, protocol version) at publish and install, the loop-economy round trip (install → fork → publish → install) pinned end-to-end | pending | |
+| W9-C9.2 | subagent (feat/effects) | the effect registry + `paa rollback` (Wave 9's core): scope-owned effects with compensation paths declared as data, compensation executed as NEW separately authorized journaled actions (README §Temporal composability's own rule), irreversible effects reported not "fixed", crash-safe resume with no double compensation; plus the container-default line (auto already prefers docker — pin it with a test, document the measured truth) | pending | |
+| W9-C9.3 | subagent (feat/rpc) | P3 the step protocol: `pipelines/rpc_host.py` (NDJSON JSON-RPC over the shared framing kit, child launch, token out-of-band, cancel with process-tree kill, stderr capture), the `paa_pipeline` child SDK (~200 lines), a shell language proof with no SDK, `paa pipeline test` (the conformance door), then freeze `paa-pipeline/1` to v1 (the three-users rule: in-process facade + sandboxed runner + RPC host) | pending | |
+| W9-C9.4 | subagent (feat/mcphost) | P6's last adapter: `builtin.mcp-host` — an externally-driven MCP session landed on the pipeline platform (`resume="none"`, a declared tier, conformance); the six-tool server and its policy/journaling already exist (`src/paa/mcp/server.py`), the row is the pipeline-shaped registration | pending | |
+| W9-C9.5 | subagent (feat/authoring) | P7 the authoring kit: `paa pipeline new` scaffolds (manifest + entrypoint + test skeleton + conformance config), the worked tree-of-thought and TDD examples, the protocol compatibility matrix | pending | |
+| W9-C9.6 | orchestrator | the multi-user + polish design docs (per-user memory namespaces + policy separation; themes/init/docs-site roadmap) — design-level only, the spec's own rule | pending | |
+| W9-INT | orchestrator | integration on wave-9f: merges, the full gate, board evidence, push, CI green | pending | |
+
 ### Archived campaign: T-VERIFY (2026-11-24, complete)
 
 See git history 5e0a0d8..8d4eecf and the delivered satisfaction report
