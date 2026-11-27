@@ -51,6 +51,17 @@ class FakeBlobStore:
     def __contains__(self, digest: object) -> bool:
         return digest in self._blobs
 
+    def corrupt(self, digest: str, data: bytes) -> None:
+        """The operator-error injection door: wrong bytes under an address.
+
+        A content-addressed store should never be able to hold this state
+        (the address IS the digest); the rollback tests use it to produce
+        the one failure a restore can genuinely hit at execution time —
+        the fetched bytes do not match the digest the record pinned, so
+        the compensation must refuse rather than write wrong content.
+        """
+        self._blobs[digest] = data
+
 
 @pytest.fixture
 def blob_store() -> FakeBlobStore:
