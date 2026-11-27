@@ -1,0 +1,68 @@
+# The worked TDD example — the docs' reference for the authoring kit (P7).
+# The closed contract ADR-0052 pins and the one parser the tree runs
+# (paa.pipelines.registry.declaration_from_manifest). Anything outside
+# these sections refuses at load, by name, before any code runs.
+# `paa pipeline list` reads this file as it stands.
+
+[pipeline]
+name        = "tdd-loop"
+version     = "0.1.0"
+description = "Write a failing test, make it pass, refactor - one cycle at a time."
+# The facade's version range, never the product's. `paa pipeline new`
+# derives it from the running runtime; ">=4.1,<5" is what it writes today.
+requires_runtime = ">=4.1,<5"
+protocol    = "paa-pipeline/1"
+
+[run]
+# v1's execution shape is the sandboxed entrypoint contract
+# (paa.pipelines.sandboxed.py): the host runs `python pipeline.py
+# --paa-args <args.json>` under the sandbox. `resume` is the one fact
+# this section carries today:
+#   "journal" - the call journal replays a crashed run (the code default)
+#   "none"    - the pipeline cannot honour replay; the host refuses to
+#               mark such a run recoverable (the adapter shape)
+resume = "journal"
+
+[capabilities]
+# The worked example asks for nothing, for the same reason the scaffold
+# does: an installed pipeline holds no facade tokens in v1 (the RPC
+# transport's row, W9-C9.3), and every key asked for is surface a human
+# reviews at install time. The closed set, for when the transport lands:
+# think     = { roles = ["worker"] }
+# use_skill = ["read_file", "bash"]
+
+[limits]
+# All four, concrete positive ints - an unbounded manifest is off
+# contract. These are the host's enforcement knobs; an overlay may
+# tighten them per run, never widen.
+max_tokens   = 200000
+max_wall_s   = 1800
+max_calls    = 400
+max_sub_runs = 2
+
+[params]
+# Layer-1 customisation: typed, ranged, `--set`-able, tighten-only.
+
+[params.max_cycles]
+type = "int"
+default = 3
+min = 1
+max = 10
+description = "Red-green-refine cycles the loop runs."
+
+[params.strict_refactor]
+type = "bool"
+default = true
+description = "Refactor every cycle, or collapse the duplication once at the end."
+
+[evidence]
+# A claim, not a grant - the host recomputes what a run actually earned.
+# "unrated" is the honest value until a run has evidence behind it.
+declares_tier = "unrated"
+
+# Layer 2, when a part of the loop should be swappable without forking
+# (the critic between green and refactor is the natural one here):
+#
+# [slots.critic]
+# interface = "agent/1"
+# default   = "agent:critic"

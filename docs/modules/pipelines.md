@@ -2,12 +2,12 @@
 
 ## Module identity
 
-- **Name:** pipelines — the pipeline platform: declarations, host, journal, registry, conformance, distribution (C8.6) and the hosted economy (C9.1)
+- **Name:** pipelines — the pipeline platform: declarations, host, journal, registry, conformance, distribution (C8.6), the hosted economy (C9.1) and the authoring kit (C9.5)
 - **Path:** `src/paa/pipelines/`
-- **Main responsibility:** The vocabulary every structured run speaks (SPEC 2's pipeline platform, `docs/plans/2026-11-21-pipeline-platform-spec.md`): a closed declaration contract (ADR-0052), a capability-granting host and facade, a ledger-backed call journal with replay (ADR-0050), a registry of what exists, a six-check conformance standard, the `pipeline` package kind installed from local dirs, pinned git URLs, signed `.paapkg` files and hub listings through the marketplace's five gates (C8.6) — and, since C9.1 lifted the spec's P5 gate by operator order, the hosted half: a publish flow that builds and signs packages into a hub, and hub-source installs that read them back through the same stages.
+- **Main responsibility:** The vocabulary every structured run speaks (SPEC 2's pipeline platform, `docs/plans/2026-11-21-pipeline-platform-spec.md`): a closed declaration contract (ADR-0052), a capability-granting host and facade, a ledger-backed call journal with replay (ADR-0050), a registry of what exists, a six-check conformance standard, the `pipeline` package kind installed from local dirs, pinned git URLs, signed `.paapkg` files and hub listings through the marketplace's five gates (C8.6) — and, since C9.1 lifted the spec's P5 gate by operator order, the hosted half: a publish flow that builds and signs packages into a hub, and hub-source installs that read them back through the same stages; and — since C9.5, the spec's P7 — the authoring kit: `paa pipeline new` scaffolds the four files a new pipeline starts from, proven through the closed parser before success is reported ([`authoring.md`](authoring.md) carries the kit, its worked examples and the protocol compatibility matrix).
 - **Architectural layer:** Core / orchestration vocabulary
-- **Entrypoints:** `PipelineRegistry.default()` and `select()` (`pipelines/registry.py:427`, `pipelines/registry.py:550`); `declaration_from_manifest()` (`pipelines/registry.py:240`); `SandboxedPipelineRunner` (`pipelines/sandboxed.py:136`); `install_pipeline_package()` (`pipelines/packages.py:1383`); `publish_pipeline_package()` (`pipelines/publish.py:309`); the CLI doors `paa pipeline …` (`cli/pipeline.py:68`), `paa pipeline install` (`cli/main.py:914`) and `paa pipeline publish` (`cli/main.py:1013`)
-- **Public interfaces:** `PipelineDeclaration`, `ParamSpec`, `SlotDeclaration`, `declaration_for` (`slots.py`); `Capability`, `CapabilitySet`, `compute_grants`, `Pipeline`, `CapabilityFacade`, `PipelineResult`, `RunLimits`, `PipelineTask` (`base.py`); `BuiltinPipelineFacade` (`builtin.py`); `SubRunComposer`, `ManagerPipeline`, `run_composition` (`compose.py`); `CallJournal`, `fingerprint`, `read_call_journal` (`journal.py`); `ReplayView`, `ReplayAction` (`replay.py`); `Overlay`, `load_overlay`, `tightened_limits` (`overlay.py`); `PipelineRegistry`, `RegisteredPipeline`, `LocalManifestError` (`registry.py`); `ConformanceCheck`, `ConformanceReport`, `CHECK_NAMES`, `installed_conformance`, `every_builtin_conformance` (`conformance.py`); `SandboxedPipelineRunner`, `PIPELINE_ENTRYPOINT`, `ENTRYPOINT_METHOD` (`sandboxed.py`); `PipelinePackageInstaller`, `CapabilityReview`, `ReviewApprover`, `render_review`, `terminal_review_approver`, `refuse_review`, `install_pipeline_package`, `compatibility_refusal`, `registry_for_hub` (`packages.py`); `PublishReport`, `PipelinePublishError`, `load_or_generate_publisher_key`, `publish_pipeline_package` (`publish.py`)
+- **Entrypoints:** `PipelineRegistry.default()` and `select()` (`pipelines/registry.py:427`, `pipelines/registry.py:550`); `declaration_from_manifest()` (`pipelines/registry.py:240`); `SandboxedPipelineRunner` (`pipelines/sandboxed.py:136`); `install_pipeline_package()` (`pipelines/packages.py:1383`); `publish_pipeline_package()` (`pipelines/publish.py:309`); the CLI doors `paa pipeline …` (`cli/pipeline.py:68`), `paa pipeline install` (`cli/main.py:914`) and `paa pipeline publish` (`cli/main.py:1013`), `paa pipeline test` (`cli/main.py:1109`) and `paa pipeline new` (`cli/pipeline.py:827`)
+- **Public interfaces:** `PipelineDeclaration`, `ParamSpec`, `SlotDeclaration`, `declaration_for` (`slots.py`); `Capability`, `CapabilitySet`, `compute_grants`, `Pipeline`, `CapabilityFacade`, `PipelineResult`, `RunLimits`, `PipelineTask` (`base.py`); `BuiltinPipelineFacade` (`builtin.py`); `SubRunComposer`, `ManagerPipeline`, `run_composition` (`compose.py`); `CallJournal`, `fingerprint`, `read_call_journal` (`journal.py`); `ReplayView`, `ReplayAction` (`replay.py`); `Overlay`, `load_overlay`, `tightened_limits` (`overlay.py`); `PipelineRegistry`, `RegisteredPipeline`, `LocalManifestError` (`registry.py`); `ConformanceCheck`, `ConformanceReport`, `CHECK_NAMES`, `installed_conformance`, `every_builtin_conformance` (`conformance.py`); `SandboxedPipelineRunner`, `PIPELINE_ENTRYPOINT`, `ENTRYPOINT_METHOD` (`sandboxed.py`); `PipelinePackageInstaller`, `CapabilityReview`, `ReviewApprover`, `render_review`, `terminal_review_approver`, `refuse_review`, `install_pipeline_package`, `compatibility_refusal`, `registry_for_hub` (`packages.py`); `PublishReport`, `PipelinePublishError`, `load_or_generate_publisher_key`, `publish_pipeline_package` (`publish.py`); `SCAFFOLD_FILES`, `ScaffoldError`, `ScaffoldReport`, `scaffold_pipeline` (`scaffold.py`); `RpcPipelineHost` (`rpc_host.py`)
 - **Other modules that depend on it:** `agents/orchestrator.py`, `chat/` (loop, service, extensions), `coder/pipeline.py`, `improve/pipeline.py`, `observe/pipeline.py`, `mcp/` (protocol, server, host), `tui/chat/`, and the CLI (`cli/pipeline.py`, `cli/main.py`, `cli/improve.py`, `cli/observe.py`)
 
 ## Purpose and responsibilities
@@ -241,7 +241,37 @@ event that says it was tried. The two events (`PIPELINE_PACKAGE_INSTALLED` /
 lineage, carry `v: 1` payloads, and ship with goldens and replay/recovery
 coverage (ADR-0046; `tests/ledger/test_pipeline_package_events.py`).
 
+### `pipelines/scaffold.py` — the authoring kit (C9.5, the spec's P7)
+`scaffold_pipeline` (`pipelines/scaffold.py:501`) renders the four files a
+new pipeline starts from — manifest, entrypoint, README, test skeleton
+(`SCAFFOLD_FILES`, `:72`) — into `PAA_HOME/pipelines/<name>/` (the
+registry's local dir, so the row is listable the moment it lands) or an
+operator's `--path`. The parse-back lock (`:549`): the manifest just
+written is parsed back through the same closed parser before success is
+reported, so a scaffold is never born broken. Every refusal is a named
+`ScaffoldError` (`:98`) before any byte is written: an unscaffoldable
+name, the reserved `installed`, a taken target, a `--force` facing a
+foreign or unparseable manifest. The kit never runs what it writes —
+that is the install door's, behind the gates. The worked examples
+(`examples/tdd-loop/`, `examples/tree-of-thought/`), the protocol
+compatibility matrix and the v1 boundaries (no TypeScript SDK — the
+spec's own P7 list carries one; `paa pipeline test` arrives with the RPC
+transport) are documented in [`authoring.md`](authoring.md).
+
 ## The one-call doors and the CLI
+
+`install_pipeline_package` (`pipelines/packages.py:1120`) is the single
+driver — the CLI's door and the tests' door are the same function, so both
+leave identical rows and identical staging. The terminal surface is
+`paa pipeline install <dir|git-url> [--ref <sha|tag>] [--allow-unverified]`
+(`cli/main.py:914`): the five gates run, conformance runs, and the capability
+review is a prompt a human answers (`terminal_review_approver`,
+`pipelines/packages.py:291`; a walk-away is a refusal, not an error). Exit
+codes follow the skills door's contract: 0 installed, 1 refused (the stage
+named), 2 usage. The authoring door rides the same contract:
+`paa pipeline new <name> [--path <dir>] [--force]` (`cli/pipeline.py:827`)
+exits 0 with the receipt (the four files, the next steps, each a real
+door) or 1 with the refusal's named reason.
 
 `install_pipeline_package` (`pipelines/packages.py:1383`) is the single
 install driver — the CLI's door and the tests' door are the same function,
@@ -309,6 +339,7 @@ order bought:
 | `install_pipeline_package(source, …)` | local dir / pinned git URL / `.paapkg` / `hub:<name>` + `--hub` | `PipelineInstallReport` | gates' marketplace row (unregistered on later refusal), staged bytes, `PIPELINE_PACKAGE_*` event |
 | `publish_pipeline_package(source, hub, …)` | a directory or an installed name | `PublishReport` | hub `.paapkg` + index entry (only when every check passed; no ledger events) |
 | `installed_conformance(…)` | staged bytes, declaration, sandbox | `ConformanceReport` | six real runs on their own lineages |
+| `scaffold_pipeline(name, parent, force)` | a name, a parent dir | `ScaffoldReport` | four files under `parent/name`, nothing else |
 
 ## Failure behavior
 
@@ -367,6 +398,8 @@ order bought:
   discipline the package events follow
 - `docs/plans/2026-11-21-pipeline-platform-spec.md` — the phased plan (P4
   registry, P5 distribution, the gated hosted economy)
+- [`authoring.md`](authoring.md) — the authoring kit (P7): the scaffold,
+  the worked examples, the protocol compatibility matrix
 - [`marketplace.md`](marketplace.md) — the five-gate installer and the signed
   package form the flow rides
 - [`ledger.md`](ledger.md) — the store under the call journal
@@ -375,7 +408,12 @@ order bought:
 - The done-when as tests: `tests/pipelines/test_packages.py` (the flow, all
   refusal paths, the hub sources and the loop economy),
   `tests/pipelines/test_publish.py` (the publish flow),
+  `tests/pipelines/test_scaffold.py` (the authoring scaffold and its
+  refusal paths), `tests/pipelines/test_examples.py`
+  (the worked references through the whole install flow),
+  `tests/pipelines/test_rpc_host.py` (the RPC host, the shell proof),
   `tests/pipelines/test_sandboxed.py`,
-  `tests/pipelines/test_registry.py`, `tests/cli/test_pipeline_install_cli.py`
-  and `tests/cli/test_pipeline_publish_cli.py` (the doors),
+  `tests/pipelines/test_registry.py`, `tests/cli/test_pipeline_install_cli.py`,
+  `tests/cli/test_pipeline_publish_cli.py`, `tests/cli/test_pipeline_new_cli.py`
+  and `tests/cli/test_pipeline_test_cli.py` (the doors),
   `tests/ledger/test_pipeline_package_events.py` (the goldens)
