@@ -281,7 +281,16 @@ class TestHubInstallThroughTheDoor:
 
         assert result.exit_code == 1
         assert "refused demo.echo at the source stage" in result.stdout
-        assert "carries no publisher signature" in result.stdout
+        # The per-shape honest verdict: a real backend names the missing
+        # signature; the dev-fallback shape names the reason it cannot
+        # authenticate one (the W8-CI3 improve precedent — both are the
+        # same refusal, stated for the signing backend that is live).
+        from paa.marketplace.signing import signing_is_secure
+
+        if signing_is_secure():
+            assert "carries no publisher signature" in result.stdout
+        else:
+            assert "insecure dev fallback" in result.stdout
         staged = _isolated_home / "pipelines" / "installed" / "demo.echo"
         assert not staged.exists()
 

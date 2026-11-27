@@ -381,6 +381,11 @@ class TestPublishFromInstalled:
     async def test_the_version_argument_selects_among_staged_versions(
         self, tmp_path: Path
     ) -> None:
+        if not signing_is_secure():
+            pytest.skip(
+                "real signing backend not available; dev fallback cannot authenticate"
+            )
+
         home = tmp_path / "home"
         _staged_install(home, "demo.echo", "1.1.0")
         _staged_install(home, "demo.echo", "1.2.3")
@@ -397,6 +402,11 @@ class TestPublishFromInstalled:
     async def test_version_omitted_publishes_the_newest_staged(
         self, tmp_path: Path
     ) -> None:
+        if not signing_is_secure():
+            pytest.skip(
+                "real signing backend not available; dev fallback cannot authenticate"
+            )
+
         home = tmp_path / "home"
         _staged_install(home, "demo.echo", "1.1.0")
         _staged_install(home, "demo.echo", "1.2.3")

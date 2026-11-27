@@ -12,6 +12,7 @@ the help surface an author reads first.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,20 @@ from typer.testing import CliRunner
 from paa.cli.main import app
 
 runner = CliRunner()
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+
+def _plain(output: str) -> str:
+    """Rendered CLI output as content: no escape sequences, no line breaks.
+
+    The runner's Rich-styled help and usage panels insert ANSI codes and
+    wrap tokens mid-token; the assertions are about content (the class
+    the repo has met three times before this file).
+    """
+    return _ANSI.sub("", output).replace("\r", "").replace("\n", "")
+
+
 
 
 @pytest.fixture(autouse=True)
@@ -59,7 +74,7 @@ class TestTheExitContract:
         missing_name = runner.invoke(app, ["pipeline", "new"])
         assert missing_name.exit_code == 2
         assert "Missing argument" in missing_name.stderr
-        assert "Usage: paa pipeline new" in missing_name.stderr
+        assert "Usage: paa pipeline new" in _plain(missing_name.stderr)
 
     def test_the_reserved_name_refuses_at_the_door(self) -> None:
         result = runner.invoke(app, ["pipeline", "new", "installed"])
@@ -139,9 +154,10 @@ class TestHelp:
     def test_the_help_reads_as_the_authoring_door(self) -> None:
         result = runner.invoke(app, ["pipeline", "new", "--help"])
         assert result.exit_code == 0
-        assert "Scaffold a new pipeline" in result.stdout
-        assert "--path" in result.stdout
-        assert "--force" in result.stdout
+        plain = _plain(result.stdout)
+        assert "Scaffold a new pipeline" in plain
+        assert "--path" in plain
+        assert "--force" in plain
 
     def test_the_pipeline_group_lists_new(self) -> None:
         result = runner.invoke(app, ["pipeline", "--help"])
