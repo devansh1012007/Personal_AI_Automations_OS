@@ -40,7 +40,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from paa.pipelines.base import PIPELINE_PROTOCOL, PipelineError, RunLimits
+from paa.pipelines.base import PIPELINE_PROTOCOL as PIPELINE_PROTOCOL
+from paa.pipelines.base import PipelineError, RunLimits
 from paa.pipelines.slots import (
     BUILTIN_DECLARATIONS,
     ParamSpec,
@@ -96,16 +97,6 @@ _PARAM_TYPES = frozenset({"int", "bool", "str"})
 _EVIDENCE_TIERS = frozenset({"T1", "T2", "T3"})
 _LIMIT_KEYS = ("max_tokens", "max_wall_s", "max_calls", "max_sub_runs")
 _DEFAULT_PREFIXES = ("agent:", "builtin:", "skill:", "out:")
-
-#: The wire protocol version a ``pipeline.toml`` declares (and the only
-#: value the closed contract accepts). Public since C9.1: a published
-#: package's manifest and hub index entry carry the same token, so the
-#: marketplace states in one place what a package speaks — the value is
-#: frozen per the three-users rule (in-process facade + sandboxed runner
-#: + the RPC transport to come), and renaming it is a protocol event,
-#: not a tidy-up.
-PIPELINE_PROTOCOL = "paa-pipeline/1"
-
 
 def _parse_runtime_range(text: str) -> tuple[tuple[str, tuple[int, ...]], ...]:
     """Parse ``>=4.1,<5`` into clauses; an unparseable range is an error.

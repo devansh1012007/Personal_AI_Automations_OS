@@ -46,7 +46,7 @@ the declaration, including the capability ask — the union of the six
 tools' own asks, so what a session's tools may exercise is stated, not
 inferred. The six-check conformance standard runs against the session
 vocabulary too (`mcp_host_conformance`,
-`src/paa/pipelines/conformance.py:1824`). One gap, stated rather than
+`src/paa/pipelines/conformance.py:1825`). One gap, stated rather than
 implied: the session's run lineage and the per-call tool-call lineages
 are deliberately not correlated in v1.
 

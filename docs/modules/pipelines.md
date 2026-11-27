@@ -6,7 +6,7 @@
 - **Path:** `src/paa/pipelines/`
 - **Main responsibility:** The vocabulary every structured run speaks (SPEC 2's pipeline platform, `docs/plans/2026-11-21-pipeline-platform-spec.md`): a closed declaration contract (ADR-0052), a capability-granting host and facade, a ledger-backed call journal with replay (ADR-0050), a registry of what exists, a six-check conformance standard, the `pipeline` package kind installed from local dirs, pinned git URLs, signed `.paapkg` files and hub listings through the marketplace's five gates (C8.6) — and, since C9.1 lifted the spec's P5 gate by operator order, the hosted half: a publish flow that builds and signs packages into a hub, and hub-source installs that read them back through the same stages; and — since C9.5, the spec's P7 — the authoring kit: `paa pipeline new` scaffolds the four files a new pipeline starts from, proven through the closed parser before success is reported ([`authoring.md`](authoring.md) carries the kit, its worked examples and the protocol compatibility matrix).
 - **Architectural layer:** Core / orchestration vocabulary
-- **Entrypoints:** `PipelineRegistry.default()` and `select()` (`pipelines/registry.py:427`, `pipelines/registry.py:550`); `declaration_from_manifest()` (`pipelines/registry.py:240`); `SandboxedPipelineRunner` (`pipelines/sandboxed.py:136`); `install_pipeline_package()` (`pipelines/packages.py:1383`); `publish_pipeline_package()` (`pipelines/publish.py:309`); the CLI doors `paa pipeline …` (`cli/pipeline.py:68`), `paa pipeline install` (`cli/main.py:914`) and `paa pipeline publish` (`cli/main.py:1013`), `paa pipeline test` (`cli/main.py:1109`) and `paa pipeline new` (`cli/pipeline.py:827`)
+- **Entrypoints:** `PipelineRegistry.default()` and `select()` (`pipelines/registry.py:427`, `pipelines/registry.py:550`); `declaration_from_manifest()` (`pipelines/registry.py:240`); `SandboxedPipelineRunner` (`pipelines/sandboxed.py:136`); `install_pipeline_package()` (`pipelines/packages.py:1383`); `publish_pipeline_package()` (`pipelines/publish.py:309`); the CLI doors `paa pipeline …` (`cli/pipeline.py:47`), `paa pipeline install` (`cli/main.py:914`) and `paa pipeline publish` (`cli/main.py:1013`), `paa pipeline test` (`cli/main.py:1109`) and `paa pipeline new` (`cli/pipeline.py:827`)
 - **Public interfaces:** `PipelineDeclaration`, `ParamSpec`, `SlotDeclaration`, `declaration_for` (`slots.py`); `Capability`, `CapabilitySet`, `compute_grants`, `Pipeline`, `CapabilityFacade`, `PipelineResult`, `RunLimits`, `PipelineTask` (`base.py`); `BuiltinPipelineFacade` (`builtin.py`); `SubRunComposer`, `ManagerPipeline`, `run_composition` (`compose.py`); `CallJournal`, `fingerprint`, `read_call_journal` (`journal.py`); `ReplayView`, `ReplayAction` (`replay.py`); `Overlay`, `load_overlay`, `tightened_limits` (`overlay.py`); `PipelineRegistry`, `RegisteredPipeline`, `LocalManifestError` (`registry.py`); `ConformanceCheck`, `ConformanceReport`, `CHECK_NAMES`, `installed_conformance`, `every_builtin_conformance` (`conformance.py`); `SandboxedPipelineRunner`, `PIPELINE_ENTRYPOINT`, `ENTRYPOINT_METHOD` (`sandboxed.py`); `PipelinePackageInstaller`, `CapabilityReview`, `ReviewApprover`, `render_review`, `terminal_review_approver`, `refuse_review`, `install_pipeline_package`, `compatibility_refusal`, `registry_for_hub` (`packages.py`); `PublishReport`, `PipelinePublishError`, `load_or_generate_publisher_key`, `publish_pipeline_package` (`publish.py`); `SCAFFOLD_FILES`, `ScaffoldError`, `ScaffoldReport`, `scaffold_pipeline` (`scaffold.py`); `RpcPipelineHost` (`rpc_host.py`)
 - **Other modules that depend on it:** `agents/orchestrator.py`, `chat/` (loop, service, extensions), `coder/pipeline.py`, `improve/pipeline.py`, `observe/pipeline.py`, `mcp/` (protocol, server, host), `tui/chat/`, and the CLI (`cli/pipeline.py`, `cli/main.py`, `cli/improve.py`, `cli/observe.py`)
 
@@ -103,19 +103,19 @@ layouts and the package flow share; off-contract manifests are named in
 `local_errors`, never silently dropped.
 
 ### `pipelines/conformance.py` — the six-check standard
-`CHECK_NAMES` (`pipelines/conformance.py:77`): double-run call-sequence
+`CHECK_NAMES` (`pipelines/conformance.py:78`): double-run call-sequence
 equality, divergence halt, unknown-outcome never auto-repeats, cancel within
 grace, budget exhaustion, no secrets in journal. Each vocabulary instantiates
 the checks in its own terms and may mark a check `n/a` with a pointer to
 where the property is pinned — a masked green is the thing the standard
-exists to stop. `every_builtin_conformance` (`:2557`) is the CI entry.
-`installed_conformance` (`:2249`) drives the six checks through the sandboxed
+exists to stop. `every_builtin_conformance` (`:2558`) is the CI entry.
+`installed_conformance` (`:2250`) drives the six checks through the sandboxed
 adapter against an installed package's own bytes; its no-secrets row states
 the honest split — the goal rides the args file and the PROPOSED fingerprint,
 never a host-written payload text, while the child's own answer rides the
 recorded result ADR-0050 serves back. The external-harness adapters
 instantiate the same six in their own vocabulary: `observe_conformance`
-drives the bundle writer, and `mcp_host_conformance` (`:1824`, W9-C9.4)
+drives the bundle writer, and `mcp_host_conformance` (`:1825`, W9-C9.4)
 drives the UNCHANGED MCP server in-process over its own framing — four
 checks real (the deterministic `mcp.session` call, the classified transport
 death, the between-frames cancel, the no-secrets scan with the server's own
@@ -183,7 +183,7 @@ are exercised by their own suites — stated in the help, not implied.
 
 ### `pipelines/packages.py` — the install flow (C8.6, the P5-lite)
 One install action, one fresh lineage, six stages
-(`PipelinePackageInstaller.install`, `pipelines/packages.py:678`):
+(`PipelinePackageInstaller.install`, `pipelines/packages.py:876`):
 
 ### `pipelines/packages.py` — the install flow (C8.6's P5-lite, C9.1's hub)
 One install action, one fresh lineage, seven stages

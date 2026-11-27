@@ -92,18 +92,18 @@ and this branch drives one of the two:
 
 **The error codes** (spec `:320`; the classes are this branch's, the codes
 are what the RPC transport renders them as — `PipelineError`'s own
-docstring says so, `pipelines/base.py:111`):
+docstring says so, `pipelines/base.py:129`):
 
 | code | spec name | this branch's class |
 |---|---|---|
 | -32001 | `BudgetExceeded` | `BudgetExceededError` (`core/errors.py:125`) |
 | -32002 | `PermissionDenied` | `PermissionDeniedError` (`core/errors.py:188`) |
-| -32003 | `GateRejected` | `GateRejectedError` (`pipelines/base.py:124`) |
-| -32004 | `Diverged` | `PipelineDivergedError` (`:130`); `ToolSequenceDivergedError` (`pipelines/replay.py:224`) on the tool path |
-| -32005 | `Cancelled` | `PipelineCancelledError` (`pipelines/base.py:149`) |
-| -32006 | `CapabilityNotGranted` | `CapabilityNotGrantedError` (`:155`) |
+| -32003 | `GateRejected` | `GateRejectedError` (`pipelines/base.py:142`) |
+| -32004 | `Diverged` | `PipelineDivergedError` (`:148`); `ToolSequenceDivergedError` (`pipelines/replay.py:224`) on the tool path |
+| -32005 | `Cancelled` | `PipelineCancelledError` (`pipelines/base.py:167`) |
+| -32006 | `CapabilityNotGranted` | `CapabilityNotGrantedError` (`:173`) |
 | -32007 | `InvalidParams` | `InvalidCallParamsError` (`:173`) |
-| -32008 | `OutcomeUnknown` | `OutcomeUnknownError` (`:179`) |
+| -32008 | `OutcomeUnknown` | `OutcomeUnknownError` (`:197`) |
 
 Beyond the spec's table, the same server-error band carries this branch's
 own surfaces — the overlay (`-32009`/`-32010`), the registry
@@ -187,7 +187,7 @@ into a stage is the RPC transport's row, not an example's.
 - **`paa pipeline test`, the standalone conformance door, is not on this
   branch** — it arrives with the same transport work; until then the
   install flow runs the same six checks (`CHECK_NAMES`,
-  `pipelines/conformance.py:76`), which is what the examples' proofs
+  `pipelines/conformance.py:78`), which is what the examples' proofs
   drive.
 - The scaffold never runs the code it writes — running an author's bytes
   is the install door's job, behind the gates (`install_pipeline_package`,
