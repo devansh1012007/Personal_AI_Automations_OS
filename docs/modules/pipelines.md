@@ -6,7 +6,7 @@
 - **Path:** `src/paa/pipelines/`
 - **Main responsibility:** The vocabulary every structured run speaks (SPEC 2's pipeline platform, `docs/plans/2026-11-21-pipeline-platform-spec.md`): a closed declaration contract (ADR-0052), a capability-granting host and facade, a ledger-backed call journal with replay (ADR-0050), a registry of what exists, a six-check conformance standard, and — since C8.6, the spec's P5-lite — the `pipeline` package kind installed from local dirs, pinned git URLs and signed `.paapkg` files through the marketplace's five gates.
 - **Architectural layer:** Core / orchestration vocabulary
-- **Entrypoints:** `PipelineRegistry.default()` and `select()` (`pipelines/registry.py:394`, `pipelines/registry.py:542`); `declaration_from_manifest()` (`pipelines/registry.py:232`); `SandboxedPipelineRunner` (`pipelines/sandboxed.py:136`); `install_pipeline_package()` (`pipelines/packages.py:1120`); the CLI doors `paa pipeline …` (`cli/pipeline.py:68`) and `paa pipeline install` (`cli/main.py:914`)
+- **Entrypoints:** `PipelineRegistry.default()` and `select()` (`pipelines/registry.py:394`, `pipelines/registry.py:542`); `declaration_from_manifest()` (`pipelines/registry.py:232`); `SandboxedPipelineRunner` (`pipelines/sandboxed.py:136`); `install_pipeline_package()` (`pipelines/packages.py:1120`); the CLI doors `paa pipeline …` (`cli/pipeline.py:68`) and `paa pipeline install` (`cli/main.py:1009`)
 - **Public interfaces:** `PipelineDeclaration`, `ParamSpec`, `SlotDeclaration`, `declaration_for` (`slots.py`); `Capability`, `CapabilitySet`, `compute_grants`, `Pipeline`, `CapabilityFacade`, `PipelineResult`, `RunLimits`, `PipelineTask` (`base.py`); `BuiltinPipelineFacade` (`builtin.py`); `SubRunComposer`, `ManagerPipeline`, `run_composition` (`compose.py`); `CallJournal`, `fingerprint`, `read_call_journal` (`journal.py`); `ReplayView`, `ReplayAction` (`replay.py`); `Overlay`, `load_overlay`, `tightened_limits` (`overlay.py`); `PipelineRegistry`, `RegisteredPipeline`, `LocalManifestError` (`registry.py`); `ConformanceCheck`, `ConformanceReport`, `CHECK_NAMES`, `installed_conformance`, `every_builtin_conformance` (`conformance.py`); `SandboxedPipelineRunner`, `PIPELINE_ENTRYPOINT`, `ENTRYPOINT_METHOD` (`sandboxed.py`); `PipelinePackageInstaller`, `CapabilityReview`, `ReviewApprover`, `render_review`, `terminal_review_approver`, `refuse_review` (`packages.py`)
 - **Other modules that depend on it:** `agents/orchestrator.py`, `chat/` (loop, service, extensions), `coder/pipeline.py`, `improve/pipeline.py`, `observe/pipeline.py`, `mcp/` (protocol, server), `tui/chat/`, and the CLI (`cli/pipeline.py`, `cli/main.py`, `cli/improve.py`, `cli/observe.py`)
 
@@ -161,7 +161,7 @@ coverage (ADR-0046; `tests/ledger/test_pipeline_package_events.py`).
 driver — the CLI's door and the tests' door are the same function, so both
 leave identical rows and identical staging. The terminal surface is
 `paa pipeline install <dir|git-url> [--ref <sha|tag>] [--allow-unverified]`
-(`cli/main.py:914`): the five gates run, conformance runs, and the capability
+(`cli/main.py:1009`): the five gates run, conformance runs, and the capability
 review is a prompt a human answers (`terminal_review_approver`,
 `pipelines/packages.py:291`; a walk-away is a refusal, not an error). Exit
 codes follow the skills door's contract: 0 installed, 1 refused (the stage

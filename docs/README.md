@@ -48,7 +48,7 @@ Primary entry points:
 * `paa doctor` — report live backends/sandbox plus the chat model, MCP token env and TUI extra (`cli/main.py:310`)
 * `paa recover` — post-crash boot sweep (`cli/main.py:292`)
 * `paa ledger <id>` — walk a task's event chain (`cli/main.py:219`)
-* `paa memory <subcommand>` — facts/search/signals/drain/world-model (`cli/main.py:702`)
+* `paa memory <subcommand>` — facts/search/signals/drain/world-model (`cli/main.py:797`)
 * `paa observe -- <cmd>` — run any CLI under observation, leave the T1 evidence bundle (`src/paa/cli/observe.py:147`)
 * `paa record run -- <cmd>` — the flight recorder: the harness under the evidence boundary, tool calls through the MCP policy proxy, the attested bundle at close (`src/paa/cli/record.py:83`)
 * `paa record verify <run-dir>` — the flight record's own chain: schema, sequence, every link (`src/paa/cli/record.py:264`)

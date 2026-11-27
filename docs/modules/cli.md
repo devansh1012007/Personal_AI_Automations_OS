@@ -38,7 +38,7 @@ the command is inherently long-running):
 
 | Command | Home | Behavior |
 |---|---|---|
-| `paa memory <sub>` | `memory_app` (`cli/main.py:702`) | `facts`/`search`/`signals`/`drain`/`world-model` reads over the memory subsystem |
+| `paa memory <sub>` | `memory_app` (`cli/main.py:797`) | `facts`/`search`/`signals`/`drain`/`world-model` reads over the memory subsystem |
 | `paa observe -- <cmd>` | `cli/observe.py:147` | The T1 observer: run one CLI in a workspace, leave a `paa-observe-bundle/1` with the manifest diff, git changes and transcript (SPEC 2 W7) |
 | `paa record run -- <cmd>` | `cli/record.py:83` | The flight recorder (SPEC 2 W7 C7.3): the harness under a real SandboxSession, tool calls through the MCP policy proxy, the attested bundle at close |
 | `paa record verify <run-dir>` | `cli/record.py:264` | The flight record's own verifier: schema, sequence, every chain link, summary, torn tail, finalised |
@@ -64,7 +64,7 @@ under `--yes`, else `prompt_yes` (blocks on `input`; EOF → deny)
 
 ## Failure behavior
 
-- Invalid correlation id → `typer.Exit(1)` (`cli/main.py:557`).
+- Invalid correlation id → `typer.Exit(1)` (`cli/main.py:653`).
 - Task not awaiting gate → `PaaError` → printed red, exit 1 (`cli/main.py:282-284`).
 - `paa agent` `PaaError` → `[red]error:[/red]`, exit 1 (`cli/coder.py:253`).
 - Unknown mode → printed red, exit 1 (`cli/main.py:527`, `cli/coder.py:108`).
