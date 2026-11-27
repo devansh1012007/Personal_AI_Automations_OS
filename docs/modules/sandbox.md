@@ -142,6 +142,32 @@ subprocess backend (`sandbox/base.py:26`).
 and takes first healthy; unreachable fallback raises `RuntimeError`
 (subprocess always healthy) (`:100`).
 
+The `auto` walk, as measured (it is the laptop default, which makes its
+rules the containment posture most runs actually get):
+
+- the preference order is the module constant `_AUTO_ORDER`
+  `("docker", "wsl", "subprocess")` (`:74`) — strongest containment first:
+  Docker (possibly gVisor) before WSL2 namespaces before a bare host process,
+  a constant rather than a comment so the walk and the ranking it implies
+  cannot drift apart;
+- auto **prefers the container backend where the probe says healthy** —
+  each candidate is probed in order (`:136`) and the first healthy one is
+  taken, so a stopped Docker daemon is skipped by evidence, not assumed
+  away;
+- auto **never fails, it degrades — loudly**: landing on PROCESS-level
+  isolation emits `sandbox.weak_isolation_selected` naming the backend, the
+  isolation level and ADR-0006 (`:143`), because a caller that requires real
+  containment must check `sandbox.isolation_level.is_real_containment`
+  (`sandbox/base.py:98`) rather than assume the factory would have refused —
+  the factory's contract is a warning, never an exception, and a silent
+  downgrade would be the dangerous version of this factory. Dry-run (NONE)
+  is not on the walk at all: an auto that could execute nothing while
+  reporting a backend would be that lie made ambient.
+
+Pinned as measured in `tests/sandbox/test_auto_selection.py`: the probe
+*sequence* (not the constant alone), the degradation warning's fields, and
+the explicit-backend-returned-without-a-probe contract.
+
 ### `_acquire_sandbox` (`runtime.py:617`)
 A bounded probe (`asyncio.wait_for(..., timeout=_SANDBOX_PROBE_BOUND_SECONDS)`,
 30 s) then fallback to subprocess. The bound is deliberately **longer** than the
@@ -232,8 +258,10 @@ enforcement (ADR-0009); heartbeat liveness with miss tolerance
   (`__init__.py`).
 - Changing `IsolationLevel` semantics affects callers branching on
   `is_real_containment`.
-- Tests: `tests/sandbox/` (201 tests; `test_session.py` holds the duplex
-  contract's 21, including the three C5.2 acceptance tests).
+- Tests: `tests/sandbox/` (207 tests; `test_session.py` holds the duplex
+  contract's 21, including the three C5.2 acceptance tests;
+  `test_auto_selection.py` holds the `auto` walk's six pins — the order, the
+  loud degradation, the explicit no-probe contract).
 
 ## Known gaps
 
