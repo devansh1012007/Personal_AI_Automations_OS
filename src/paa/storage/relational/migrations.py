@@ -556,7 +556,7 @@ def version_log_ddl(engine: Engine) -> str:
 # Step builders
 # ---------------------------------------------------------------------------
 
-#: A note on the ``# noqa: S608`` markers below.
+#: A note on the ``S608`` suppression markers below.
 #:
 #: Ruff's bandit rule fires on a statement that is *built* rather than
 #: written, and a migration's statements are built: a step names its table

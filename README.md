@@ -41,7 +41,7 @@ PAA should integrate with front-half systems that handle intake, routing, and ag
 ```bash
 uv venv --python 3.12
 uv pip install -e ".[dev]"
-.venv/Scripts/python.exe -m pytest tests/ -q
+.venv/bin/python -m pytest tests/ -q          # Windows: .venv\\Scripts\\python.exe
 ```
 
 Run it from the CLI (for example, with a local model via Ollama, or `echo` when offline):
@@ -346,9 +346,9 @@ src/paa/
 ## Testing
 
 ```bash
-.venv/Scripts/python.exe -m pytest tests/ -q                 # everything
-.venv/Scripts/python.exe -m pytest tests/ledger -q           # the spine
-.venv/Scripts/python.exe -m pytest -m chaos -q               # crash injection
+.venv/bin/python -m pytest tests/ -q                 # everything
+.venv/bin/python -m pytest tests/ledger -q           # the spine
+.venv/bin/python -m pytest -m chaos -q               # crash injection
 ```
 
 Uses Hypothesis for properties that should hold universally, including the gatherer's token ceiling, replay robustness under event orderings, and bounded confidence values. Crash tests exercise database shutdown and reopening around a lineage; extend these with provider-boundary fault injection before claiming that external effects are exactly-once or generally reversible.
