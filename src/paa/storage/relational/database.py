@@ -194,10 +194,23 @@ class Database:
         # Readers are opened only after the schema exists — a read-only
         # connection against a nonexistent file fails rather than creating it.
         self._read_pool = asyncio.Queue(maxsize=self._read_pool_size)
-        for _ in range(self._read_pool_size):
-            conn = await self._open(readonly=True)
-            self._all_reads.append(conn)
-            self._read_pool.put_nowait(conn)
+        try:
+            for _ in range(self._read_pool_size):
+                conn = await self._open(readonly=True)
+                self._all_reads.append(conn)
+                self._read_pool.put_nowait(conn)
+        except BaseException:
+            # A reader that cannot open leaves the database half-connected:
+            # the write connection and every reader opened so far are this
+            # object's to close, and a caller whose ``connect()`` raised has
+            # no way to know it must close something it never finished
+            # opening. Each aiosqlite connection owns a worker thread, so a
+            # connection leaked here is a thread that outlives the loop and
+            # surfaces at teardown as "Event loop is closed" noise. Closed
+            # here, at the source — the same rule the schema-failure path
+            # above already follows.
+            await self.close()
+            raise
 
         log.info(
             "database.connected",

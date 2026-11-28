@@ -598,6 +598,40 @@ class TestTheOpenPathIsABoundary:
         assert isinstance(cause, sqlite3.Error), cause
         assert "unable to open database file" in str(cause), cause
 
+    async def test_a_failed_reader_open_leaks_no_connections(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A connect that fails half-way closes everything it opened.
+
+        The write connection and the first reader open before a later
+        reader fails; before the fix both stayed open with no owner, because
+        the caller saw only the exception and had nothing it could close.
+        Each aiosqlite connection owns a worker thread, so a connection
+        leaked here is exactly the thread that outlives the event loop and
+        surfaces at teardown as "Event loop is closed" noise.
+        """
+        db = Database(tmp_path / "paa.db")
+        calls = {"n": 0}
+        original_open = db._open
+
+        async def flaky_open(*, readonly: bool) -> Any:
+            calls["n"] += 1
+            if calls["n"] > 1:  # the write connection opened; a reader fails
+                # Translated the way ``_open`` itself would, so the failure
+                # arrives at connect() in the neutral vocabulary.
+                raise translate_sqlite_error(
+                    sqlite3.OperationalError("the reader exploded")
+                )
+            return await original_open(readonly=readonly)
+
+        monkeypatch.setattr(db, "_open", flaky_open)
+        with pytest.raises(StorageError):
+            await db.connect()
+
+        # Nothing the failed connect opened survives it:
+        assert db._write_conn is None
+        assert db._all_reads == []
+
 
 class TestTheReadPathIsABoundary:
     """A read is a substrate boundary too.
