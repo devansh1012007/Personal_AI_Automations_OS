@@ -61,13 +61,21 @@ The registration keys are the ``SkillContract.provider`` values
 kind-driven dispatch sites resolve ``adapter_for(contract.provider)``. A
 name nobody's contracts can carry is still registrable — the table is
 name → factory, and who asks for a name is the caller's business.
+
+The builtin names are also *typed* to their classes (:func:`adapter_for`'s
+overloads): because duplicates refuse and the builtins register first, the
+statement "``adapter_for('claw_hub')`` is the ``ClawHubAdapter`` factory" is
+an invariant of this module, not an aspiration, and the overloads simply
+let a caller keep the concrete constructor signature — ``build_contract``
+and friends — without a cast. Every other name keeps the general factory
+type, because what a plugin registers is the plugin's business.
 """
 
 from __future__ import annotations
 
 import importlib.metadata
 from collections.abc import Callable
-from typing import TypeAlias
+from typing import Literal, TypeAlias, overload
 
 import structlog
 
@@ -135,6 +143,22 @@ def register_adapter(name: str, factory: AdapterFactory) -> None:
     _FACTORIES[name] = factory
 
 
+@overload
+def adapter_for(name: Literal["claw_hub"]) -> type[ClawHubAdapter]: ...
+
+
+@overload
+def adapter_for(name: Literal["mcp_server"]) -> type[McpServerAdapter]: ...
+
+
+@overload
+def adapter_for(name: Literal["native"]) -> type[NativeAdapter]: ...
+
+
+@overload
+def adapter_for(name: str) -> AdapterFactory: ...
+
+
 def adapter_for(name: str) -> AdapterFactory:
     """The factory registered under ``name`` — the kind-driven dispatch door.
 
@@ -145,6 +169,12 @@ def adapter_for(name: str) -> AdapterFactory:
     default group (see the module docstring) before the refusal is raised,
     so a plugin distribution is reachable without anyone remembering to
     warm it — and a name that is genuinely unknown still refuses loudly.
+
+    The overloads above type the three builtin names to their classes: the
+    duplicate refusal plus the lazy seed make that an invariant, so a
+    caller keeps the concrete constructor (and the methods only that
+    adapter publishes) without reaching for a cast. Any other name — which
+    is the whole point of the surface — returns the general factory type.
     """
     _ensure_builtin_adapters()
     factory = _FACTORIES.get(name)

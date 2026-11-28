@@ -78,7 +78,7 @@ from paa.pipelines.registry import (
     select,
 )
 from paa.skills.adapters.base import SkillAdapter
-from paa.skills.adapters.claw_hub import ClawHubAdapter, parse_skill_md
+from paa.skills.adapters.registry import adapter_for
 from paa.skills.contracts import SkillContract, SkillResult
 from paa.skills.registry import SkillRegistry
 from paa.skills.usa import UnifiedSkillAdapter
@@ -445,8 +445,11 @@ class ChatExtensionSurface:
         self._registry = SkillRegistry(db)
         # One adapter instance for discovery and claw_hub invocation:
         # invoke reads the contract's working_dir, so a single stateless
-        # adapter serves every installed skill directory.
-        self._claw = ClawHubAdapter(self._home)
+        # adapter serves every installed skill directory. The class that
+        # serves the name comes from the adapter registry — the name→factory
+        # mapping is the open surface (adapters/registry.py) — while the
+        # root it is handed stays this surface's own configuration.
+        self._claw = adapter_for("claw_hub")(self._home)
 
     # -- locations ---------------------------------------------------------
 
@@ -488,7 +491,11 @@ class ChatExtensionSurface:
                     "the personal skills dir"
                 )
             root, label = Path(source), SOURCE_CLAW_HUB
-        adapter = ClawHubAdapter(root)
+        # Kind-driven through the registry: 'claw_hub' names the directory
+        # format being read (the same name the contracts carry), so the
+        # factory that serves it is the registry's word, not this file's
+        # import list.
+        adapter = adapter_for("claw_hub")(root)
         contracts = await adapter.discover()
         found: list[DiscoveredSkill] = []
         for contract in contracts:
@@ -673,7 +680,10 @@ class ChatExtensionSurface:
         lineage: uuid.UUID,
     ) -> Activation:
         """Register the contract rebuilt against the staged directory."""
-        adapter = ClawHubAdapter(staged)
+        # Kind-driven through the registry, like every other adapter choice
+        # here: the staged bytes are claw_hub format, and the factory for
+        # that name is looked up, not imported by class.
+        adapter = adapter_for("claw_hub")(staged)
         contract = adapter.build_contract(staged)
         # Provenance the directory itself cannot carry: the gated content
         # hash and the staged location the gates cleared.
@@ -754,9 +764,11 @@ class ChatExtensionSurface:
                 "installing an MCP server as a chat capability requires a "
                 "sandbox; none was provided",
             )
-        from paa.skills.adapters.mcp import McpServerAdapter
-
-        adapter = McpServerAdapter(
+        # Kind-driven through the registry: 'mcp_server' is the modality
+        # this method exists to install, and the factory that serves it is
+        # the registry's word. The arguments stay here because they are the
+        # caller's configuration, which no registry could know.
+        adapter = adapter_for("mcp_server")(
             list(server_command),
             version=version,
             sandbox=self._sandbox,
@@ -883,15 +895,18 @@ class ChatExtensionSurface:
         their own server command — a single provider→adapter map cannot
         serve two servers, and pretending it could would dispatch one
         server's tool to another's process. The USA itself is stateless;
-        construction is a dict build. Providers this surface installs
-        none of (``native``) get an empty adapter list, and the USA
-        refuses the dispatch by name.
+        construction is a dict build. Which *factory* serves a provider is
+        the adapter registry's word (``adapter_for`` — the open surface),
+        while the arguments each modality needs stay here, because the
+        constructors genuinely differ: an MCP server's command rides the
+        contract, the claw_hub adapter is the shared root-bound instance
+        built at construction. Providers this surface installs none of
+        (``native``) get an empty adapter list, and the USA refuses the
+        dispatch by name.
         """
         adapter: SkillAdapter | None = None
         if contract.provider == "mcp_server":
-            from paa.skills.adapters.mcp import McpServerAdapter
-
-            adapter = McpServerAdapter(
+            adapter = adapter_for(contract.provider)(
                 list(contract.invocation.server_command),
                 sandbox=self._sandbox,
                 permission_mode=self._permission_mode,
@@ -932,6 +947,14 @@ def _read_frontmatter(skill_dir: Path) -> dict[str, Any]:
     directory that changed underneath the flow — the flow carries on
     with no extension keys rather than dying mid-install.
     """
+    # Not an adapter_for site, on purpose: the registry's table is name →
+    # adapter *factory*, and parse_skill_md is the parser the claw_hub
+    # format publishes beside its class — a format detail every directory
+    # this flow reads shares, not a dispatchable modality with a door of
+    # its own. Imported at this its only use, like PackageInstaller in
+    # __init__, so the top import list names no adapter class by name.
+    from paa.skills.adapters.claw_hub import parse_skill_md
+
     skill_file = skill_dir / "SKILL.md"
     try:
         frontmatter, _ = parse_skill_md(skill_file.read_text(encoding="utf-8"))
