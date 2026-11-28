@@ -73,18 +73,61 @@ class TestConformanceV0:
         assert all(c.status == "fail" for c in gap.checks)
         assert "no conformance runner" in render_reports([gap])
 
+    async def test_the_report_count_follows_an_added_declaration(
+        self, ledger: LedgerStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The derived count moves with the declaration table, not against it.
+
+        The pin this proves honest (``len(reports) == len(BUILTIN_DECLARATIONS)``
+        in the page-of-truth test below) replaced an exact ``== 7`` that
+        broke by design the moment an eighth builtin landed — the
+        closed-door failure the review named. Same monkeypatched extra
+        as the test above: the reports grow by exactly the addition
+        (the RED gap row), and the derived count follows the table
+        rather than failing. No literal anywhere: the ninth builtin
+        proves the same thing this one does.
+        """
+        from paa.pipelines import registry as registry_module
+        from paa.pipelines.slots import PipelineDeclaration
+
+        unpatched = len(registry_module.BUILTIN_DECLARATIONS)
+        extra = PipelineDeclaration(
+            name="test.eighth-builtin",
+            version="1.0.0",
+            requires_runtime=">=4.1,<5",
+            description="registered to prove the derived count follows",
+        )
+        monkeypatch.setattr(
+            registry_module,
+            "BUILTIN_DECLARATIONS",
+            {**registry_module.BUILTIN_DECLARATIONS, extra.name: extra},
+        )
+        # One heavyweight run, like every sibling here: the runners write
+        # to the shared ledger fixture, and a second full pass in one
+        # test doubles the surface for transaction residue without
+        # proving anything the three assertions below do not already.
+        after = await every_builtin_conformance(ledger, tmp_path)
+        assert len(after) == unpatched + 1
+        assert len(after) == len(registry_module.BUILTIN_DECLARATIONS)
+        # The addition is a report (a RED one — no runner), never a
+        # silent gap in the page.
+        assert extra.name in {r.pipeline for r in after}
+
     async def test_the_rendered_report_is_one_page_of_truth(
         self, ledger: LedgerStore, tmp_path: Path
     ) -> None:
         reports = await every_builtin_conformance(ledger, tmp_path)
         text = render_reports(reports)
-        # One verdict line per report: the count is the registered-runnable
-        # count (four until Wave 7 added the observer, six with Wave 8's
-        # manager and guarded self-improvement loop, seven with Wave 9's
-        # mcp-host adapter), so a pipeline added without a GREEN report
-        # shows up here as a missing line, not a silent gap.
+        # One verdict line per report: the count is the declarations' own,
+        # read through the registry binding both ``list()`` and the
+        # monkeypatch pattern above flow through — so a pipeline added
+        # without a GREEN report shows up here as a missing/RED line, not
+        # by breaking an exact count (this is the line that used to say
+        # ``== 7`` and turned every eighth builtin into a red test).
+        from paa.pipelines import registry as registry_module
+
         assert text.count("GREEN") == len(reports)
-        assert len(reports) == 7
+        assert len(reports) == len(registry_module.BUILTIN_DECLARATIONS)
         assert "double-run-sequence-equality" in text
         assert "n/a" not in text.splitlines()[0]  # verdict lines stay verdicts
         # The n/a rows are visible, not hidden: tie the rendered count to

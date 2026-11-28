@@ -36,6 +36,7 @@ from paa.pipelines.overlay import (
 )
 from paa.pipelines.slots import (
     BUILTIN_DECLARATIONS,
+    PipelineDeclaration,
     builtin_context_provider,
     declaration_for,
     register_context_provider,
@@ -45,6 +46,26 @@ from paa.pipelines.slots import (
 CHAT = BUILTIN_DECLARATIONS["builtin.chat"]
 CODER = BUILTIN_DECLARATIONS["coder.tool-loop"]
 BUILTIN = BUILTIN_DECLARATIONS["builtin.plan-execute-critique"]
+
+
+def _defaults_overlay(declaration: PipelineDeclaration) -> str:
+    """The overlay that restates a declaration's own param defaults.
+
+    TOML-rendered per the manifest's closed type set (``int``/``bool``/
+    ``str``), so a declaration with no params yields an empty ``[params]``
+    table — a valid overlay that exercises nothing, which is the honest
+    result for a pipeline with nothing to restate.
+    """
+    lines = ["[params]"]
+    for param, spec in declaration.params.items():
+        if spec.type == "bool":
+            value = "true" if spec.default else "false"
+        elif spec.type == "str":
+            value = f'"{spec.default}"'
+        else:
+            value = str(spec.default)
+        lines.append(f"{param} = {value}")
+    return "\n".join(lines)
 
 
 class TestNarrowingIsAccepted:
@@ -239,19 +260,21 @@ class TestWideningIsRejectedByName:
 
 
 class TestDeclarations:
-    def test_all_seven_in_process_pipelines_are_declared(self) -> None:
-        # The registered-builtin set is pinned so a slot added without a
-        # declaration (or a declaration without a slot) is a red test, not
-        # a registry that quietly disagrees with the overlay loader.
-        assert set(BUILTIN_DECLARATIONS) == {
-            "builtin.plan-execute-critique",
-            "builtin.chat",
-            "coder.tool-loop",
-            "builtin.observe",
-            "builtin.manager",
-            "improve.reflection-loop",
-            "builtin.mcp-host",
-        }
+    def test_every_declaration_is_an_overlay_baseline(self) -> None:
+        # The pin this replaces was an exact census of seven names: it
+        # broke by design the moment an eighth builtin landed — the
+        # closed-door failure W9A-REG exists to remove — and it never
+        # actually called the loader. The property that survives
+        # additions is the one the old comment claimed to guard: the
+        # declaration table is the overlay loader's whole world, so
+        # every declaration must be a coherent baseline for it — each
+        # declared param's own default sits inside its own range, and
+        # the overlay that restates them loads clean.
+        for name, declaration in BUILTIN_DECLARATIONS.items():
+            overlay = load_overlay(_defaults_overlay(declaration), declaration)
+            assert overlay.params == {
+                param: spec.default for param, spec in declaration.params.items()
+            }, name
 
     def test_declarations_restate_the_classes(self) -> None:
         from paa.chat.loop import ChatLoop
