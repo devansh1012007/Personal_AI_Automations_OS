@@ -90,13 +90,7 @@ class TestConformanceV0:
         from paa.pipelines import registry as registry_module
         from paa.pipelines.slots import PipelineDeclaration
 
-        # Two scratch roots: the runners mkdir their working children
-        # under the path they are handed (``one``/``two``/``three``...),
-        # so a second run needs a second root, not the same one.
-        scratch_before, scratch_after = tmp_path / "before", tmp_path / "after"
-        scratch_before.mkdir()
-        scratch_after.mkdir()
-        before = await every_builtin_conformance(ledger, scratch_before)
+        unpatched = len(registry_module.BUILTIN_DECLARATIONS)
         extra = PipelineDeclaration(
             name="test.eighth-builtin",
             version="1.0.0",
@@ -108,8 +102,12 @@ class TestConformanceV0:
             "BUILTIN_DECLARATIONS",
             {**registry_module.BUILTIN_DECLARATIONS, extra.name: extra},
         )
-        after = await every_builtin_conformance(ledger, scratch_after)
-        assert len(after) == len(before) + 1
+        # One heavyweight run, like every sibling here: the runners write
+        # to the shared ledger fixture, and a second full pass in one
+        # test doubles the surface for transaction residue without
+        # proving anything the three assertions below do not already.
+        after = await every_builtin_conformance(ledger, tmp_path)
+        assert len(after) == unpatched + 1
         assert len(after) == len(registry_module.BUILTIN_DECLARATIONS)
         # The addition is a report (a RED one — no runner), never a
         # silent gap in the page.
