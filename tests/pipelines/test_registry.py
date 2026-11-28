@@ -2,7 +2,7 @@
 
 What these tests pin:
 
-* **the registry's two sources** — the seven in-process builtins
+* **the registry's two sources** — the in-process builtins
   (trust ``builtin``, runnable; Wave 7 added ``builtin.observe``, Wave 8
   added ``builtin.manager`` and ``improve.reflection-loop``, Wave 9
   added ``builtin.mcp-host``) and the local directory's manifests
@@ -83,18 +83,21 @@ def _local_home(tmp_path: Path) -> Path:
 
 
 class TestTheRegistry:
-    def test_default_lists_the_seven_builtins(self) -> None:
+    def test_default_lists_the_builtin_declarations(self) -> None:
+        # The default registry's rows are the declaration table itself,
+        # complete and in the table's own order: a pipeline added to
+        # BUILTIN_DECLARATIONS appears here without this file noticing,
+        # and a row the table cannot explain — or a declaration dropped
+        # on the floor — is a red test, so the registry stays a
+        # transparent projection of slots.py, never a second census.
+        # (This used to pin an exact ordered list of seven names, which
+        # broke by design the moment an eighth builtin landed.)
+        from paa.pipelines.slots import BUILTIN_DECLARATIONS
+
         registry = PipelineRegistry(local_dir=None)
         rows = registry.list()
-        assert [r.name for r in rows] == [
-            "builtin.plan-execute-critique",
-            "builtin.chat",
-            "coder.tool-loop",
-            "builtin.observe",
-            "builtin.manager",
-            "improve.reflection-loop",
-            "builtin.mcp-host",
-        ]
+        assert rows  # vacuous otherwise
+        assert [r.name for r in rows] == list(BUILTIN_DECLARATIONS)
         assert all(r.trust == "builtin" and r.runnable for r in rows)
 
     def test_the_two_external_harness_adapters_declare_their_facts(self) -> None:
