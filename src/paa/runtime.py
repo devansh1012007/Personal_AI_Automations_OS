@@ -57,6 +57,7 @@ from paa.ledger.mandate import (
 from paa.ledger.recovery import RecoveryEngine
 from paa.ledger.store import LedgerStore
 from paa.models.base import redact
+from paa.pipelines.registry import DEFAULT_PIPELINE
 from paa.storage.relational import get_database
 from paa.storage.relational.base import RelationalBackend
 
@@ -250,6 +251,7 @@ class Runtime:
         workspace_path: str | None = None,
         target_agent: str | None = None,
         mandate: Mandate | None = None,
+        pipeline: str | None = None,
     ) -> CorrelationId:
         """Record a task and return its lineage id. Does not execute it.
 
@@ -259,6 +261,16 @@ class Runtime:
         proceeds, and the lineage's head event says plainly that no
         authority was asserted, so ``paa doctor`` counts it separately
         rather than as coverage.
+
+        ``pipeline`` names the pipeline this task runs under — the
+        explicit, mandate-scoped selection the C6.5 rule fixed (never
+        scored). It is validated by
+        :func:`paa.pipelines.registry.select` **before any event is
+        emitted**: an unknown name, or one outside the mandate's pipeline
+        scope, raises :class:`PipelineSelectionError` and leaves zero
+        trace. ``None`` — the default — submits the default task
+        pipeline. The selection is recorded on the ``TASK_REQUESTED``
+        payload, and :meth:`run` reads it back to dispatch.
 
         Two refusals can follow, each recorded as a ``MANDATE_REFUSED``
         event before raising :class:`PaaError`, never silently:
@@ -277,6 +289,18 @@ class Runtime:
         """
         effective = effective_policy_version(self.settings.policy)
         resolved = mandate if mandate is not None else implicit_mandate(self.settings.policy)
+        if pipeline is not None:
+            # Selection is explicit and mandate-scoped, the registry's own
+            # rule, and it happens before any event is emitted: a name that
+            # cannot run is a caller error that leaves zero trace — the
+            # same rule the install gates follow.
+            from paa.pipelines.registry import PipelineRegistry, select
+
+            select(
+                pipeline,
+                registry=PipelineRegistry.default(),
+                allowed=resolved.scope.pipelines,
+            )
         if resolved.policy_version != effective:
             refused = await self._refuse_mandate(resolved, reason="policy_changed")
             raise PaaError(
@@ -306,6 +330,7 @@ class Runtime:
                 workspace_path=workspace_path,
                 target_agent=target_agent,
                 mandate=resolved,
+                pipeline=pipeline,
             )
         )
 
@@ -328,8 +353,94 @@ class Runtime:
         return correlation_id
 
     async def run(self, correlation_id: CorrelationId | uuid.UUID) -> Any:
-        """Drive a submitted task to a terminal phase."""
-        return await self.orchestrator.run(correlation_id)
+        """Drive a submitted task to a terminal phase.
+
+        One selection, recorded once: :meth:`submit` writes the operator's
+        pipeline onto the ``TASK_REQUESTED`` payload, and this door reads it
+        back from the lineage — the ledger is the truth, so a run after a
+        restart dispatches the same way. A task that named no pipeline (or
+        named the default task pipeline) is driven by the orchestrator,
+        unchanged. A task that named ``builtin.manager`` is driven as a
+        composition run on the same lineage, with the same host-minted
+        runners ``paa pipeline run`` uses — the one runner table, stated
+        once in :func:`paa.pipelines.compose.default_host_runners`, so the
+        two doors cannot drift apart. Any other registered pipeline owns
+        its models and its session, so it runs through its own one-shot
+        door; reaching it here is refused loudly with that door named,
+        never silently ignored — the selection was the operator's word.
+        """
+        from paa.pipelines.compose import ManagerPipeline
+
+        pipeline = await self._recorded_request_field(correlation_id, "pipeline")
+        if pipeline is None or pipeline == DEFAULT_PIPELINE:
+            return await self.orchestrator.run(correlation_id)
+        if pipeline == ManagerPipeline.name:
+            import json
+
+            from paa.pipelines.base import PipelineTask
+            from paa.pipelines.compose import default_host_runners, run_composition
+            from paa.pipelines.registry import PipelineRegistry
+
+            registry = PipelineRegistry.default()
+            goal = await self._recorded_request_field(correlation_id, "goal")
+            text = goal if isinstance(goal, str) else ""
+            # The manager door's own contract, the same one the CLI parses:
+            # the goal carries the operator's decomposition as JSON.
+            try:
+                decomposition = json.loads(text) if text.strip() else None
+            except json.JSONDecodeError as exc:
+                raise PaaError(
+                    f"a builtin.manager task's goal must be the JSON "
+                    f"decomposition: {exc}",
+                    actual=ManagerPipeline.name,
+                ) from exc
+            if not isinstance(decomposition, dict):
+                raise PaaError(
+                    "a builtin.manager task's goal must be a JSON object: "
+                    '{"delegations": [{"pipeline": ..., "goal": ...}, ...]}',
+                    actual=ManagerPipeline.name,
+                )
+            task = PipelineTask(
+                correlation_id=(
+                    correlation_id
+                    if isinstance(correlation_id, uuid.UUID)
+                    else uuid.UUID(str(correlation_id))
+                ),
+                session_id=None,
+                goal=text,
+                request=decomposition,
+            )
+            _, result = await run_composition(
+                self.ledger,
+                task,
+                runners=default_host_runners(registry),
+                registry=registry,
+            )
+            return result
+        raise PaaError(
+            f"pipeline {pipeline!r} runs through its own one-shot door "
+            "(paa pipeline run or the chat surface): its driver owns its "
+            "models and its session, and the task lineage runs the default "
+            "task pipeline and builtin.manager",
+            actual=pipeline,
+        )
+
+    async def _recorded_request_field(
+        self, correlation_id: CorrelationId | uuid.UUID, field: str
+    ) -> Any:
+        """Read one field of the recorded task request from its lineage.
+
+        The ledger is the truth: a dispatch after a restart reads the same
+        selection the submit recorded, not a value this process remembers.
+        """
+        for event in await self.ledger.read_correlation(correlation_id):
+            if event.event_type is not EventType.TASK_REQUESTED:
+                continue
+            request = event.payload.get("request")
+            if isinstance(request, dict):
+                return request.get(field)
+            return None
+        return None
 
     async def submit_and_run(self, goal: str, **kwargs: Any) -> Any:
         """Convenience: submit then run, the common one-shot path."""

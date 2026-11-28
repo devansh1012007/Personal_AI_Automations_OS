@@ -149,6 +149,17 @@ class TaskRequest:
     ``TASK_REQUESTED``, so ``paa ledger`` shows the authority first.
     """
 
+    pipeline: str | None = None
+    """The explicitly selected pipeline for this task (the C6.5 rule:
+    selection is explicit and mandate-scoped, never scored).
+
+    ``None`` runs the default task pipeline. Validated by
+    :func:`paa.pipelines.registry.select` at the runtime's door **before any
+    event is emitted**, and recorded on the ``TASK_REQUESTED`` payload so
+    the lineage carries the operator's word — the run reads it back from
+    the ledger, so a dispatch after a restart is the same dispatch.
+    """
+
 
 @dataclass(slots=True)
 class TaskOutcome:
@@ -324,6 +335,11 @@ class ChiefOrchestrator:
         }
         if request.workspace_path:
             payload["workspace_path"] = request.workspace_path
+        if request.pipeline:
+            # The explicit selection, recorded only when set so events from
+            # before the field existed replay identically. The lineage is
+            # the truth: Runtime.run reads this back to dispatch.
+            payload["request"]["pipeline"] = request.pipeline
 
         await self.emit(
             correlation_id,

@@ -625,7 +625,7 @@ async def _run_manager_pipeline(
     from paa.cli.main import _build_runtime
     from paa.core.types import new_correlation_id
     from paa.pipelines.base import PipelineStatus, PipelineTask
-    from paa.pipelines.compose import run_composition
+    from paa.pipelines.compose import default_host_runners, run_composition
     from paa.pipelines.overlay import tightened_limits
     from paa.pipelines.registry import PipelineRegistry
 
@@ -652,27 +652,11 @@ async def _run_manager_pipeline(
     try:
         ledger = rt.ledger
 
-        # The host-minted runners: each registered runnable builtin gets
-        # a driver as an in-process runner. The CLI's one-shot drivers own
-        # their own models and sessions, so the runner here is the honest
-        # v1 door — it records the delegation as received and completed;
-        # wiring the full one-shot drivers per worker is the improve-wave
-        # follow-up (the composition contract itself is pinned in
-        # tests/pipelines/test_compose.py against real workers).
-        async def _runner(run: Any) -> Any:
-            from paa.pipelines.base import PipelineResult
-
-            return PipelineResult(
-                status=PipelineStatus.COMPLETED,
-                summary=f"delegation received by {run.name}",
-                metrics={"worker": run.name},
-            )
-
-        runners: dict[str, Any] = {
-            row.name: _runner
-            for row in PipelineRegistry(local_dir=None).list()
-            if row.runnable and row.name != "builtin.manager"
-        }
+        # The host-minted runners: the one table every composition door
+        # shares (this door and Runtime.run's), stated once in compose so
+        # the two cannot drift apart.
+        registry = PipelineRegistry(local_dir=None)
+        runners = default_host_runners(registry)
         task = PipelineTask(
             correlation_id=run_id,
             session_id=None,
@@ -684,7 +668,7 @@ async def _run_manager_pipeline(
                 ledger,
                 task,
                 runners=runners,
-                registry=PipelineRegistry(local_dir=None),
+                registry=registry,
                 limits=limits,
                 allowed=tuple(allow) if allow else None,
             )

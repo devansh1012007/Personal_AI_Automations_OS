@@ -752,6 +752,33 @@ class CompositionHost:
         return None
 
 
+def default_host_runners(registry: PipelineRegistry) -> dict[str, ChildRunner]:
+    """The host-minted v1 runners every composition door shares.
+
+    Each registered runnable builtin except the manager itself gets the
+    one-shot driver shape the CLI door established: the runner records the
+    delegation as received and completed. Wiring the full one-shot drivers
+    per worker is the improve-wave follow-up; the composition contract
+    itself is pinned in ``tests/pipelines/test_compose.py`` against real
+    workers. Stated once here — and consumed by both ``paa pipeline run``
+    and ``Runtime.run`` — so the two doors cannot drift apart.
+    """
+    from paa.pipelines.base import PipelineResult, PipelineStatus
+
+    async def _runner(run: ChildRun) -> PipelineResult:
+        return PipelineResult(
+            status=PipelineStatus.COMPLETED,
+            summary=f"delegation received by {run.name}",
+            metrics={"worker": run.name},
+        )
+
+    return {
+        row.name: _runner
+        for row in registry.list()
+        if row.runnable and row.name != ManagerPipeline.name
+    }
+
+
 async def run_composition(
     ledger: LedgerStore,
     task: PipelineTask,
