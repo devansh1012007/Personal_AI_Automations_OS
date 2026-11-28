@@ -67,7 +67,7 @@ to `None` (ingestion skipped).
 | `Daemon` → `MemoryCreator` | `run_batch()` | Ingest signals | `src/paa/daemon.py:160` |
 | `Daemon` → `MemoryCurator` | `run_maintenance()` | Curate memory (decay, prune, consolidate, orphans, reconcile, analyze) | `src/paa/daemon.py:180` |
 | `cli.main serve` → `Daemon` | `Daemon(rt)`, `start()`/`stop()` | `paa serve` | `cli/main.py:588` |
-| `Runtime.build` → boot recovery | `orchestrator.boot()` | Recovery at boot | `runtime.py:326` |
+| `Runtime.build` → boot recovery | `orchestrator.boot()` | Recovery at boot | `runtime.py:456` |
 
 ## Runtime behavior
 

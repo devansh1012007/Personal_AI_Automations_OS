@@ -4,7 +4,7 @@ PAA's "backend" is not a separate service — it is the in-process cognitive
 runtime exposed through a CLI, a loopback FastAPI ingestion API, and a programmatic
 `Runtime`. There is no separate backend/frontend split in the traditional sense:
 the CLI and API are both thin edges over the same `Runtime` object
-(`src/paa/runtime.py:140`).
+(`src/paa/runtime.py:141`).
 
 ## Backend entry points
 
@@ -23,7 +23,7 @@ the CLI and API are both thin edges over the same `Runtime` object
 | `paa chat` | `src/paa/cli/chat.py:160` | The chat surface — Textual TUI, or `--plain` (SPEC 2 W4) |
 | `paa mcp serve` | `src/paa/cli/mcp.py:137` | Stdio MCP server exposing memory + chat as tools (SPEC 2 W4) |
 | `paa tui` | `cli/main.py:539` | Interactive dashboard |
-| `Runtime.build()` | `src/paa/runtime.py:353` | Programmatic composition root (used by all edges) |
+| `Runtime.build()` | `src/paa/runtime.py:464` | Programmatic composition root (used by all edges) |
 
 ## Backend module responsibilities
 
@@ -59,9 +59,9 @@ by:
    over it (`cli/main.py:476`). The API delegates to the same `Runtime`.
 3. **Programmatic `Runtime`** — `async with await Runtime.build() as rt:
    cid = await rt.submit(...); outcome = await rt.run(cid)`
-   (`runtime.py:144`).
+   (`runtime.py:145`).
 
-All three converge on `ChiefOrchestrator` (`src/paa/agents/orchestrator.py:158`).
+All three converge on `ChiefOrchestrator` (`src/paa/agents/orchestrator.py:169`).
 
 ## What the backend does NOT do (honest gaps)
 

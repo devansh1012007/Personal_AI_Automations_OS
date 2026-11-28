@@ -6,7 +6,7 @@
 - **Path:** `src/paa/pipelines/scaffold.py` (the renderer), `src/paa/cli/pipeline.py` (the door), `examples/` (the worked references)
 - **Main responsibility:** The zero-infrastructure start the pipeline platform's distribution order names first (P7, `docs/plans/2026-11-21-pipeline-platform-spec.md:438`): `paa pipeline new <name>` writes the four files a new pipeline starts from — manifest, entrypoint, README, test skeleton — proven through the closed parser before success is reported, with named refusals for every refusal path; the two worked examples (`examples/tdd-loop/`, `examples/tree-of-thought/`) are complete pipelines in that shape, held to the same six-check standard; and this document carries the protocol compatibility matrix the spec's P7 list asks for.
 - **Architectural layer:** Core / orchestration vocabulary (the renderer lives in `pipelines/`); the door is Edge
-- **Entrypoints:** `scaffold_pipeline()` (`pipelines/scaffold.py:501`); the CLI door `paa pipeline new` (`cli/pipeline.py:827`); the worked examples' entrypoints (`examples/tdd-loop/pipeline.py:80`, `examples/tree-of-thought/pipeline.py:99`)
+- **Entrypoints:** `scaffold_pipeline()` (`pipelines/scaffold.py:501`); the CLI door `paa pipeline new` (`cli/pipeline.py:811`); the worked examples' entrypoints (`examples/tdd-loop/pipeline.py:80`, `examples/tree-of-thought/pipeline.py:99`)
 - **Public interfaces:** `SCAFFOLD_FILES`, `SCAFFOLD_VERSION`, `ScaffoldError`, `ScaffoldReport`, `scaffold_pipeline` (`pipelines/scaffold.py`)
 - **Other modules that depend on it:** the CLI (`cli/pipeline.py`) — nothing else; the scaffold is a leaf by design, it renders files and refuses, it never runs them
 

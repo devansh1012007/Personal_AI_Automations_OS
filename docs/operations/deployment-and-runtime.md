@@ -26,7 +26,7 @@ live-server run still needs a pass (parity + backend verification pending).
 
 ## Runtime startup
 
-Programmatic: `Runtime.build()` (`src/paa/runtime.py:353`):
+Programmatic: `Runtime.build()` (`src/paa/runtime.py:464`):
 1. `Settings()` → `ensure_directories()` creates all state dirs
    (`config.py:886`).
 2. `Database` connects + applies `schema_sqlite.sql`.
@@ -34,13 +34,13 @@ Programmatic: `Runtime.build()` (`src/paa/runtime.py:353`):
 4. Model router built (or a `model_adapter` injected); `RouterModelAdapter`
    wraps it.
 5. Optional backends: `_try_vector`, `_try_graph`, `_try_queue` — degrade, never
-   raise (`runtime.py:519`–`:539`).
+   raise (`runtime.py:630`–`:650`).
 6. `_build_agents()` constructs planner, policy, worker, critic, context
-   builders, router (`runtime.py:660`).
-7. `_acquire_sandbox()` — 5s probe, falls back to subprocess (`runtime.py:617`).
-8. `ChiefOrchestrator` assembled with all collaborators (`runtime.py:368`).
+   builders, router (`runtime.py:771`).
+7. `_acquire_sandbox()` — 5s probe, falls back to subprocess (`runtime.py:728`).
+8. `ChiefOrchestrator` assembled with all collaborators (`runtime.py:479`).
 9. `boot_recovery()` runs `RecoveryEngine.boot_sweep()` before accepting work
-   (`runtime.py:264`).
+   (`runtime.py:456`).
 
 CLI one-shot commands build a `Runtime`, do one thing, print, and close
 (`cli/main.py:112`). `paa serve` builds one `Runtime`, starts the `Daemon` and

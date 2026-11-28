@@ -167,6 +167,67 @@ _FILE_NAME = re.compile(
     r"^(?P<path>(?:[A-Za-z0-9_.\-]+/)*[A-Za-z0-9_.\-]+\.[A-Za-z0-9_]+)$"
 )
 
+#: Load-bearing citations pinned to their **content**, not just their
+#: existence. The three checks above catch the mechanically decidable
+#: defects; they cannot see a citation that is *wrong without being broken*
+#: — the line exists, is not blank, and no longer holds what the sentence
+#: claims. That blind spot is where the drift the 2026-11-28 review round
+#: found lived (``runtime.py:209`` still named ``Runtime.run()`` long after
+#: the method had moved twice). These pins close it for the citations a
+#: reader is most likely to follow: the architecture doc's verified call
+#: chains and the doors the module docs name.
+#:
+#: Each entry is ``(document, citation exactly as written in the document,
+#: text that must appear on the cited line)``. A pin fails when the line
+#: moves without the sentence being re-read — which is exactly the moment
+#: the citation needs a human. A citation removed from its document fails
+#: too ("the citation is gone; re-pin it"), so the table cannot rot into a
+#: list of pins for citations nobody writes any more.
+PINNED_ANCHORS: tuple[tuple[str, str, str], ...] = (
+    # The architecture doc's Chain A: task submission and execution.
+    ("docs/architecture/component-interactions.md", "runtime.py:245", "async def submit("),
+    ("docs/architecture/component-interactions.md", "runtime.py:355", "async def run("),
+    (
+        "docs/architecture/component-interactions.md",
+        "src/paa/agents/orchestrator.py:299",
+        "async def submit(",
+    ),
+    (
+        "docs/architecture/component-interactions.md",
+        "src/paa/agents/orchestrator.py:441",
+        "async def run(",
+    ),
+    ("docs/architecture/component-interactions.md", "ledger/store.py:116", "async def append("),
+    ("docs/architecture/component-interactions.md", "ledger/replay.py:546", "async def project("),
+    (
+        "docs/architecture/component-interactions.md",
+        "context_agents.py:372",
+        "class PlannerContextBuilder",
+    ),
+    ("docs/architecture/component-interactions.md", "reasoning.py:62", "class StrategicPlanner"),
+    ("docs/architecture/component-interactions.md", "policy.py:158", "async def handle("),
+    # The doors the module docs name.
+    ("docs/modules/daemon.md", "runtime.py:456", "async def boot_recovery"),
+    ("docs/modules/ledger.md", "runtime.py:464", "async def build("),
+    ("docs/operations/deployment-and-runtime.md", "src/paa/runtime.py:464", "async def build("),
+    # The extensibility re-audit's own evidence.
+    (
+        "docs/plans and audits/flexability-audit.md",
+        "src/paa/runtime.py:245",
+        "async def submit(",
+    ),
+    (
+        "docs/plans and audits/flexability-audit.md",
+        "src/paa/runtime.py:355",
+        "async def run(",
+    ),
+    (
+        "docs/plans and audits/flexability-audit.md",
+        "src/paa/marketplace/installer.py:219",
+        "_gate_smoke_test",
+    ),
+)
+
 
 @dataclass(frozen=True)
 class Reference:
@@ -541,6 +602,52 @@ def test_the_lock_is_not_vacuous() -> None:
     assert not any(document.startswith("docs/plans/") for document in documents)
     assert any(reference.path == "src/paa/runtime.py" for reference in references)
     assert any(reference.document == "docs/README.md" for reference in references)
+
+
+def test_load_bearing_citations_are_pinned_to_their_content() -> None:
+    """The citations a reader follows name what is actually on the line.
+
+    The three existence checks above pass for a citation whose target moved
+    and whose number now lands on a different non-blank line — the "wrong
+    without being broken" case the lock's own docstring admits it cannot
+    see. The pins close that hole for the load-bearing set: the architecture
+    doc's call chains, the runtime doors the module docs name, and the
+    re-audit's evidence. When one of these fails, the fix is to re-read the
+    sentence and re-point (and re-pin) it — never to silence the pin.
+    """
+    broken: list[str] = []
+    for document, quoted, expected in PINNED_ANCHORS:
+        doc = REPO_ROOT / document
+        if not doc.is_file():
+            broken.append(f"{document}: the pinned document is gone")
+            continue
+        text = doc.read_text(encoding="utf-8")
+        if quoted not in text:
+            broken.append(f"{document}: {quoted!r} — the citation is gone; re-pin it")
+            continue
+        path, number = quoted.rsplit(":", 1)
+        candidates = resolve(path)
+        if len(candidates) != 1:
+            broken.append(
+                f"{document}: {quoted!r} — {path!r} does not name exactly one file"
+            )
+            continue
+        line = _line_text(candidates[0], int(number))
+        if expected not in line:
+            broken.append(
+                f"{document}: {quoted!r} — "
+                f"{candidates[0].relative_to(REPO_ROOT).as_posix()} line {number} "
+                f"no longer reads {expected!r}"
+            )
+    assert not broken, "load-bearing citations drifted:\n" + "\n".join(broken)
+
+
+def test_the_pins_are_not_vacuous() -> None:
+    """The pin table is non-empty and its documents are in the lock's scope."""
+    assert len(PINNED_ANCHORS) >= 10
+    documents = {document for document, _, _ in PINNED_ANCHORS}
+    scanned = {path.relative_to(REPO_ROOT).as_posix() for path in scope_files()}
+    assert documents <= scanned, documents - scanned
 
 
 def test_the_lock_catches_a_broken_reference(tmp_path: Path) -> None:

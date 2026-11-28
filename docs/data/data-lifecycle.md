@@ -8,7 +8,7 @@ and what happens on failure. All paths are verified against source where cited.
 
 ### Creation
 A task originates from a caller (CLI, API, daemon, or coder agent tool).
-`ChiefOrchestrator.submit()` (`src/paa/agents/orchestrator.py:279`) mints a `CorrelationId`
+`ChiefOrchestrator.submit()` (`src/paa/agents/orchestrator.py:290`) mints a `CorrelationId`
 and writes `TASK_REQUESTED` then `TASK_QUEUED` to `system_state_ledger` before
 enqueuing to `queue_messages` (`StreamName.ORCHESTRATOR_CORE`). Submission is
 deliberately cheap and always succeeds so the request is durable before any
@@ -162,7 +162,7 @@ Hard guarantee: `allocated_tokens <= ceiling` (assertion, `gatherer.py:565`).
 
 ### Consumption
 Orchestrator `_hydrate()` reads `routing_directive`; on HARD_STOP it parks the
-task on `AWAITING_HUMAN_ATTESTATION` (`src/paa/agents/orchestrator.py:583`).
+task on `AWAITING_HUMAN_ATTESTATION` (`src/paa/agents/orchestrator.py:599`).
 
 ### Worker packet
 `WorkerContextBuilder.handle()` (`context_agents.py:428`) drops all narrative
@@ -178,7 +178,7 @@ enters the sandbox.
 the `patch` in the step output (`reasoning.py:469`).
 
 ### Validation
-`CriticValidatorAdapter` (`runtime.py:77`) adapts `DeterministicValidationEngine`
+`CriticValidatorAdapter` (`runtime.py:78`) adapts `DeterministicValidationEngine`
 (`validation/engine.py:214`) to the critic's call shape. Checks in order:
 schema → AST security scan → patch dry-run (`UnifiedDiffValidator.dry_run`,
 `validation/patch.py:467`) → workspace drift → tests (runs last, only inside
@@ -217,7 +217,7 @@ tracks `unprocessed`/`processing`/`processed`/`malformed`/`quarantined`
 
 ### Creation
 Orchestrator `submit()` enqueues `{correlation_id, goal}` to
-`StreamName.ORCHESTRATOR_CORE` (`src/paa/agents/orchestrator.py:313`). Recovery `_requeue()`
+`StreamName.ORCHESTRATOR_CORE` (`src/paa/agents/orchestrator.py:324`). Recovery `_requeue()`
 re-enqueues recovered lineages (`recovery.py:1333`).
 
 ### Consumption

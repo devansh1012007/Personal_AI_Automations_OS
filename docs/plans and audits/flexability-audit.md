@@ -1,6 +1,46 @@
 # PAA extensibility audit
 
+## Re-audit (2026-11-28): the verdict flips
+
+The original audit below was written before Wave 6. Its "No" verdict was
+true then; it is not true now. Waves 6–9 shipped the pipeline platform the
+audit's §4/§6 proposed, and the review round of 2026-11-28 closed the two
+gaps that remained inside it. The flipped capabilities, with current
+evidence:
+
+| Original finding | Now | Evidence |
+|---|---|---|
+| Pipeline selection — Unsupported | **Working** | Explicit, mandate-scoped selection at the core door: `Runtime.submit(pipeline=...)` validates through `registry.select` before any event is emitted (`src/paa/runtime.py:245`), the choice rides the `TASK_REQUESTED` payload, and `Runtime.run` reads it back from the lineage to dispatch (`src/paa/runtime.py:355`); `paa pipeline run` (`src/paa/cli/pipeline.py:248`) and the chat console select through the same registry. |
+| Pipeline registry — Unsupported | **Working** | `PipelineRegistry` (`src/paa/pipelines/registry.py:393`) scans builtins, the operator's local manifests, and the installer's staged packages; selection refuses unknown names and out-of-scope ones (`src/paa/pipelines/registry.py:541`). |
+| Stable pipeline abstraction — Design-only | **Working** | `src/paa/pipelines/` ships the base vocabulary, the built-in strategy over the frozen facade, the call journal, tighten-only overlays, and the six-check conformance standard. |
+| Declarative stage composition — Design-only | **Working** | Declarations with slots/params/limits plus tighten-only overlays (ADR-0052); `paa pipeline inspect` renders what a declaration says. |
+| Marketplace pipeline package type — Unsupported | **Working** | `pipeline` is a valid package kind (`src/paa/marketplace/package.py:48`); `.paapkg` publish and install ship signed pipeline packages with a compatibility floor (`src/paa/pipelines/publish.py`, `src/paa/pipelines/packages.py`). |
+| Executable package loading — Unsupported | **Working** | Install runs gates → conformance → review → stage to `PAA_HOME/pipelines/installed/<name>/<version>/`, and the registry scans the staging as a registered pipeline (`src/paa/pipelines/packages.py:924`). |
+| Smoke/conformance — incomplete | **Working** | The smoke gate stages the bytes and executes the entrypoint under the sandbox (`src/paa/marketplace/installer.py:219`), and since the 2026-11-28 review round every gate **fails closed** — a gate that cannot run refuses, it does not pass. |
+| Versioned runtime SDK — Unsupported | **Working** | `paa-pipeline/1` is frozen (ADR-0055), `requires_runtime` ranges and `requires_paa` floors are checked pre-gates, and the `paa_pipeline` SDK speaks the frozen protocol. |
+| Extensibility tests — Unsupported | **Working** | `tests/pipelines/` (conformance, composition, packages, scaffold, examples) register second pipelines, select per task, install executable pipeline code, and pin conformance; `tests/runtime/test_pipeline_selection.py` pins the core selection door. |
+
+What honestly remains open, so this re-audit is not a victory lap:
+
+- A third-party **in-process** loop is still not executed in-process: a local
+  manifest is listed and inspected but runs through the RPC transport (P3,
+  C9.3), and the built-in one-shot drivers own their own models and sessions,
+  so `Runtime.run` refuses them loudly with their door named rather than
+  hosting them. That boundary is deliberate — the audit's own §4 argued the
+  host must not hand raw collaborators to untrusted code.
+- The capability facade for pipelines is the frozen `CapabilityFacade` plus
+  the call journal, not the audit's `RuntimeContext` shape; a third-party
+  loop speaks the wire protocol instead. Same boundary, different spelling.
+
+The original audit follows, unchanged except that its own `path:line`
+citations have been re-anchored to the current tree (the repository's lock
+keeps them resolvable; the insert-shift discipline keeps them meaningful).
+
 ## 1. Executive verdict
+
+> **Superseded by the re-audit above (2026-11-28).** The verdict below was
+> the honest finding at audit time, before Waves 6–9 shipped the pipeline
+> platform. It is kept as the record of what was true then.
 
 **No: PAA cannot today support an independent developer shipping a completely new agentic loop and harness as an installable, selectable, recoverable first-class runtime component without forking or modifying PAA core.**
 
@@ -19,29 +59,29 @@ No tracked files were modified during this audit.
 
 | Capability | Status | Evidence and conclusion |
 |---|---|---|
-| Built-in task lifecycle | **Working** | `src/paa/agents/orchestrator.py:401-462` hosts the run; since P1.2 the strategy is `BuiltinPlanExecuteCritique` (`src/paa/pipelines/builtin.py:593-862`) over the frozen facade — hydrate → plan → policy → execute/critique/retry → commit. |
-| Runtime composition | **Partially supported** | `src/paa/runtime.py:232-345` wires the built-in runtime, but `Runtime.build()` accepts no pipeline registry, pipeline implementation, or arbitrary loop host. |
+| Built-in task lifecycle | **Working** | `src/paa/agents/orchestrator.py:417-478` hosts the run; since P1.2 the strategy is `BuiltinPlanExecuteCritique` (`src/paa/pipelines/builtin.py:593-862`) over the frozen facade — hydrate → plan → policy → execute/critique/retry → commit. |
+| Runtime composition | **Working** | `src/paa/runtime.py:233-456` wires the built-in runtime; since the 2026-11-28 round, the core runtime selects pipelines itself (`Runtime.submit(pipeline=...)`, `runtime.py:245`) and `builtin.manager` composes registered workers through the shared host-runner table (`src/paa/pipelines/compose.py:755`). |
 | Planner/worker/policy/critic chain | **Working** | `src/paa/pipelines/builtin.py:656-862`; tests in `tests/agents/test_orchestrator.py:64-210` cover ordering, policy blocking, retry, gates, and resumed steps. |
 | Deterministic permissions and risk checks | **Working** | `src/paa/agents/policy.py:122-183`; policy is model-independent and covers permissions, lockdown/network, irreversible operations, protected paths, operator rules, and anti-goals. |
-| Worker sandbox and validation | **Working on the built-in path** | `src/paa/runtime.py:660-719` composes `CriticValidatorAdapter`, `DeterministicValidationEngine`, sandbox, and `WorkerCell`. |
+| Worker sandbox and validation | **Working on the built-in path** | `src/paa/runtime.py:771-830` composes `CriticValidatorAdapter`, `DeterministicValidationEngine`, sandbox, and `WorkerCell`. |
 | Append-only ledger | **Working** | `src/paa/ledger/store.py:102-166` performs idempotency, state versioning, hash chaining, event insertion, and head projection atomically. |
 | Replay and recovery | **Working for ledger-aware orchestrator tasks** | `src/paa/ledger/recovery.py:991-1030` and `src/paa/ledger/recovery.py:1032-1184`; `tests/ledger/test_recovery.py:71-431` covers recovery, idempotence, gates, drift rollback, and process death. |
-| Delegation/recursion protection | **Working** | `src/paa/agents/base.py` and orchestrator delegation mediation around `src/paa/agents/orchestrator.py:503`. |
+| Delegation/recursion protection | **Working** | `src/paa/agents/base.py` and orchestrator delegation mediation around `src/paa/agents/orchestrator.py:519`. |
 | Independent model/tool loop | **Working, but isolated** | `src/paa/coder/loop.py:116-198`; `_handle_call()` at `:200-220` provides tool gating, hooks, denial, and max-step bounds. `tests/coder/test_loop.py:53-215` exercises these. |
 | Coder harness composition | **Partial** | `src/paa/coder/agent.py:115-248` composes a runtime, router-backed model, runtime tools, permissions, hooks, and session, but it is a separate front end rather than an interchangeable runtime pipeline. |
 | Coder loop ledger integration | **Unsupported** | `src/paa/coder/loop.py:142-198` records to `Session` (`user`, `assistant`, `tool_call`, `tool_result`), not `LedgerEvent`, task projections, workspace checkpoints, or `RecoveryEngine`. |
-| Stable pipeline abstraction | **Design-only** | `docs/EXTENSIBILITY_PIPELINES.md` proposes `Pipeline` and `RuntimeContext`, but there is no `src/paa/pipelines/` implementation, SDK version, context facade, or conformance contract. |
-| Pipeline selection | **Unsupported** | `src/paa/runtime.py:209-211`, `Runtime.run()`, unconditionally calls `self.orchestrator.run(correlation_id)`. `TaskRequest` has no pipeline field and there is no CLI/API `--pipeline`, session default, or global default. |
-| Pipeline registry | **Unsupported** | No `PipelineRegistry`, activation API, registry table, or registration mechanism exists. `src/paa/skills/registry.py` is skill-specific and cannot select execution strategies. |
-| Declarative stage composition | **Design-only** | YAML/stage composition is described in `docs/EXTENSIBILITY_PIPELINES.md`; there is no parser, stage registry, or execution host. |
-| Marketplace pipeline package type | **Unsupported** | `src/paa/marketplace/package.py:31-33` allows only `skill`, `agent`, `playbook`, `config`, and `bundle`; `pipeline` is rejected by `__post_init__()` at `:58-61`. |
-| Marketplace install gates | **Working for metadata packages** | `src/paa/marketplace/installer.py:90-129` runs signature, hash, AST, permissions, and smoke gates; tests are in `tests/marketplace/test_marketplace.py:115-187`. |
-| Executable package loading | **Unsupported** | `PackageInstaller._register()` at `src/paa/marketplace/installer.py:200-220` inserts a marketplace row; it does not unpack/import executable code, resolve an entrypoint, register a pipeline, or connect it to `Runtime`. |
-| Marketplace smoke/conformance | **Design-only/incomplete** | `_gate_smoke_test()` at `src/paa/marketplace/installer.py:183-200` checks sandbox health but never executes the package entrypoint. |
+| Stable pipeline abstraction | **Working** (was Design-only) | `src/paa/pipelines/` implements the vocabulary, the built-in strategy over the frozen `CapabilityFacade`, the call journal, overlays, and the six-check conformance standard; `paa-pipeline/1` is the frozen wire protocol (ADR-0055). |
+| Pipeline selection | **Working** (was Unsupported) | `Runtime.submit(pipeline=...)` validates the explicit, mandate-scoped selection before any event and records it on `TASK_REQUESTED`; `Runtime.run` (`src/paa/runtime.py:355`) reads it back from the lineage to dispatch — the default task pipeline through the orchestrator, `builtin.manager` as a composition, anything else refused loudly with its one-shot door named. |
+| Pipeline registry | **Working** (was Unsupported) | `PipelineRegistry` (`src/paa/pipelines/registry.py:393`) scans builtins, local manifests, and installed stagings; `select` (`pipelines/registry.py:541`) is explicit and mandate-scoped, never scored. |
+| Declarative stage composition | **Working** (was Design-only) | Declarations carry params, slots, limits, capabilities, resume, and evidence tier; overlays tighten only (ADR-0052). |
+| Marketplace pipeline package type | **Working** (was Unsupported) | `pipeline` is a valid kind (`src/paa/marketplace/package.py:48`); the publish flow builds signed pipeline-kind `.paapkg` archives carrying the declaration's compatibility range and protocol. |
+| Marketplace install gates | **Working for metadata packages** | `src/paa/marketplace/installer.py:103-152` runs signature, hash, AST, permissions, and smoke gates; tests are in `tests/marketplace/test_marketplace.py:143-203`. |
+| Executable package loading | **Working** (was Unsupported) | `PipelinePackageInstaller` (`src/paa/pipelines/packages.py:889`) runs gates → conformance → review → stage: the bytes land in `PAA_HOME/pipelines/installed/<name>/<version>/` and the registry scans the staging as a live pipeline — `pack → sign → install → select → run` exists. |
+| Marketplace smoke/conformance | **Working** (was incomplete) | `_gate_smoke_test()` (`src/paa/marketplace/installer.py:219`) stages the package and executes its entrypoint under the sandbox with the skill contract's own pass bar; since the 2026-11-28 round the gate fails closed (no sandbox, unhealthy sandbox, no scanner — each refuses rather than passing), and `paa pipeline test` runs the six-check standard. |
 | Skill dispatch | **Working** | `src/paa/skills/usa.py:106-234` resolves contracts, validates input, authorizes before invocation, applies bounded secret access, validates output, and updates reliability. |
 | Skill marketplace path | **Partial** | Skill contracts and USA exist, but the audit found no complete installed-package-files → live adapter/skill path. |
-| Versioned runtime SDK | **Unsupported** | No RuntimeContext SDK version, semver range, compatibility gate, or migration policy exists. |
-| Extensibility tests | **Unsupported** | Existing tests prove built-in behavior; none register a second pipeline, select it per task, install executable pipeline code, or recover a crashed external loop. |
+| Versioned runtime SDK | **Working** (was Unsupported) | `paa-pipeline/1` frozen (ADR-0055); `requires_runtime` ranges on declarations, `requires_paa` floors on manifests, checked before any gate runs. |
+| Extensibility tests | **Working** (was Unsupported) | `tests/pipelines/` registers second pipelines, selects per task, installs executable pipeline code through the real gates, and pins the six-check conformance standard; `tests/runtime/test_pipeline_selection.py` pins the core selection door; `tests/pipelines/test_compose.py` recovers crashed compositions. |
 
 ### What a developer can do today
 
@@ -67,13 +107,26 @@ The design document correctly identifies the need for a `RuntimeContext`, but th
 
 ### Critical: no selection path
 
+> Closed. `TaskRequest` carries `pipeline`, `Runtime.submit` validates the
+> selection through `registry.select` before any event, and `Runtime.run`
+> dispatches on the recorded choice (`src/paa/runtime.py:245`, `:355`). The
+> original finding follows.
+
 `TaskRequest`/`Runtime.submit()` carry task data but no pipeline identifier. `Runtime.run()` always dispatches to the built-in orchestrator. There is no explicit selection, session default, global default, `can_handle()` scoring, confidence threshold, activation state, or compatibility check.
 
 ### Critical: marketplace is metadata registration, not executable extension loading
 
+> Closed. `pipeline` is a package kind, and installation stages executable
+> bytes that the registry scans as a live pipeline (`src/paa/pipelines/packages.py:924`).
+> The original finding follows.
+
 `PackageManifest` rejects `pipeline`. Even supported package kinds are recorded as metadata; installation does not create a live import/entrypoint/registry path. Therefore the documented-looking flow `pack → sign → install → select → run` does not exist for loops or harnesses.
 
 ### High: the smoke gate does not run the package
+
+> Closed. The gate stages the bytes and executes the entrypoint under the
+> sandbox (`src/paa/marketplace/installer.py:219`), and since 2026-11-28 it
+> fails closed. The original finding follows.
 
 `_gate_smoke_test()` health-checks the sandbox, but no package entrypoint is staged and executed. A pipeline can pass installation without its code being imported or checked against a runtime contract.
 

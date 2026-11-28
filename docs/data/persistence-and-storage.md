@@ -27,12 +27,12 @@ Settings (`src/paa/config.py:56`):
 
 **`Database`** is an async SQLite access layer:
 - Single write connection guarded by `asyncio.Lock`; `BEGIN IMMEDIATE`
-  transactions (`transaction()`, `database.py:214`).
-- Pooled read-only connections (size 4) via `_reader()` (`database.py:230`).
+  transactions (`transaction()`, `database.py:370`).
+- Pooled read-only connections (size 4) via `_reader()` (`database.py:499`).
 - WAL mode; applies `schema_sqlite.sql` idempotently on `connect()`
-  (`database.py:107`).
+  (`database.py:183`).
 - `close()` runs `PRAGMA wal_checkpoint(TRUNCATE)` so a single `.db` file copy
-  is a complete backup (`database.py:132`).
+  is a complete backup (`database.py:237`).
 - Helpers: `fetch_all`/`fetch_one`/`fetch_value` (reads), `execute`/`execute_many`
   (writes), `utc_now`/`to_iso`/`from_iso` (tz-aware ISO timestamps), `dumps`/
   `loads` (compact JSON for storage columns).
@@ -42,7 +42,7 @@ Configuration: `StorageSettings.sqlite_path` (default `~/.paa/state/paa.db`),
 postgres_dsn` (used only when `backend_relational == "postgres"`).
 
 Failure: `transaction()`/`_reader()` raise `StorageError` if not connected
-(`database.py:214`/`230`). Schema DDL failure raises `StorageError` with
+(`database.py:366`/`:499`). Schema DDL failure raises `StorageError` with
 substrate="sqlite" (`database.py`).
 
 **Consumers:** `LedgerStore`, `RecoveryEngine`, cold lake signals/artifacts,
@@ -98,7 +98,7 @@ Embeddings (`models/embeddings.py` → `storage/vector/embeddings.py`):
 
 Collections (`store.py`): `ACTIVE_FACTS` and `RFC_COLLECTIONS`.
 
-Consumers: `Runtime._try_vector` (`runtime.py:519`), `MemoryCreator` (embeds
+Consumers: `Runtime._try_vector` (`runtime.py:630`), `MemoryCreator` (embeds
 new facts, `creator.py:1516`), context gatherer semantic search
 (`context_agents.py:183`).
 
@@ -109,7 +109,7 @@ new facts, `creator.py:1516`), context gatherer semantic search
 - Explicit `"kuzu"`: raises `ImportError` if kuzu absent.
 - `"sqlite"`: always succeeds (recursive CTE traversal).
 
-Consumers: `Runtime._try_graph` (`runtime.py:532`), context builder graph
+Consumers: `Runtime._try_graph` (`runtime.py:643`), context builder graph
 neighbours (`context_agents.py:206`, bounded by `graph_hops` from modality
 profile).
 
@@ -130,8 +130,8 @@ Configuration: `StorageSettings.backend_queue`, `StorageSettings.redis_url`
 `BackpressureController` (`backpressure.py:77`): pure NORMAL / DEGRADED /
 SHEDDING decision on queue depth; control-plane streams always accepted.
 
-Consumers: `Runtime` (`runtime.py:393`), `ChiefOrchestrator.submit` enqueues
-(`src/paa/agents/orchestrator.py:313`), daemon dispatch claims (`daemon.py:159`),
+Consumers: `Runtime` (`runtime.py:504`), `ChiefOrchestrator.submit` enqueues
+(`src/paa/agents/orchestrator.py:324`), daemon dispatch claims (`daemon.py:159`),
 recovery requeue (`recovery.py:1333`), API backpressure gate
 (`api/app.py:200`).
 
@@ -151,13 +151,13 @@ recovery requeue (`recovery.py:1333`), API backpressure gate
 Every optional-backend factory (`_try_vector`, `_try_graph`, `_try_queue`,
 `get_blob_store`) catches `Exception` and returns `None`/fallback with a logged
 warning — never raises for a missing optional backend in `auto` mode
-(`runtime.py:519`–`:539`). The runtime must boot on a laptop with only core
+(`runtime.py:630`–`:650`). The runtime must boot on a laptop with only core
 dependencies installed (`AGENTS.md:60`).
 
 Degradation impact:
 - No vector → context gatherer semantic search returns `[]` (`context_agents.py:184`).
 - No graph → graph neighbours returns `[]` (`context_agents.py:215`).
-- No queue → orchestrator submit skips enqueue (`src/paa/agents/orchestrator.py:279`); daemon dispatch sleeps (`daemon.py:154`).
+- No queue → orchestrator submit skips enqueue (`src/paa/agents/orchestrator.py:290`); daemon dispatch sleeps (`daemon.py:154`).
 - No S3 → cold lake uses local CAS (`storage/coldlake/__init__.py:68`).
 
 ## 8. Consistency and parity
@@ -175,7 +175,7 @@ Degradation impact:
 - Task projections are derived by replay; snapshots are a cache optimisation
   (`ledger/replay.py:93`).
 - Queue (Redis) is volatile; the ledger is authoritative for recovery
-  (`recovery.py:11`, `src/paa/agents/orchestrator.py:776`).
+  (`recovery.py:11`, `src/paa/agents/orchestrator.py:792`).
 
 ## Related documents
 

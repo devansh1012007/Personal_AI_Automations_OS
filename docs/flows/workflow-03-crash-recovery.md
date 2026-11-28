@@ -10,7 +10,7 @@ Verified against `src/paa/ledger/recovery.py`, `src/paa/ledger/store.py`,
 |---|---|---|
 | CLI | `paa recover` | `cli/main.py:292` → `Runtime.boot_recovery()` |
 | Service start | `paa serve` → `Daemon.start()` | `daemon.py:91` |
-| Runtime build | `Runtime.build(run_recovery=True)` (default) | `runtime.py:331` |
+| Runtime build | `Runtime.build(run_recovery=True)` (default) | `runtime.py:456` |
 
 All lead to `ChiefOrchestrator.boot()` → `RecoveryEngine.boot_sweep()`.
 

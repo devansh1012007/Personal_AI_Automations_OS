@@ -24,7 +24,7 @@ degrade, never raise (`AGENTS.md:59`).
 Async SQLite access layer: single write connection (`asyncio.Lock`, `BEGIN
 IMMEDIATE`), pooled read-only connections (size 4), WAL mode, applies
 `schema_sqlite.sql` on `connect()`, `close()` checkpoints WAL (TRUNCATE) so a
-file copy is a complete backup (`storage/relational/database.py:224`). Helpers `fetch_all/fetch_one/
+file copy is a complete backup (`storage/relational/database.py:237`). Helpers `fetch_all/fetch_one/
 fetch_value/execute/execute_many`, `utc_now/to_iso/from_iso`, `dumps/loads`.
 
 ### Schemas (26 business tables + `schema_migrations`)
@@ -77,13 +77,13 @@ DEGRADED/SHEDDING; 11 `StreamName`s; `ORCHESTRATOR_CORE` is control plane.
 | `SignalRepository` → `Database` + `CAS` | signal row + blob | Signal intake | `storage/coldlake/signals.py:114` |
 | `Observability runs` → `Database` | run rows | Execution traces | `runs.py` |
 | `Skills registry` → `Database` | skill rows | Skill catalog | `skills/registry.py:95` |
-| `Marketplace installer` → `Database` | package rows | Package registry | `marketplace/installer.py:81` |
+| `Marketplace installer` → `Database` | package rows | Package registry | `marketplace/installer.py:94` |
 
 ## Runtime behavior
 
 - Optional backends constructed in `Runtime._try_vector/_try_graph/_try_queue`
-  — catch `Exception`, return `None`/fallback, log warning (`runtime.py:519`).
-- `_acquire_sandbox` 5s probe → subprocess fallback (`runtime.py:617`).
+  — catch `Exception`, return `None`/fallback, log warning (`runtime.py:630`).
+- `_acquire_sandbox` 5s probe → subprocess fallback (`runtime.py:728`).
 - `Database` is single-writer; WAL allows concurrent readers.
 
 ## Failure behavior

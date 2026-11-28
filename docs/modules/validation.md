@@ -72,7 +72,7 @@ Manifest capture + drift detection (`hash_file`).
 | Component | Relationship | Why | Source |
 |---|---|---|---|
 | `CriticReviewer` → `Engine` | `validate(output)` | Review step output | `reasoning.py:275` |
-| `CriticValidatorAdapter` (runtime) → `Engine` | adapt call shape | Bridge critic ↔ engine | `runtime.py:92` |
+| `CriticValidatorAdapter` (runtime) → `Engine` | adapt call shape | Bridge critic ↔ engine | `runtime.py:93` |
 | `Engine` → `Scanner/Validator/PytestRunner/Snapshot` | delegate checks | Compose verdict | `validation/engine.py:227` |
 | `USA` → `SchemaValidator` | `validate_tool_output()` | Validate skill output | `usa.py` |
 | `PytestRunner` → `Sandbox` | `run(spec)` | Execute tests contained | `test_runner.py` |
@@ -80,7 +80,7 @@ Manifest capture + drift detection (`hash_file`).
 ## Runtime behavior
 
 - Lazy import in `runtime.py` (`try/except`) — validation unavailable degrades
-  gracefully (`runtime.py:692`).
+  gracefully (`runtime.py:803`).
 - Tests run last and only inside a sandbox (`validation/engine.py:245`).
 - `ok` requires positive evidence; absence of failure ≠ pass (`test_runner.py:83`).
 

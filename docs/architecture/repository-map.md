@@ -127,7 +127,7 @@ responsibility and the files it contains. All paths are repository-relative.
 | `paa observe` | `src/paa/cli/observe.py:147` | `observe`: run a CLI under observation, leave a T1 bundle (SPEC 2 W7) |
 | `paa chat` | `src/paa/cli/chat.py:160` | the chat surface — TUI, or `--plain` (SPEC 2 W4) |
 | `paa mcp serve` | `src/paa/cli/mcp.py:137` | stdio MCP server (SPEC 2 W4) |
-| Programmatic runtime | `src/paa/runtime.py:353` | `Runtime.build()` |
+| Programmatic runtime | `src/paa/runtime.py:464` | `Runtime.build()` |
 | API factory | `src/paa/api/app.py:54` | `create_app(runtime)` |
 | Daemon | `src/paa/daemon.py:45` | `Daemon(runtime)` |
 

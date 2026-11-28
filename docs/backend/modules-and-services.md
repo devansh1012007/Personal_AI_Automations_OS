@@ -29,7 +29,7 @@ section cited. Pydantic-settings `Settings` with prefix `PAA_`, nested delimiter
 **Configuration precedence:** explicit kwargs > environment (`PAA_*`) >
 `.env` file > defaults (`config.py:7`).
 
-**Consumers:** `Runtime.build()` (`runtime.py:345`), `PolicyRiskAgent`
+**Consumers:** `Runtime.build()` (`runtime.py:456`), `PolicyRiskAgent`
 (`policy.py:132`), `BackpressureController` (`backpressure.py:86`), model router
 (`router.py:143`), and essentially every subsystem.
 
@@ -116,16 +116,16 @@ boots recovery (`boot`).
 
 **Key logic:**
 - `submit()` writes `TASK_REQUESTED` then `TASK_QUEUED`, applies backpressure,
-  enqueues to `StreamName.ORCHESTRATOR_CORE` (`src/paa/agents/orchestrator.py:279`).
+  enqueues to `StreamName.ORCHESTRATOR_CORE` (`src/paa/agents/orchestrator.py:290`).
 - `run()` drives a submitted task to terminal; returns early if already
-  terminal (`src/paa/agents/orchestrator.py:401`).
+  terminal (`src/paa/agents/orchestrator.py:417`).
 - The pipeline's `_execute_steps` retries each step up to `max_step_retries`
   (default 2) (`src/paa/pipelines/builtin.py:766`).
 - Delegation graph enforces depth/cycle/node bounds per correlation
-  (`src/paa/agents/orchestrator.py:503`, `delegation.py:87`).
+  (`src/paa/agents/orchestrator.py:519`, `delegation.py:87`).
 
 **Failure behavior:** `PaaError` during execution → `EXECUTION_FAILED` event,
-then re-project (`src/paa/agents/orchestrator.py:441`).
+then re-project (`src/paa/agents/orchestrator.py:457`).
 
 ### `reasoning.py` — planner, critic, router, worker
 **Responsibility:** `StrategicPlanner` compiles goals into steps (model or
@@ -188,9 +188,9 @@ fetch_value/execute/execute_many/vacuum/analyze/integrity_check/table_names`;
 `utc_now`, `to_iso`, `from_iso`, `dumps`, `loads`.
 
 **Failure behavior:** `transaction()`/`_reader()` require a connected
-connection or raise `StorageError` (`database.py:214`). `close()` runs
+connection or raise `StorageError` (`database.py:366`). `close()` runs
 `PRAGMA wal_checkpoint(TRUNCATE)` so a single `.db` file copy is a complete
-backup (`database.py:132`).
+backup (`database.py:237`).
 
 ### `storage/coldlake/` — content-addressed blob store + signals
 **Responsibility:** `ContentAddressedStore` — immutable zstd-compressed blobs

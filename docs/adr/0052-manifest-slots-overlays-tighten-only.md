@@ -23,7 +23,7 @@ the design here:
 
 1. **No execution needed to know what a pipeline is.** A manifest must be
    analysable before any code runs — the marketplace's five gates
-   (`marketplace/installer.py:54`) already work this way for skills: signature,
+   (`marketplace/installer.py:62`) already work this way for skills: signature,
    content hash, AST scan, permission check, smoke test, with
    `marketplace/package.py:48`'s `_VALID_KINDS` as the closed kind set a
    `pipeline` kind slots into.

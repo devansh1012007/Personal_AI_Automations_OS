@@ -31,19 +31,19 @@ The `TaskProjection.phase` becomes `AWAITING_HUMAN`; `is_resumable` is
 | Event | Payload | File |
 |---|---|---|
 | `AWAITING_HUMAN_ATTESTATION` | `{reason, vacant_slots?}` | `src/paa/pipelines/builtin.py:716` / `:718` |
-| `HUMAN_GATE_CLEARED` | `{resume_phase, note}` | `src/paa/agents/orchestrator.py:773` |
-| `HUMAN_GATE_REJECTED` | `{resume_phase, note}` | `src/paa/agents/orchestrator.py:773` |
+| `HUMAN_GATE_CLEARED` | `{resume_phase, note}` | `src/paa/agents/orchestrator.py:789` |
+| `HUMAN_GATE_REJECTED` | `{resume_phase, note}` | `src/paa/agents/orchestrator.py:789` |
 
 ## Clearing the gate (external only)
 
 `ChiefOrchestrator.clear_human_gate(cid, approved, resume_phase=EXECUTING,
-note=None)` (`src/paa/agents/orchestrator.py:712`):
-1. `project()`; raises `PaaError` if phase is not `AWAITING_HUMAN` (`src/paa/agents/orchestrator.py:772`).
+note=None)` (`src/paa/agents/orchestrator.py:728`):
+1. `project()`; raises `PaaError` if phase is not `AWAITING_HUMAN` (`src/paa/agents/orchestrator.py:788`).
 2. Emit `HUMAN_GATE_CLEARED` (approved) or `HUMAN_GATE_REJECTED` (rejected)
-   with `{resume_phase, note}` (`src/paa/agents/orchestrator.py:773`).
+   with `{resume_phase, note}` (`src/paa/agents/orchestrator.py:789`).
 3. Return re-projected `TaskProjection`.
 
-**Nothing in the automated path can clear its own gate** (`src/paa/agents/orchestrator.py:722`)
+**Nothing in the automated path can clear its own gate** (`src/paa/agents/orchestrator.py:738`)
 — a crash is never interpreted as consent (`ledger/replay.py:62`).
 
 Callers:
@@ -112,7 +112,7 @@ sequenceDiagram
 |---|---|---|
 | Gate cleared on non-parked task | `PaaError` "task is not awaiting human attestation" → API 409 | `src/paa/pipelines/builtin.py:430`, `api/app.py:136` |
 | Recovery encounters AWAITING_HUMAN | `PARKED_HUMAN`; left across restart | `recovery.py:1156` |
-| Automated path tries to clear | Not possible — no internal caller | `src/paa/agents/orchestrator.py:722` |
+| Automated path tries to clear | Not possible — no internal caller | `src/paa/agents/orchestrator.py:738` |
 
 ## Persistence
 

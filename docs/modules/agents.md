@@ -42,7 +42,7 @@ model (`src/paa/agents/orchestrator.py:9`, `policy.py:7`).
 
 ### `orchestrator.py` — Chief Orchestrator
 `run(cid)` projects the lineage; if terminal, returns immediately
-(`src/paa/agents/orchestrator.py:401`). Phases:
+(`src/paa/agents/orchestrator.py:417`). Phases:
 - `_hydrate` (`src/paa/pipelines/builtin.py:656`) — context builder; parks on
   `AWAITING_HUMAN_ATTESTATION` if density insufficient (`src/paa/pipelines/builtin.py:716`).
 - `_plan` (`src/paa/pipelines/builtin.py:732`) — planner; SIMPLE bypasses model
@@ -53,10 +53,10 @@ model (`src/paa/agents/orchestrator.py:9`, `policy.py:7`).
   `POLICY_CLEARED` (`src/paa/pipelines/builtin.py:483`).
 - `_execute_steps` (`src/paa/pipelines/builtin.py:766`) — per step: `EXECUTION_STARTED` → worker → critic
   → `EXECUTION_COMPLETED`/`VALIDATION_FAILED`; retry up to `max_step_retries`
-  (default 2, `src/paa/agents/orchestrator.py:183`).
+  (default 2, `src/paa/agents/orchestrator.py:194`).
 - `_commit` (`src/paa/pipelines/builtin.py:494`) — `MUTATION_COMMITTED` (terminal).
 
-`mediate_delegation()` (`src/paa/agents/orchestrator.py:503`) enforces delegation graph bounds. `clear_human_gate()` (`src/paa/agents/orchestrator.py:712`) — only external callers clear gates. `boot()` (`src/paa/agents/orchestrator.py:801`) runs
+`mediate_delegation()` (`src/paa/agents/orchestrator.py:519`) enforces delegation graph bounds. `clear_human_gate()` (`src/paa/agents/orchestrator.py:728`) — only external callers clear gates. `boot()` (`src/paa/agents/orchestrator.py:817`) runs
 recovery.
 
 ### `reasoning.py` — planner, critic, router, worker
@@ -107,16 +107,16 @@ from DB (`:234`), anti-goals (cosine ≥0.82 or phrase match, `:262`). Risk scor
 | Component | Relationship | Why | Source |
 |---|---|---|---|
 | `ChiefOrchestrator` → all agents | calls `agent.run(message, ctx)` | Drive lifecycle phases | `src/paa/pipelines/builtin.py:701`, `:757`, `:444`, `:792`, `:849` |
-| `Agent` → `DelegationRegistry` | `delegate()` | Orchestrator owns delegation graph | `agents/base.py:373`, `src/paa/agents/orchestrator.py:503` |
+| `Agent` → `DelegationRegistry` | `delegate()` | Orchestrator owns delegation graph | `agents/base.py:373`, `src/paa/agents/orchestrator.py:519` |
 | `Reasoning agents` → `ModelLike` | `complete_structured()` | Model seam | `reasoning.py:95`, `:246`, `:353` |
-| `RouterModelAdapter` | wraps `EscalatingModelRouter` | Bridge `ModelLike` → router | `runtime.py:98` |
+| `RouterModelAdapter` | wraps `EscalatingModelRouter` | Bridge `ModelLike` → router | `runtime.py:99` |
 | `PolicyRiskAgent` → `Database` | `fetch_all(hot_serving_policy_rules)` | Operator rules | `policy.py:255` |
 | `Context builders` → `Database`/vector/graph | fetch facts/semantic/graph | Build context packet | `context_agents.py:144`, `:244`, `:341` |
-| `Runtime.build` | constructs all agents | Composition root | `runtime.py:660` |
+| `Runtime.build` | constructs all agents | Composition root | `runtime.py:771` |
 
 ## Runtime behavior
 
-- Initialized by `Runtime.build()` → `_build_agents()` (`runtime.py:660`).
+- Initialized by `Runtime.build()` → `_build_agents()` (`runtime.py:771`).
 - Each `Agent.run()` is async, applies cross-cutting guarantees, returns
   `AgentResult`.
 - Delegation is mediated, non-blocking at topology level (DAG wait graph).
@@ -138,7 +138,7 @@ from DB (`:234`), anti-goals (cosine ≥0.82 or phrase match, `:262`). Risk scor
 - Changing an agent's `handle()` signature breaks the `Agent` ABC contract
   (`agents/base.py:296`).
 - Adding a delegation requires `can_delegate = True` and orchestrator
-  registration (`agents/base.py:308`, `src/paa/agents/orchestrator.py:209`).
+  registration (`agents/base.py:308`, `src/paa/agents/orchestrator.py:220`).
 - Changing `TERMINAL_EVENTS` affects recovery scanning (`core/types.py:273`,
   `ledger/store.py:304`).
 - Tests: `tests/agents/` (70 tests per README).
@@ -147,7 +147,7 @@ from DB (`:234`), anti-goals (cosine ≥0.82 or phrase match, `:262`). Risk scor
 
 - `src/paa/agents/specialists/` is an empty package (`AGENTS.md:146`).
 - Router is optional; when absent, `_classify()` heuristic picks modality
-  (`src/paa/agents/orchestrator.py:365`).
+  (`src/paa/agents/orchestrator.py:381`).
 - Deterministic planner fallback is crude (splits on conjunctions).
 
 ## Related documents

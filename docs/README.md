@@ -57,7 +57,7 @@ Primary entry points:
 * `paa mcp serve` — the stdio MCP server (`src/paa/cli/mcp.py:137`)
 * `paa agent "prompt"` — tool-using coder loop (`src/paa/cli/coder.py:58`)
 
-The composition root is `Runtime.build()` (`src/paa/runtime.py:353`).
+The composition root is `Runtime.build()` (`src/paa/runtime.py:464`).
 
 ## B. Start here
 

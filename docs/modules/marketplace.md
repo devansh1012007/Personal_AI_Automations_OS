@@ -42,7 +42,7 @@ the economy shares with every other package kind:
   them exactly as a skill does;
 - the **signed manifest**, now carrying `requires_paa`/`protocol` inside
   the signed bytes, and the **publisher-key trust store**
-  (`PackageInstaller.trust_key`, `installer.py:283`) a consumer installs
+  (`PackageInstaller.trust_key`, `installer.py:324`) a consumer installs
   a signed package under;
 - the **hub index format**: a directory of `.paapkg` files plus
   `index.json`, written by `LocalDirectoryRegistry.publish` and read back

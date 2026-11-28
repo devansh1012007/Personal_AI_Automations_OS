@@ -82,7 +82,7 @@ Runtime.build()
   └─ ChiefOrchestrator
 ```
 
-`src/paa/runtime.py:353`.
+`src/paa/runtime.py:464`.
 
 ### 2. Optional backends degrade; they never raise
 
@@ -93,7 +93,7 @@ Each is attempted inside `_try_vector` / `_try_graph` / `_try_queue` /
 in-process fallback with a logged warning. The runtime must boot on a laptop
 with only core dependencies installed.
 
-`src/paa/runtime.py:519`, `:532`, `:542`, `:617`.
+`src/paa/runtime.py:630`, `:643`, `:653`, `:728`.
 
 ### 3. No generative reasoning in the control path
 
@@ -129,7 +129,7 @@ so the privacy boundary is auditable. The model seam is the narrow
 `ModelLike.complete_structured(prompt, schema)` protocol; `RouterModelAdapter`
 is the only place that knows about `EscalatingModelRouter`.
 
-`src/paa/models/router.py:123`, `src/paa/runtime.py:98`.
+`src/paa/models/router.py:123`, `src/paa/runtime.py:99`.
 
 ## The task lifecycle (every arrow writes a ledger event first)
 
@@ -146,7 +146,7 @@ TASK_REQUESTED → TASK_QUEUED → CONTEXT_HYDRATED → PLAN_COMPILED
 `README.md:221`. `EXECUTION_COMPLETED` fires **per step**, not per task, and is
 not terminal (`docs/adr/0010`).
 
-Orchestrator phases (`src/paa/agents/orchestrator.py:401`):
+Orchestrator phases (`src/paa/agents/orchestrator.py:417`):
 
 1. `run` — project the lineage; if terminal, return immediately.
 2. `_hydrate` — build the context packet (planner context builder); may park on
@@ -169,7 +169,7 @@ waiters can exist — the RFC's safety property is preserved by construction,
 not by prohibiting peer calls.
 
 `src/paa/agents/base.py:22`, `src/paa/agents/delegation.py:48`,
-`src/paa/agents/orchestrator.py:503`.
+`src/paa/agents/orchestrator.py:519`.
 
 ## Configuration philosophy
 

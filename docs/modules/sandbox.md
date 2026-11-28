@@ -168,7 +168,7 @@ Pinned as measured in `tests/sandbox/test_auto_selection.py`: the probe
 *sequence* (not the constant alone), the degradation warning's fields, and
 the explicit-backend-returned-without-a-probe contract.
 
-### `_acquire_sandbox` (`runtime.py:617`)
+### `_acquire_sandbox` (`runtime.py:728`)
 A bounded probe (`asyncio.wait_for(..., timeout=_SANDBOX_PROBE_BOUND_SECONDS)`,
 30 s) then fallback to subprocess. The bound is deliberately **longer** than the
 Docker backend's own probe timeout (20 s), so the inner probe is what gives out
@@ -208,7 +208,7 @@ enforcement (ADR-0009); heartbeat liveness with miss tolerance
 |---|---|---|---|
 | `WorkerCell` → `Sandbox` | `run(spec)` | Execute step | `reasoning.py:456` |
 | `PytestRunner` → `Sandbox` | `run(spec)` | Run tests | `validation/test_runner.py` |
-| `Runtime._acquire_sandbox` → `get_sandbox` | select backend | Compose runtime | `runtime.py:617` |
+| `Runtime._acquire_sandbox` → `get_sandbox` | select backend | Compose runtime | `runtime.py:728` |
 | `ClawHubAdapter` → `Sandbox` | `run(SandboxSpec)` | Run skill entrypoint | `skills/adapters/claw_hub.py:458` |
 | `RecursionGuard` → `MODALITY_PROFILES` | read ceilings | Depth/node bounds | `recursion.py:137` |
 
@@ -250,7 +250,7 @@ enforcement (ADR-0009); heartbeat liveness with miss tolerance
   budget; that errs safe, but it must not read as a workload fault (ADR-0031).
 - `sample_rss_mb` returns `(None, ...)` when no tier works — memory ceiling
   not enforced, run proceeds (`watchdog.py`).
-- `_acquire_sandbox` probe timeout → subprocess fallback (`runtime.py:617`).
+- `_acquire_sandbox` probe timeout → subprocess fallback (`runtime.py:728`).
 
 ## Modification impact
 

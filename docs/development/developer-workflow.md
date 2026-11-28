@@ -70,7 +70,7 @@ async with await Runtime.build() as rt:
     outcome = await rt.run(cid)
 ```
 
-For tests, inject a scripted model via `model_adapter=` (`runtime.py:237`);
+For tests, inject a scripted model via `model_adapter=` (`runtime.py:238`);
 the `ScriptedModel` in `tests/integration/conftest.py` is the reference
 implementation (`AGENTS.md:108`).
 

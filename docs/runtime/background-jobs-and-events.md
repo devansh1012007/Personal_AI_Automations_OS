@@ -42,8 +42,8 @@ interval and drains nothing (`daemon.py:154`).
 ## 2. Recovery boot sweep
 
 `RecoveryEngine.boot_sweep()` (`recovery.py:991`), invoked by
-`ChiefOrchestrator.boot()` (`src/paa/agents/orchestrator.py:825`) and by `Runtime.build()`
-(`runtime.py:331`) and `Daemon.start()` (`daemon.py:91`):
+`ChiefOrchestrator.boot()` (`src/paa/agents/orchestrator.py:841`) and by `Runtime.build()`
+(`runtime.py:456`) and `Daemon.start()` (`daemon.py:91`):
 
 1. `verify_all_chains()` — hash-chain integrity across all lineages; problems
    are **reported, never auto-repaired** (`recovery.py:1000`).
@@ -119,7 +119,7 @@ lineages. The event vocabulary (`src/paa/core/types.py:122`):
 |---|---|
 | Daemon loop exception | Logged, loop restarted after 1s (`daemon.py:134`) |
 | Task run exception | Logged, message nacked (redelivery) (`daemon.py:170`) |
-| Orchestrator `PaaError` | `EXECUTION_FAILED` event, re-project, return error (`src/paa/agents/orchestrator.py:441`) |
+| Orchestrator `PaaError` | `EXECUTION_FAILED` event, re-project, return error (`src/paa/agents/orchestrator.py:457`) |
 | Sandbox step failure | `VALIDATION_FAILED`; retry up to budget (`src/paa/pipelines/builtin.py:812`) |
 | Recovery single lineage failure | Logged as `UNRECOVERABLE`; sweep continues (`recovery.py:1015`) |
 | Hash-chain problem | Reported in `RecoveryReport.chain_problems`, never repaired (`recovery.py:1000`) |

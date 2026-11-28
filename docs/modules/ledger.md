@@ -124,8 +124,8 @@ from that version.
 
 | Component | Relationship | Why it connects | Source |
 |---|---|---|---|
-| `ChiefOrchestrator` | calls `LedgerStore.append` | Emits every state transition | `src/paa/agents/orchestrator.py:251` |
-| `Runtime.build` | constructs `LedgerStore`, `RecoveryEngine` | Composition root | `runtime.py:288`, `:326` |
+| `ChiefOrchestrator` | calls `LedgerStore.append` | Emits every state transition | `src/paa/agents/orchestrator.py:262` |
+| `Runtime.build` | constructs `LedgerStore`, `RecoveryEngine` | Composition root | `runtime.py:464` |
 | `RecoveryEngine` | uses `LedgerStore`, `Database` | Replay and reconcile | `recovery.py:905` |
 | `replay.project` | reads `LedgerStore.read_correlation` | Build TaskProjection | `ledger/replay.py:568` |
 | `API /ledger/{id}` | calls `read_correlation` | Explainability endpoint | `api/app.py:156` |
@@ -135,7 +135,7 @@ from that version.
 ## Runtime behavior
 
 - Initialized by `Runtime.build()`; `boot_recovery()` runs at startup
-  (`runtime.py:331`).
+  (`runtime.py:456`).
 - All writes are async, inside `Database.transaction()` (`BEGIN IMMEDIATE`).
 - Termination: append returns the sealed event; no long-running loop.
 
