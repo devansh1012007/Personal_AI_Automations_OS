@@ -128,7 +128,11 @@ def install(
             for skill in discovered:
                 report = await surface.install(skill, activate=not no_activate)
                 if report.installed:
-                    gates = ", ".join(gate.value for gate in report.install.passed_gates)
+                    gate_names = [gate.value for gate in report.install.passed_gates]
+                    gate_names += [
+                        f"{gate.value} (n/a)" for gate, _ in report.install.na_gates
+                    ]
+                    gates = ", ".join(gate_names)
                     activation = report.activation
                     pipeline_note = (
                         f" — coding loop: {activation.pipeline}"

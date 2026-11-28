@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 import structlog.testing
@@ -17,7 +18,13 @@ from paa.marketplace.installer import InstallGate, PackageInstaller
 from paa.marketplace.package import PackageError, PackageManifest, SkillPackage
 from paa.marketplace.registry_client import LocalDirectoryRegistry
 from paa.marketplace.signing import generate_keypair, sign, signing_is_secure, verify
+from paa.sandbox.subprocess_backend import SubprocessSandbox
 from paa.storage.relational.database import Database
+from paa.validation.ast_scanner import AstSecurityScanner
+
+#: An entrypoint the smoke gate can actually run: exit 0 with one JSON
+#: object on stdout — the skill contract's own pass bar.
+_ENTRYPOINT = b'import json\nprint(json.dumps({"status": "ok"}))\n'
 
 
 def _manifest(**over: object) -> PackageManifest:
@@ -27,16 +34,37 @@ def _manifest(**over: object) -> PackageManifest:
         "kind": "skill",
         "publisher": "acme",
         "description": "search the web",
+        "entrypoints": ["main.py"],
     }
     base.update(over)
     return PackageManifest(**base)  # type: ignore[arg-type]
 
 
 def _package(files: dict[str, bytes] | None = None, **over: object) -> SkillPackage:
-    files = files or {"skill.py": b"def run(q):\n    return q\n"}
+    files = files or {
+        "skill.py": b"def run(q):\n    return q\n",
+        "main.py": _ENTRYPOINT,
+    }
     manifest = _manifest(**over)
     manifest.content_hash = SkillPackage.hash_files(files)
     return SkillPackage(manifest, files)
+
+
+def _installer(db: Database, **over: Any) -> PackageInstaller:
+    """The production shape: a real scanner and a real sandbox.
+
+    The gates fail closed since the review round — a gate whose dependency
+    is missing refuses rather than passing — so a test that wants an install
+    to reach success wires both, exactly the way ``ChatExtensionSurface``
+    and the pipeline-package flow do.
+    """
+    params: dict[str, Any] = {
+        "scanner": AstSecurityScanner(),
+        "sandbox": SubprocessSandbox(),
+        "allow_unverified": True,
+    }
+    params.update(over)
+    return PackageInstaller(db, **params)
 
 
 class TestSigning:
@@ -205,13 +233,88 @@ class TestInstallerGates:
         assert await self._rows(db) == 0
 
     async def test_unsigned_installs_with_explicit_optin(self, db: Database) -> None:
-        installer = PackageInstaller(db, allow_unverified=True)
+        installer = _installer(db)
         report = await installer.install(_package(), mode=PermissionMode.AUTO)
         assert report.installed
         assert await self._rows(db) == 1
 
+    async def test_a_missing_scanner_refuses_rather_than_passes(
+        self, db: Database
+    ) -> None:
+        """The AST gate fails closed: no scanner wired means a refusal.
+
+        Before the review round the gate returned ``None`` — a pass — when
+        the constructor's scanner default was left at ``None``, so a caller
+        who forgot to wire one got a silent pass. The refusal names the
+        missing piece, and the gate never joins ``passed_gates``.
+        """
+        installer = PackageInstaller(db, allow_unverified=True, sandbox=SubprocessSandbox())
+        report = await installer.install(_package(), mode=PermissionMode.AUTO)
+        assert report.refused_at is InstallGate.AST_SCAN
+        assert "scanner" in (report.reason or "")
+        assert InstallGate.AST_SCAN not in report.passed_gates
+        assert await self._rows(db) == 0
+
+    async def test_a_missing_sandbox_refuses_rather_than_passes(
+        self, db: Database
+    ) -> None:
+        """The smoke gate fails closed: no sandbox wired means a refusal."""
+        installer = PackageInstaller(db, allow_unverified=True, scanner=AstSecurityScanner())
+        report = await installer.install(_package(), mode=PermissionMode.AUTO)
+        assert report.refused_at is InstallGate.SMOKE_TEST
+        assert "sandbox" in (report.reason or "")
+        assert InstallGate.SMOKE_TEST not in report.passed_gates
+        assert await self._rows(db) == 0
+
+    async def test_an_unhealthy_sandbox_refuses_rather_than_skipping(
+        self, db: Database
+    ) -> None:
+        """A sandbox that fails its own health check fails the gate.
+
+        The old behaviour logged ``smoke_test_skipped`` and returned a pass;
+        an install that claims a smoke pass on a sandbox that cannot vouch
+        for anything is exactly the silent pass the gate exists to prevent.
+        """
+
+        class _Dead:
+            """A sandbox that cannot pass its own health check."""
+
+            async def healthcheck(self) -> bool:
+                return False
+
+            async def run(self, spec: Any) -> Any:
+                raise AssertionError("a failed health check must refuse before any run")
+
+        installer = PackageInstaller(
+            db, allow_unverified=True, scanner=AstSecurityScanner(), sandbox=_Dead()
+        )
+        report = await installer.install(_package(), mode=PermissionMode.AUTO)
+        assert report.refused_at is InstallGate.SMOKE_TEST
+        assert "health check" in (report.reason or "")
+        assert InstallGate.SMOKE_TEST not in report.passed_gates
+        assert await self._rows(db) == 0
+
+    async def test_an_entrypointless_package_records_the_gate_as_not_run(
+        self, db: Database
+    ) -> None:
+        """A package with no entrypoint installs with an honest ``n/a``.
+
+        The smoke gate has nothing it could execute, so the report records
+        the gate as not applicable — never as passed. A report that listed
+        ``smoke_test`` among its passed gates for a package whose gate never
+        ran would be the ledger-is-truth rule broken at the install door.
+        """
+        installer = _installer(db)
+        pkg = _package(files={"data.json": b"{}"}, entrypoints=[])
+        report = await installer.install(pkg, mode=PermissionMode.AUTO)
+        assert report.installed
+        assert InstallGate.SMOKE_TEST not in report.passed_gates
+        assert [gate for gate, _ in report.na_gates] == [InstallGate.SMOKE_TEST]
+        assert report.na_gates[0][1] == "the package declares no entrypoint"
+        assert await self._rows(db) == 1
+
     async def test_content_hash_mismatch_refused(self, db: Database) -> None:
-        installer = PackageInstaller(db, allow_unverified=True)
+        installer = _installer(db)
         pkg = _package()
         pkg.files["skill.py"] = b"tampered after hashing\n"  # hash no longer matches
         report = await installer.install(pkg, mode=PermissionMode.AUTO)
@@ -219,16 +322,14 @@ class TestInstallerGates:
         assert await self._rows(db) == 0
 
     async def test_ast_scan_gate_refuses_dangerous_code(self, db: Database) -> None:
-        from paa.validation.ast_scanner import AstSecurityScanner
-
-        installer = PackageInstaller(db, allow_unverified=True, scanner=AstSecurityScanner())
+        installer = _installer(db)
         pkg = _package(files={"evil.py": b"import os\nos.system('rm -rf /')\n"})
         report = await installer.install(pkg, mode=PermissionMode.AUTO)
         assert report.refused_at is InstallGate.AST_SCAN
         assert await self._rows(db) == 0
 
     async def test_permission_gate_refuses_overreach(self, db: Database) -> None:
-        installer = PackageInstaller(db, allow_unverified=True)
+        installer = _installer(db)
         pkg = _package(required_permissions=["PERM_NET_EGRESS"])
         # LOCKDOWN grants only SANDBOX_RUN.
         report = await installer.install(pkg, mode=PermissionMode.LOCKDOWN)
@@ -236,17 +337,17 @@ class TestInstallerGates:
         assert await self._rows(db) == 0
 
     async def test_clean_signed_package_installs(self, db: Database) -> None:
-        from paa.validation.ast_scanner import AstSecurityScanner
-
-        installer = PackageInstaller(db, allow_unverified=True, scanner=AstSecurityScanner())
-        pkg = _package(files={"skill.py": b"def run(q):\n    return q.upper()\n"})
+        installer = _installer(db)
+        pkg = _package(
+            files={"skill.py": b"def run(q):\n    return q.upper()\n", "main.py": _ENTRYPOINT}
+        )
         report = await installer.install(pkg, mode=PermissionMode.AUTO)
         assert report.installed
         assert InstallGate.AST_SCAN in report.passed_gates
         assert await self._rows(db) == 1
 
     async def test_uninstall_reverses_install(self, db: Database) -> None:
-        installer = PackageInstaller(db, allow_unverified=True)
+        installer = _installer(db)
         await installer.install(_package(), mode=PermissionMode.AUTO)
         assert await installer.uninstall("google_search", "1.0.0") is True
         assert await self._rows(db) == 0
@@ -264,7 +365,7 @@ class TestInstallerGates:
         pkg.manifest.publisher_key = kp.public_b64
         pkg.manifest.signature = sign(pkg.manifest.signing_bytes(), kp.private_b64)
 
-        installer = PackageInstaller(db)
+        installer = _installer(db, allow_unverified=False)
         await installer.trust_key("k1", kp.public_b64, "acme")
         report = await installer.install(pkg, mode=PermissionMode.AUTO)
         assert report.installed

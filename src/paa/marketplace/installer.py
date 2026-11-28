@@ -20,7 +20,15 @@ The gates, in order, and why the order matters:
 5. **Sandbox smoke test** — does it even run? Executed in a sandbox so a
    malicious package cannot touch the host during its own install test.
 
-Only after all five pass is the skill registered.
+Every gate **fails closed**. A gate whose dependency is missing — no scanner
+wired, no sandbox configured, a sandbox that fails its own health check —
+refuses the install with a reason naming the missing piece; it never reports
+itself as passed. The one honest exception is the smoke gate for a package
+that declares no entrypoint at all: there is nothing the gate could execute,
+so the report records the gate as **not applicable** (``na_gates``), never as
+passed — the same truth rule the ledger follows. Only gates that ran and
+passed are listed in ``passed_gates``, and only after all applicable gates
+pass is the skill registered.
 """
 
 from __future__ import annotations
@@ -69,6 +77,11 @@ class InstallReport:
     outcome: InstallOutcome
     package_name: str
     passed_gates: list[InstallGate] = field(default_factory=list)
+    #: Gates that did not apply to this package, with the reason each was not
+    #: run. A gate that cannot apply is recorded here — never in
+    #: ``passed_gates`` — so a report never claims a gate passed when it did
+    #: not run.
+    na_gates: list[tuple[InstallGate, str]] = field(default_factory=list)
     refused_at: InstallGate | None = None
     reason: str | None = None
     signature_state: SignatureState = SignatureState.UNVERIFIED
@@ -124,9 +137,19 @@ class PackageInstaller:
             return self._refuse(report, InstallGate.PERMISSIONS, missing)
         report.passed_gates.append(InstallGate.PERMISSIONS)
 
-        if (smoke := await self._gate_smoke_test(package)) is not None:
+        if not package.manifest.entrypoints:
+            # The one gate that can be honestly not applicable: a package
+            # with no entrypoint has nothing the smoke gate can execute. It
+            # is recorded as not-run — never as passed — and the pipeline
+            # flow's conformance stage is the execution proof for
+            # pipeline-kind packages.
+            report.na_gates.append(
+                (InstallGate.SMOKE_TEST, "the package declares no entrypoint")
+            )
+        elif (smoke := await self._gate_smoke_test(package)) is not None:
             return self._refuse(report, InstallGate.SMOKE_TEST, smoke)
-        report.passed_gates.append(InstallGate.SMOKE_TEST)
+        else:
+            report.passed_gates.append(InstallGate.SMOKE_TEST)
 
         await self._register(package, report)
         report.outcome = InstallOutcome.INSTALLED
@@ -167,7 +190,13 @@ class PackageInstaller:
 
     def _gate_ast(self, package: SkillPackage) -> str | None:
         if self._scanner is None:
-            return None
+            # Fail closed: a gate that cannot run refuses, it does not pass.
+            # The scanner is a cheap in-process object, so "not wired" is a
+            # caller's omission, and the reason names it as one.
+            return (
+                "the AST gate has no scanner — a gate that cannot run "
+                "refuses (fail closed), it does not pass"
+            )
         for name, source in package.python_sources().items():
             findings = self._scanner.scan(source, filename=name)
             hard = [f for f in findings if getattr(f, "severity", None) and _is_block(f)]
@@ -204,15 +233,27 @@ class PackageInstaller:
         but emits no JSON has already failed the contract its activation
         would advertise.
         """
-        if self._sandbox is None or not package.manifest.entrypoints:
-            return None
+        if self._sandbox is None:
+            # Fail closed, the same rule as the AST gate: "no sandbox wired"
+            # is a caller's omission, and the gate that cannot run refuses
+            # rather than report itself as passed.
+            return (
+                "the smoke gate has no sandbox — a gate that cannot run "
+                "refuses (fail closed), it does not pass"
+            )
         try:
             healthy = await self._sandbox.healthcheck()
         except Exception:
             healthy = False
         if not healthy:
-            log.warning("marketplace.smoke_test_skipped", reason="no healthy sandbox")
-            return None
+            # A sandbox that cannot pass its own health check cannot vouch
+            # for a package's behaviour, so the gate refuses: an install that
+            # claimed a smoke pass on an unhealthy sandbox would be exactly
+            # the silent pass this gate exists to prevent.
+            return (
+                "the sandbox failed its health check — the smoke gate refuses "
+                "(fail closed), it does not pass"
+            )
 
         entrypoint = package.manifest.entrypoints[0]
         if entrypoint not in package.files:
